@@ -134,9 +134,11 @@ public final class MacManualNetworkOwner {
         self.makeRunner = makeRunner
     }
     @discardableResult public func start(_ request: MacManualNetworkRequest, locale: Locale = .current) -> Bool {
-        // LAN browsing still needs confirmed teardown of its underlying
-        // Bonjour browsers and resolution requests.
-        guard request != .lan else { return false }
+        // LAN browsing shares the same verified teardown as the other
+        // diagnostics: cancelling the owner task cancels the discovery engine's
+        // browse/resolve group, which retires the NWBrowser and deallocates
+        // the DNS-SD resolve/address queries on their own queues (proven by
+        // MacLANLiveProbeDrainTests before this admission was opened).
         return startOwnedOperation(request, locale: locale)
     }
 

@@ -9,7 +9,7 @@ import FloeMacNetwork
 
 enum MacToolboxAvailability {
     static let available: Set<ToolboxTool> = Set([.hash, .json, .encoding, .calculator, .qr,
-        .ruler, .photoMeasure, .location, .timer, .magnifier, .browser, .sound,
+        .ruler, .photoMeasure, .location, .timer, .magnifier, .browser, .sound, .scanner,
         .http, .webSocket, .mqtt, .serialAssistant]).union(MacToolboxNetworkScope.tools)
 
     static func groupTitle(_ group: ToolboxGroup, locale: Locale) -> String {
@@ -137,6 +137,8 @@ public struct MacToolboxWindow: View {
             MacQRToolView(locale: locale, mediaEnvironment: services.mediaEnvironment)
         case .magnifier:
             MacToolboxMagnifierView(environment: services.mediaEnvironment)
+        case .scanner:
+            MacToolboxScannerView(environment: services.mediaEnvironment)
         case .sound:
             MacToolboxSoundView(environment: services.mediaEnvironment)
         case .calculator:
@@ -147,7 +149,7 @@ public struct MacToolboxWindow: View {
             MacPhotoMeasureView(model: services.instrumentModels.photo)
         case .location:
             MacLocationInstrumentView(model: services.instrumentModels.location)
-        case .ping, .traceroute, .dns, .port, .wifi, .roaming:
+        case .ping, .traceroute, .dns, .port, .lan, .wifi, .roaming:
             if let tool = selection.wrappedValue {
                 MacNetworkToolView(tool: tool, owner: services.networkOwner).id(tool.rawValue)
             }

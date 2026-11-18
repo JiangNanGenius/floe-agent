@@ -31,6 +31,9 @@ actor FloeMacSelfSession {
     private let goal: String
     private let toolsEnabled: Bool
     private let boundary: FloeMacSelfTaskBoundary?
+    /// Exact durable attachments the prepared user turn must still carry when
+    /// the run is re-checked immediately before dispatch.
+    private let preparedAttachments: [AttachmentRef]
     private let beforeInputRecheck: (@Sendable () async -> Void)?
     private let beforeServiceStart: (@Sendable () async -> Void)?
     private let afterCancellationAttempt: (@Sendable () async -> Void)?
@@ -61,6 +64,7 @@ actor FloeMacSelfSession {
         goal: String,
         toolsEnabled: Bool,
         boundary: FloeMacSelfTaskBoundary?,
+        preparedAttachments: [AttachmentRef],
         eventBufferLimit: Int,
         beforeInputRecheck: (@Sendable () async -> Void)? = nil,
         beforeServiceStart: (@Sendable () async -> Void)? = nil,
@@ -78,6 +82,7 @@ actor FloeMacSelfSession {
         self.goal = goal
         self.toolsEnabled = toolsEnabled
         self.boundary = boundary
+        self.preparedAttachments = preparedAttachments
         self.beforeInputRecheck = beforeInputRecheck
         self.beforeServiceStart = beforeServiceStart
         self.afterCancellationAttempt = afterCancellationAttempt
@@ -161,7 +166,8 @@ actor FloeMacSelfSession {
                 throw FloeMacSelfCoreError.preparedIdentityMismatch("durable user input is unavailable")
             }
             try FloeMacSelfPreparedInput.verify(saved, messageID: identity.userMessageID,
-                conversationID: identity.conversationID, runID: identity.runID, goal: goal)
+                conversationID: identity.conversationID, runID: identity.runID, goal: goal,
+                expectedAttachments: preparedAttachments)
         } catch {
             await settleBeforeDispatch(reason: "preparedInputMismatch")
             return

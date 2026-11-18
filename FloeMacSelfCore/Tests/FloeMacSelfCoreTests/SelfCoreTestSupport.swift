@@ -478,6 +478,55 @@ final class SelfCoreFixture: @unchecked Sendable {
         )
     }
 
+    // MARK: Attachments
+
+    /// Minimal PNG bytes (1x1); the runtime normalizer keys off the signature.
+    static let fixturePNGBytes = Data([
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+        0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+        0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+        0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+        0x42, 0x60, 0x82
+    ])
+
+    /// Stages a real image attachment: fixture PNG bytes on disk behind a
+    /// bookmark, exactly what the host stages from a picker.
+    func makeImageAttachment(named name: String = "fixture.png") throws -> FloeMacSelfSessionAttachment {
+        let url = root.appendingPathComponent(name)
+        try Self.fixturePNGBytes.write(to: url)
+        return FloeMacSelfSessionAttachment(
+            kind: .image,
+            displayName: name,
+            uti: "public.png",
+            byteCount: Self.fixturePNGBytes.count,
+            sha256: FloeDigest.sha256Hex(Self.fixturePNGBytes),
+            bookmark: try url.bookmarkData()
+        )
+    }
+
+    /// Stages a real document attachment: text bytes on disk behind a
+    /// bookmark. Documents stay durable-only references in this stage.
+    func makeDocumentAttachment(
+        named name: String = "notes.txt",
+        contents: String = "fixture document body"
+    ) throws -> FloeMacSelfSessionAttachment {
+        let data = Data(contents.utf8)
+        let url = root.appendingPathComponent(name)
+        try data.write(to: url)
+        return FloeMacSelfSessionAttachment(
+            kind: .document,
+            displayName: name,
+            uti: "public.plain-text",
+            byteCount: data.count,
+            sha256: FloeDigest.sha256Hex(data),
+            bookmark: try url.bookmarkData()
+        )
+    }
+
     func makeHostGate(
         workspaceID: UUID,
         allowedToolNames: Set<String>,

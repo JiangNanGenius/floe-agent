@@ -124,6 +124,7 @@ struct MacWorkspaceFilesView: View {
                 } actions: {
                     Button(t("选择文件夹…", "Choose Folder…"), action: chooseFolder)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if loading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if failed {

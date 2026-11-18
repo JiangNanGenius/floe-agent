@@ -235,6 +235,14 @@
 "mac.workspace.inspector.running" = "运行中";
 "mac.workspace.inspector.updated" = "最近更新";
 "mac.workspace.browseFiles" = "浏览文件";
+"mac.workspace.attachFiles" = "添加附件…";
+"mac.workspace.attachFailed" = "无法添加这些文件";
+"mac.workspace.selectVisionModel" = "请选择支持图片输入的模型，或移除图片附件。";
+"mac.workspace.removeAttachment" = "移除附件";
+"mac.workspace.attachmentReferenceOnly" = "仅文件引用";
+"mac.workspace.noProject" = "无项目";
+"mac.workspace.runPreparing" = "准备中";
+"mac.workspace.runStopping" = "正在停止";
 
 "app.name" = "Floe Agent";
 "app.floe_agent_app.task_center" = "任务中心";

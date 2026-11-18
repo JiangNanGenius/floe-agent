@@ -36,7 +36,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
             agent = workspace
             let host = NSHostingController(rootView: MacWorkspaceRootView(
                 workspace: workspace, openBridge: openBridge,
-                openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) }
+                openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) },
+                remembersFileRoot: testSupport == nil
             ))
             let window = NSWindow(contentViewController: host)
             window.title = String(localized: "host.role.agent")

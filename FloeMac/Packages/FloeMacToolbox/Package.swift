@@ -38,6 +38,7 @@ let package = Package(
                 .product(name: "FloeToolboxClients", package: "FloeToolbox"),
                 .product(name: "FloeToolboxUtilities", package: "FloeToolbox"),
                 .product(name: "FloeMacMediaSystem", package: "FloeMacToolboxMedia"),
+                .product(name: "FloeMacNetwork", package: "FloeMacNetwork"),
             ]
         ),
     ],

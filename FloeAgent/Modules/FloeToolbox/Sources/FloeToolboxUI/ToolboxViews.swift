@@ -184,9 +184,13 @@ public struct ToolboxHomeView: View {
     @State private var search = ""
     private func text(_ zh: String,_ en: String) -> String { toolboxLocale.language.languageCode?.identifier == "zh" ? zh : en }
     private let availability: [ToolboxTool: ToolboxAvailability]
+    private let showsAssistantAvailability: Bool
     private let onOpen: (ToolboxTool) -> Void
-    public init(availability: [ToolboxTool: ToolboxAvailability], onOpen: @escaping (ToolboxTool) -> Void) {
-        self.availability = availability; self.onOpen = onOpen
+    public init(availability: [ToolboxTool: ToolboxAvailability], showsAssistantAvailability: Bool = true,
+                onOpen: @escaping (ToolboxTool) -> Void) {
+        self.availability = availability
+        self.showsAssistantAvailability = showsAssistantAvailability
+        self.onOpen = onOpen
     }
     public var body: some View {
         GeometryReader { geometry in
@@ -293,12 +297,14 @@ public struct ToolboxHomeView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
-                    if tool.hasAssistant {
+                    if showsAssistantAvailability && tool.hasAssistant && !isUnsupported(tool) {
                         Image(systemName: "sparkles").foregroundStyle(.secondary)
                             .accessibilityLabel(text("支持 AI 助手", "AI assistant available"))
                     }
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
+                    if !isUnsupported(tool) {
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                    }
                 }.frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
                     .padding(.vertical, 6).contentShape(Rectangle())
             }

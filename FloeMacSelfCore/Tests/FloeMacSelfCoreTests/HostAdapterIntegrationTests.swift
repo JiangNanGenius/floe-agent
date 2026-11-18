@@ -282,10 +282,11 @@ struct HostAdapterIntegrationTests {
     func concurrentRuntimeOnHeldDatabaseFailsClosed() async throws {
         try await withSelfCoreTempDirectory { root in
             let databaseURL = root.appendingPathComponent("held.sqlite")
+            let provenance = try makeHostProvenance(databaseURL: databaseURL)
             let first = try FloeMacSelfRuntime(
                 databaseURL: databaseURL,
                 owner: FloeMacSelfHostIdentity(displayName: "FirstFixture"),
-                provenance: try makeHostProvenance(databaseURL: databaseURL)
+                provenance: provenance
             )
             _ = try await first.bootstrap()
 
@@ -293,7 +294,7 @@ struct HostAdapterIntegrationTests {
                 _ = try FloeMacSelfRuntime(
                     databaseURL: databaseURL,
                     owner: FloeMacSelfHostIdentity(displayName: "SecondFixture"),
-                    provenance: try makeHostProvenance(databaseURL: databaseURL)
+                    provenance: provenance
                 )
             }
             #expect(secondError == .authorityLocked)

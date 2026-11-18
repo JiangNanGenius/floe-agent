@@ -7,9 +7,36 @@ import FloePersistence
 import FloeProviders
 import FloeSecurity
 import Foundation
+import UniformTypeIdentifiers
 #if FLOE_MAC_HOST_SMOKE
 import FloeModels
 #endif
+
+/// One staged file attachment prepared for the next send. The draft carries
+/// a read-only security-scoped bookmark created at pick time plus verified
+/// size and digest metadata; it grants no tool or permission authority.
+/// `.image` drafts are inlined into the model request by the runtime;
+/// `.document` drafts stay durable-only references (the model does not read
+/// them in this stage).
+struct HostAgentAttachmentDraft: Hashable, Identifiable, Sendable {
+    enum Kind: String, Hashable, Sendable {
+        case image
+        case document
+    }
+
+    let id: UUID
+    let kind: Kind
+    let url: URL
+    let bookmark: Data
+    let displayName: String
+    let byteCount: Int
+    let sha256: String
+    let uti: String
+
+    /// UI hint mirroring the runtime contract: image bytes reach the model;
+    /// documents are saved with the task as references only.
+    var isModelVisible: Bool { kind == .image }
+}
 
 struct HostAgentProvider: Codable {
     var profile: ProviderProfile
@@ -22,7 +49,8 @@ struct HostAgentProvider: Codable {
     var displayTitle: String { profile.displayName ?? model.displayName }
 
     @MainActor
-    init(displayName: String? = nil, endpoint: String, protocolKind: ModelProtocol, modelID: String, apiKey: String) throws {
+    init(displayName: String? = nil, endpoint: String, protocolKind: ModelProtocol, modelID: String, apiKey: String,
+         supportsImages: Bool = false) throws {
         guard let endpointURL = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw InvalidConfiguration.endpoint
         }
@@ -35,7 +63,8 @@ struct HostAgentProvider: Codable {
         profile = ProviderProfile(kind: .custom, wireProtocol: protocolKind, baseURL: endpointURL,
                                   displayName: trimmedName?.isEmpty == false ? trimmedName : nil)
         model = ModelProfile(providerID: profile.id, remoteModelID: modelID, displayName: modelID,
-                             limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0))
+                             limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0),
+                             capabilities: supportsImages ? [.text, .vision] : [.text])
         self.apiKey = apiKey
         try validate()
     }
@@ -89,8 +118,32 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var messages: [PersistedMessage] = []
     @Published private(set) var pendingPrompt: String?
     @Published private(set) var streamedText = ""
+    /// Durable project workspaces for task selection; nil selection means
+    /// "all tasks". Selection never changes a task's immutable workspace.
+    @Published private(set) var workspaces: [WorkspaceRecord] = []
+    @Published private(set) var selectedWorkspaceID: UUID?
+    /// Files staged for the next send; cleared once a run starts.
+    @Published private(set) var stagedAttachments: [HostAgentAttachmentDraft] = []
+    /// Live projection of the active run; nil when no run owns the composer.
+    @Published private(set) var runPhase: FloeMacSelfSessionPhase?
     @Published var notice: String?
     private(set) var storageErrorKind: String?
+
+    /// Staged file bytes ceiling: image drafts are additionally capped by the
+    /// runtime's 8 MiB inline limit; documents stay references only.
+    static let maximumAttachmentBytes = 32 * 1_024 * 1_024
+    /// Mirrors the runtime's per-run attachment ceiling.
+    static let maximumStagedAttachmentCount = 8
+    /// Inline images above this size never reach the model; staging matches
+    /// the runtime's image inlining bound instead of staging a file that
+    /// would silently degrade.
+    static let maximumInlineImageBytes = 8 * 1_024 * 1_024
+    /// Key material and certificate exports are never staged: they are
+    /// reference secrets, not model or task content.
+    static let blockedAttachmentExtensions: Set<String> = [
+        "pem", "key", "p12", "pfx", "der", "cer", "crt", "keystore",
+        "jks", "asc", "gpg", "kdbx", "ppk", "mobileprovision"
+    ]
 
     /// Saved provider records (list order). Records are validated on load;
     /// corrupt entries are dropped and the cleaned list is written back.
@@ -133,6 +186,7 @@ final class HostAgentWorkspace: ObservableObject {
             guard let runtime else { return }
             try await runtime.bootstrap()
             conversations = try await runtime.conversations()
+            workspaces = try await runtime.workspaces()
             if let recent = conversations.first {
                 selectedID = recent.id
                 messages = try await runtime.conversationMessages(conversationID: recent.id)
@@ -163,12 +217,14 @@ final class HostAgentWorkspace: ObservableObject {
                 record.profile.id = selected
                 record.model.id = store.providers[index].model.id
                 record.model.providerID = selected
+                record.model.capabilities = store.providers[index].model.capabilities
                 store.providers[index] = record
             } else if !store.providers.isEmpty {
                 let existing = store.providers[0].profile.id
                 record.profile.id = existing
                 record.model.id = store.providers[0].model.id
                 record.model.providerID = existing
+                record.model.capabilities = store.providers[0].model.capabilities
                 store.providers[0] = record
                 store.selectedProviderID = existing
             } else {
@@ -181,10 +237,10 @@ final class HostAgentWorkspace: ObservableObject {
     /// Adds a provider and makes it the selected one for chat.
     @discardableResult
     func addProvider(name: String?, endpoint: String, protocolKind: ModelProtocol,
-                     modelID: String, key: String) -> Bool {
+                     modelID: String, key: String, supportsImages: Bool = false) -> Bool {
         updateProviderStore { store in
             let record = try HostAgentProvider(displayName: name, endpoint: endpoint,
-                                               protocolKind: protocolKind, modelID: modelID, apiKey: key)
+                                               protocolKind: protocolKind, modelID: modelID, apiKey: key, supportsImages: supportsImages)
             store.providers.append(record)
             store.selectedProviderID = record.profile.id
         }
@@ -194,13 +250,13 @@ final class HostAgentWorkspace: ObservableObject {
     /// selections and conversations stay bound to the same provider.
     @discardableResult
     func updateProvider(id: UUID, name: String?, endpoint: String, protocolKind: ModelProtocol,
-                        modelID: String, key: String) -> Bool {
+                        modelID: String, key: String, supportsImages: Bool = false) -> Bool {
         updateProviderStore { store in
             guard let index = store.providers.firstIndex(where: { $0.profile.id == id }) else {
                 throw ProviderStoreError.missingRecord
             }
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
-                                               protocolKind: protocolKind, modelID: modelID, apiKey: key)
+                                               protocolKind: protocolKind, modelID: modelID, apiKey: key, supportsImages: supportsImages)
             record.profile.id = id
             record.model.id = store.providers[index].model.id
             record.model.providerID = id
@@ -249,6 +305,141 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    /// Chooses the project workspace shown for task selection. Nil shows
+    /// every task. This never rebinds an existing conversation: a task's
+    /// workspace is fixed after its first message.
+    func selectWorkspace(_ id: UUID?) {
+        guard isReady, !isSending, !isTerminating else { return }
+        selectedWorkspaceID = id
+    }
+
+    /// Registers a project workspace for an explicitly picked local folder.
+    /// The runtime is idempotent per resolved root path: re-adding the same
+    /// folder returns the existing record instead of creating a duplicate.
+    @discardableResult
+    func addWorkspace(name: String, rootURL: URL) async -> Bool {
+        guard let runtime, isReady, !isSending, !isTerminating,
+              let release = admit() else { return false }
+        defer { release() }
+        do {
+            let bookmark = try rootURL.bookmarkData(options: [
+                .withSecurityScope, .securityScopeAllowOnlyReadAccess
+            ])
+            let record = try await runtime.registerWorkspace(name: name, rootBookmark: bookmark)
+            workspaces = try await runtime.workspaces()
+            // Select the durable record the runtime actually bound: for an
+            // already-registered folder this is the existing workspace id.
+            selectedWorkspaceID = record.id
+            return true
+        } catch {
+            notice = String(
+                localized: "host.chat.workspaceSaveFailed",
+                defaultValue: "The workspace could not be saved."
+            )
+            return false
+        }
+    }
+
+    /// Stages picked files for the next send. Only regular files that open
+    /// for reading, produce a read-only security-scoped bookmark, and pass
+    /// the bounded size/type rules are staged; duplicates of an already
+    /// staged path are ignored. The bounded read fetches at most the ceiling
+    /// plus one byte so an oversized file is rejected without being fully
+    /// loaded. The returned array lists exactly what was staged.
+    @discardableResult
+    func stageAttachments(_ urls: [URL]) -> [HostAgentAttachmentDraft] {
+        guard isReady, !isSending, !isTerminating else { return [] }
+        var staged: [HostAgentAttachmentDraft] = []
+        var stagedPaths = Set(stagedAttachments.map {
+            $0.url.resolvingSymlinksInPath().standardizedFileURL
+        })
+        for url in urls {
+            guard stagedAttachments.count + staged.count < Self.maximumStagedAttachmentCount else { break }
+            let pathExtension = url.pathExtension.lowercased()
+            guard !pathExtension.isEmpty,
+                  !Self.blockedAttachmentExtensions.contains(pathExtension) else { continue }
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true else { continue }
+            guard let bookmark = try? url.bookmarkData(options: [
+                .withSecurityScope, .securityScopeAllowOnlyReadAccess
+            ]) else { continue }
+            var stale = false
+            guard let resolved = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ), !stale else { continue }
+            let standardized = resolved.resolvingSymlinksInPath().standardizedFileURL
+            guard stagedPaths.insert(standardized).inserted else { continue }
+            // Read at most the document ceiling plus one byte; anything
+            // larger is skipped before the image classification read.
+            guard let head = Self.boundedContents(of: resolved, limit: Self.maximumAttachmentBytes),
+                  !head.isEmpty else { continue }
+            let rasterMIME = Self.rasterImageMIME(head)
+            let kind: HostAgentAttachmentDraft.Kind = rasterMIME == nil ? .document : .image
+            // Images must satisfy the stricter inline bound or they would
+            // stage as model-visible drafts that the runtime then drops.
+            if kind == .image, head.count > Self.maximumInlineImageBytes { continue }
+            staged.append(HostAgentAttachmentDraft(
+                id: UUID(),
+                kind: kind,
+                url: resolved,
+                bookmark: bookmark,
+                displayName: url.lastPathComponent,
+                byteCount: head.count,
+                sha256: FloeDigest.sha256Hex(head),
+                uti: UTType(filenameExtension: url.pathExtension)?.identifier ?? "public.data"
+            ))
+        }
+        guard !staged.isEmpty else { return [] }
+        stagedAttachments.append(contentsOf: staged)
+        return staged
+    }
+
+    /// Reads at most `limit` bytes from one exact path. The descriptor is
+    /// opened `O_NOFOLLOW | O_NONBLOCK` (a swapped-in symlink or FIFO can
+    /// neither redirect the read nor block the staging UI) and `fstat` must
+    /// confirm a regular file before any byte is read.
+    private static func boundedContents(of url: URL, limit: Int) -> Data? {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var status = stat()
+        guard fstat(fd, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG else { return nil }
+        var data = Data()
+        data.reserveCapacity(min(limit, max(0, Int(status.st_size))))
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        while data.count <= limit {
+            let readCount = read(fd, &buffer, buffer.count)
+            guard readCount > 0 else { break }
+            data.append(contentsOf: buffer[0..<readCount])
+        }
+        guard !data.isEmpty, data.count <= limit else { return nil }
+        return data
+    }
+
+    func unstageAttachment(_ id: UUID) {
+        stagedAttachments.removeAll { $0.id == id }
+    }
+
+    func clearStagedAttachments() {
+        stagedAttachments.removeAll()
+    }
+
+    /// Raster signatures accepted by the runtime's image inlining. Kept in
+    /// sync with the upstream normalizer; non-raster files stage as
+    /// durable-only documents.
+    private static func rasterImageMIME(_ data: Data) -> String? {
+        if data.count >= 3, data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if data.count >= 8, data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { return "image/png" }
+        if data.count >= 6, data.starts(with: Array("GIF8".utf8)) { return "image/gif" }
+        if data.count >= 12,
+           data.prefix(4) == Data("RIFF".utf8),
+           data.dropFirst(8).prefix(4) == Data("WEBP".utf8) { return "image/webp" }
+        return nil
+    }
+
     /// Renames or pins a saved conversation through the runtime and reloads
     /// the list on success. False means the change was not applied; callers
     /// surface their own message.
@@ -286,8 +477,12 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    /// Sends one chat turn. Only `.chat` mode is available in this stage; the
+    /// runtime fail-closes any other mode. `workspaceID` binds a new task to
+    /// the selected project; continuing an existing task keeps its immutable
+    /// workspace regardless of this value.
     @discardableResult
-    func send(_ goal: String) -> Bool {
+    func send(_ goal: String, workspaceID: UUID? = nil) -> Bool {
         let text = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let runtime, isReady, !isSending, !isTerminating, !text.isEmpty else { return false }
         do {
@@ -295,7 +490,11 @@ final class HostAgentWorkspace: ObservableObject {
                 notice = String(localized: "host.chat.configureFirst")
                 return false
             }
-            return beginSend(text, runtime: runtime, provider: config.binding())
+            guard config.model.capabilities.contains(.vision) || !stagedAttachments.contains(where: { $0.kind == .image }) else {
+                notice = String(localized: "mac.workspace.selectVisionModel")
+                return false
+            }
+            return beginSend(text, runtime: runtime, provider: config.binding(), workspaceID: workspaceID)
         } catch {
             notice = String(localized: "host.chat.keychainUnavailable")
             return false
@@ -303,32 +502,56 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func beginSend(_ text: String, runtime: FloeMacSelfRuntime,
-                           provider: FloeMacSelfProviderBinding) -> Bool {
+                           provider: FloeMacSelfProviderBinding,
+                           workspaceID: UUID? = nil) -> Bool {
         guard let release = admit() else { return false }
         isSending = true
         notice = nil
         pendingPrompt = text
         let currentID = selectedID
+        let drafts = stagedAttachments
+        let workspaceName = workspaceID.flatMap { id in workspaces.first(where: { $0.id == id })?.name }
+        if !drafts.isEmpty { stagedAttachments = [] }
         Task {
             defer {
                 isSending = false
+                runPhase = nil
                 activeRun = nil
                 release()
             }
             do {
-                let handle = try await runtime.startSession(
-                    FloeMacSelfSessionRequest(conversationID: currentID, goal: text), provider: provider
+                let request = FloeMacSelfSessionRequest(
+                    conversationID: currentID,
+                    workspaceID: workspaceID,
+                    goal: text,
+                    context: FloeMacSelfRunContext(workspaceName: workspaceName),
+                    attachments: drafts.map {
+                        FloeMacSelfSessionAttachment(
+                            id: $0.id,
+                            kind: $0.kind == .image ? .image : .document,
+                            displayName: $0.displayName,
+                            uti: $0.uti,
+                            byteCount: $0.byteCount,
+                            sha256: $0.sha256,
+                            bookmark: $0.bookmark
+                        )
+                    }
                 )
+                let handle = try await runtime.startSession(request, provider: provider)
                 activeRun = handle
                 selectedID = handle.identity.conversationID
+                runPhase = await handle.phase()
                 let events = handle.events()
                 streamedText = await handle.snapshot()?.streamedText ?? ""
                 for await _ in events {
-                    streamedText = await handle.snapshot()?.streamedText ?? ""
+                    let snapshot = await handle.snapshot()
+                    streamedText = snapshot?.streamedText ?? ""
+                    runPhase = await handle.phase()
                 }
                 let terminal = await handle.waitForTerminal()
                 messages = try await handle.durableMessages()
                 conversations = try await runtime.conversations()
+                workspaces = try await runtime.workspaces()
                 pendingPrompt = nil
                 streamedText = ""
                 guard let terminal, terminal.confirmed else {
@@ -342,6 +565,9 @@ final class HostAgentWorkspace: ObservableObject {
             } catch {
                 // User input and provider errors can contain private material.
                 // Show the action that failed and preserve the draft for retry.
+                if !drafts.isEmpty {
+                    stagedAttachments = drafts + stagedAttachments
+                }
                 notice = String(localized: "host.chat.runFailed")
             }
         }

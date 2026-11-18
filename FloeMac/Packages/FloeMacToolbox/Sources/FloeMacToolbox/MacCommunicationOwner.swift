@@ -8,6 +8,7 @@ import FloeToolboxCore
 import FloeToolboxClients
 import FloeToolboxWorkbenches
 import FloeToolboxUI
+import FloeMacNetwork
 
 /// One explicit communication target chosen by the person using the window.
 public enum MacCommunicationRequest: Sendable, Equatable {
@@ -15,13 +16,16 @@ public enum MacCommunicationRequest: Sendable, Equatable {
     case webSocket(URL)
     case mqtt(host: String, port: UInt16, tls: Bool, version: MQTTVersion, username: String?, password: String?)
     case serial(host: String, port: UInt16, tls: Bool, configuration: SerialAssistantConfiguration)
+    /// One user-selected `/dev/cu.*` node, admitted with its USB identity.
+    case serialUSB(path: String, settings: USBSerialSettings, vendorID: UInt16, productID: UInt16,
+                   configuration: SerialAssistantConfiguration)
 
     public var tool: ToolboxTool {
         switch self {
         case .http: .http
         case .webSocket: .webSocket
         case .mqtt: .mqtt
-        case .serial: .serialAssistant
+        case .serial, .serialUSB: .serialAssistant
         }
     }
 }
@@ -33,6 +37,7 @@ public enum MacCommunicationInputIssue: Error, Equatable, Sendable {
     case webSocketURLRequired, invalidWebSocketURL
     case httpURLRequired, invalidHTTPURL
     case invalidSerialConfiguration
+    case serialPortRequired, invalidSerialPortPath
 
     public var field: MacCommunicationField {
         switch self {
@@ -74,6 +79,15 @@ public enum MacCommunicationValidation {
             if issues.isEmpty, (try? configuration.wireProtocol()) == nil { issues.append(.invalidSerialConfiguration) }
             if issues.isEmpty, (try? SerialEndpoint(title: host, transport: configuration.connection.transport,
                     wireProtocol: .raw, host: host, port: Int(port))) == nil { issues.append(.invalidHost) }
+            return issues
+        case .serialUSB(let path, _, _, _, let configuration):
+            var issues: [MacCommunicationInputIssue] = []
+            if path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                issues.append(.serialPortRequired)
+            } else if (try? MacUSBSerialPortCatalog().validate(path: path)) == nil {
+                issues.append(.invalidSerialPortPath)
+            }
+            if issues.isEmpty, (try? configuration.wireProtocol()) == nil { issues.append(.invalidSerialConfiguration) }
             return issues
         }
     }
@@ -178,21 +192,27 @@ public final class MacCommunicationOwner {
     private var openTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     private var activeGate: MacCommunicationGate?
+    private let localTransport: MacLocalSerialTransport
     private var opener: (MacCommunicationRequest, SessionLease, CaptureJournal, CaptureRedactor, @escaping SerialAuthorizer) async throws -> MacCommunicationSession
 
-    public init(storageRoot: URL, networkTimeout: TimeInterval = 30) {
+    public init(storageRoot: URL, networkTimeout: TimeInterval = 30,
+                localTransport: MacLocalSerialTransport = .live) {
         self.storageRoot = storageRoot
         self.timeout = networkTimeout
+        self.localTransport = localTransport
         self.opener = { request, lease, journal, redactor, authorize in
             try await MacCommunicationSession.open(request: request, lease: lease, journal: journal,
-                                                   redactor: redactor, authorize: authorize, timeout: networkTimeout)
+                                                   redactor: redactor, authorize: authorize, timeout: networkTimeout,
+                                                   localTransport: localTransport)
         }
     }
 
     init(storageRoot: URL, networkTimeout: TimeInterval = 30,
+         localTransport: MacLocalSerialTransport = .live,
          opener: @escaping (MacCommunicationRequest, SessionLease, CaptureJournal, CaptureRedactor, @escaping SerialAuthorizer) async throws -> MacCommunicationSession) {
         self.storageRoot = storageRoot
         self.timeout = networkTimeout
+        self.localTransport = localTransport
         self.opener = opener
     }
 
@@ -327,7 +347,7 @@ extension MacCommunicationSession {
     /// choices stay immutable once the session exists.
     static func open(request: MacCommunicationRequest, lease: SessionLease, journal: CaptureJournal,
                      redactor: CaptureRedactor, authorize: @escaping SerialAuthorizer,
-                     timeout: TimeInterval) async throws -> MacCommunicationSession {
+                     timeout: TimeInterval, localTransport: MacLocalSerialTransport = .live) async throws -> MacCommunicationSession {
         switch request {
         case .http(let url):
             let target = url.absoluteString
@@ -385,6 +405,38 @@ extension MacCommunicationSession {
                 let pump = SerialReceiveService(session: session, updated: { [weak panel] in await panel?.refresh() })
                 owner.installSerial(connection: connection, session: session, panel: panel, modbus: nil, receiver: pump)
                 try await pump.start()
+            }
+            return owner
+        case .serialUSB(let path, let settings, let vendorID, let productID, let configuration):
+            let wire = try configuration.wireProtocol()
+            let fileName = URL(fileURLWithPath: path).lastPathComponent
+            let endpoint = try SerialEndpoint(title: fileName, transport: .usb, wireProtocol: wire,
+                                              host: path, usbVendorID: vendorID, usbProductID: productID)
+            try configuration.validate(endpoint: endpoint)
+            let connection = try await localTransport.openUSB(path, settings)
+            let session: SerialSession
+            do {
+                session = try SerialSession(lease: lease, endpoint: endpoint, journal: journal,
+                                            connection: connection, redactor: redactor, authorize: authorize)
+            } catch {
+                await connection.close()
+                throw error
+            }
+            let owner = MacCommunicationSession(tool: .serialAssistant, lease: lease, endpointSummary: fileName)
+            if configuration.protocolType == .modbus {
+                let client = try ModbusClient(session: session)
+                owner.installSerial(connection: connection, session: session, panel: nil,
+                                    modbus: ModbusWorkbenchModel(client: client, journal: journal, provider: nil), receiver: nil)
+            } else {
+                let panel = SerialPanelModel(session: session, journal: journal, provider: nil)
+                let pump = SerialReceiveService(session: session, updated: { [weak panel] in await panel?.refresh() })
+                owner.installSerial(connection: connection, session: session, panel: panel, modbus: nil, receiver: pump)
+                do {
+                    try await pump.start()
+                } catch {
+                    await owner.close()
+                    throw error
+                }
             }
             return owner
         }

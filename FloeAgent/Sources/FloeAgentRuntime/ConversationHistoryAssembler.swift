@@ -34,7 +34,8 @@ public struct ConversationHistoryAssembler: Sendable {
 
     public func build(
         conversationID: UUID,
-        excludingMessageID: UUID? = nil
+        excludingMessageID: UUID? = nil,
+        includeInlineImages: Bool = true
     ) async throws -> [ConversationMessage] {
         let persisted = try await store.messages(conversationID: conversationID)
             .filter {
@@ -86,7 +87,7 @@ public struct ConversationHistoryAssembler: Sendable {
             guard bytes + size <= recentBudget || recent.isEmpty else { break }
             bytes += size
             var copy = message
-            if let original = originals[message.id] {
+            if includeInlineImages, let original = originals[message.id] {
                 for part in original.parts where part.kind == .image {
                     guard let attachmentID = part.attachmentID,
                           let attachment = try await store.attachment(id: attachmentID),

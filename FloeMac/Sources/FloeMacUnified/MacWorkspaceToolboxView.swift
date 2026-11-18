@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import FloeMacInstruments
 import FloeMacToolbox
+import FloeToolboxCore
+import FloeToolboxUI
 import SwiftUI
 
 struct MacWorkspaceToolboxView: View {
@@ -8,37 +11,27 @@ struct MacWorkspaceToolboxView: View {
     let openToolbox: (String) -> Void
 
     var body: some View {
-        List {
-            ForEach(MacToolboxCatalog.groups(locale: locale)) { group in
-                Section(group.title) {
-                    ForEach(group.tools) { tool in
-                        if tool.isAvailable {
-                            Button {
-                                openToolbox(tool.id)
-                            } label: {
-                                HStack {
-                                    Label(tool.title, systemImage: tool.symbol)
-                                    Spacer()
-                                    Image(systemName: "arrow.up.forward.app")
-                                        .foregroundStyle(.secondary)
-                                        .accessibilityHidden(true)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityIdentifier("workspace.toolbox.\(tool.id)")
-                        } else {
-                            HStack {
-                                Label(tool.title, systemImage: tool.symbol)
-                                Spacer()
-                                Text(MacToolboxText.t("暂不可用", "Unavailable", locale))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
+        ToolboxHomeView(availability: availability, showsAssistantAvailability: false) { tool in
+            openToolbox(tool.rawValue)
+        }
+    }
+
+    private var availability: [ToolboxTool: ToolboxAvailability] {
+        let instruments = MacInstrumentCatalog()
+        var result: [ToolboxTool: ToolboxAvailability] = [:]
+        for group in MacToolboxCatalog.groups(locale: locale) {
+            for entry in group.tools {
+                guard let tool = ToolboxTool(rawValue: entry.id) else { continue }
+                if entry.isAvailable {
+                    result[tool] = .available
+                } else if let instrument = MacInstrument.allCases.first(where: { $0.toolboxTool == tool }),
+                          case .unsupported(let notice) = instruments.availability(for: instrument) {
+                    result[tool] = .unsupported(notice.text(locale))
+                } else {
+                    result[tool] = .unsupported(MacToolboxText.t("此工具尚未在 Mac 上提供。", "This tool is not yet available on Mac.", locale))
                 }
             }
         }
-        .listStyle(.inset)
+        return result
     }
 }

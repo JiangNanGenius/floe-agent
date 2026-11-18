@@ -37,6 +37,47 @@ public struct FloeMacSelfRunContext: Sendable, Hashable {
     }
 }
 
+/// One durable file attachment for a Mac session. The host supplies a
+/// read-only security-scoped bookmark created at pick time; the composition
+/// persists only metadata and the digest beside the launch transaction.
+/// Image attachments are inlined into the model request by the existing
+/// runtime; document attachments are durable-only in this stage and are not
+/// model-visible yet.
+public struct FloeMacSelfSessionAttachment: Sendable, Hashable, Identifiable {
+    public enum Kind: String, Sendable, Hashable {
+        case image
+        case document
+    }
+
+    public let id: UUID
+    public let kind: Kind
+    public let displayName: String
+    public let uti: String
+    public let byteCount: Int
+    /// Lowercase SHA-256 hex of the picked bytes; verified after prepare.
+    public let sha256: String
+    /// Read-only security-scoped bookmark for the picked file.
+    public let bookmark: Data
+
+    public init(
+        id: UUID = UUID(),
+        kind: Kind,
+        displayName: String,
+        uti: String,
+        byteCount: Int,
+        sha256: String,
+        bookmark: Data
+    ) {
+        self.id = id
+        self.kind = kind
+        self.displayName = displayName
+        self.uti = uti
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        self.bookmark = bookmark
+    }
+}
+
 /// Native launch request. `conversationID` resumes an existing durable task;
 /// `newConversationID` reserves a known identity for a new one. Passing both
 /// is rejected by the composition layer.
@@ -50,6 +91,9 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
     public let initialPolicy: DraftTaskPolicy
     public let runID: UUID?
     public let context: FloeMacSelfRunContext
+    /// Durable file attachments staged for this run. Attachments never grant
+    /// tools or permissions; they are reference data bound to the user turn.
+    public let attachments: [FloeMacSelfSessionAttachment]
     /// True selects the existing Floe chat envelope (brief conversational
     /// instructions). Set false for task-style tool work. This flag never
     /// grants a tool; the tool binding still requires the explicit ceiling.
@@ -66,6 +110,7 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         initialPolicy: DraftTaskPolicy = DraftTaskPolicy(),
         runID: UUID? = nil,
         context: FloeMacSelfRunContext = FloeMacSelfRunContext(),
+        attachments: [FloeMacSelfSessionAttachment] = [],
         chatFastMode: Bool = true,
         startedAt: Date = Date()
     ) {
@@ -78,6 +123,7 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         self.initialPolicy = initialPolicy
         self.runID = runID
         self.context = context
+        self.attachments = attachments
         self.chatFastMode = chatFastMode
         self.startedAt = startedAt
     }
@@ -93,6 +139,10 @@ enum FloeMacSelfRequestValidator {
     static let maximumWorkspaceNotes = 32
     static let maximumWorkspaceNoteBytes = 500
     static let maximumWorkspaceListingBytes = 32_768
+    static let maximumAttachments = 8
+    static let maximumAttachmentNameBytes = 200
+    static let maximumAttachmentBytes = 32 * 1_024 * 1_024
+    static let maximumAttachmentBookmarkBytes = 16 * 1_024
 
     static func validate(_ request: FloeMacSelfSessionRequest) throws {
         guard request.conversationID == nil || request.newConversationID == nil else {
@@ -120,7 +170,38 @@ enum FloeMacSelfRequestValidator {
                     : "Plan composition is not part of this stage"
             )
         }
+        try validate(request.attachments)
         try validate(request.context)
+    }
+
+    static func validate(_ attachments: [FloeMacSelfSessionAttachment]) throws {
+        guard attachments.count <= maximumAttachments else {
+            throw FloeMacSelfCoreError.invalidRequest("too many attachments for one Mac run")
+        }
+        var seen = Set<UUID>()
+        for attachment in attachments {
+            guard seen.insert(attachment.id).inserted else {
+                throw FloeMacSelfCoreError.invalidRequest("duplicate attachment identity")
+            }
+            let name = attachment.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.utf8.count <= maximumAttachmentNameBytes else {
+                throw FloeMacSelfCoreError.invalidRequest("an attachment name is empty or too long")
+            }
+            guard attachment.byteCount > 0, attachment.byteCount <= maximumAttachmentBytes else {
+                throw FloeMacSelfCoreError.invalidRequest("an attachment size is outside the bounded range")
+            }
+            guard attachment.sha256.utf8.count == 64,
+                  attachment.sha256.utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102) }) else {
+                throw FloeMacSelfCoreError.invalidRequest("an attachment digest is not a lowercase SHA-256 hex")
+            }
+            guard !attachment.bookmark.isEmpty,
+                  attachment.bookmark.count <= maximumAttachmentBookmarkBytes else {
+                throw FloeMacSelfCoreError.invalidRequest("an attachment bookmark is missing or unbounded")
+            }
+            guard !attachment.displayName.utf8.contains(0) else {
+                throw FloeMacSelfCoreError.invalidRequest("an attachment name must not contain NUL")
+            }
+        }
     }
 
     static func validate(_ context: FloeMacSelfRunContext) throws {
@@ -182,19 +263,41 @@ enum FloeMacSelfRequestValidator {
     }
 }
 
-/// Narrow text-only chat proof. This is an observed database read, not a
-/// request journal binding or an atomic lock against independent writers.
+/// Narrow chat proof for the prepared user turn: the exact text plus, in
+/// order, one part per durable attachment. This is an observed database
+/// read, not a request journal binding or an atomic lock against
+/// independent writers.
 enum FloeMacSelfPreparedInput {
-    static func verify(_ message: PersistedMessage, messageID: UUID,
-                       conversationID: UUID, runID: UUID, goal: String) throws {
+    static func verify(
+        _ message: PersistedMessage,
+        messageID: UUID,
+        conversationID: UUID,
+        runID: UUID,
+        goal: String,
+        expectedAttachments: [AttachmentRef] = []
+    ) throws {
         guard message.id == messageID, message.conversationID == conversationID,
               message.runID == runID, message.role == "user",
               message.content.utf8.elementsEqual(goal.utf8),
-              message.parts.count == 1, let part = message.parts.first,
-              part.messageID == messageID, part.partIndex == 0,
-              part.kind == .text, part.attachmentID == nil, part.metadata.isEmpty,
-              let text = part.text, text.utf8.elementsEqual(goal.utf8) else {
+              message.parts.count == expectedAttachments.count + 1 else {
             throw FloeMacSelfCoreError.preparedIdentityMismatch("durable user input does not match the prepared run")
+        }
+        let textPart = message.parts[0]
+        guard textPart.messageID == messageID, textPart.partIndex == 0,
+              textPart.kind == .text, textPart.attachmentID == nil, textPart.metadata.isEmpty,
+              let text = textPart.text, text.utf8.elementsEqual(goal.utf8) else {
+            throw FloeMacSelfCoreError.preparedIdentityMismatch("durable user input does not match the prepared run")
+        }
+        for (offset, attachment) in expectedAttachments.enumerated() {
+            let part = message.parts[offset + 1]
+            let expectedKind: MessagePart.Kind = attachment.kind == .image ? .image : .file
+            guard part.messageID == messageID, part.partIndex == offset + 1,
+                  part.kind == expectedKind,
+                  part.attachmentID == attachment.id,
+                  part.text == nil,
+                  part.metadata["name"] == attachment.displayName else {
+                throw FloeMacSelfCoreError.preparedIdentityMismatch("durable attachment parts do not match the prepared run")
+            }
         }
     }
 }

@@ -234,6 +234,14 @@
 "mac.workspace.inspector.running" = "Running";
 "mac.workspace.inspector.updated" = "Last updated";
 "mac.workspace.browseFiles" = "Browse Files";
+"mac.workspace.attachFiles" = "Attach Files…";
+"mac.workspace.attachFailed" = "Couldn’t Attach These Files";
+"mac.workspace.selectVisionModel" = "Choose a model that supports image input, or remove the images.";
+"mac.workspace.removeAttachment" = "Remove Attachment";
+"mac.workspace.attachmentReferenceOnly" = "File reference only";
+"mac.workspace.noProject" = "No Project";
+"mac.workspace.runPreparing" = "Preparing";
+"mac.workspace.runStopping" = "Stopping";
 
 "app.name" = "Floe Agent";
 "app.floe_agent_app.task_center" = "Task Center";

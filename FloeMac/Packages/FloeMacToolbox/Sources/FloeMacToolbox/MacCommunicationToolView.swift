@@ -6,6 +6,7 @@ import FloeToolboxCore
 import FloeToolboxClients
 import FloeToolboxUI
 import FloeToolboxWorkbenches
+import FloeMacNetwork
 
 /// Manual communication workbench: the person using this window picks an
 /// exact target, admits one session, and disconnects explicitly. It owns no
@@ -21,6 +22,12 @@ struct MacCommunicationToolView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var serial = SerialAssistantConfiguration()
+    @State private var usbPorts: [MacUSBSerialPortDescriptor] = []
+    @State private var usbPortPath = ""
+    @State private var usbBaud: UInt32 = 115200
+    @State private var usbDataBits: UInt8 = 8
+    @State private var usbStopBits: UInt8 = 1
+    @State private var usbParity = USBSerialSettings.Parity.none
     @State private var attempted = false
 
     var body: some View {
@@ -33,6 +40,9 @@ struct MacCommunicationToolView: View {
         }
         .background(MacToolboxWindowCloseObserver { owner.cancel() }.frame(width: 0, height: 0))
         .id(tool.rawValue)
+        .onAppear {
+            if tool == .serialAssistant, usbPorts.isEmpty { refreshUSBPorts() }
+        }
     }
 
     // MARK: - Connected
@@ -163,6 +173,7 @@ struct MacCommunicationToolView: View {
         Picker(MacToolboxText.t("连接方式", "Connection", locale), selection: $serial.connection) {
             Text("TCP").tag(SerialAssistantConnection.tcp)
             Text("UDP").tag(SerialAssistantConnection.udp)
+            Text(MacToolboxText.t("USB 串口", "USB serial", locale)).tag(SerialAssistantConnection.usb)
         }.pickerStyle(.segmented).disabled(owner.connecting)
             .accessibilityIdentifier("mac.toolbox.communication.serialTransport")
         Picker(MacToolboxText.t("协议类型", "Protocol", locale), selection: $serial.protocolType) {
@@ -177,16 +188,86 @@ struct MacCommunicationToolView: View {
                 }
             }.disabled(owner.connecting)
         }
-        TextField(MacToolboxText.t("主机名或 IP 地址", "Host name or IP address", locale), text: $address)
-            .textFieldStyle(.roundedBorder).autocorrectionDisabled()
-            .disabled(owner.connecting)
-            .accessibilityIdentifier("mac.toolbox.communication.address")
-        TextField(MacToolboxText.t("端口", "Port", locale), text: $port)
-            .textFieldStyle(.roundedBorder)
-            .disabled(owner.connecting)
-            .accessibilityIdentifier("mac.toolbox.communication.port")
-        if serial.connection == .tcp { Toggle("TLS", isOn: $useTLS).disabled(owner.connecting) }
+        if serial.connection == .usb {
+            usbSerialForm
+        } else {
+            TextField(MacToolboxText.t("主机名或 IP 地址", "Host name or IP address", locale), text: $address)
+                .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                .disabled(owner.connecting)
+                .accessibilityIdentifier("mac.toolbox.communication.address")
+            TextField(MacToolboxText.t("端口", "Port", locale), text: $port)
+                .textFieldStyle(.roundedBorder)
+                .disabled(owner.connecting)
+                .accessibilityIdentifier("mac.toolbox.communication.port")
+            if serial.connection == .tcp { Toggle("TLS", isOn: $useTLS).disabled(owner.connecting) }
+        }
     }
+
+    /// Explicitly selected local device: the list shows only the callout
+    /// nodes the system already exposes; nothing is scanned. The chosen
+    /// path, line settings and USB identity are admitted as one request.
+    @ViewBuilder private var usbSerialForm: some View {
+        HStack(spacing: 10) {
+            Picker(MacToolboxText.t("串口", "Serial port", locale), selection: $usbPortPath) {
+                if usbPorts.isEmpty {
+                    Text(MacToolboxText.t("未找到串口设备", "No serial ports found", locale)).tag("")
+                }
+                ForEach(usbPorts, id: \.path) { port in
+                    Text(port.fileName).tag(port.path)
+                }
+            }
+            .disabled(owner.connecting)
+            .accessibilityIdentifier("mac.toolbox.communication.usbPort")
+            Button(MacToolboxText.t("刷新", "Refresh", locale)) { refreshUSBPorts() }
+                .disabled(owner.connecting)
+                .accessibilityIdentifier("mac.toolbox.communication.usbRefresh")
+        }
+        HStack(spacing: 10) {
+            Picker(MacToolboxText.t("波特率", "Baud", locale), selection: $usbBaud) {
+                ForEach([9600, 19200, 38400, 57600, 115200, 230400], id: \.self) { value in
+                    Text("\(value)").tag(UInt32(value))
+                }
+            }
+            Picker(MacToolboxText.t("数据位", "Data bits", locale), selection: $usbDataBits) {
+                ForEach([5, 6, 7, 8], id: \.self) { Text("\($0)").tag(UInt8($0)) }
+            }
+            Picker(MacToolboxText.t("停止位", "Stop bits", locale), selection: $usbStopBits) {
+                Text("1").tag(UInt8(1)); Text("2").tag(UInt8(2))
+            }
+            Picker(MacToolboxText.t("校验", "Parity", locale), selection: $usbParity) {
+                Text(MacToolboxText.t("无", "None", locale)).tag(USBSerialSettings.Parity.none)
+                Text(MacToolboxText.t("奇", "Odd", locale)).tag(USBSerialSettings.Parity.odd)
+                Text(MacToolboxText.t("偶", "Even", locale)).tag(USBSerialSettings.Parity.even)
+            }
+        }
+        .disabled(owner.connecting)
+        Text(MacToolboxText.t(
+            "只连接你选中的串口设备；不会自动扫描或打开其他设备。macOS 不支持高位/标记校验的串口参数时会明确提示。",
+            "Only the port you select is opened; nothing else is scanned or opened. Settings macOS serial cannot represent are reported instead of approximated.",
+            locale))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func refreshUSBPorts() {
+        let catalog = MacUSBSerialPortCatalog()
+        usbPorts = catalog.ports()
+        if !usbPorts.contains(where: { $0.path == usbPortPath }) {
+            usbPortPath = usbPorts.first?.path ?? ""
+        }
+    }
+
+    private var usbSettings: USBSerialSettings {
+        // Picker choices stay inside the shared grammar, so this only falls
+        // back if those constraints are ever widened.
+        (try? USBSerialSettings(baud: usbBaud, dataBits: usbDataBits, stopBits: usbStopBits, parity: usbParity))
+            ?? Self.fallbackUSBSettings
+    }
+
+    private static let fallbackUSBSettings: USBSerialSettings = {
+        // 115200/8/N/1 is the shared default and always validates.
+        try! USBSerialSettings()
+    }()
 
     private func framingLabel(_ framing: ModbusFraming) -> String {
         switch framing {
@@ -208,8 +289,8 @@ struct MacCommunicationToolView: View {
             MacToolboxText.t("连接 MQTT 服务器后可订阅主题并发布消息。",
                              "Connect to an MQTT server, then subscribe to topics and publish messages.", locale)
         case .serialAssistant:
-            MacToolboxText.t("通过 TCP 或 UDP 与串口设备或串口网关通信；支持通用收发与 Modbus。",
-                             "Talk to a serial device or gateway over TCP or UDP; raw exchange and Modbus are supported.", locale)
+            MacToolboxText.t("通过 TCP、UDP 或你选中的 USB 串口与设备通信；支持通用收发与 Modbus。",
+                              "Talk to a device over TCP, UDP, or a USB serial port you select; raw exchange and Modbus are supported.", locale)
         default:
             ""
         }
@@ -244,6 +325,10 @@ struct MacCommunicationToolView: View {
             text = MacToolboxText.t("请输入完整的 http:// 或 https:// 地址。", "Enter a complete http:// or https:// address.", locale)
         case .invalidSerialConfiguration:
             text = MacToolboxText.t("请按设备说明选择 Modbus 数据封装。", "Choose the Modbus framing your device documents.", locale)
+        case .serialPortRequired:
+            text = MacToolboxText.t("请选择要连接的串口设备。", "Choose the serial port to connect.", locale)
+        case .invalidSerialPortPath:
+            text = MacToolboxText.t("所选串口无效，请刷新列表后重新选择。", "The selected port is not valid. Refresh the list and choose again.", locale)
         }
         return Label(text, systemImage: "exclamationmark.circle.fill")
             .font(.callout).foregroundStyle(.red)
@@ -262,9 +347,14 @@ struct MacCommunicationToolView: View {
                   tls: useTLS, version: mqttVersion,
                   username: username.isEmpty ? nil : username, password: password.isEmpty ? nil : password)
         case .serialAssistant:
-            .serial(host: address.trimmingCharacters(in: .whitespacesAndNewlines),
-                    port: UInt16(port.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0,
-                    tls: useTLS, configuration: serial)
+            if serial.connection == .usb {
+                .serialUSB(path: usbPortPath.trimmingCharacters(in: .whitespacesAndNewlines),
+                           settings: usbSettings, vendorID: 0, productID: 0, configuration: serial)
+            } else {
+                .serial(host: address.trimmingCharacters(in: .whitespacesAndNewlines),
+                        port: UInt16(port.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0,
+                        tls: useTLS, configuration: serial)
+            }
         default:
             .http(URL(string: "https://example.invalid")!)
         }

@@ -73,6 +73,7 @@ final class UnifiedMacSmoke {
         var nativeChat = false
         var storedTaskRun = false
         var taskMetadataSaved = false
+        var workspaceAndAttachmentStaging = false
         if let agent = model.macWorkspace.agent {
             await agent.prepare()
             // The visible SwiftUI view may already own preparation.
@@ -81,11 +82,18 @@ final class UnifiedMacSmoke {
                     && ContinuousClock.now < prepareDeadline {
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            if let view = NSApp.windows.first(where: {
+            workspaceAndAttachmentStaging = await verifyWorkspaceAndAttachmentStaging(agent)
+            if let window = NSApp.windows.first(where: {
                 $0.isVisible && $0.title == String(localized: "host.role.agent")
-            })?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: bitmap)
-                try? bitmap.representation(using: .png, properties: [:])?.write(to: report.appendingPathExtension("png"))
+            }), let content = window.contentView {
+                capture(content, extension: "png")
+                // The welcome page has exactly one trailing toolbar action.
+                // Press it before sending so the same file pane remains open
+                // when the newly created conversation is selected.
+                if !pressAccessibilityButton(content, id: "workspace.files.toggle") {
+                    let point = NSPoint(x: content.bounds.width - 29, y: content.isFlipped ? 22 : content.bounds.height - 22)
+                    _ = click(content, at: point, in: window)
+                }
             }
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
             await agent.loadTaskRuns()
@@ -100,6 +108,11 @@ final class UnifiedMacSmoke {
                 let saved = agent.conversations.first { $0.id == id }
                 taskMetadataSaved = renamed && pinned && saved?.title == "Fixture desktop task" && saved?.isPinned == true
             }
+            if let content = NSApp.windows.first(where: {
+                $0.isVisible && $0.title == String(localized: "host.role.agent")
+            })?.contentView {
+                capture(content, extension: "task.png")
+            }
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
         let toolbox = await exerciseToolbox(model: model)
@@ -112,6 +125,7 @@ final class UnifiedMacSmoke {
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
             "taskMetadataSaved": taskMetadataSaved,
+            "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
             "toolboxAndLoopbackVerified": toolbox,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
@@ -132,16 +146,15 @@ final class UnifiedMacSmoke {
         let deadline = ContinuousClock.now + .seconds(5)
         while ContinuousClock.now < deadline {
             if let bridge = NSApp.windows.first(where: { $0.title == "Floe Bridge" && $0.isVisible }),
-               let content = bridge.contentView,
-               let frame = model.smokeSwitchFrame, !frame.isEmpty {
-                let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
-                let location = content.convert(point, to: nil)
-                for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
-                    guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
-                                                         timestamp: ProcessInfo.processInfo.systemUptime,
-                                                         windowNumber: bridge.windowNumber, context: nil,
-                                                         eventNumber: 0, clickCount: 1, pressure: 1) else { return false }
-                    NSApp.postEvent(event, atStart: false)
+               let content = bridge.contentView {
+                if !pressAccessibilityButton(content, id: "bridge.switchToAgent") {
+                    guard let frame = model.smokeSwitchFrame, !frame.isEmpty else {
+                        try? await Task.sleep(for: .milliseconds(50))
+                        continue
+                    }
+                    capture(content, extension: "bridge.png")
+                    let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
+                    guard click(content, at: point, in: bridge) else { return false }
                 }
                 while model.macWorkspace.agent == nil && ContinuousClock.now < deadline {
                     try? await Task.sleep(for: .milliseconds(50))
@@ -151,6 +164,32 @@ final class UnifiedMacSmoke {
             try? await Task.sleep(for: .milliseconds(50))
         }
         return false
+    }
+
+    private func pressAccessibilityButton(_ value: Any, id: String, remaining: Int = 16) -> Bool {
+        guard remaining > 0, let element = value as? any NSAccessibilityProtocol else { return false }
+        if element.accessibilityIdentifier() == id { return element.accessibilityPerformPress() }
+        return (element.accessibilityChildren() ?? []).contains {
+            pressAccessibilityButton($0, id: id, remaining: remaining - 1)
+        }
+    }
+
+    private func capture(_ view: NSView, extension suffix: String) {
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        try? bitmap.representation(using: .png, properties: [:])?.write(to: report.appendingPathExtension(suffix))
+    }
+
+    private func click(_ view: NSView, at point: NSPoint, in window: NSWindow) -> Bool {
+        let location = view.convert(point, to: nil)
+        for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                                                 timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: window.windowNumber, context: nil,
+                                                 eventNumber: 0, clickCount: 1, pressure: 1) else { return false }
+            NSApp.postEvent(event, atStart: false)
+        }
+        return true
     }
 
     private func exerciseToolbox(model: BridgeAppModel) async -> Bool {
@@ -168,6 +207,28 @@ final class UnifiedMacSmoke {
             && reopened?.services.mediaEnvironment !== first.services.mediaEnvironment
         let closed = await workspace.closeToolbox()
         return pingPassed && distinctOwner && closed
+    }
+
+    private func verifyWorkspaceAndAttachmentStaging(_ agent: HostAgentWorkspace) async -> Bool {
+        let project = root.appendingPathComponent("Fixture Project", isDirectory: true)
+        let reference = project.appendingPathComponent("fixture.md")
+        do {
+            try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
+            try Data("Synthetic attachment".utf8).write(to: reference, options: .withoutOverwriting)
+        } catch {
+            return false
+        }
+        guard await agent.addWorkspace(name: "Fixture Project", rootURL: project),
+              let first = agent.selectedWorkspaceID,
+              await agent.addWorkspace(name: "Fixture Project", rootURL: project),
+              agent.selectedWorkspaceID == first,
+              agent.workspaces.filter({ $0.id == first }).count == 1,
+              let staged = agent.stageAttachments([reference]).first,
+              staged.displayName == "fixture.md",
+              agent.stagedAttachments.count == 1 else { return false }
+        agent.unstageAttachment(staged.id)
+        agent.selectWorkspace(nil)
+        return agent.stagedAttachments.isEmpty
     }
 
     private func exerciseModeRoundTrip(model: BridgeAppModel) async -> Bool {

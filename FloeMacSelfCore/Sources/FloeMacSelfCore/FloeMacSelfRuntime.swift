@@ -20,9 +20,18 @@ public struct FloeMacSelfRuntimeOptions: Sendable, Hashable {
     /// Per-subscriber event buffer for the host projection. The upstream
     /// channel is also newest-bounded and has no replay.
     public var eventBufferLimit: Int
+    /// Host-configured root base for durable private-task workspaces. A
+    /// private-task workspace row carries an empty bookmark by design; its
+    /// verified root is `<base>/<internalRelativePath>`. Nil refuses a
+    /// private-task tool boundary fail-closed.
+    public var privateTaskRootBaseURL: URL?
 
-    public init(eventBufferLimit: Int = 256) {
+    public init(
+        eventBufferLimit: Int = 256,
+        privateTaskRootBaseURL: URL? = nil
+    ) {
         self.eventBufferLimit = min(2_048, max(32, eventBufferLimit))
+        self.privateTaskRootBaseURL = privateTaskRootBaseURL
     }
 }
 
@@ -31,6 +40,7 @@ private struct FloeMacSelfStores: Sendable {
     let conversations: SQLiteConversationStore
     let runs: SQLiteRunStore
     let checkpoints: SQLiteRunCheckpointStore
+    let workspaces: SQLiteWorkspaceStore
 }
 
 public actor FloeMacSelfRuntime {
@@ -53,6 +63,7 @@ public actor FloeMacSelfRuntime {
     // The durable runtime, not a transient UI handle, owns live sessions.
     private var sessions: [UUID: FloeMacSelfSession] = [:]
     private var activeAdmissions: Set<UUID> = []
+    private var workspaceRegistrations: [URL: Task<WorkspaceRecord, any Error>] = [:]
     private var closingSessions: Set<UUID> = []
     private var closed = false
     private var shuttingDown = false
@@ -259,7 +270,8 @@ public actor FloeMacSelfRuntime {
             launch: SQLiteRunLaunchStore(database: database),
             conversations: SQLiteConversationStore(database: database),
             runs: SQLiteRunStore(database: database),
-            checkpoints: SQLiteRunCheckpointStore(database: database, legacyDirectory: nil)
+            checkpoints: SQLiteRunCheckpointStore(database: database, legacyDirectory: nil),
+            workspaces: SQLiteWorkspaceStore(database: database)
         )
         admissions = FloeMacSelfAdmissionStore(database: database, authorityLock: authorityLock)
         let receipt = FloeMacSelfBootstrapReceipt(
@@ -287,17 +299,14 @@ public actor FloeMacSelfRuntime {
         // Match the exact normalization used by SQLiteRunLaunchStore.prepare.
         let canonicalGoal = request.goal.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // A declared boundary and host-gate labels do not prove that this
-        // durable workspace owns the supplied filesystem root. Unlike the
-        // App's WorkspaceCenter, this host does not yet acquire and retain a
-        // task-root lease from the persisted workspace. Refuse before creating
-        // an admission or invoking the provider until that integration exists.
+        let resolvedProvider = try FloeMacSelfCapabilityResolver.resolveProvider(provider)
+        // The shipping host supports project-scoped chat. Tool execution
+        // still requires a verified workspace lease and approval lifecycle.
         guard tools == nil else {
             throw FloeMacSelfCoreError.toolCapabilityUnavailable(
                 "workspace ownership and task-root lease are not connected"
             )
         }
-        let resolvedProvider = try FloeMacSelfCapabilityResolver.resolveProvider(provider)
         let resolvedTools = try FloeMacSelfCapabilityResolver.resolveTools(tools, model: resolvedProvider.model)
         try FloeMacSelfRequestValidator.validate(
             toolsEnabled: resolvedTools.enabled,
@@ -355,9 +364,17 @@ public actor FloeMacSelfRuntime {
             var conversationHistory: [ConversationMessage] = []
             if request.conversationID != nil {
                 do {
+                    // Historical turns stay text-only: re-reading mutable
+                    // bookmarks behind old attachment rows is not safe. The
+                    // durable attachment records remain; only the current
+                    // turn's images are inlined, through the bounded
+                    // verified read below.
                     conversationHistory = try await ConversationHistoryAssembler(
                         store: stores.conversations
-                    ).build(conversationID: resolvedConversationID)
+                    ).build(
+                        conversationID: resolvedConversationID,
+                        includeInlineImages: false
+                    )
                 } catch {
                     throw Self.surface(error)
                 }
@@ -367,6 +384,19 @@ public actor FloeMacSelfRuntime {
 
             let providerName = resolvedProvider.provider.displayName
                 ?? resolvedProvider.provider.kind.rawValue
+            let stagedAttachments: [AttachmentRef] = request.attachments.map { attachment in
+                AttachmentRef(
+                    id: attachment.id,
+                    kind: attachment.kind == .image ? .image : .document,
+                    displayName: attachment.displayName,
+                    uti: attachment.uti,
+                    byteCount: attachment.byteCount,
+                    sha256: attachment.sha256,
+                    storage: .securityScopedBookmark,
+                    urlBookmark: attachment.bookmark,
+                    createdAt: request.startedAt
+                )
+            }
             let launchRequest = RunLaunchRequest(
                 conversationID: request.conversationID,
                 newConversationID: newConversationID,
@@ -375,7 +405,7 @@ public actor FloeMacSelfRuntime {
                 goal: request.goal,
                 initialState: "preparing",
                 workspaceID: request.workspaceID,
-                attachments: [],
+                attachments: stagedAttachments,
                 conversationMode: ConversationMode.chat.rawValue,
                 initialPolicy: request.initialPolicy,
                 messageRole: "user",
@@ -404,15 +434,24 @@ public actor FloeMacSelfRuntime {
             }
             try FloeMacSelfPreparedInput.verify(
                 prepared.userMessage, messageID: prepared.userMessage.id,
-                conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal)
+                conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal,
+                expectedAttachments: prepared.attachments)
+            let normalizedStagedAttachments: [AttachmentRef] = stagedAttachments.map { attachment in
+                var normalized = attachment
+                normalized.conversationID = resolvedConversationID
+                normalized.messageID = prepared.userMessage.id
+                return normalized
+            }
             guard prepared.run.goal.utf8.elementsEqual(canonicalGoal.utf8),
+                  prepared.attachments == normalizedStagedAttachments,
                   let savedInput = try await stores.conversations.message(
                     id: prepared.userMessage.id, conversationID: resolvedConversationID) else {
                 throw FloeMacSelfCoreError.preparedIdentityMismatch("durable user input is unavailable")
             }
             try FloeMacSelfPreparedInput.verify(
                 savedInput, messageID: prepared.userMessage.id,
-                conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal)
+                conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal,
+                expectedAttachments: prepared.attachments)
             guard prepared.run.providerID == resolvedProvider.provider.id,
                   prepared.run.modelID == resolvedProvider.model.id else {
                 throw FloeMacSelfCoreError.preparedIdentityMismatch(
@@ -486,6 +525,17 @@ public actor FloeMacSelfRuntime {
                 executor = resolvedTools.executor
             }
 
+            // Image attachments are model-visible; document attachments stay
+            // durable-only references in this stage. Each current-turn image
+            // is read exactly once through a no-follow, non-blocking handle
+            // restricted to a regular file, and only bytes whose digest
+            // matches the value persisted at prepare time are inlined.
+            var currentUserImages: [ConversationImagePart] = []
+            for attachment in prepared.attachments where attachment.kind == .image {
+                if let part = Self.verifiedInlineImage(attachment) {
+                    currentUserImages.append(part)
+                }
+            }
             let service = ConversationRunService(
                 configuration: configuration,
                 adapter: resolvedProvider.adapter,
@@ -499,7 +549,7 @@ public actor FloeMacSelfRuntime {
                 runStore: stores.runs,
                 runID: prepared.run.id,
                 conversationHistory: conversationHistory,
-                currentUserImages: [],
+                currentUserImages: currentUserImages,
                 runContext: runContext
             )
 
@@ -539,6 +589,7 @@ public actor FloeMacSelfRuntime {
                 goal: canonicalGoal,
                 toolsEnabled: resolvedTools.enabled,
                 boundary: resolvedTools.boundary,
+                preparedAttachments: prepared.attachments,
                 eventBufferLimit: options.eventBufferLimit,
                 beforeInputRecheck: preparedInputTestHook,
                 beforeServiceStart: dispatchTestHook,
@@ -783,6 +834,174 @@ public actor FloeMacSelfRuntime {
             runID: runID,
             epoch: expectedEpoch
         )
+    }
+
+    // MARK: - Workspaces (project-aware selection)
+
+    /// Every durable workspace in deterministic name order. This is the
+    /// project list the host presents for task selection; it grants no
+    /// execution authority by itself.
+    public func workspaces() async throws -> [WorkspaceRecord] {
+        let stores = try requireStores()
+        do {
+            return try await stores.workspaces.workspaces()
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    public func workspace(id: UUID) async throws -> WorkspaceRecord? {
+        let stores = try requireStores()
+        do {
+            return try await stores.workspaces.workspace(id: id)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    /// Registers a project workspace from a host-verified, already resolved
+    /// root bookmark. The call is idempotent per local root path: a bookmark
+    /// resolving to the same directory as an existing project workspace
+    /// returns that record instead of creating a duplicate row.
+    @discardableResult
+    public func registerWorkspace(
+        name: String,
+        rootBookmark: Data
+    ) async throws -> WorkspaceRecord {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 200, !trimmed.utf8.contains(0) else {
+            throw FloeMacSelfCoreError.invalidRequest("Invalid workspace name.")
+        }
+        guard !rootBookmark.isEmpty else {
+            throw FloeMacSelfCoreError.invalidRequest("A workspace root bookmark is required.")
+        }
+        var stale = false
+        guard let resolved = try? URL(
+            resolvingBookmarkData: rootBookmark,
+            options: [],
+            relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        ), !stale else {
+            throw FloeMacSelfCoreError.invalidRequest("The workspace root bookmark cannot be resolved.")
+        }
+        let resolvedRoot = resolved.resolvingSymlinksInPath().standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedRoot.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw FloeMacSelfCoreError.invalidRequest("The workspace root is not an existing directory.")
+        }
+        if let inFlight = workspaceRegistrations[resolvedRoot] {
+            return try await inFlight.value
+        }
+        let registration = Task {
+            try await registerResolvedWorkspace(name: trimmed, rootBookmark: rootBookmark,
+                                                resolvedRoot: resolvedRoot, stores: stores)
+        }
+        let operationID = UUID()
+        activeAdmissions.insert(operationID)
+        workspaceRegistrations[resolvedRoot] = registration
+        defer {
+            activeAdmissions.remove(operationID)
+            workspaceRegistrations.removeValue(forKey: resolvedRoot)
+        }
+        return try await registration.value
+    }
+
+    private func registerResolvedWorkspace(
+        name: String, rootBookmark: Data, resolvedRoot: URL, stores: FloeMacSelfStores
+    ) async throws -> WorkspaceRecord {
+        do {
+            let existing = try await stores.workspaces.workspaces()
+            for record in existing where record.kind == .project {
+                var recordStale = false
+                guard let recordRoot = try? URL(
+                    resolvingBookmarkData: record.rootBookmark,
+                    options: [],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &recordStale
+                ), !recordStale else { continue }
+                if recordRoot.resolvingSymlinksInPath().standardizedFileURL == resolvedRoot {
+                    return record
+                }
+            }
+            let record = WorkspaceRecord(
+                name: name,
+                rootBookmark: rootBookmark,
+                kind: .project
+            )
+            try ensureAdmissionStillAllowed()
+            try requireAuthority()
+            try await stores.workspaces.saveWorkspace(record)
+            return record
+        } catch let error as FloeMacSelfCoreError {
+            throw error
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    /// Inline bound shared with the existing image normalizer. The bounded
+    /// no-follow read and the digest check keep a swapped, mutated, symlinked
+    /// or oversized file from ever reaching the model as user-provided
+    /// evidence.
+    private static let maximumInlineImageBytes = 8 * 1_024 * 1_024
+
+    private static func verifiedInlineImage(_ attachment: AttachmentRef) -> ConversationImagePart? {
+        guard attachment.kind == .image, attachment.byteCount <= maximumInlineImageBytes,
+              let bookmark = attachment.urlBookmark else { return nil }
+        var stale = false
+        guard let url = try? URL(
+            resolvingBookmarkData: bookmark,
+            options: [],
+            relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        ), !stale else { return nil }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard let bytes = boundedRegularFileBytes(path: url.path, limit: maximumInlineImageBytes),
+              FloeDigest.sha256Hex(bytes) == attachment.sha256,
+              let mimeType = rasterImageMIME(bytes) else { return nil }
+        // Only raster formats providers accept directly are inlined; other
+        // image containers (for example SVG or TIFF) are dropped in this
+        // stage instead of being rasterized from mutable bytes.
+        return ConversationImagePart(mimeType: mimeType, base64: bytes.base64EncodedString())
+    }
+
+    /// Raster signatures the providers accept as inline image data. Kept in
+    /// lockstep with the upstream image normalizer's passthrough formats.
+    private static func rasterImageMIME(_ data: Data) -> String? {
+        if data.count >= 3, data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if data.count >= 8, data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { return "image/png" }
+        if data.count >= 6, data.starts(with: Array("GIF8".utf8)) { return "image/gif" }
+        if data.count >= 12,
+           data.prefix(4) == Data("RIFF".utf8),
+           data.dropFirst(8).prefix(4) == Data("WEBP".utf8) { return "image/webp" }
+        return nil
+    }
+
+    /// Reads at most `limit` bytes from one exact path. The descriptor is
+    /// opened `O_NOFOLLOW | O_NONBLOCK` (a swapped-in symlink or FIFO can
+    /// neither redirect the read nor block it) and `fstat` must confirm a
+    /// regular file before any byte is read.
+    private static func boundedRegularFileBytes(path: String, limit: Int) -> Data? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var status = stat()
+        guard fstat(fd, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG else { return nil }
+        var data = Data()
+        data.reserveCapacity(min(limit, max(0, Int(status.st_size))))
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        while data.count <= limit {
+            let readCount = read(fd, &buffer, buffer.count)
+            guard readCount > 0 else { break }
+            data.append(contentsOf: buffer[0..<readCount])
+        }
+        guard !data.isEmpty, data.count <= limit else { return nil }
+        return data
     }
 
     // MARK: - Read-only archive

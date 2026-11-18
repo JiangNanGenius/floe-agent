@@ -5,6 +5,7 @@ import FloePersistence
 import SwiftUI
 #if FLOE_UNIFIED_MAC
 import AppKit
+import UniformTypeIdentifiers
 #endif
 
 struct HostAgentWorkspaceView: View {
@@ -13,7 +14,10 @@ struct HostAgentWorkspaceView: View {
     var openModelSettings: (() -> Void)? = nil
     var openFiles: (() -> Void)? = nil
     @State private var standaloneDraft = ""
-    #if !FLOE_UNIFIED_MAC
+    #if FLOE_UNIFIED_MAC
+    @State private var choosingAttachments = false
+    @State private var showAttachmentError = false
+    #else
     @State private var showingSettings = false
     #endif
 
@@ -80,6 +84,18 @@ struct HostAgentWorkspaceView: View {
         }
         #if FLOE_UNIFIED_MAC
         .background(FloeTheme.readingSurface)
+        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                let accepted = workspace.stageAttachments(urls)
+                showAttachmentError = !urls.isEmpty && accepted.isEmpty
+            case .failure:
+                showAttachmentError = true
+            }
+        }
+        .alert("mac.workspace.attachFailed", isPresented: $showAttachmentError) {
+            Button("OK", role: .cancel) {}
+        }
         #else
         .padding(20)
         #endif
@@ -94,17 +110,19 @@ struct HostAgentWorkspaceView: View {
     #if FLOE_UNIFIED_MAC
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
+            if !workspace.stagedAttachments.isEmpty {
+                attachmentStrip
+            }
             HStack {
-                if let openFiles {
-                    Button(action: openFiles) {
-                        Label("mac.workspace.browseFiles", systemImage: "paperclip")
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .help("mac.workspace.browseFiles")
-                    .frame(width: 30)
+                Button { choosingAttachments = true } label: {
+                    Label("mac.workspace.attachFiles", systemImage: "paperclip")
                 }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .help("mac.workspace.attachFiles")
+                .frame(width: 30)
+                .disabled(workspace.isSending || workspace.isTerminating)
                 TextField("host.chat.prompt", text: draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(FloeTheme.Typography.body)
@@ -120,7 +138,8 @@ struct HostAgentWorkspaceView: View {
                 } else {
                     let canSend = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !workspace.isTerminating
                     Button {
-                        if workspace.send(draft.wrappedValue) { draft.wrappedValue = "" }
+                        let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
+                        if workspace.send(draft.wrappedValue, workspaceID: project) { draft.wrappedValue = "" }
                     } label: {
                         FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSend)
                     }
@@ -134,6 +153,9 @@ struct HostAgentWorkspaceView: View {
             if let openModelSettings {
                 HStack(spacing: 6) {
                     modelControl(openSettings: openModelSettings)
+                    if let openFiles, workspace.selectedID == nil {
+                        projectControl(openFiles: openFiles)
+                    }
                     Spacer()
                 }
                 .padding(.leading, 4)
@@ -146,6 +168,64 @@ struct HostAgentWorkspaceView: View {
         .padding(.horizontal, 14)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity)
+    }
+
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(workspace.stagedAttachments, id: \.id) { attachment in
+                    let isImage = attachment.kind == .image
+                    HStack(spacing: 5) {
+                        Image(systemName: isImage ? "photo" : "doc")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: attachment.displayName).lineLimit(1)
+                            if !isImage {
+                                Text("mac.workspace.attachmentReferenceOnly").foregroundStyle(.secondary)
+                            }
+                        }
+                        Button {
+                            workspace.unstageAttachment(attachment.id)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("mac.workspace.removeAttachment")
+                    }
+                    .font(.caption)
+                    .padding(6)
+                    .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 7))
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .disabled(workspace.isSending || workspace.isTerminating)
+    }
+
+    private func projectControl(openFiles: @escaping () -> Void) -> some View {
+        let projects = workspace.workspaces.filter { $0.kind == .project }
+        let project = projects.first { $0.id == workspace.selectedWorkspaceID }
+        return Menu {
+            Button("mac.workspace.noProject") { workspace.selectWorkspace(nil) }
+            ForEach(projects, id: \.id) { option in
+                Button {
+                    workspace.selectWorkspace(option.id)
+                } label: {
+                    if option.id == project?.id {
+                        Label(option.name, systemImage: "checkmark")
+                    } else {
+                        Text(verbatim: option.name)
+                    }
+                }
+            }
+            Divider()
+            Button("mac.workspace.browseFiles", action: openFiles)
+        } label: {
+            Label(project?.name ?? String(localized: "mac.workspace.noProject"), systemImage: "folder")
+                .font(FloeTheme.Typography.metadata)
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder private func modelControl(openSettings: @escaping () -> Void) -> some View {

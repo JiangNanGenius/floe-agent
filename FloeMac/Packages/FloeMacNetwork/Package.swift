@@ -15,6 +15,7 @@ let package = Package(
         .testTarget(name: "FloeMacNetworkTests", dependencies: [
             "FloeMacNetwork",
             .product(name: "FloeToolboxCore", package: "FloeToolbox"),
+            .product(name: "FloeToolboxClients", package: "FloeToolbox"),
             .product(name: "FloeToolboxDiagnostics", package: "FloeToolbox"),
         ]),
     ],

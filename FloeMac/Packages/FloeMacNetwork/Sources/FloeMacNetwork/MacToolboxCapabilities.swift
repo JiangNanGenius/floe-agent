@@ -82,7 +82,7 @@ public struct MacToolboxToolCapability: Equatable, Sendable {
 
 /// Tools actually exposed by the manually initiated host surface.
 public enum MacToolboxNetworkScope {
-    public static let tools: [ToolboxTool] = [.ping, .traceroute, .dns, .port, .wifi, .roaming]
+    public static let tools: [ToolboxTool] = [.ping, .traceroute, .dns, .port, .lan, .wifi, .roaming]
 
     /// Human-readable grouping used by the Mac integration note.
     public static let diagnosticTools: [ToolboxTool] = [.ping, .traceroute, .dns, .port, .lan, .wifi, .roaming]
@@ -94,11 +94,6 @@ public enum MacToolboxCapabilityMatrix {
     /// an "unavailable" badge for unrelated utilities; their own owner reports
     /// their state.
     public static func capability(for tool: ToolboxTool) -> MacToolboxToolCapability? {
-        if [.lan, .serialAssistant, .http, .webSocket, .mqtt].contains(tool) {
-            return .init(tool: tool,
-                availability: .unavailable("The host authorization and revocation lifecycle is not connected."),
-                detail: "This tool is not enabled by the manual diagnostics surface.")
-        }
         switch tool {
         case .ping:
             return .init(tool: tool, availability: .available,
@@ -123,14 +118,14 @@ public enum MacToolboxCapabilityMatrix {
                     .hostDeclaration("NSLocalNetworkUsageDescription"),
                     .hostDeclaration("NSBonjourServices entries equal to LANDiscoveryScope.declaredBonjourTypes")
                 ],
-                detail: "The shared LANDiscoveryEngine with a Mac NWBrowser/DNSServiceResolve probe for the declared Bonjour types.",
+                detail: "The shared LANDiscoveryEngine with a Mac NWBrowser/DNSServiceResolve probe for the declared Bonjour types. The manual owner cancels and drains the browse/resolve group before a run is reported stopped.",
                 limitations: ["Bonjour only; devices that do not advertise a declared service type are not discovered. A blocked permission is distinguished from an empty result."],
                 subsystems: [.init(identifier: "lan.bonjour",
                     availability: .availableWhenRequirementsMet,
                     requirements: [.permission(.localNetwork),
                                    .hostDeclaration("NSLocalNetworkUsageDescription"),
                                    .hostDeclaration("NSBonjourServices")],
-                    detail: "Browses only the app-declared service types and resolves addresses/ports through DNS-SD.")])
+                    detail: "Browses only the app-declared service types and resolves addresses/ports through DNS-SD; task cancellation retires the browser and deallocates the DNS-SD queries on their own queues.")])
         case .wifi:
             return .init(tool: tool, availability: .availableWhenRequirementsMet,
                 requirements: [

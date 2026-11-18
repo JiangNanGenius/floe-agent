@@ -5,7 +5,7 @@ import FloeToolboxCore
 import FloeToolboxDiagnostics
 @testable import FloeMacNetwork
 
-private actor DelayedRunner: MacManualNetworkRunning {
+actor DelayedRunner: MacManualNetworkRunning {
     private var continuation: CheckedContinuation<String, Never>?
     private var waiting: CheckedContinuation<Void, Never>?
     private var entered = 0
@@ -93,16 +93,36 @@ private actor PermissionGate {
         #expect(!gate.allows(lease, "example.test", .ports([443])))
     }
 
-    @Test func unconnectedCommunicationToolsStayUnavailable() {
-        for tool in [ToolboxTool.serialAssistant, .http, .webSocket, .mqtt] {
+    @Test func connectedCommunicationToolsReportTheirRealAvailability() {
+        // HTTP, WebSocket and MQTT run through the shared clients; the serial
+        // assistant runs TCP/UDP today and admits BLE GATT / USB serial only
+        // with an explicit selected device plus the listed host declarations.
+        for tool in [ToolboxTool.http, .webSocket, .mqtt] {
             guard let capability = MacToolboxCapabilityMatrix.capability(for: tool) else {
                 Issue.record("Missing capability status")
                 continue
             }
-            if case .unavailable = capability.availability {} else {
-                Issue.record("Unconnected tool was reported available: \(tool.rawValue)")
+            if case .available = capability.availability {} else {
+                Issue.record("Connected tool was not reported available: \(tool.rawValue)")
             }
         }
+        guard let serial = MacToolboxCapabilityMatrix.capability(for: .serialAssistant) else {
+            Issue.record("Missing serial capability status")
+            return
+        }
+        guard case .availableWhenRequirementsMet = serial.availability else {
+            Issue.record("Serial assistant must stay requirement-gated")
+            return
+        }
+        guard let lan = MacToolboxCapabilityMatrix.capability(for: .lan) else {
+            Issue.record("Missing LAN capability status")
+            return
+        }
+        guard case .availableWhenRequirementsMet = lan.availability else {
+            Issue.record("LAN must stay permission/declaration gated")
+            return
+        }
+        #expect(lan.requirements.contains(.permission(.localNetwork)))
     }
 
     @Test func roamingReportsOnlyConsecutiveChangesWithKnownAccessPoints() {
@@ -162,10 +182,13 @@ private actor PermissionGate {
         #expect(owner.result == "new result")
     }
 
-    @Test func lanStaysClosedUntilSystemWorkersAreOwned() {
-        let owner = MacManualNetworkOwner()
-        #expect(!owner.start(.lan))
-        #expect(!owner.running)
+    @Test func unconnectedToolsAreNotInThisSlice() {
+        // Terminal, VNC and the remaining instrument entries belong to other
+        // owners; this slice must not claim them and must not badge them.
+        for tool in [ToolboxTool.terminal, .vnc, .level, .motion, .compass,
+                     .barometer, .measure, .hash, .json, .encoding, .qr, .scanner] {
+            #expect(MacToolboxCapabilityMatrix.capability(for: tool) == nil)
+        }
     }
 
     @Test func cancelledPermissionWaitCannotStartWiFiRead() async {

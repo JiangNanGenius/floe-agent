@@ -14,6 +14,7 @@ struct MacWorkspaceRootView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let openBridge: () -> Void
     let openToolbox: (String) -> Void
+    var remembersFileRoot = true
 
     @State private var destination: MacWorkspaceDestination? = .newTask
     @State private var showInspector = false
@@ -27,6 +28,8 @@ struct MacWorkspaceRootView: View {
     @State private var showRename = false
     @State private var showExportError = false
     @State private var showMetadataError = false
+    @State private var grantedFolder: URL?
+    @State private var registeredFolder: URL?
 
     var body: some View {
         NavigationSplitView {
@@ -39,9 +42,17 @@ struct MacWorkspaceRootView: View {
                 HStack(spacing: 0) {
                     if destination != .files { detail.frame(maxWidth: .infinity, maxHeight: .infinity) }
                     if showInspector && destination != .files { Divider() }
-                    MacWorkspaceFilesView(insertInDraft: insertFileText, canInsertInDraft: canSelectTask)
+                    MacWorkspaceFilesView(
+                        insertInDraft: insertFileText,
+                        canInsertInDraft: canSelectTask,
+                        remembersRoot: remembersFileRoot,
+                        taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
+                        onRootChanged: { grantedFolder = $0 },
+                        onAttachmentsChanged: updateFileAttachments
+                    )
                         .frame(minWidth: filesVisible ? 270 : 0,
                                maxWidth: destination == .files ? .infinity : (filesVisible ? 310 : 0))
+                        .background(FloeTheme.readingSurface)
                         .clipped()
                         .opacity(filesVisible ? 1 : 0)
                         .allowsHitTesting(filesVisible)
@@ -58,10 +69,23 @@ struct MacWorkspaceRootView: View {
         .task(id: destination) {
             guard workspace.isReady else { return }
             switch destination {
-            case .newTask: await workspace.select(nil)
+            case .newTask:
+                if workspace.selectedID != nil {
+                    workspace.clearStagedAttachments()
+                    await workspace.select(nil)
+                }
             case .conversation(let id):
-                if id != workspace.selectedID { await workspace.select(id) }
+                if id != workspace.selectedID {
+                    workspace.clearStagedAttachments()
+                    await workspace.select(id)
+                }
             default: break
+            }
+        }
+        .task(id: canSelectTask ? grantedFolder : nil) {
+            guard canSelectTask, let folder = grantedFolder, folder != registeredFolder else { return }
+            if await workspace.addWorkspace(name: folder.lastPathComponent, rootURL: folder) {
+                registeredFolder = folder
             }
         }
         .onChange(of: workspace.selectedID) { _, id in
@@ -226,14 +250,17 @@ struct MacWorkspaceRootView: View {
             Spacer(minLength: 8)
             if showsTask {
                 if workspace.isSending {
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel("mac.workspace.inspector.running")
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small).accessibilityHidden(true)
+                        Text(runStatusTitle).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Button { showInspector.toggle() } label: {
                     Label("mac.workspace.files", systemImage: "sidebar.trailing")
                 }
                 .labelStyle(.iconOnly)
                 .help("mac.workspace.files")
+                .accessibilityIdentifier("workspace.files.toggle")
                 .keyboardShortcut("i", modifiers: [.command, .option])
                 .accessibilityAddTraits(showInspector ? .isSelected : [])
             }
@@ -250,6 +277,14 @@ struct MacWorkspaceRootView: View {
         .padding(.horizontal, 20)
         .frame(minHeight: 44)
         .background(FloeTheme.chromeMaterial)
+    }
+
+    private var runStatusTitle: LocalizedStringKey {
+        if workspace.isStopping || workspace.runPhase == .cancelling {
+            return "mac.workspace.runStopping"
+        }
+        if workspace.runPhase == nil { return "mac.workspace.runPreparing" }
+        return "mac.workspace.inspector.running"
     }
 
     @ViewBuilder private var detail: some View {
@@ -289,6 +324,19 @@ struct MacWorkspaceRootView: View {
         let current = drafts[id] ?? ""
         drafts[id] = current.isEmpty ? text : current + "\n\n" + text
         if !showsTask { destination = .newTask }
+    }
+
+    private func updateFileAttachments(_ files: [URL]) {
+        guard canSelectTask else { return }
+        let wanted = Set(files)
+        let alreadyStaged = Set(workspace.stagedAttachments.map(\.url))
+        for draft in workspace.stagedAttachments where !wanted.contains(draft.url) {
+            workspace.unstageAttachment(draft.id)
+        }
+        _ = workspace.stageAttachments(files.filter { !alreadyStaged.contains($0) })
+        if !showsTask && !files.isEmpty {
+            destination = workspace.selectedID.map(MacWorkspaceDestination.conversation) ?? .newTask
+        }
     }
 
     private func openTask(_ id: UUID) {
