@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import FloeDesktopSync
+import Foundation
 import GRDB
 
 /// Internal transaction seam only. It neither opens a database nor installs
@@ -29,5 +30,55 @@ enum FloeMacCanonicalFeedStorage {
     static func position(in db: Database) throws -> CanonicalMessageFeed.Position {
         guard let connection = db.sqliteConnection else { throw CanonicalMessageFeed.FeedError.unavailable }
         return try CanonicalMessageFeed.position(on: connection)
+    }
+
+    /// Establishes the replay watermark for one authorized conversation scan.
+    /// Runs inside the caller's GRDB transaction on the authoritative
+    /// connection; the returned watermark is provisional until that
+    /// transaction commits. Establishing real host authority and selecting
+    /// the conversation (excluding temporary/editor-owned data) remains the
+    /// caller's duty.
+    static func beginBootstrap(
+        in db: Database,
+        conversationID: UUID
+    ) throws -> CanonicalMessageFeed.Bootstrap {
+        guard let connection = db.sqliteConnection else { throw CanonicalMessageFeed.FeedError.unavailable }
+        return try CanonicalMessageFeed.beginBootstrap(on: connection, conversationID: conversationID)
+    }
+
+    /// Reads one bounded keyset page of an in-flight bootstrap scan. Every
+    /// page is validated against the bootstrap generation, so a history
+    /// rotation mid-scan fails closed instead of mixing generations.
+    static func bootstrapPage(
+        in db: Database,
+        bootstrap: CanonicalMessageFeed.Bootstrap,
+        after: UUID?,
+        limit: Int
+    ) throws -> CanonicalMessageFeed.BootstrapPage {
+        guard let connection = db.sqliteConnection else { throw CanonicalMessageFeed.FeedError.unavailable }
+        return try CanonicalMessageFeed.bootstrapPage(on: connection, bootstrap: bootstrap, after: after, limit: limit)
+    }
+
+    /// Reads one bounded invalidation page and resolves each entry to the
+    /// current canonical row (or a tombstone) in this read snapshot. A
+    /// consumer must apply the page and persist `next` atomically; this
+    /// wrapper only borrows the caller's transaction.
+    static func changes(
+        in db: Database,
+        conversationID: UUID,
+        after position: CanonicalMessageFeed.Position,
+        limit: Int
+    ) throws -> CanonicalMessageFeed.ChangePage {
+        guard let connection = db.sqliteConnection else { throw CanonicalMessageFeed.FeedError.unavailable }
+        return try CanonicalMessageFeed.changes(on: connection, conversationID: conversationID, after: position, limit: limit)
+    }
+
+    /// Rotates the feed history inside the caller's write transaction. Every
+    /// previously issued cursor or bootstrap watermark fails with
+    /// `wrongGeneration` afterwards; consumers must rebuild their authorized
+    /// projection from a new bootstrap before resuming.
+    static func rotateHistory(in db: Database) throws -> CanonicalMessageFeed.Position {
+        guard let connection = db.sqliteConnection else { throw CanonicalMessageFeed.FeedError.unavailable }
+        return try CanonicalMessageFeed.rotateHistory(on: connection)
     }
 }

@@ -62,6 +62,12 @@ final class SQLiteConnection: @unchecked Sendable {
         }
     }
 
+    /// Borrowed by integration adapters (e.g. the canonical message feed)
+    /// that layer their own transaction policy on this connection. The
+    /// caller owns the enclosing transaction and serialization; reads through
+    /// this handle bypass the statement helpers and their closed checks.
+    var rawHandle: OpaquePointer? { handle }
+
     func prepare(_ sql: String) throws -> SQLiteStatement {
         guard !isClosed, let handle else { throw SyncStoreError.closed }
         var statement: OpaquePointer?

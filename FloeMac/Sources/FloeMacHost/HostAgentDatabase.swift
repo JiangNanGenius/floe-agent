@@ -6,7 +6,7 @@ import Foundation
 
 enum HostAgentDatabase {
     static func open(applicationSupport: URL, namespace: String) throws -> FloeMacSelfRuntime {
-        let directoryName = namespace == "org.floeagent.macbridge" ? "Floe Mac Agent" : "Floe Mac Agent Development"
+        let directoryName = directoryName(for: namespace)
         let parent = applicationSupport
         let directory = parent.appendingPathComponent(directoryName, isDirectory: true)
         let databaseName = "floe.sqlite"
@@ -39,6 +39,27 @@ enum HostAgentDatabase {
         )
         return try FloeMacSelfRuntime(databaseURL: database,
                                      owner: .init(displayName: "Floe Mac"), provenance: provenance)
+    }
+
+    /// Deterministic private location of the committed-task SyncStore that
+    /// mirrors the host runtime database. Both files live in the same owner-
+    /// only directory created by `open`; this seam performs no I/O and grants
+    /// no access — the SyncStore itself enforces 0o600 permissions and schema
+    /// ownership when the host opens it. The host derives the directory
+    /// identity discipline from the same `namespace` mapping so the two files
+    /// can never disagree about their private location.
+    static func committedSyncStoreURL(applicationSupport: URL, namespace: String) throws -> URL {
+        let parent = applicationSupport.standardizedFileURL
+        guard parent.isFileURL, parent.path.hasPrefix("/"), parent.path != "/" else {
+            throw StorageError.supportDirectory
+        }
+        return parent
+            .appendingPathComponent(directoryName(for: namespace), isDirectory: true)
+            .appendingPathComponent("floe-sync.sqlite")
+    }
+
+    private static func directoryName(for namespace: String) -> String {
+        namespace == "org.floeagent.macbridge" ? "Floe Mac Agent" : "Floe Mac Agent Development"
     }
 
     private static func openDirectory(_ directory: URL) throws -> Int32 {
