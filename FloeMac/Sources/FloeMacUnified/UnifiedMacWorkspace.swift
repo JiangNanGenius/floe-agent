@@ -22,7 +22,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
         self.testSupport = testSupport
     }
 
-    func openAgent() {
+    func openAgent(openBridge: @escaping () -> Void = {}) {
         if agentWindow == nil {
             guard let root = testSupport ?? FileManager.default.urls(for: .applicationSupportDirectory,
                                                                       in: .userDomainMask).first,
@@ -34,12 +34,15 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
                 return { activity.finish(lease) }
             })
             agent = workspace
-            let host = NSHostingController(rootView: HostAgentWorkspaceView(workspace: workspace).padding(24))
+            let host = NSHostingController(rootView: MacWorkspaceRootView(
+                workspace: workspace, openBridge: openBridge,
+                openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) }
+            ))
             let window = NSWindow(contentViewController: host)
             window.title = String(localized: "host.role.agent")
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.setContentSize(NSSize(width: 960, height: 660))
-            window.minSize = NSSize(width: 560, height: 420)
+            window.setContentSize(NSSize(width: 1150, height: 750))
+            window.minSize = NSSize(width: 720, height: 480)
             if testSupport == nil { window.setFrameAutosaveName("FloeMacUnifiedAgent") }
             window.isReleasedWhenClosed = false
             window.center()
@@ -49,7 +52,9 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func openToolbox() {
+    func openToolbox() { openToolbox(toolID: nil) }
+
+    func openToolbox(toolID: String?) {
         guard !drainingToolbox else { return }
         if toolbox == nil {
             guard let lease = try? activity.begin(.maintenance) else { return }
@@ -60,7 +65,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
             toolbox = controller
             toolboxLease = lease
         }
-        toolbox?.present()
+        toolbox?.present(toolID: toolID)
     }
 
     func closeToolbox() async -> Bool {

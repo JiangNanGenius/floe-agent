@@ -61,6 +61,8 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var isTerminating = false
     @Published private(set) var modelName: String?
     @Published private(set) var conversations: [ConversationRecord] = []
+    @Published private(set) var recentTaskRuns: [UUID: RunRecord] = [:]
+    @Published private(set) var taskRunLookupFailed = false
     @Published private(set) var selectedID: UUID?
     @Published private(set) var messages: [PersistedMessage] = []
     @Published private(set) var pendingPrompt: String?
@@ -74,6 +76,7 @@ final class HostAgentWorkspace: ObservableObject {
     private let admitWork: AdmitWork
     private var runtime: FloeMacSelfRuntime?
     private var activeRun: FloeMacSelfSessionHandle?
+    private var taskRunLookup = UUID()
     private static let settingsAccount = "selected-chat-provider.v1"
 
     init(supportDirectory: URL, namespace: String, useKeychain: Bool = true,
@@ -150,6 +153,25 @@ final class HostAgentWorkspace: ObservableObject {
             if selectedID == id && !isSending { messages = history }
         } catch {
             if selectedID == id && !isSending { notice = String(localized: "host.chat.historyUnavailable") }
+        }
+    }
+
+    func loadTaskRuns() async {
+        guard let runtime, isReady, let release = admit() else { return }
+        defer { release() }
+        let lookup = UUID()
+        taskRunLookup = lookup
+        var records: [UUID: RunRecord] = [:]
+        do {
+            for conversation in conversations.lazy.filter(\.isVisibleInOrdinaryList).prefix(60) {
+                guard !Task.isCancelled, lookup == taskRunLookup else { return }
+                records[conversation.id] = try await runtime.recentRuns(conversationID: conversation.id, limit: 1).first
+            }
+            guard !Task.isCancelled, lookup == taskRunLookup else { return }
+            recentTaskRuns = records
+            taskRunLookupFailed = false
+        } catch {
+            if !Task.isCancelled, lookup == taskRunLookup { taskRunLookupFailed = true }
         }
     }
 

@@ -66,7 +66,11 @@ final class UnifiedMacSmoke {
                 && before != nil && before == path.flatMap { try? Data(contentsOf: $0) }
         }
         let switchedToAgent = await exerciseBridgeSwitch(model: model)
+        let workbenchVisible = NSApp.windows.contains {
+            $0.isVisible && $0.title == String(localized: "host.role.agent")
+        }
         var nativeChat = false
+        var storedTaskRun = false
         if let agent = model.macWorkspace.agent {
             await agent.prepare()
             // The visible SwiftUI view may already own preparation.
@@ -76,6 +80,14 @@ final class UnifiedMacSmoke {
                 try? await Task.sleep(for: .milliseconds(50))
             }
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
+            await agent.loadTaskRuns()
+            let historyDeadline = ContinuousClock.now + .seconds(3)
+            if let id = agent.selectedID {
+                while agent.recentTaskRuns[id] == nil && ContinuousClock.now < historyDeadline {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                storedTaskRun = agent.recentTaskRuns[id]?.conversationID == id
+            }
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
         let toolbox = await exerciseToolbox(model: model)
@@ -83,7 +95,9 @@ final class UnifiedMacSmoke {
             "sameProcessBridgeReady": model.listenerReady,
             "legacyPairAndSignatureVerified": pairedRequest,
             "switchedToAgentFromBridge": switchedToAgent,
+            "workbenchWindowVisible": workbenchVisible,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
+            "storedTaskRunFound": storedTaskRun,
             "toolboxAndLoopbackVerified": toolbox,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
@@ -127,7 +141,7 @@ final class UnifiedMacSmoke {
 
     private func exerciseToolbox(model: BridgeAppModel) async -> Bool {
         let workspace = model.macWorkspace
-        workspace.openToolbox()
+        workspace.openToolbox(toolID: "ping")
         guard let first = workspace.toolbox, first.window?.isVisible == true else { return false }
         let command = first.services.networkOwner
         let started = command.start(.ping("127.0.0.1"), locale: Locale(identifier: "en"))

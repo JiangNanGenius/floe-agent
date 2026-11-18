@@ -22,23 +22,68 @@ enum MacToolboxAvailability {
     }
 }
 
+public enum MacToolboxCatalog {
+    public struct Tool: Identifiable {
+        public let id: String
+        public let title: String
+        public let symbol: String
+        public let isAvailable: Bool
+    }
+
+    public struct Group: Identifiable {
+        public let id: String
+        public let title: String
+        public let tools: [Tool]
+    }
+
+    public static func groups(locale: Locale) -> [Group] {
+        ToolboxGroup.allCases.map { group in
+            Group(id: group.rawValue, title: MacToolboxAvailability.groupTitle(group, locale: locale),
+                  tools: ToolboxTool.allCases.filter { $0.group == group }.map { tool in
+                Tool(id: tool.rawValue, title: tool.title(in: locale), symbol: tool.symbol,
+                     isAvailable: MacToolboxAvailability.available.contains(tool))
+            })
+        }
+    }
+}
+
+@MainActor
+fileprivate final class MacToolboxSelection: ObservableObject {
+    private static let defaultsKey = "floe.mac.toolbox.selectedTool"
+    @Published private(set) var tool: ToolboxTool
+
+    init() {
+        let stored = UserDefaults.standard.string(forKey: Self.defaultsKey)
+        tool = stored.flatMap(ToolboxTool.init(rawValue:)) ?? .hash
+    }
+
+    func select(_ tool: ToolboxTool) {
+        guard self.tool != tool else { return }
+        self.tool = tool
+        UserDefaults.standard.set(tool.rawValue, forKey: Self.defaultsKey)
+    }
+}
+
 /// The toolbox is an auxiliary window in the existing Floe Mac app, not a
 /// second product. The host owns `MacToolboxServices`; the window observes it.
 public struct MacToolboxWindow: View {
     @ObservedObject private var services: MacToolboxServices
+    @StateObject private var selectedTool: MacToolboxSelection
     @Environment(\.locale) private var locale
-    @AppStorage("floe.mac.toolbox.selectedTool") private var selectionRaw = ToolboxTool.hash.rawValue
 
     public init(services: MacToolboxServices) {
+        self.init(services: services, selectedTool: MacToolboxSelection())
+    }
+
+    fileprivate init(services: MacToolboxServices, selectedTool: MacToolboxSelection) {
         self.services = services
+        _selectedTool = StateObject(wrappedValue: selectedTool)
     }
 
     private var selection: Binding<ToolboxTool?> {
         Binding(
-            get: {
-                ToolboxTool(rawValue: selectionRaw) ?? .hash
-            },
-            set: { selectionRaw = ($0 ?? .hash).rawValue }
+            get: { selectedTool.tool },
+            set: { selectedTool.select($0 ?? .hash) }
         )
     }
 
@@ -131,10 +176,13 @@ public struct MacToolboxWindow: View {
 @MainActor
 public final class MacToolboxWindowController: NSWindowController {
     public let services: MacToolboxServices
+    private let selectedTool: MacToolboxSelection
 
     public init(services: MacToolboxServices, autosavesFrame: Bool = true) {
         self.services = services
-        let hosting = NSHostingController(rootView: MacToolboxWindow(services: services))
+        let selectedTool = MacToolboxSelection()
+        self.selectedTool = selectedTool
+        let hosting = NSHostingController(rootView: MacToolboxWindow(services: services, selectedTool: selectedTool))
         let window = NSWindow(contentViewController: hosting)
         window.title = MacToolboxText.windowTitle(.current)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -152,6 +200,14 @@ public final class MacToolboxWindowController: NSWindowController {
     }
 
     public func present() {
+        present(toolID: nil)
+    }
+
+    public func present(toolID: String?) {
+        if let toolID {
+            guard let tool = ToolboxTool(rawValue: toolID), MacToolboxAvailability.available.contains(tool) else { return }
+            selectedTool.select(tool)
+        }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

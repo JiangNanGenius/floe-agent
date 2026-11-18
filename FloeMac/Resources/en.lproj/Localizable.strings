@@ -217,3 +217,18 @@
 "Updates will install when current work finishes." = "Updates will install when current work finishes.";
 "Workspaces" = "Workspaces";
 "host.chat.endingSession" = "Floe is preparing to quit or update.";
+
+"mac.workspace.newTask" = "New Task";
+"mac.workspace.taskCenter" = "Task Center";
+"mac.workspace.files" = "Workspace Files";
+"mac.workspace.services" = "Services";
+"mac.workspace.findTask" = "Find a task";
+"mac.workspace.task" = "Task";
+"mac.workspace.inspector" = "Task Details";
+"mac.workspace.connections" = "Connections";
+"mac.workspace.pendingServices" = "Pending Mac Integrations";
+"mac.workspace.pendingServicesList" = "Skills, MCP, scheduled tasks, and device sync";
+"mac.workspace.inspector.messages" = "Messages";
+"mac.workspace.inspector.running" = "Running";
+"mac.workspace.inspector.updated" = "Last updated";
+"mac.workspace.browseFiles" = "Browse Files";

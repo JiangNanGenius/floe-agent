@@ -5,11 +5,19 @@ import SwiftUI
 
 struct HostAgentWorkspaceView: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    @State private var draft = ""
+    var workspaceDraft: Binding<String>? = nil
+    @State private var standaloneDraft = ""
+    #if !FLOE_UNIFIED_MAC
     @State private var showingSettings = false
+    #endif
+
+    private var draft: Binding<String> {
+        workspaceDraft ?? $standaloneDraft
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            #if !FLOE_UNIFIED_MAC
             HStack {
                 Picker("host.chat.history", selection: Binding(
                     get: { workspace.selectedID },
@@ -20,15 +28,11 @@ struct HostAgentWorkspaceView: View {
                         Text(conversation.title).tag(Optional(conversation.id))
                     }
                 }
-                .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
                 Spacer()
-                Button(workspace.modelName ?? String(localized: "host.chat.provider")) {
-                    showingSettings = true
-                }
-                .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
+                Button(workspace.modelName ?? String(localized: "host.chat.provider")) { showingSettings = true }
             }
-            .padding(.bottom, 2)
-
+            .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
+            #endif
             if workspace.isPreparing {
                 ProgressView("host.chat.opening")
             } else if !workspace.isReady {
@@ -37,18 +41,19 @@ struct HostAgentWorkspaceView: View {
             } else {
                 conversation
                 HStack(alignment: .bottom) {
-                    TextField("host.chat.prompt", text: $draft, axis: .vertical)
+                    TextField("host.chat.prompt", text: draft, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
-                        .lineLimit(2...5)
+                        .lineLimit(2...7)
                     if workspace.isSending {
                         Button("host.chat.stop") { workspace.stop() }
                             .disabled(!workspace.canStop)
                     } else {
                         Button("host.chat.send") {
-                            if workspace.send(draft) { draft = "" }
+                            if workspace.send(draft.wrappedValue) { draft.wrappedValue = "" }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workspace.isTerminating)
+                        .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workspace.isTerminating)
+                        .keyboardShortcut(.return, modifiers: .command)
                     }
                 }
             }
@@ -56,14 +61,22 @@ struct HostAgentWorkspaceView: View {
                 Text(notice).foregroundStyle(.secondary)
             }
         }
+        .padding(20)
         .task { await workspace.prepare() }
+        #if !FLOE_UNIFIED_MAC
         .sheet(isPresented: $showingSettings) {
             HostAgentProviderForm(workspace: workspace, isPresented: $showingSettings)
         }
+        #endif
     }
 
     private var conversation: some View {
         ScrollView {
+            if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
+                ContentUnavailableView("mac.workspace.newTask", systemImage: "bubble.left.and.bubble.right")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 36)
+            }
             LazyVStack(alignment: .leading, spacing: 15) {
                 ForEach(workspace.messages) { message in
                     row(message.content, user: message.role == "user")
@@ -86,13 +99,18 @@ struct HostAgentWorkspaceView: View {
             Text(user ? "host.chat.user" : "host.chat.assistant")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(verbatim: text)
-                .textSelection(.enabled)
+            if user {
+                Text(verbatim: text).textSelection(.enabled)
+            } else if let formatted = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+                Text(formatted).textSelection(.enabled)
+            } else {
+                Text(verbatim: text).textSelection(.enabled)
+            }
         }
     }
 }
 
-private struct HostAgentProviderForm: View {
+struct HostAgentProviderForm: View {
     @ObservedObject var workspace: HostAgentWorkspace
     @Binding var isPresented: Bool
     @State private var endpoint = ""

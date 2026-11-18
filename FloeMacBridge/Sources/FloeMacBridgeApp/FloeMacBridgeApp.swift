@@ -49,7 +49,7 @@ private struct BridgeMenuView: View {
         Text("Floe Bridge").font(.headline)
         Text(model.connectionStatus)
         #if FLOE_UNIFIED_MAC
-        Button("host.menu.openAgent") { model.macWorkspace.openAgent() }
+        Button("host.menu.openAgent") { model.openAgentWorkspace() }
         Button("host.menu.tools") { model.macWorkspace.openToolbox() }
         #endif
         Button("Settings…") { model.openSettings() }
@@ -229,6 +229,11 @@ final class BridgeAppModel: ObservableObject {
             self?.presentSettingsWindow()
         }
     }
+    #if FLOE_UNIFIED_MAC
+    func openAgentWorkspace() {
+        macWorkspace.openAgent { [weak self] in self?.openSettings() }
+    }
+    #endif
     private func presentSettingsWindow() {
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         let persistsPresentation = smoke == nil
@@ -351,7 +356,7 @@ private struct BridgeSettingsView: View {
     }
     #if FLOE_UNIFIED_MAC
     private var switchToAgentButton: some View {
-        Button("host.bridge.switchToAgent") { model.macWorkspace.openAgent() }
+        Button("host.bridge.switchToAgent") { model.openAgentWorkspace() }
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("bridge.switchToAgent")
             #if FLOE_MAC_HOST_SMOKE

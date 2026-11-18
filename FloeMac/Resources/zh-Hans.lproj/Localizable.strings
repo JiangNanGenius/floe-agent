@@ -218,3 +218,18 @@
 "Workspaces" = "工作空间";
 "host.chat.endingSession" = "Floe 正在准备退出或更新。";
 "The update could not finish. Reopen Floe to resume work." = "更新未完成。请退出并重新打开 Floe 后继续。";
+
+"mac.workspace.newTask" = "新建任务";
+"mac.workspace.taskCenter" = "任务中心";
+"mac.workspace.files" = "工作区文件";
+"mac.workspace.services" = "服务";
+"mac.workspace.findTask" = "查找任务";
+"mac.workspace.task" = "任务";
+"mac.workspace.inspector" = "任务详情";
+"mac.workspace.connections" = "连接";
+"mac.workspace.pendingServices" = "待接入 Mac";
+"mac.workspace.pendingServicesList" = "Skills、MCP、定时任务和设备同步";
+"mac.workspace.inspector.messages" = "消息";
+"mac.workspace.inspector.running" = "运行中";
+"mac.workspace.inspector.updated" = "最近更新";
+"mac.workspace.browseFiles" = "浏览文件";
