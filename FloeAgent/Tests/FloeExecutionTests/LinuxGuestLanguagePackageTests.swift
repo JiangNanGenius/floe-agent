@@ -260,6 +260,7 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
             "\"--requirement\"",
             "\"--disable-pip-version-check\"",
             "\"--no-input\"",
+            "\"--no-compile\"",
             "tempfile.mkdtemp(prefix=\"floe-pip-req-\")",
             "os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600",
             "os.fsync",
@@ -299,7 +300,7 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         XCTAssertTrue(closureTransport.contains("FIND_LINKS = []"))
     }
 
-    func testPythonInstallNoHashKeepsThePlainArgvByteForByteAndNilStdin() async throws {
+    func testPythonInstallNoHashUsesPlainPipWithLazyBytecodeAndNilStdin() async throws {
         let (environmentID, layer) = try makeLayer()
         defer { try? FileManager.default.removeItem(at: layer) }
         try LanguagePackageSources(pythonIndex: "https://mirror.example.com/simple/").save(in: layer)
@@ -312,8 +313,7 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         let install = try XCTUnwrap(runner.calls.first { call in
             call.argv.contains("-m") && call.argv.contains("pip") && call.argv.contains("install")
         })
-        // Byte-for-byte the pre-hash-mode command: exact argv, the spec on
-        // argv, no requirements file, no stdin.
+        // Plain installs pass the spec on argv; hash mode uses a requirements file.
         XCTAssertEqual(install.argv, [
             "/usr/bin/env",
             "PATH=\(LinuxGuestPythonEnvironment.guestVenvPath)/bin:" + LinuxGuestNodeEnvironment.defaultGuestPath,
@@ -326,7 +326,7 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
             "PYTHONUNBUFFERED=1",
             "VIRTUAL_ENV=\(LinuxGuestPythonEnvironment.guestVenvPath)",
             "\(LinuxGuestPythonEnvironment.guestVenvPath)/bin/python3",
-            "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+            "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-compile",
             "demo==1.0",
         ])
         XCTAssertNil(install.standardInput)
@@ -417,6 +417,21 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         XCTAssertEqual(rows.first?.name, "demo")
         XCTAssertEqual(rows.first?.writable, true)
         XCTAssertEqual(rows.last?.writable, false)
+    }
+
+    func testInstallVerificationQueriesOnlyRequestedProjectNames() async throws {
+        let (environmentID, layer) = try makeLayer()
+        defer { try? FileManager.default.removeItem(at: layer) }
+        let runner = pipInstallAnsweringRunner()
+        let packages = LinuxGuestLanguagePackages(runner: runner)
+        let result = await packages.pythonVerification(
+            specs: ["demo[extra]==1.0", "another-project"],
+            environment: makeEnvironment(environmentID, layer: layer)
+        )
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+        let query = try XCTUnwrap(runner.calls.first { $0.argv.contains(LinuxGuestLanguagePackages.pythonInventoryScript) })
+        XCTAssertEqual(Array(query.argv.suffix(2)), ["demo", "another-project"])
+        XCTAssertEqual(result, "installVerify=[]")
     }
 
     func testOwnedButStoppedPythonChangeNeverFallsBackToHost() async throws {

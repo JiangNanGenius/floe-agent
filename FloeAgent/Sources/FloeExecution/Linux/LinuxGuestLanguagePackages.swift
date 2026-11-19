@@ -70,8 +70,8 @@ public struct LinuxGuestLanguagePackages: Sendable {
     /// App-wide shared download cache root, exported by the host as the
     /// optional `floe-cache` 9p share and mounted at `/floe/cache`. It holds
     /// only re-downloadable objects (pip wheels, npm tarballs); a package is
-    /// downloaded once and reused across environments. It is used only after
-    /// the guest itself reports a real mount, never assumed from a path.
+    /// reused across environments when mounted writable. Resident projects
+    /// receive a read-only share and cache downloads in their own write layer.
     public static let sharedCacheRoot = "/floe/cache"
 
     private let runner: any LinuxCommandRunning
@@ -92,46 +92,22 @@ public struct LinuxGuestLanguagePackages: Sendable {
             runner: runner, cancellation: cancellation)
     }
 
-    /// Resolves which guest cache directory an install must use. When the
-    /// host exported the shared cache share and the running guest actually
-    /// mounted it (`/proc/mounts`), the shared path wins; otherwise the
-    /// per-environment layer cache stays in effect. This mirrors the runner
-    /// PID-1 decision in `floe_exec.c`, so direct shell installs and managed
-    /// installs cannot disagree about where downloads live.
+    /// Resident projects can read official wheels from a read-only share. pip and npm
+    /// need a writable cache even when all cache subdirectories already exist.
     private func cacheDirectory(kind: String, environmentFallback: String,
                                 environmentID: String, cancellation: CancellationToken?) async -> String {
         let shared = Self.sharedCacheRoot + "/" + kind
-        guard await isSharedCacheMounted(environmentID: environmentID, cancellation: cancellation) else {
-            return environmentFallback
-        }
-        return shared
-    }
-
-    /// One bounded read of /proc/mounts per decision. A failing or absent
-    /// guest answers false (per-environment fallback), never an error that
-    /// blocks an unrelated package operation. The mount point is the SECOND
-    /// whitespace-separated field of a /proc/mounts row; the check compares
-    /// that field exactly (awk's default splitting tolerates any single or
-    /// repeated spaces/tabs), so an older guest without the share keeps its
-    /// honest per-environment fallback instead of a literal that can never
-    /// match. No guest is ever restarted for this decision.
-    private func isSharedCacheMounted(environmentID: String, cancellation: CancellationToken?) async -> Bool {
-        let result: LinuxCommandResult
-        do {
-            result = try await runner.run(
-                environmentID: environmentID,
-                argv: ["/bin/sh", "-c",
-                       #"awk '$2=="/floe/cache"{found=1} END{exit found?0:1}' /proc/mounts && mkdir -p /floe/cache/pip /floe/cache/npm /floe/cache/xdg"#],
-                workingDirectory: nil,
-                standardInput: nil,
-                timeout: 15,
-                maxOutputBytes: 1024,
-                cancellation: cancellation
-            )
-        } catch {
-            return false
-        }
-        return result.exitCode == 0
+        let probe = #"awk '$2=="/floe/cache" && $4 ~ /(^|,)rw(,|$)/ {found=1} END {exit !found}' /proc/mounts && mkdir -p "$1" && test -w "$1""#
+        let result = try? await runner.run(
+            environmentID: environmentID,
+            argv: ["/bin/sh", "-c", probe, "floe-package-cache", shared],
+            workingDirectory: nil,
+            standardInput: nil,
+            timeout: 15,
+            maxOutputBytes: 1024,
+            cancellation: cancellation
+        )
+        return result?.exitCode == 0 ? shared : environmentFallback
     }
 
     // MARK: - Ownership
@@ -314,13 +290,13 @@ public struct LinuxGuestLanguagePackages: Sendable {
         // `--require-hashes --requirement <that real path>` — the identical
         // pip grammar, with the pins in no argv — propagating pip's exit code
         // and removing the file in finally, including under cancellation.
-        // The no-hash command stays byte-for-byte the plain one.
+        // Let Python cache imported modules on demand instead of compiling the entire wheel.
         let pipProgram: [String]
         if requireHashesMode {
             pipProgram = [venv.pythonPath, "-c", Self.pythonHashTransportSource(findLinks: findLinks)]
         } else {
             pipProgram = [venv.pythonPath, "-m", "pip", "install",
-                          "--disable-pip-version-check", "--no-input"] + findLinks + specs
+                          "--disable-pip-version-check", "--no-input", "--no-compile"] + findLinks + specs
         }
         let argv = ["/usr/bin/env"] + (LinuxGuestEnvironmentEncoding.argv(variables) ?? []) + pipProgram
         let result: LinuxCommandResult
@@ -363,7 +339,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
     /// signed closure), materializes it as an owned temporary file
     /// (`mkdtemp` 0700 + `O_CREAT|O_EXCL` 0600, fsynced) inside the guest,
     /// invokes pip with the identical grammar (`-m pip install
-    /// --disable-pip-version-check --no-input --require-hashes
+    /// --disable-pip-version-check --no-input --no-compile --require-hashes
     /// [--find-links …] --requirement <real path>`) through the SAME
     /// interpreter (`sys.executable`), propagates pip's exit code, and
     /// deletes the file in `finally` — including when SIGINT/SIGTERM cancel
@@ -436,7 +412,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
                 os.fsync(handle.fileno())
             completed = subprocess.run([sys.executable, "-m", "pip", "install",
                                        "--disable-pip-version-check", "--no-input",
-                                       "--require-hashes"] + FIND_LINKS
+                                       "--no-compile", "--require-hashes"] + FIND_LINKS
                                       + ["--requirement", path],
                                       stdin=subprocess.DEVNULL)
             raise SystemExit(completed.returncode)
@@ -514,6 +490,12 @@ public struct LinuxGuestLanguagePackages: Sendable {
         environment: ToolEnvironment,
         cancellation: CancellationToken?
     ) async throws -> [LinuxGuestPythonDistribution] {
+        try await readPythonDistributions(names: [], environment: environment, cancellation: cancellation)
+    }
+
+    private func readPythonDistributions(
+        names: [String], environment: ToolEnvironment, cancellation: CancellationToken?
+    ) async throws -> [LinuxGuestPythonDistribution] {
         try await requireRunning(environment.id)
         let venv = try await LinuxGuestPythonProvisioner.shared.ensure(
             environmentID: environment.id,
@@ -522,7 +504,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         )
         let result = try await runner.run(
             environmentID: environment.id,
-            argv: [venv.pythonPath, "-c", Self.pythonInventoryScript],
+            argv: [venv.pythonPath, "-c", Self.pythonInventoryScript] + names,
             workingDirectory: nil,
             standardInput: nil,
             timeout: 60,
@@ -562,17 +544,11 @@ public struct LinuxGuestLanguagePackages: Sendable {
         specs: [String],
         environment: ToolEnvironment
     ) async -> String {
-        func normalized(_ value: String) -> String {
-            value.lowercased().replacingOccurrences(of: "[-_.]+", with: "-", options: .regularExpression)
-        }
-        let names = specs.map { spec -> String in
-            spec.split(separator: "=", maxSplits: 1).first.map(String.init) ?? spec
-        }
-        guard let rows = try? await pythonInventory(environment: environment, cancellation: nil) else {
+        let names = specs.map { String($0.prefix { $0 != "[" && $0 != "=" }) }
+        guard !names.isEmpty else { return "installVerify=[]" }
+        guard let matches = try? await readPythonDistributions(names: names, environment: environment, cancellation: nil) else {
             return "installVerify=unavailable"
         }
-        let wanted = Set(names.map(normalized))
-        let matches = rows.filter { wanted.contains(normalized($0.name)) }
         let payload = matches.map { ["name": $0.name, "version": $0.version, "location": $0.location, "writable": $0.writable] as [String: Any] }
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
               let json = String(data: data, encoding: .utf8) else { return "installVerify=unavailable" }
@@ -772,23 +748,31 @@ public struct LinuxGuestLanguagePackages: Sendable {
     import json as _json
     import os as _os
     import re as _re
+    import sys as _sys
     import sysconfig as _sysconfig
     _target = _os.path.realpath(_sysconfig.get_paths()["purelib"])
     _rows = []
     _seen = set()
-    for _distribution in _metadata.distributions():
+    _names = _sys.argv[1:]
+    _wanted = {_re.sub(r"[-_.]+", "-", name).lower() for name in _names}
+    if _names:
+        _distributions = (dist for name in _names for dist in _metadata.distributions(name=name))
+    else:
+        _distributions = _metadata.distributions()
+    for _distribution in _distributions:
         try:
-            _name = _distribution.metadata.get("Name")
+            _metadata_fields = _distribution.metadata
+            _name = _metadata_fields.get("Name")
         except Exception:
             _name = None
         if not _name:
             continue
         _key = _re.sub(r"[-_.]+", "-", _name).lower()
-        if _key in _seen:
+        if _key in _seen or (_wanted and _key not in _wanted):
             continue
         _seen.add(_key)
         try:
-            _version = _distribution.version or ""
+            _version = _metadata_fields.get("Version") or ""
         except Exception:
             _version = ""
         _location = str(_distribution.locate_file(""))
