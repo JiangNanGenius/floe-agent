@@ -217,8 +217,8 @@ struct MacWorkspaceRootView: View {
                             .padding(.bottom, 4)
                     }
                     ForEach(filteredConversations) { conversation in
-                        sidebarLink(.conversation(conversation.id), title: LocalizedStringKey(conversation.title),
-                                    icon: conversation.isPinned ? "pin" : "bubble.left", conversationTitle: conversation.title)
+                        sidebarLink(.conversation(conversation.id), title: LocalizedStringKey(conversation.workbenchDisplayTitle),
+                                    icon: conversation.isPinned ? "pin" : "bubble.left", conversationTitle: conversation.workbenchDisplayTitle)
                             .disabled(!canSelectTask && workspace.selectedID != conversation.id)
                             .contextMenu {
                                 Button(LocalizedStringKey(conversation.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
@@ -301,7 +301,8 @@ struct MacWorkspaceRootView: View {
     private var title: String {
         switch destination {
         case .newTask: String(localized: "mac.workspace.newTask")
-        case .conversation(let id): workspace.conversations.first { $0.id == id }?.title ?? String(localized: "mac.workspace.task")
+        case .conversation(let id): workspace.conversations.first { $0.id == id }?.workbenchDisplayTitle
+            ?? String(localized: "mac.workspace.untitledTask")
         case .files: String(localized: "mac.workspace.files")
         case .toolbox: String(localized: "host.menu.tools")
         case .images: String(localized: "mac.settings.images")
@@ -515,6 +516,14 @@ struct MacWorkspaceRootView: View {
             return "## \(role)\n\n\(body)"
         }
         return sections.joined(separator: "\n\n") + "\n"
+    }
+}
+
+extension ConversationRecord {
+    var workbenchDisplayTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? String(localized: "mac.workspace.untitledTask")
+            : title
     }
 }
 

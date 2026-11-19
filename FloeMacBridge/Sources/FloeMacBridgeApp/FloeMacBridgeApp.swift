@@ -510,6 +510,7 @@ private struct UnifiedMacSettingsView: View {
                 }
             }
             .frame(width: 880, height: 585)
+            .background(FloeTheme.groupedSurface)
             .accessibilityIdentifier("mac.settings.sheet")
         } else {
             BridgeSettingsView(model: model).frame(width: 520, height: 560)

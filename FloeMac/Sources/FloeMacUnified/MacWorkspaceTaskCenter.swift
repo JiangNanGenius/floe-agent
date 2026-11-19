@@ -246,8 +246,7 @@ struct MacWorkspaceTaskCenter: View {
     }
 
     private func title(for record: ConversationRecord) -> String {
-        let trimmed = record.title.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? t("未命名任务", "Untitled Task") : record.title
+        record.workbenchDisplayTitle
     }
 
     // MARK: - Run state presentation (machine name → concise bilingual label)

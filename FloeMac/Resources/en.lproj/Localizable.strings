@@ -227,6 +227,7 @@
 "mac.provider.contextTokens" = "Context Limit (Tokens)";
 "mac.provider.backToProviders" = "Models & Providers";
 "mac.provider.noProviders" = "No Model Providers";
+"mac.workspace.untitledTask" = "Untitled Task";
 "mac.provider.add" = "Add Provider";
 "mac.run.activity" = "Tool Activity";
 "mac.run.tool.waiting" = "Waiting";

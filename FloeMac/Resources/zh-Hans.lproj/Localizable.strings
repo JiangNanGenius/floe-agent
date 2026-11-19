@@ -227,6 +227,7 @@
 "mac.provider.contextTokens" = "上下文上限（Token）";
 "mac.provider.backToProviders" = "模型与服务商";
 "mac.provider.noProviders" = "还没有模型服务商";
+"mac.workspace.untitledTask" = "未命名任务";
 "mac.provider.add" = "添加服务商";
 "mac.run.activity" = "执行记录";
 "mac.run.tool.waiting" = "等待中";
