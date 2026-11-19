@@ -341,9 +341,15 @@ struct HostAgentWorkspaceView: View {
     }
 
     private func approvalCard(_ approval: HostAgentApproval) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(LocalizedStringKey(approval.path == nil ? "mac.agent.approvalRequired" : "mac.agent.createFileApproval"),
-                  systemImage: "hand.raised")
+        let title: LocalizedStringKey = if approval.previousText != nil {
+            "mac.agent.replaceTextApproval"
+        } else if approval.path != nil {
+            "mac.agent.createFileApproval"
+        } else {
+            "mac.agent.approvalRequired"
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: "hand.raised")
                 .font(.headline)
             Text(verbatim: approval.path ?? approval.toolName)
                 .font(.callout.monospaced())
@@ -357,7 +363,24 @@ struct HostAgentWorkspaceView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            if let text = approval.text, !text.isEmpty {
+            if let previousText = approval.previousText, let text = approval.text {
+                DisclosureGroup("mac.agent.reviewReplacement") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("mac.agent.originalText").font(.caption.weight(.semibold))
+                            Text(verbatim: previousText).font(.caption.monospaced()).textSelection(.enabled)
+                            Text("mac.agent.replacementText").font(.caption.weight(.semibold))
+                            if text.isEmpty {
+                                Text("mac.agent.removeText").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Text(verbatim: text).font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 135)
+                }
+            } else if let text = approval.text, !text.isEmpty {
                 DisclosureGroup("mac.agent.reviewFileContents") {
                     ScrollView {
                         Text(verbatim: text).font(.caption.monospaced())

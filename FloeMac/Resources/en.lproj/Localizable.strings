@@ -295,6 +295,11 @@
 "mac.agent.projectRequired" = "Choose a project folder when starting a task in Agent or Plan mode.";
 "mac.agent.approvalRequired" = "Review operation";
 "mac.agent.createFileApproval" = "Create this file?";
+"mac.agent.replaceTextApproval" = "Edit this file?";
+"mac.agent.reviewReplacement" = "Review the original and replacement text";
+"mac.agent.originalText" = "Original text";
+"mac.agent.replacementText" = "Replacement";
+"mac.agent.removeText" = "Remove this text";
 "mac.agent.reviewFileContents" = "Review file contents";
 "mac.agent.deny" = "Decline";
 "mac.agent.allowOnce" = "Allow Once";

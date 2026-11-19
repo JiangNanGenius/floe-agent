@@ -89,6 +89,7 @@ final class UnifiedMacSmoke {
         var deletedFixtureTask = false
         var workspaceAndAttachmentStaging = false
         var conversationHistoryVerified = false
+        var workspaceTextEditsVerified = false
         var catalog = false
         var agentApproval = (allowed: false, denied: false)
         var planning = (planSaved: false, goalSaved: false)
@@ -158,6 +159,7 @@ final class UnifiedMacSmoke {
                     pressedApprovalButton = pressedApprovalButton || pressed
                     return pressed
                 }
+                workspaceTextEditsVerified = await agent.verifyAgentTextEditSmoke(project: project, folder: folder)
                 planning = await agent.verifyPlanningSmoke(project: project)
             }
             if let normalChatID {
@@ -183,6 +185,7 @@ final class UnifiedMacSmoke {
             "composerDraftsReloaded": verifyDraftStorage(),
             "providerCatalogFetched": catalog,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
+            "workspaceTextEditsVerified": workspaceTextEditsVerified,
             "conversationHistoryVerified": conversationHistoryVerified,
             "agentApprovedFileCreated": agentApproval.allowed,
             "agentDeclinedFileAbsent": agentApproval.denied,

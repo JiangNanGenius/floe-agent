@@ -296,6 +296,11 @@
 "mac.agent.projectRequired" = "请先选择项目文件夹，再使用 Agent 或计划模式。";
 "mac.agent.approvalRequired" = "确认操作";
 "mac.agent.createFileApproval" = "创建这个文件？";
+"mac.agent.replaceTextApproval" = "修改这个文件？";
+"mac.agent.reviewReplacement" = "查看原文和替换文字";
+"mac.agent.originalText" = "原文";
+"mac.agent.replacementText" = "替换为";
+"mac.agent.removeText" = "移除这段文字";
 "mac.agent.reviewFileContents" = "查看文件内容";
 "mac.agent.deny" = "拒绝";
 "mac.agent.allowOnce" = "允许一次";

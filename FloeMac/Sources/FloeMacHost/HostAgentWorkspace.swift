@@ -127,6 +127,7 @@ struct HostAgentApproval: Equatable {
     let toolName: String
     let path: String?
     let text: String?
+    let previousText: String?
 }
 
 @MainActor
@@ -922,17 +923,26 @@ final class HostAgentWorkspace: ObservableObject {
             pendingApproval = nil
             return
         }
+        let preview: (path: String?, text: String?, previousText: String?)
         #if FLOE_UNIFIED_MAC
-        let write = call.toolName == MacAgentWorkspaceCreateFileTool.name
-            ? try? JSONDecoder().decode(MacAgentWorkspaceCreateFileTool.Arguments.self, from: call.argumentsJSON)
-            : nil
+        let decoder = JSONDecoder()
+        switch call.toolName {
+        case MacAgentWorkspaceCreateFileTool.name:
+            let args = try? decoder.decode(MacAgentWorkspaceCreateFileTool.Arguments.self, from: call.argumentsJSON)
+            preview = (args?.path, args?.content, nil)
+        case MacAgentWorkspaceReplaceTextTool.name:
+            let args = try? decoder.decode(MacAgentWorkspaceReplaceTextTool.Arguments.self, from: call.argumentsJSON)
+            preview = (args?.path, args?.newText, args?.oldText)
+        default:
+            preview = (nil, nil, nil)
+        }
         #else
-        struct WriteRequest { let path: String; let content: String }
-        let write: WriteRequest? = nil
+        preview = (nil, nil, nil)
         #endif
         let card = HostAgentApproval(conversationID: handle.identity.conversationID,
                                      runID: handle.identity.runID, workspaceID: handle.identity.workspaceID,
-                                     callID: call.id, toolName: call.toolName, path: write?.path, text: write?.content)
+                                     callID: call.id, toolName: call.toolName, path: preview.path,
+                                     text: preview.text, previousText: preview.previousText)
         if pendingApproval != card { pendingApproval = card }
     }
 
@@ -1412,6 +1422,78 @@ final class HostAgentWorkspace: ObservableObject {
         return (results.first == true, results.count == 2 && results[1])
     }
 
+    func verifyAgentTextEditSmoke(project: WorkspaceRecord, folder: URL) async -> Bool {
+        guard vault == nil, let runtime, !isSending else { return false }
+        await select(nil)
+        do {
+            for scenario in ["approved", "denied", "stale", "ambiguous"] {
+                let name = "edit-\(scenario).txt"
+                let url = folder.appendingPathComponent(name)
+                let prefix = Data([0xef, 0xbb, 0xbf])
+                let body = scenario == "ambiguous" ? "before\r\nbefore\r\n" : "before\r\nkeep\r\n"
+                let original = prefix + Data(body.utf8)
+                try original.write(to: url, options: .withoutOverwriting)
+                try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: url.path)
+                let priorCopies = try Self.smokePreviousVersions(in: folder)
+                guard let provider = smokeProvider(.replaceText(name, FloeDigest.sha256Hex(original))),
+                      beginSend("Edit \(name)", runtime: runtime, provider: provider,
+                                workspaceID: selectedID == nil ? project.id : nil, mode: .agent) else { return false }
+                let deadline = ContinuousClock.now + .seconds(6)
+                while pendingApproval == nil && isSending && ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+                guard let approval = pendingApproval, approval.path == name,
+                      approval.toolName == MacAgentWorkspaceTools.replaceTextToolName,
+                      approval.previousText == "before", approval.text == "after",
+                      try Data(contentsOf: url) == original else {
+                    stop()
+                    _ = await waitForSmokeRun()
+                    return false
+                }
+                let changedElsewhere = Data("external revision\n".utf8)
+                if scenario == "stale" { try changedElsewhere.write(to: url, options: .atomic) }
+                await resolveApproval(approval, allow: scenario != "denied")
+                let succeeded = await waitForSmokeRun()
+                guard !isSending, pendingApproval == nil else { return false }
+                let events = try await runtime.runEvents(runID: approval.runID)
+                let result = events.filter { $0.kind == .toolResult }.lazy
+                    .compactMap { try? JSONDecoder().decode([String: String].self, from: Data($0.payloadJSON.utf8)) }
+                    .first { $0["id"] == approval.callID }
+                let versions = try Self.smokePreviousVersions(in: folder).subtracting(priorCopies)
+                let actual = try Data(contentsOf: url)
+                switch scenario {
+                case "approved":
+                    guard succeeded, result?["status"] == "ok", actual == prefix + Data("after\r\nkeep\r\n".utf8),
+                          versions.count == 1, let backup = versions.first,
+                          try Data(contentsOf: backup) == original,
+                          (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?
+                            .intValue == 0o640 else { return false }
+                case "stale":
+                    guard actual == changedElsewhere, versions.isEmpty, result?["status"] == "failed",
+                          result?["summary"]?.contains("the file changed since it was inspected") == true
+                    else { return false }
+                case "ambiguous":
+                    guard actual == original, versions.isEmpty, result?["status"] == "failed",
+                          result?["summary"]?.contains("the specified text must occur exactly once") == true
+                    else { return false }
+                default:
+                    guard succeeded, result?["status"] == "denied", actual == original, versions.isEmpty else { return false }
+                }
+                smokeRunDiagnostics.append("workspace.replaceText \(scenario): verified")
+            }
+            return true
+        } catch {
+            smokeRunDiagnostics.append("workspace.replaceText fixture: \(error.localizedDescription)")
+            if isSending { stop(); _ = await waitForSmokeRun() }
+            return false
+        }
+    }
+
+    private static func smokePreviousVersions(in folder: URL) throws -> Set<URL> {
+        Set(try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".floe-previous-") })
+    }
+
     func verifyPlanningSmoke(project: WorkspaceRecord) async -> (planSaved: Bool, goalSaved: Bool) {
         guard vault == nil, let runtime, !isSending,
               let planner = smokeProvider(.submitPlan), let worker = smokeProvider(.workOnGoal) else {
@@ -1464,7 +1546,7 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private struct SmokeTaskAdapter: ProviderAdapter {
-        enum Action: Sendable { case createFile(String), submitPlan, executePlan, workOnGoal }
+        enum Action: Sendable { case createFile(String), replaceText(String, String), submitPlan, executePlan, workOnGoal }
         let action: Action
         let protocolKind: ModelProtocol = .openAIChatCompletions
 
@@ -1472,7 +1554,8 @@ final class HostAgentWorkspace: ObservableObject {
                     credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
             AsyncThrowingStream { stream in
                 do {
-                    if case .submitPlan = action, request.allToolNames.contains("workspace.createFile") {
+                    if case .submitPlan = action,
+                       !MacAgentWorkspaceTools.writeToolNames.isDisjoint(with: request.allToolNames) {
                         throw FloeError.validationFailed("Plan mode offered a workspace write")
                     }
                     let call = try firstCall()
@@ -1503,6 +1586,12 @@ final class HostAgentWorkspace: ObservableObject {
             case .createFile(let file):
                 let body = try JSONEncoder().encode(["path": file, "content": "Synthetic workspace output."])
                 return try ToolCall(id: "smoke-\(file)", toolName: "workspace.createFile", argumentsJSON: body, scope: .local)
+            case .replaceText(let file, let sha256):
+                let body = try JSONEncoder().encode([
+                    "path": file, "oldText": "before", "newText": "after", "expectedSHA256": sha256,
+                ])
+                return try ToolCall(id: "smoke-\(file)", toolName: MacAgentWorkspaceTools.replaceTextToolName,
+                                    argumentsJSON: body, scope: .local)
             case .submitPlan:
                 let plan = PlanSubmission(title: "Fixture plan", summary: "Inspect and verify the project output.",
                     sections: [.init(title: "Inspect output", body: "Read the project output and verify its text.")],

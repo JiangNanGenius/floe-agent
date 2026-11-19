@@ -11,7 +11,7 @@
 // Design constraints honored here:
 // - Explicit known-safe initial catalog only: three reads
 //   (workspace.listDirectory / workspace.readFile /
-//   workspace.inspectFileMetadata) and ONE write (workspace.createFile).
+//   workspace.inspectFileMetadata) and approved text creation/replacement.
 //   Tool and argument names intentionally match the existing public Floe
 //   workspace contract so host prompts, provider schemas and approval
 //   vocabulary stay aligned.
@@ -88,6 +88,9 @@ public enum MacAgentWorkspaceToolsError: Error, LocalizedError {
     case parentDirectoryMissing(String)
     /// Strict no-overwrite: the createFile target already exists.
     case targetAlreadyExists(String)
+    case revisionChanged
+    case exactTextMismatch
+    case replacementUnconfirmed(String)
     /// A directory was used where a regular file is required.
     case isDirectory(String)
     /// A required path does not exist.
@@ -119,6 +122,12 @@ public enum MacAgentWorkspaceToolsError: Error, LocalizedError {
             "the parent directory of '\(path)' does not exist; create it explicitly first"
         case .targetAlreadyExists(let path):
             "the file '\(path)' already exists; choose a new path"
+        case .revisionChanged:
+            "the file changed since it was inspected; inspect it again and ask for a new approval"
+        case .exactTextMismatch:
+            "the specified text must occur exactly once in this revision"
+        case .replacementUnconfirmed(let recoveryName):
+            "the edit could not be confirmed; inspect the file and the preserved previous entry '\(recoveryName)' before retrying"
         case .isDirectory(let path):
             "'\(path)' is a directory, not a regular file"
         case .notFound(let path):
@@ -141,6 +150,7 @@ public enum MacAgentWorkspaceTools {
     public static let readFileToolName = "workspace.readFile"
     public static let inspectFileMetadataToolName = "workspace.inspectFileMetadata"
     public static let createFileToolName = "workspace.createFile"
+    public static let replaceTextToolName = "workspace.replaceText"
 
     /// Read-only tools: allowed in both plan-style (`readOnly: true`) and
     /// agent/goal sessions. Plan sessions bind exactly this set.
@@ -149,8 +159,7 @@ public enum MacAgentWorkspaceTools {
         readFileToolName,
         inspectFileMetadataToolName,
     ]
-    /// The single known-safe write of this batch: exclusive new file only.
-    public static let writeToolNames: Set<String> = [createFileToolName]
+    public static let writeToolNames: Set<String> = [createFileToolName, replaceTextToolName]
 
     /// Stable labels for the host gate (provenance, not secrets).
     public static let approvalPolicySource = "floe.security.human-one-shot"
@@ -173,7 +182,7 @@ public enum MacAgentWorkspaceTools {
     ///     user-home root fails closed.
     ///   - readOnly: When true (plan-style investigation) the binding
     ///     advertises and permits only the read tools. When false
-    ///     (agent/goal) the exclusive-create write tool is added; every write
+    ///     (agent/goal) text writes are added; every write
     ///     still requires exactly one human approval through the session's
     ///     pending-approval card.
     /// - Returns: A binding ready for `FloeMacSelfRuntime.startSession`.
@@ -278,7 +287,7 @@ public enum MacAgentWorkspaceTools {
 /// never require a card.
 ///
 /// The runtime already auto-allows non-side-effecting descriptors before
-/// policy consultation, so in production only `workspace.createFile` reaches
+/// policy consultation, so in production only the two write tools reach
 /// the decision path and `HumanApprovalPolicy` escalates it to the session's
 /// pending-approval card. The read fast-path keeps the policy correct even
 /// if a future runtime consults it for a read: it returns a single-use allow
@@ -312,9 +321,7 @@ public struct MacAgentWorkspaceOneShotApprovalPolicy: ApprovalPolicy {
                 expiresAt: nil
             )
         }
-        // HumanApprovalPolicy deterministically escalates the catalog's write
-        // (no document-family carve-out applies to workspace.createFile), so
-        // the user decides this exact call exactly once.
+        // The user decides this exact workspace mutation once.
         return try await human.decide(action)
     }
 }
@@ -495,14 +502,15 @@ enum MacAgentWorkspacePinSupport {
     static func openVerifiedRegularFile(
         _ pin: Pin,
         physicalRoot: String,
-        displayPath: String
+        displayPath: String,
+        writable: Bool = false
     ) throws -> Int32 {
         guard !pin.name.isEmpty else {
             throw MacAgentWorkspaceToolsError.isDirectory(displayPath)
         }
         let descriptor = openat(
             pin.parentFileDescriptor, pin.name,
-            O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+            (writable ? O_RDWR : O_RDONLY) | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
         )
         guard descriptor >= 0 else {
             throw MacAgentWorkspaceToolsError.notFound(displayPath)
@@ -1250,9 +1258,191 @@ public struct MacAgentWorkspaceCreateFileTool: AgentTool, MacAgentWorkspaceExecu
     }
 }
 
+// MARK: workspace.replaceText
+
+/// Replace one exact UTF-8 range in the revision the user approved. The
+/// atomic exchange keeps the original inode at a unique sibling name, so
+/// edits through an already-open descriptor remain recoverable.
+public struct MacAgentWorkspaceReplaceTextTool: AgentTool, MacAgentWorkspaceExecutable {
+    public struct Arguments: Decodable, Sendable {
+        public let path: String
+        public let oldText: String
+        public let newText: String
+        public let expectedSHA256: String
+        public let expectedOccurrences: Int?
+        public let scope: String?
+    }
+
+    public static let name = MacAgentWorkspaceTools.replaceTextToolName
+    public static let toolDescription =
+        "Replace one exact UTF-8 text occurrence in an existing workspace file, with approval. Read and inspect the file first; pass its complete pre-edit SHA256. The original is preserved beside the updated file. Inspect again if the revision changed."
+    public static let parametersJSON = #"""
+    {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Workspace-relative path to an existing text file"},
+        "oldText": {"type": "string", "minLength": 1, "description": "Exact existing text with enough context to match once"},
+        "newText": {"type": "string", "description": "Exact replacement text"},
+        "expectedSHA256": {"type": "string", "description": "Complete SHA256 from workspace.inspectFileMetadata"},
+        "expectedOccurrences": {"type": "integer", "enum": [1], "description": "Optional; this tool replaces one occurrence"}
+      },
+      "required": ["path", "oldText", "newText", "expectedSHA256"],
+      "additionalProperties": false
+    }
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles]
+    public static let isSideEffecting = true
+
+    static let descriptor = ToolCatalog.Descriptor(
+        name: name, toolDescription: toolDescription, parametersJSON: parametersJSON,
+        riskLabels: riskLabels, isSideEffecting: isSideEffecting, requiresHostScope: false
+    )
+
+    private let root: MacAgentWorkspaceRoot
+
+    public init(rootURL: URL) { root = MacAgentWorkspaceRoot(rootURL) }
+
+    public func validate(_ args: Arguments) throws {
+        let digest = args.expectedSHA256.lowercased().utf8
+        guard !args.path.isEmpty, !args.oldText.isEmpty, (args.expectedOccurrences ?? 1) == 1,
+              digest.count == 64, digest.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw MacAgentWorkspaceToolsError.invalidArguments("path, exact old text and a complete SHA256 are required")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        try validate(args)
+        try macWorkspacePreflight(path: args.path, context: context, scopeArgument: args.scope)
+        let (physicalRoot, relative) = try macWorkspacePinSetup(root: root, path: args.path)
+        let limit = MacAgentWorkspaceTools.maxWriteBytes
+        let oldText = Data(args.oldText.utf8), newText = Data(args.newText.utf8)
+        guard oldText.count <= limit, newText.count <= limit else {
+            throw MacAgentWorkspaceToolsError.tooLarge(limit: limit)
+        }
+        guard !newText.contains(0) else { throw MacAgentWorkspaceToolsError.notTextFile(args.path) }
+
+        let receipt = try MacAgentWorkspacePinSupport.withPinnedTarget(
+            physicalRoot: physicalRoot, relative: relative, root: root
+        ) { pin in
+            let originalFD = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(
+                pin, physicalRoot: physicalRoot, displayPath: args.path, writable: true)
+            defer { Darwin.close(originalFD) }
+            guard flock(originalFD, LOCK_EX | LOCK_NB) == 0 else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            var originalIdentity = stat()
+            guard fstat(originalFD, &originalIdentity) == 0 else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            guard originalIdentity.st_mode & (S_ISUID | S_ISGID) == 0 else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("files with setuid or setgid permissions cannot be edited")
+            }
+            let original = try Self.readFile(originalFD, limit: limit)
+            guard FloeDigest.sha256Hex(original) == args.expectedSHA256.lowercased() else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            guard !original.contains(0), String(data: original, encoding: .utf8) != nil else {
+                throw MacAgentWorkspaceToolsError.notTextFile(args.path)
+            }
+            guard let match = original.range(of: oldText),
+                  original[(match.lowerBound + 1)...].range(of: oldText) == nil else {
+                throw MacAgentWorkspaceToolsError.exactTextMismatch
+            }
+            var updated = original
+            updated.replaceSubrange(match, with: newText)
+            guard updated.count <= limit else { throw MacAgentWorkspaceToolsError.tooLarge(limit: limit) }
+            if updated == original { return (FloeDigest.sha256Hex(original), nil as String?) }
+
+            let parent = pin.parentFileDescriptor
+            let previous = ".floe-previous-\(UUID().uuidString)"
+            let staged = openat(parent, previous, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard staged >= 0 else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("the workspace directory is not writable")
+            }
+            var stagedIdentity = stat()
+            guard fstat(staged, &stagedIdentity) == 0 else {
+                Darwin.close(staged)
+                throw MacAgentWorkspaceToolsError.replacementUnconfirmed(previous)
+            }
+            defer {
+                // Unlink only the inode we staged. After the exchange this
+                // name holds the original or a concurrent writer's entry.
+                if Self.matches(stagedIdentity, named: previous, in: parent) {
+                    unlinkat(parent, previous, 0)
+                }
+                Darwin.close(staged)
+            }
+            guard fcopyfile(originalFD, staged, nil, copyfile_flags_t(COPYFILE_METADATA)) == 0 else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("the file metadata could not be preserved")
+            }
+            let file = FileHandle(fileDescriptor: staged, closeOnDealloc: false)
+            try file.write(contentsOf: updated)
+            try file.synchronize()
+            guard try Self.readFile(staged, limit: limit) == updated else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("the staged replacement could not be verified")
+            }
+            try context.cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            var heldParent = stat(), currentParent = stat()
+            guard fstat(parent, &heldParent) == 0, stat(pin.parentPhysicalPath, &currentParent) == 0,
+                  heldParent.st_dev == currentParent.st_dev, heldParent.st_ino == currentParent.st_ino,
+                  Self.matches(originalIdentity, named: pin.name, in: parent),
+                  Self.matches(stagedIdentity, named: previous, in: parent),
+                  try Self.readFile(originalFD, limit: limit) == original else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            guard renameatx_np(parent, previous, parent, pin.name, UInt32(RENAME_SWAP)) == 0 else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("the filesystem could not exchange the file and its staged revision")
+            }
+            var displaced = stat()
+            let foundDisplaced = fstatat(parent, previous, &displaced, AT_SYMLINK_NOFOLLOW) == 0
+            guard Self.matches(stagedIdentity, named: pin.name, in: parent),
+                  Self.matches(originalIdentity, named: previous, in: parent),
+                  (try? Self.readFile(originalFD, limit: limit)) == original else {
+                // Restore the displaced entry only while our staged inode
+                // still owns the target. A later writer's entry is kept.
+                if foundDisplaced,
+                   Self.matches(stagedIdentity, named: pin.name, in: parent),
+                   Self.matches(displaced, named: previous, in: parent),
+                   renameatx_np(parent, previous, parent, pin.name, UInt32(RENAME_SWAP)) == 0 {
+                    throw MacAgentWorkspaceToolsError.revisionChanged
+                }
+                throw MacAgentWorkspaceToolsError.replacementUnconfirmed(previous)
+            }
+            guard fsync(parent) == 0, (try? Self.readFile(staged, limit: limit)) == updated,
+                  Self.matches(stagedIdentity, named: pin.name, in: parent),
+                  Self.matches(originalIdentity, named: previous, in: parent) else {
+                throw MacAgentWorkspaceToolsError.replacementUnconfirmed(previous)
+            }
+            let parentPath = relative.split(separator: "/").dropLast().joined(separator: "/")
+            return (FloeDigest.sha256Hex(updated), parentPath.isEmpty ? previous : parentPath + "/" + previous)
+        }
+        let previous = receipt.1.map { " previous=\($0)" } ?? ""
+        return ToolExecutionOutput(digesting: "edited=\(relative) sha256=\(receipt.0)\(previous)",
+                                   maximumSummaryCharacters: 4096)
+    }
+
+    private static func readFile(_ descriptor: Int32, limit: Int) throws -> Data {
+        let reader = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        try reader.seek(toOffset: 0)
+        let data = try reader.read(upToCount: limit + 1) ?? Data()
+        guard data.count <= limit else { throw MacAgentWorkspaceToolsError.tooLarge(limit: limit) }
+        return data
+    }
+
+    private static func matches(_ expected: stat, named path: String, in parent: Int32) -> Bool {
+        var actual = stat()
+        return fstatat(parent, path, &actual, AT_SYMLINK_NOFOLLOW) == 0
+            && actual.st_dev == expected.st_dev && actual.st_ino == expected.st_ino
+            && actual.st_nlink == 1 && (actual.st_mode & S_IFMT) == S_IFREG
+    }
+}
+
 // MARK: - Executor
 
-/// The focused native project-file executor. It owns exactly the four
+/// The focused native project-file executor. It owns the listed
 /// catalog tools, each scoped to one verified workspace root; `readOnly`
 /// builds simply omit the write tool so a plan-style session has no write
 /// runner at all. Nothing else in the process registry is reachable through
@@ -1275,6 +1465,7 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
         ]
         if !readOnly {
             table[MacAgentWorkspaceTools.createFileToolName] = MacAgentWorkspaceCreateFileTool(rootURL: root)
+            table[MacAgentWorkspaceTools.replaceTextToolName] = MacAgentWorkspaceReplaceTextTool(rootURL: root)
         }
         self.tools = table
     }
