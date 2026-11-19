@@ -422,6 +422,21 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
         return selection
     }
 
+    public func matches(_ context: GameProjectContext) -> Bool {
+        projectID == context.projectID && owner == context.owner && rootURL == context.rootURL
+            && environmentID == context.environmentID && baseRevision == context.savedRevision
+    }
+
+    func confirming(root: GameRelativePath?, engine: GameEngineID) -> Self {
+        .init(schemaVersion: schemaVersion, projectID: projectID, owner: owner,
+              environmentID: environmentID, rootURL: rootURL, baseRevision: baseRevision,
+              recordedEngine: recordedEngine, fileCount: fileCount, directoryCount: directoryCount,
+              isEmptyProject: isEmptyProject, choices: choices, state: .confirmed,
+              selectedRoot: root, selectedEngine: engine, selectionSource: .explicit,
+              selectionVerification: .evidenceMatched, ambiguities: [], aiRecommendation: aiRecommendation,
+              heuristicRecommendation: heuristicRecommendation, diagnostics: diagnostics, persisted: false)
+    }
+
     func withPersistence(_ value: Bool) -> Self {
         .init(schemaVersion: schemaVersion, projectID: projectID, owner: owner,
               environmentID: environmentID, rootURL: rootURL, baseRevision: baseRevision,

@@ -153,7 +153,12 @@ struct GameProjectSpaceScreen: View {
                         ScrollView {
                             VStack(spacing: 0) {
                                 if let error { noticeBar(error, failed: true) }
+                                if pending == .simpleEdit {
+                                    ProgressView(IDELanguageRunText.t("正在保存引擎选择…", "Saving engine selection…"))
+                                        .padding(.vertical, 8)
+                                }
                                 setupPanel(session)
+                                    .disabled(pending != nil)
                             }
                         }
                             .navigationTitle(IDELanguageRunText.t("游戏引擎", "Game engine"))
@@ -279,6 +284,7 @@ struct GameProjectSpaceScreen: View {
                 proposal: session.project.pendingSelectionProposal,
                 proposalIsStale: session.project.isPendingSelectionProposalStale,
                 onRecognized: { root, engine in
+                    guard pending == nil else { return }
                     error = nil
                     await select(session, root: root, engine: engine)
                     if error == nil { showingProjectSetup = false }
@@ -464,6 +470,7 @@ struct GameProjectSpaceScreen: View {
 
     private func status(_ session: GameWorkspaceSession) -> String? {
         if pending == .importProject { return nil }
+        if pending == .play { return IDELanguageRunText.t("正在准备试玩…", "Preparing to play…") }
         if pending != nil { return IDELanguageRunText.t("正在处理…", "Working…") }
         if let snapshot = session.project.selectionSnapshot {
             if snapshot.state == .empty {
@@ -602,7 +609,7 @@ struct GameProjectSpaceScreen: View {
         do {
             // Normal workspace/Git edits may have changed the game since this
             // overview last rendered; validate against the current tree.
-            try await session.project.refresh()
+            try await session.project.refreshSelectionForPlay()
         } catch {
             self.error = error.localizedDescription
             return

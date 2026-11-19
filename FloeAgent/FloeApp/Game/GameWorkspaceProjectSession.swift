@@ -129,6 +129,7 @@ final class GameWorkspaceProjectSession {
         switch result {
         case .success(let snapshot):
             selectionSnapshot = snapshot
+            recognitionIssue = nil
         case .failure(let error):
             selectionSnapshot = nil
             pendingSelectionProposal = nil
@@ -278,8 +279,17 @@ final class GameWorkspaceProjectSession {
         selectionSnapshot = result.snapshot
     }
 
+    func refreshSelectionForPlay() async throws {
+        try await prepareForSelection()
+        let current = try context
+        if let selectionSnapshot, selectionSnapshot.matches(current), selectionSnapshot.runSelection != nil {
+            return
+        }
+        try await refresh(reloadFiles: false)
+    }
+
     func makeRunExtension() async throws -> IDEProjectRunExtension {
-        try await prepareForHandoff()
+        try await refreshSelectionForPlay()
         guard let selectionSnapshot else { throw GameProjectFlowError.selectionRequired }
         let selected = try selectionSnapshot.requireRunSelection()
         guard let ideHost else { throw GameIDEBridgeError.workspaceChanged }

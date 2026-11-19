@@ -23,6 +23,9 @@ public actor GameProjectSelectionCoordinator {
     /// never overwrites a newer explicit choice for the same project.
     private var writeGenerations: [GameProjectSelectionKey: UInt64] = [:]
 
+    // Discovery is reusable only for this exact live tree and saved revision.
+    private var lastDiscovery: GameProjectSelectionSnapshot?
+
     public init(scaffolder: GameStarterScaffolder,
                 contexts: any GameAuthoringContextHost & GameRunContextHost,
                 store: any GameProjectSelectionStore,
@@ -90,9 +93,11 @@ public actor GameProjectSelectionCoordinator {
             snapshot: snapshot, shouldPersist: resolution.shouldPersist,
             shouldRemove: resolution.shouldRemove)
         try Task.checkCancellation()
-        return try await applyPersistence(adjusted, context: context, key: key,
+        let result = try await applyPersistence(adjusted, context: context, key: key,
                                           observedGeneration: observedGeneration,
                                           mandatory: false)
+        if (writeGenerations[key] ?? 0) == observedGeneration { lastDiscovery = result }
+        return result
     }
 
     /// Explicit user choice. The exact root must exist in fresh discovery and
@@ -105,16 +110,27 @@ public actor GameProjectSelectionCoordinator {
         let key = try selectionKey(context)
         let token = beginWrite(key)
         let project = try await openProject(id: context.projectID, owner: context.owner)
-        let resolution = try await resolver().resolve(
-            project: project, context: context, loadedRecord: nil,
-            intent: GameProjectSelectionIntent(root: root, engine: engine))
+        try GameProjectSelectionValidation.project(project, context: context)
+        let snapshot: GameProjectSelectionSnapshot
+        if let discovery = lastDiscovery, discovery.matches(context),
+           discovery.engines(forRoot: root).contains(where: { $0.engine == engine }) {
+            // repository.open above checked the live file inventory. The marker
+            // evidence already displayed belongs to that exact revision.
+            try await GameProjectSelectionValidation.currentContext(context, contexts: contexts)
+            snapshot = discovery.confirming(root: root, engine: engine)
+        } else {
+            let resolution = try await resolver().resolve(
+                project: project, context: context, loadedRecord: nil,
+                intent: GameProjectSelectionIntent(root: root, engine: engine))
+            guard resolution.shouldPersist else { throw GameProjectFlowError.selectionRequired }
+            snapshot = resolution.snapshot
+        }
         try requireWrite(key, token)
         try Task.checkCancellation()
-        guard resolution.shouldPersist else { throw GameProjectFlowError.selectionRequired }
         let record: GameProjectSelectionRecord
         do {
             record = try GameProjectSelectionRecord(context: context,
-                                                    snapshot: resolution.snapshot)
+                                                    snapshot: snapshot)
         } catch {
             throw GameProjectFlowError.selectionRequired
         }
@@ -126,7 +142,8 @@ public actor GameProjectSelectionCoordinator {
             throw GameProjectFlowError.persistenceFailed(
                 GameProjectSelectionText.bounded(error))
         }
-        return resolution.snapshot.withPersistence(true)
+        try requireWrite(key, token)
+        return snapshot.withPersistence(true)
     }
 
     /// Explicit manual choice for an imported tree whose engine is not

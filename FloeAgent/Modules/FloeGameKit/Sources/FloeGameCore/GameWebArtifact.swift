@@ -10,6 +10,17 @@ public struct GameWebArtifactPackage: Sendable {
     public let files: [GameProjectFile]
     public let maximumFileBytes: Int
 
+    private let filesByPath: [GameRelativePath: GameProjectFile]
+
+    private init(directory: URL, prepared: GamePreparedArtifact, files: [GameProjectFile],
+                 maximumFileBytes: Int) {
+        self.directory = directory
+        self.prepared = prepared
+        self.files = files
+        self.maximumFileBytes = maximumFileBytes
+        self.filesByPath = Dictionary(uniqueKeysWithValues: files.map { ($0.path, $0) })
+    }
+
     private struct ContentManifest: Encodable { let engine: GameEngineID; let files: [GameProjectFile] }
 
     public static func build(source: GameProjectContext, engine: GameEngineID, entry: GameRelativePath,
@@ -31,6 +42,7 @@ public struct GameWebArtifactPackage: Sendable {
         let stage = parent.appendingPathComponent(".game-artifact-" + UUID().uuidString)
         try GameFileStorage.directory(stage)
         defer { try? FileManager.default.removeItem(at: stage) }
+        let staged = try GameProjectReader(rootURL: stage, maximumFileBytes: bounds.maximumFileBytes)
         var files: [GameProjectFile] = [], total = 0
         for item in entries {
             try Task.checkCancellation()
@@ -62,7 +74,6 @@ public struct GameWebArtifactPackage: Sendable {
             total += bytes.bytes
             let record = try GameProjectFile(path: item.path, sha256: bytes.sha256, bytes: bytes.bytes, executable: reader.isExecutable(item.path))
             if record.executable { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: output.path) }
-            let staged = try GameProjectReader(rootURL: stage, maximumFileBytes: bounds.maximumFileBytes)
             guard let saved = try staged.fingerprint(item.path), saved.bytes == record.bytes, saved.sha256 == record.sha256 else { throw GameProjectError.corruptStorage }
             files.append(record)
         }
@@ -86,7 +97,7 @@ public struct GameWebArtifactPackage: Sendable {
     }
 
     public func readResource(_ path: GameRelativePath) throws -> Data {
-        guard let record = files.first(where: { $0.path == path }) else { throw GameProjectError.unreadableFile(path.value) }
+        guard let record = filesByPath[path] else { throw GameProjectError.unreadableFile(path.value) }
         let inMemoryLimit = min(maximumFileBytes, 64 * 1_024 * 1_024)
         guard record.bytes <= inMemoryLimit else { throw GameProjectError.limitExceeded(path.value) }
         let reader = try GameProjectReader(rootURL: directory, maximumFileBytes: inMemoryLimit)

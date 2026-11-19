@@ -49,6 +49,26 @@ extension GameProjectInspector {
             "package.json", "project.json", "game.json", "floe-game.json",
             "story.twine.json", "package-lock.json", "npm-shrinkwrap.json"
         ]
+        // MV/MZ maps can number in the hundreds. These files are engine data,
+        // not arbitrary-named project manifests. Scope the exemption to a tree
+        // with the engine's own core script and database, preserving discovery
+        // of independent Ink/GDevelop projects elsewhere in the import.
+        let names = Set(paths.map(\.value))
+        var rpgDataFolders = Set<String>()
+        for path in paths {
+            try Task.checkCancellation()
+            let name = path.value
+            guard name == "data/System.json" || name.hasSuffix("/data/System.json") else { continue }
+            let prefix = String(name.dropLast("data/System.json".count))
+            if names.contains(prefix + "js/rpg_core.js") || names.contains(prefix + "js/rmmz_core.js") {
+                rpgDataFolders.insert(prefix + "data")
+            }
+        }
+        let databaseNames: Set<String> = [
+            "actors.json", "animations.json", "armors.json", "classes.json", "commonevents.json",
+            "enemies.json", "items.json", "mapinfos.json", "skills.json", "states.json",
+            "system.json", "tilesets.json", "troops.json", "weapons.json"
+        ]
         let tokens = ["\"gdVersion\"", "\"firstLayout\"", "\"inkVersion\""]
         var roots = Set<GameRelativePath>()
         var probes = 0
@@ -69,6 +89,12 @@ extension GameProjectInspector {
             let name = (components.last ?? "").lowercased()
             guard (name as NSString).pathExtension == "json",
                   !skippedNames.contains(name) else { continue }
+            if rpgDataFolders.contains(components.dropLast().joined(separator: "/")) {
+                let stem = name.dropLast(".json".count)
+                let isMap = stem.hasPrefix("map") && stem.count > 3
+                    && stem.dropFirst(3).utf8.allSatisfy { (48...57).contains($0) }
+                if isMap || databaseNames.contains(name) { continue }
+            }
             guard probes < limits.maximumProjectProbes else {
                 throw GameProjectError.limitExceeded("projectProbes")
             }
