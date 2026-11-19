@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.9.0</title>
+      <pubDate>Thu, 19 Nov 2026 07:55:00 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.9.0</link>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;iCloud 模型配置同步和文本附件。&lt;/p&gt;&lt;p&gt;iCloud model configuration and text attachments.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.9.0/Floe-Agent-1.9.0.dmg" length="29459438" type="application/octet-stream" sparkle:edSignature="bDhqtoayQzk7+D9x9FLYvgDerbf0QQcHfH6I7Kk1PVcRLGFT+0OesKhQs2FmhPqzcYQbx0AM/HdR2Uhqn1suDQ==" />
+    </item>
+    <item>
       <title>Floe Agent 1.8.0</title>
       <pubDate>Thu, 19 Nov 2026 06:59:32 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.8.0</link>
