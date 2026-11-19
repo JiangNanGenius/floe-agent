@@ -7,7 +7,7 @@ public final class ExecutionBreadcrumbs: @unchecked Sendable {
         for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("ExecutionBreadcrumbs", isDirectory: true))
 
-    public enum Operation: String, Codable, Sendable { case shell, serviceStart, serviceStop }
+    public enum Operation: String, Codable, Sendable { case shell, serviceStart, serviceStop, gameSelection, gameEnvironment, gameLaunch }
     public enum Phase: String, Codable, Sendable {
         case began, negotiated, sending, awaitingReply, interruptRequested, completed, failed
     }

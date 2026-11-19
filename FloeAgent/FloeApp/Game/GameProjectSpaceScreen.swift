@@ -27,6 +27,7 @@ struct GameProjectSpaceScreen: View {
     @State private var notice: String?
     @State private var loading = true
     @State private var pending: GameProjectOverviewAction?
+    @State private var playProgress = ""
     @State private var showingAssistant = false
     @State private var engineQuestion: ThreadComposerInput?
     @State private var showingQuickEdit = false
@@ -487,7 +488,7 @@ struct GameProjectSpaceScreen: View {
 
     private func status(_ session: GameWorkspaceSession) -> String? {
         if pending == .importProject { return nil }
-        if pending == .play { return IDELanguageRunText.t("正在准备试玩…", "Preparing to play…") }
+        if pending == .play { return playProgress }
         if pending != nil { return IDELanguageRunText.t("正在处理…", "Working…") }
         if let snapshot = session.project.selectionSnapshot {
             if snapshot.state == .ambiguous {
@@ -616,14 +617,21 @@ struct GameProjectSpaceScreen: View {
 
     private func play(_ session: GameWorkspaceSession) async {
         guard pending == nil else { return }
+        let attempt = UUID()
+        let trace = ExecutionBreadcrumbs.shared
+        error = nil
+        playProgress = IDELanguageRunText.t("正在检查游戏目录…", "Checking the game folder…")
         pending = .play
         defer { pending = nil }
         do {
             // Normal workspace/Git edits may have changed the game since this
             // overview last rendered; validate against the current tree.
+            trace.record(.gameSelection, .began, id: attempt)
             try await session.project.refreshSelectionForPlay()
+            trace.record(.gameSelection, .completed, id: attempt)
         } catch {
-            self.error = error.localizedDescription
+            trace.record(.gameSelection, .failed, id: attempt, code: Int32(clamping: (error as NSError).code))
+            self.error = playErrorMessage(error)
             return
         }
         guard session.project.selectionSnapshot?.runSelection != nil else {
@@ -640,16 +648,34 @@ struct GameProjectSpaceScreen: View {
             }
             return
         }
+        var stage = ExecutionBreadcrumbs.Operation.gameEnvironment
+        playProgress = IDELanguageRunText.t("正在准备试玩环境…", "Preparing the play environment…")
         do {
+            trace.record(stage, .began, id: attempt)
             _ = try await environment.gameWorkspaces.ensurePlayableSession(for: session)
+            trace.record(stage, .completed, id: attempt)
+            stage = .gameLaunch
+            playProgress = IDELanguageRunText.t("正在加载游戏文件…", "Loading game files…")
+            trace.record(stage, .began, id: attempt)
             let play = environment.gameWorkspaces.playCoordinator(for: session)
             _ = try await play.start()
             guard play.isRunning else { throw GameWorkspaceRegistryError.noSavedRun }
+            trace.record(stage, .completed, id: attempt)
             showingPlay = true
         } catch {
-            self.error = error.localizedDescription
+            trace.record(stage, .failed, id: attempt, code: Int32(clamping: (error as NSError).code))
+            self.error = playErrorMessage(error)
         }
     }
+    private func playErrorMessage(_ error: Error) -> String {
+        if let projectError = error as? GameProjectError, projectError == .corruptStorage {
+            return IDELanguageRunText.t(
+                "校验游戏文件时发现内容不一致。请在工程文件中检查最近的修改，再重新试玩。",
+                "Some game files did not match the saved project. Check recent changes in Project Files and try Play again.")
+        }
+        return error.localizedDescription
+    }
+
     @State private var showingPlay = false
     // Play is a full-screen presentation over the same owned session.
     // Declared here so the overview owns no second player.
