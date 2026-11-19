@@ -679,8 +679,11 @@ final class ThreadDetailViewModel: ObservableObject {
         var stage = "conversationRead"
         var preferredModeWarning: String?
         do {
-            guard let conversation = try await center.conversationStore(for: conversationID)
-                .conversation(id: conversationID) else {
+            let loadedConversation = try await center.conversationStore(for: conversationID)
+                .conversation(id: conversationID)
+            try Task.checkCancellation()
+            guard generation == loadGeneration else { return }
+            guard let conversation = loadedConversation else {
                 isConversationMissing = true
                 runs = []
                 messages = []
@@ -691,8 +694,6 @@ final class ThreadDetailViewModel: ObservableObject {
                 stopLiveUpdates()
                 return
             }
-            try Task.checkCancellation()
-            guard generation == loadGeneration else { return }
             isConversationMissing = false
             taskTitle = conversation.title
             if !isTemporary {
@@ -712,7 +713,10 @@ final class ThreadDetailViewModel: ObservableObject {
             preferredModeWarning = await restorePreferredExecutionMode(generation: generation)
             guard generation == loadGeneration else { return }
             stage = "runList"
-            runs = try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30)
+            let loadedRuns = try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30)
+            try Task.checkCancellation()
+            guard generation == loadGeneration else { return }
+            runs = loadedRuns
             if let latest = runs.first {
                 center.environment.browserCenter.recordOwnerRun(conversationID: conversationID, runID: latest.id)
             }
@@ -1212,8 +1216,6 @@ final class ThreadDetailViewModel: ObservableObject {
     private var cachedTimeline: [ThreadTimelineItem] = []
     private var cachedDecisionAnnotations: [ToolDecisionAnnotation] = []
     private(set) var timelineBuildCount = 0
-    private var cachedTimelineIDs: [String] = []
-    var timelineIDs: [String] { _ = timeline; return cachedTimelineIDs }
     private var loadGeneration: UInt64 = 0
 
     /// The unified, sequence-ordered timeline for the selected run.
@@ -1253,7 +1255,6 @@ final class ThreadDetailViewModel: ObservableObject {
             suppressedDecisionNoticeIDs: ProposalDecisionPresentation.standaloneSuppressionIDs(in: notices)
         )
         cachedTimelineKey = key
-        cachedTimelineIDs = cachedTimeline.map(\.id)
         timelineBuildCount += 1
         return cachedTimeline
     }

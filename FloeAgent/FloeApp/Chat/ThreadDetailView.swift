@@ -28,7 +28,6 @@ private struct ThreadNavigationTitle: ViewModifier {
 
 private struct ThreadScrollMetrics: Equatable {
     let offset: Double
-    let height: Double
     let bottomDistance: Double
 }
 
@@ -792,7 +791,6 @@ struct ThreadDetailView: View {
                     ForEach(viewModel.timeline) { item in
                         datedTimelineRow(item)
                             .id(item.id)
-                            .transition(viewModel.isRunning ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                     }
 
                     #if canImport(AlarmKit)
@@ -842,34 +840,28 @@ struct ThreadDetailView: View {
                             .id("thread-latest-anchor")
                     }
                     .padding()
-                    .animation(viewModel.isRunning && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: viewModel.timelineIDs)
                 }
                 .accessibilityIdentifier("thread.messages.viewport")
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
+                // Keep the bottom pinned in the layout pass. Repeated scrollTo
+                // calls during lazy-row measurement can target an estimated
+                // content height before the new rows have been laid out.
+                .defaultScrollAnchor(latestFollow.followsLatest && !isUserScrolling && !search.isActive ? .bottom : nil,
+                                     for: .sizeChanges)
                 .onScrollPhaseChange { old, phase in
                     if phase == .interacting, old != .interacting {
                         earlierActivityScrollDemand &+= 1
                     }
                     isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-                    if phase == .idle, latestFollow.followsLatest, !search.isActive {
-                        proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-                    }
                 }
                 .onScrollGeometryChange(for: ThreadScrollMetrics.self) { geometry in
                     ThreadScrollMetrics(offset: geometry.contentOffset.y,
-                        height: geometry.contentSize.height,
                         bottomDistance: geometry.contentSize.height + geometry.contentInsets.bottom
                             - geometry.contentOffset.y - geometry.containerSize.height)
-                } action: { old, new in
+                } action: { _, new in
                     latestFollow.observe(offset: new.offset, bottomDistance: new.bottomDistance,
                                          userScrolling: isUserScrolling)
                     showsReturnToLatest = latestFollow.isAwayFromLatest && !latestFollow.followsLatest
-                    // Observe layout too: an image or tool card can grow without
-                    // adding an event or increasing the streamed text length.
-                    if old.height != new.height, latestFollow.followsLatest, !isUserScrolling,
-                       !search.isActive {
-                        proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-                    }
                 }
                 .background(GeometryReader { geometry in
                     Color.clear
@@ -924,15 +916,7 @@ struct ThreadDetailView: View {
                     showsReturnToLatest = true
                 }
             }
-            .onChange(of: [viewModel.liveStreamedText.utf8.count, viewModel.liveReasoningText.utf8.count,
-                           viewModel.events.count, viewModel.messages.count,
-                           viewModel.isRunning ? 1 : 0]) { _, _ in
-                // Follow only when the user has not intentionally scrolled
-                // away to inspect earlier reasoning or tool output.
-                guard viewModel.hasLoaded, latestFollow.followsLatest, !isUserScrolling,
-                      !search.isActive else { return }
-                proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-            }
+
         }
     }
 

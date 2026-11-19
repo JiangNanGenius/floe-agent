@@ -416,6 +416,10 @@ enum ThreadTimelineBuilder {
                 unboundAssistantMessages.append(message)
             }
         }
+        // Older stores have messages with no runID. Once a run claims
+        // one, neither another run nor the task-level tail may render it again.
+        let legacyIDs = Set((unboundUserMessages + unboundAssistantMessages).map(\.id))
+        var claimedLegacyIDs = Set<UUID>()
         var result: [ThreadTimelineItem] = []
         for run in sortedRuns {
             let isLive = run.id == liveRunID && isRunning
@@ -424,8 +428,8 @@ enum ThreadTimelineBuilder {
             }
             let runItems = build(
                 messagesForRun: boundByRun[run.id, default: []],
-                unboundUserMessages: unboundUserMessages,
-                unboundAssistantMessages: unboundAssistantMessages,
+                unboundUserMessages: claimedLegacyIDs.isEmpty ? unboundUserMessages : unboundUserMessages.filter { !claimedLegacyIDs.contains($0.id) },
+                unboundAssistantMessages: claimedLegacyIDs.isEmpty ? unboundAssistantMessages : unboundAssistantMessages.filter { !claimedLegacyIDs.contains($0.id) },
                 events: eventsByRun[run.id, default: []],
                 run: run,
                 isRunning: isLive,
@@ -437,6 +441,17 @@ enum ThreadTimelineBuilder {
                 pendingApprovals: pendingApprovals.filter { $0.runID == run.id },
                 payloadCache: payloadCache
             )
+            if !legacyIDs.isEmpty {
+                for item in runItems {
+                    switch item {
+                    case .userMessage(let message) where legacyIDs.contains(message.id):
+                        claimedLegacyIDs.insert(message.id)
+                    case .assistantMessage(_, let suffix, _):
+                        if let id = UUID(uuidString: suffix), legacyIDs.contains(id) { claimedLegacyIDs.insert(id) }
+                    default: break
+                    }
+                }
+            }
             result += runItems.map { item in
                 if run.id != liveRunID, case .stepGroup(let events, _) = item {
                     return .stepGroup(events: events, isLatest: false)
@@ -447,6 +462,7 @@ enum ThreadTimelineBuilder {
         let represented = Set(sortedRuns.map(\.id))
         let taskLevel = messages.filter {
             $0.role != "goalContinuation"
+                && !claimedLegacyIDs.contains($0.id)
                 && $0.runID.map(represented.contains) != true
                 && !ConversationHistoryAssembler.isLegacyWorkspaceContextNotice($0)
         }

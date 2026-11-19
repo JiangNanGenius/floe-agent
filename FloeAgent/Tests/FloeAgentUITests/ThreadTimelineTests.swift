@@ -22,6 +22,25 @@ import FloeExecution
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @Test("Legacy messages claimed by a run render just once during a burst")
+    func legacyBurstHasUniqueRowIDs() {
+        let conversation = UUID()
+        let runs = (0..<20).map { _ in makeRun(state: "completed", conversationID: conversation) }
+        let messages = runs.flatMap { _ in
+            [makeMessage(role: "user", content: "goal", conversationID: conversation),
+             makeMessage(role: "assistant", content: "answer", conversationID: conversation)]
+        }
+        let rows = ThreadTimelineBuilder.buildConversation(messages: messages, runs: runs,
+            eventsByRun: [:], liveRunID: nil, isRunning: false, liveStreamedText: "",
+            liveReasoningText: "", pendingApprovals: [])
+        let ids = rows.map(\.id)
+        #expect(Set(ids).count == ids.count)
+        for message in messages {
+            let prefix = message.role == "user" ? "user." : "assistant."
+            #expect(ids.contains(prefix + message.id.uuidString))
+        }
+    }
+
     @Test("Native service runs never demand a model final reply; model and cross-owner runs still do")
     func nativeServiceRunHasNoMissingModelReply() throws {
         let conversation = UUID()
