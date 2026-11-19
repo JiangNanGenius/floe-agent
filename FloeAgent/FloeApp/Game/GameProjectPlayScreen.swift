@@ -27,14 +27,28 @@ struct GameProjectPlayScreen: View {
     @State private var error: String?
 
     var body: some View {
+        Group {
+            if let presentation = play?.webPresentation {
+                GameProjectWebPlayerSurface(presentation: presentation,
+                    title: session.record?.title ?? "Game") { receipt in
+                    if receipt.closeAcknowledged { dismiss() }
+                }
+            } else {
+                guestScreen
+            }
+        }
+        .task { await prepare() }
+        .onDisappear {
+            controls?.requestInputEnabled(false)
+            Task { await play?.detachViewer() }
+        }
+        .interactiveDismissDisabled()
+    }
+
+    private var guestScreen: some View {
         NavigationStack {
             Group {
-                if let presentation = play?.webPresentation {
-                    GameProjectWebPlayerSurface(presentation: presentation,
-                        title: session.record?.title ?? "Game") { receipt in
-                        if receipt.closeAcknowledged { dismiss() }
-                    }
-                } else if let controls {
+                if let controls {
                     GameRGSSControlsViewport(presentation: controls, vnc: vnc)
                         .id(controls.jobID)
                 } else if let guest = play?.rgssPlay {
@@ -64,11 +78,6 @@ struct GameProjectPlayScreen: View {
                     Text(error).font(.callout).foregroundStyle(.red).padding(10)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
-            }
-            .task { await prepare() }
-            .onDisappear {
-                controls?.requestInputEnabled(false)
-                Task { await play?.detachViewer() }
             }
             .sheet(isPresented: $showSaves) {
                 if let controls { GameRGSSSavePanel(session: controls.play).id(controls.jobID) }
@@ -103,7 +112,6 @@ struct GameProjectPlayScreen: View {
                 Button(copy("取消", "Cancel"), role: .cancel) {}
             }
         }
-        .interactiveDismissDisabled(true)
     }
 
     private func copy(_ zh: String, _ en: String) -> String { IDELanguageRunText.t(zh, en) }

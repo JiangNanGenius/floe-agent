@@ -317,6 +317,7 @@ struct GameRunWebEntry: Sendable, Equatable {
     let externalReferences: [String]
     /// Normalized local script paths that are referenced but absent.
     let missingReferences: [String]
+    let isPublishedTwine: Bool
     let hasInlineScript: Bool
     let hasScriptTag: Bool
 
@@ -327,10 +328,14 @@ struct GameRunWebEntry: Sendable, Equatable {
 
 enum GameRunWebProbe {
     static func evaluate(index: GameRunSourceIndex, entry: GameRelativePath?,
-                         limits: GameRunPreparationLimits) throws -> GameRunWebEntry? {
+                         limits: GameRunPreparationLimits, inspectTwine: Bool = false) throws -> GameRunWebEntry? {
         guard let entry else { return nil }
+        let storyScanLimit = min(limits.maximumFileBytes, 16 * 1024 * 1024)
+        let isPublishedTwine = try inspectTwine && GameProjectInspector.isTwineHTML(
+            reader: GameProjectReader(rootURL: index.rootURL, maximumFileBytes: limits.maximumFileBytes),
+            path: entry, maximumScanBytes: storyScanLimit)
         let bytes = try GameRunFileIO.read(root: index.rootURL, path: entry,
-            maximumBytes: limits.maximumIndexBytes)
+            maximumBytes: isPublishedTwine ? max(limits.maximumIndexBytes, storyScanLimit) : limits.maximumIndexBytes)
         guard let text = String(data: bytes, encoding: .utf8) else {
             throw GameRunPreparationError.invalidProject("HTML entry is not UTF-8")
         }
@@ -411,6 +416,7 @@ enum GameRunWebProbe {
                      references: references.sorted(),
                      externalReferences: external,
                      missingReferences: missing.sorted(),
+                     isPublishedTwine: isPublishedTwine,
                      hasInlineScript: hasInline,
                      hasScriptTag: hasScriptTag)
     }

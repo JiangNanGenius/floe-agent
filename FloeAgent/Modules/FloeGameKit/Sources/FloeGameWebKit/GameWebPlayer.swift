@@ -9,6 +9,29 @@ import AppKit
 import UIKit
 #endif
 
+#if canImport(UIKit)
+@MainActor
+private final class GameViewportWebView: WKWebView {
+    private var notifiedSize: CGSize?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        notifiedSize = nil
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let size = bounds.size
+        guard window != nil, size.width > 0, size.height > 0, notifiedSize != size else { return }
+        notifiedSize = size
+        // WebKit can finish loading offscreen without notifying the game when
+        // its SwiftUI viewport is attached. Let layout settle before the event.
+        evaluateJavaScript("requestAnimationFrame(() => window.dispatchEvent(new Event('resize'))); void 0")
+    }
+}
+#endif
+
 public enum GameInputDirection: String, Sendable { case left, right, up, down }
 public enum GameInputButton: String, Sendable { case confirm, cancel, action1, action2, action3, action4, start, select }
 public enum GamePointerPhase: String, Sendable { case began, moved, ended }
@@ -69,7 +92,14 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
         configuration.websiteDataStore = GameWebStorage.persistentStore(for: identity)
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.setURLSchemeHandler(handler, forURLScheme: GameArtifactSchemeHandler.scheme)
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        // Preparation loads the document before the player is attached to its
+        // SwiftUI surface. Engines measure this viewport during startup.
+        let initialViewport = CGRect(x: 0, y: 0, width: 800, height: 600)
+        #if os(macOS)
+        webView = WKWebView(frame: initialViewport, configuration: configuration)
+        #else
+        webView = GameViewportWebView(frame: initialViewport, configuration: configuration)
+        #endif
         super.init()
         webView.navigationDelegate = self; webView.uiDelegate = self; webView.allowsLinkPreview = false
         configuration.userContentController.add(WeakGameBridge(owner: self), name: "floeGame")

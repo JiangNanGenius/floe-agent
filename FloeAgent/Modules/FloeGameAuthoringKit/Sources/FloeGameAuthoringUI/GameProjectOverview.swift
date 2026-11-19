@@ -32,13 +32,16 @@ public struct GameProjectOverviewView: View {
     public let content: GameProjectOverviewContent
     public let pendingAction: GameProjectOverviewAction?
     public let status: String?
+    public let onCreateStarter: (@MainActor () -> Void)?
     public let showEngineSummary: Bool
     public let onAction: @MainActor (GameProjectOverviewAction) -> Void
     @Environment(\.locale) private var locale
 
     public init(content: GameProjectOverviewContent, pendingAction: GameProjectOverviewAction? = nil,
                 status: String? = nil, showEngineSummary: Bool = true,
+                onCreateStarter: (@MainActor () -> Void)? = nil,
                 onAction: @escaping @MainActor (GameProjectOverviewAction) -> Void) {
+        self.onCreateStarter = onCreateStarter
         self.content = content; self.pendingAction = pendingAction; self.status = status
         self.showEngineSummary = showEngineSummary; self.onAction = onAction
     }
@@ -48,7 +51,9 @@ public struct GameProjectOverviewView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
-                preview(height: content.hasFiles ? max(240, min(480, geometry.size.height * 0.36)) : 220)
+                if !content.hasFiles || content.previewPNG != nil {
+                    preview(height: content.hasFiles ? max(180, min(360, geometry.size.height * 0.32)) : 220)
+                }
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 12) { ForEach(primary, id: \.self) { actionButton($0) } }
                     LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 12) { ForEach(primary, id: \.self) { actionButton($0) } }
@@ -75,7 +80,7 @@ public struct GameProjectOverviewView: View {
         }
         }
     }
-    private var primary: [GameProjectOverviewAction] { [.aiModify, .simpleEdit, .ide, .play] }
+    private var primary: [GameProjectOverviewAction] { content.hasFiles ? [.play, .simpleEdit, .ide, .aiModify] : [.ide, .aiModify] }
     private var header: some View {
         HStack(alignment: .top, spacing: 18) {
             Group {
@@ -102,6 +107,11 @@ public struct GameProjectOverviewView: View {
                         Label(pendingAction == .importProject ? (zh ? "正在导入" : "Importing") : (zh ? "导入游戏" : "Import game"),
                               systemImage: "square.and.arrow.down")
                     }.buttonStyle(.borderedProminent).disabled(pendingAction != nil)
+                    .accessibilityIdentifier("game.overview.import")
+                    if let onCreateStarter {
+                        Button(zh ? "创建起始模板" : "Create starter", action: onCreateStarter)
+                            .disabled(pendingAction != nil)
+                    }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.quaternary.opacity(0.5))
             } else if let bytes = content.previewPNG, let image = decodedImage(bytes) { image.resizable().scaledToFill().accessibilityLabel(zh ? "游戏预览" : "Game preview") }
             else {
@@ -117,8 +127,8 @@ public struct GameProjectOverviewView: View {
                 else { Image(systemName: symbol(action)) }
                 Text(title(action)).lineLimit(1).minimumScaleFactor(0.85)
             }.font(.headline).frame(minWidth: 140, maxWidth: .infinity, minHeight: 52)
-                .foregroundStyle(action == .aiModify ? Color.white : Color.primary)
-                .background(action == .aiModify ? Color.accentColor : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+                .foregroundStyle(action == .play ? Color.white : Color.primary)
+                .background(action == .play ? Color.accentColor : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
                 .contentShape(RoundedRectangle(cornerRadius: 14))
         }.buttonStyle(.plain).disabled(pendingAction != nil).accessibilityIdentifier("game.overview." + action.rawValue)
     }

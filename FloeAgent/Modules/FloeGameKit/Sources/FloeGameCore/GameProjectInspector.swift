@@ -540,7 +540,7 @@ public struct GameProjectInspector: Sendable {
         return false
     }
 
-    private static func isTwineHTML(reader: GameProjectReader, path: GameRelativePath,
+    public static func isTwineHTML(reader: GameProjectReader, path: GameRelativePath,
                                     maximumScanBytes: Int) throws -> Bool {
         guard let offset = try reader.findASCII("<tw-storydata", in: path,
                                                 maximumBytes: maximumScanBytes),

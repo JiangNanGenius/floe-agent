@@ -480,6 +480,18 @@ struct GameProjectSelectionResolver: Sendable {
                          shouldPersist: false, shouldRemove: shouldRemove)
         }
 
+        // A launcher folder or a plugin may have HTML but no engine of its
+        // own. Keep it available for manual selection without asking users
+        // to choose it alongside the only recognized game.
+        let recognized = choices.filter { !$0.engines.isEmpty }
+        if recognized.count == 1, let only = recognized.first,
+           only.engines.count == 1, let engine = only.engines.first?.engine {
+            return .init(state: .automatic, root: only.root, engine: engine,
+                         source: .automatic, verification: .evidenceMatched,
+                         ambiguities: ambiguities,
+                         shouldPersist: true, shouldRemove: shouldRemove)
+        }
+
         if choices.count > 1 {
             ambiguities.append(.multipleRoots(roots: choices.map(\.root)))
             for choice in choices where choice.engines.count > 1 {
@@ -495,12 +507,6 @@ struct GameProjectSelectionResolver: Sendable {
         }
 
         let only = choices[0]
-        if only.engines.count == 1, let engine = only.engines.first?.engine {
-            return .init(state: .automatic, root: only.root, engine: engine,
-                         source: .automatic, verification: .evidenceMatched,
-                         ambiguities: ambiguities,
-                         shouldPersist: true, shouldRemove: shouldRemove)
-        }
         if only.engines.count > 1 {
             ambiguities.append(.multipleEngines(
                 root: only.root, engines: only.engines.map(\.engine)))

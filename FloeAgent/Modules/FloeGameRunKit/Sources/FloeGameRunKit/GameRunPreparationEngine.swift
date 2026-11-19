@@ -185,15 +185,34 @@ struct GameRunPreparationEngine: Sendable {
         self.configuration = configuration
     }
 
+    private func webEntry(for engine: GameEngineID, selection: GameRunSelection,
+                          index: GameRunSourceIndex) throws -> GameRelativePath? {
+        if let entry = selection.entry ?? GameRunRoutePlanner.defaultEntry(index) { return entry }
+        guard engine == .twine else { return nil }
+        // Published stories often retain the author's title as their HTML filename.
+        let reader = try GameProjectReader(rootURL: index.rootURL, maximumFileBytes: configuration.limits.maximumFileBytes)
+        var story: GameRelativePath?
+        for file in index.files where !file.path.value.contains("/") {
+            let ext = (file.path.value as NSString).pathExtension.lowercased()
+            guard ext == "html" || ext == "htm" else { continue }
+            try Task.checkCancellation()
+            if try GameProjectInspector.isTwineHTML(reader: reader, path: file.path, maximumScanBytes: min(configuration.limits.maximumFileBytes, 16 * 1024 * 1024)) {
+                guard story == nil else { throw GameRunPreparationError.invalidProject("Choose a single published Twine story.") }
+                story = file.path
+            }
+        }
+        return story
+    }
+
     func plan(context: GameProjectContext, engine: GameEngineID,
               selection: GameRunSelection?) async throws -> GameRunRoutePlan {
         do {
             try await checkCurrent(context)
             let chosen = try resolvedSelection(context: context, provided: selection)
             let source = try scan(context: context, selection: chosen)
-            let entry = chosen.entry ?? GameRunRoutePlanner.defaultEntry(source.index)
+            let entry = try webEntry(for: engine, selection: chosen, index: source.index)
             let web = try GameRunWebProbe.evaluate(index: source.index, entry: entry,
-                                                   limits: configuration.limits)
+                                                   limits: configuration.limits, inspectTwine: engine == .twine)
             let availability = try await availability(engine: engine, web: web)
             return try GameRunRoutePlanner.evaluate(engine: engine, index: source.index,
                                                     web: web, availability: availability).plan
@@ -218,9 +237,9 @@ struct GameRunPreparationEngine: Sendable {
         try ensureArtifactDirectory()
         let source = try scan(context: request.context, selection: chosen)
         let index = source.index
-        let entry = chosen.entry ?? GameRunRoutePlanner.defaultEntry(index)
+        let entry = try webEntry(for: request.engine, selection: chosen, index: index)
         let web = try GameRunWebProbe.evaluate(index: index, entry: entry,
-                                               limits: configuration.limits)
+                                               limits: configuration.limits, inspectTwine: request.engine == .twine)
         let availability = try await availability(engine: request.engine, web: web)
         let evaluation = try GameRunRoutePlanner.evaluate(
             engine: request.engine, index: index, web: web, availability: availability)

@@ -97,7 +97,7 @@ struct FloeAgentApp: App {
 
     private var showsMainWindow: Bool {
         FloeUserAgreement.bypassForTesting || FloeUserAgreement.hasAccepted(
-            acceptedAgreement, version: FloeUserAgreement.currentVersion)
+            acceptedAgreement)
     }
 
     init() {

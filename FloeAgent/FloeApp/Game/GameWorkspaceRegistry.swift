@@ -775,7 +775,17 @@ final class GameWorkspaceRegistry {
             choice, conversationID: conversationID, root: session.key.rootPathURL, fresh: true)
         let proposed = TaskExecutionBinding(conversationID: conversationID, target: target)
         let saved = try await bindingStore.bindInitial(proposed)
-        guard saved == proposed else { throw GameWorkspaceRegistryError.assistantHasRuns }
+        // `bindInitial` is first-writer-wins and round-trips the body through
+        // the store's millisecond date encoding, so a full synthesized
+        // equality against `proposed` would always fail on `updatedAt` even
+        // when this call installed the binding. Compare the real identity
+        // (conversation, target facts, generation) instead; a genuine
+        // concurrent bind is still rejected.
+        guard saved.conversationID == proposed.conversationID,
+              saved.target == proposed.target,
+              saved.generation == proposed.generation else {
+            throw GameWorkspaceRegistryError.assistantHasRuns
+        }
         guard let container = await environment.environmentRegistry.record(id: saved.target.environmentID),
               container.kind == .session, container.ownerID == conversationID.uuidString,
               let root = try await environment.environmentRegistry
@@ -821,11 +831,14 @@ final class GameWorkspaceRegistry {
             context: context, history: session.history, support: session.support,
             title: title, starterResources: starterResources())
         try await reopened.refresh(reloadFiles: false)
-        // Selection records include the environment ID. On the first play,
-        // carry the choice from the editor into the newly attached runtime
-        // only if discovery still recognizes it at the same saved revision.
+        // Selection records include the environment ID, so the reopened
+        // session cannot see the editor-session record and re-resolves from
+        // discovery alone. Attaching the runtime also reopens the repository
+        // at a new revision even when no file was edited, so a saved-revision
+        // equality gate would drop a still-valid explicit choice here. Carry
+        // the editor choice over whenever fresh discovery still recognizes
+        // the same engine at the same root; `select` revalidates everything.
         if let selected = old.selectionSnapshot?.runSelection,
-           selected.baseRevision == reopened.project.revision,
            let snapshot = reopened.selectionSnapshot,
            snapshot.engines(forRoot: selected.gameRoot).contains(where: { $0.engine == selected.engine }),
            snapshot.runSelection?.engine != selected.engine || snapshot.runSelection?.gameRoot != selected.gameRoot {

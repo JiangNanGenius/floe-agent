@@ -35,6 +35,8 @@ struct GameProjectSpaceScreen: View {
     @State private var showingHistory = false
     @State private var showingImporter = false
     @State private var showingProjectSetup = false
+    @State private var requestedSetupAction: GameProjectOverviewAction?
+    @State private var confirmedSetupAction: GameProjectOverviewAction?
     @State private var importAfterSetup = false
     @State private var assistantAfterSetup = false
     @State private var manualPromptAfterSetup: GameManualSelectionPrompt?
@@ -137,7 +139,11 @@ struct GameProjectSpaceScreen: View {
                 }
             }
             .sheet(isPresented: $showingProjectSetup, onDismiss: {
-                if importAfterSetup {
+                requestedSetupAction = nil
+                if let action = confirmedSetupAction, let session {
+                    confirmedSetupAction = nil
+                    perform(action, session: session)
+                } else if importAfterSetup {
                     importAfterSetup = false
                     showingImporter = true
                 } else if assistantAfterSetup {
@@ -157,11 +163,14 @@ struct GameProjectSpaceScreen: View {
                                     ProgressView(IDELanguageRunText.t("正在保存引擎选择…", "Saving engine selection…"))
                                         .padding(.vertical, 8)
                                 }
+                                runtimeBanner(session)
                                 setupPanel(session)
                                     .disabled(pending != nil)
                             }
                         }
-                            .navigationTitle(IDELanguageRunText.t("游戏引擎", "Game engine"))
+                            .navigationTitle(requestedSetupAction == .play
+                                ? IDELanguageRunText.t("选择要试玩的游戏", "Choose a game to play")
+                                : IDELanguageRunText.t("游戏引擎", "Game engine"))
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
                                 ToolbarItem(placement: .cancellationAction) {
@@ -252,7 +261,7 @@ struct GameProjectSpaceScreen: View {
     @ViewBuilder private func overview(_ session: GameWorkspaceSession) -> some View {
         VStack(spacing: 0) {
             if let error { noticeBar(error, failed: true) }
-            if let notice { noticeBar(notice, failed: false) }
+            else if let notice { noticeBar(notice, failed: false) }
             if let issue = session.project.recognitionIssue {
                 HStack {
                     Text(IDELanguageRunText.t("引擎识别失败：", "Engine detection failed: ") + issue)
@@ -265,13 +274,13 @@ struct GameProjectSpaceScreen: View {
                 }
                 .padding(.horizontal)
             }
-            runtimeBanner(session)
             if pending == .importProject {
                 importProgress
             }
             engineSummary(session)
             GameProjectOverviewView(content: content(session), pendingAction: pending,
-                status: status(session), showEngineSummary: false) { action in
+                status: status(session), showEngineSummary: false,
+                onCreateStarter: { starterEngine = nil; starterError = nil; showingCreateStarter = true }) { action in
                     perform(action, session: session)
                 }
         }
@@ -287,7 +296,10 @@ struct GameProjectSpaceScreen: View {
                     guard pending == nil else { return }
                     error = nil
                     await select(session, root: root, engine: engine)
-                    if error == nil { showingProjectSetup = false }
+                    if error == nil {
+                        confirmedSetupAction = requestedSetupAction
+                        showingProjectSetup = false
+                    }
                 },
                 onManual: { root, engine in
                     manualPromptAfterSetup = GameManualSelectionPrompt(
@@ -300,7 +312,12 @@ struct GameProjectSpaceScreen: View {
                     showingProjectSetup = false
                 },
                 onConfirmProposal: { proposal in
+                    error = nil
                     await confirmProposal(session, proposal)
+                    if error == nil, session.project.selectionSnapshot?.runSelection != nil {
+                        confirmedSetupAction = requestedSetupAction
+                        showingProjectSetup = false
+                    }
                 },
                 onDismissProposal: {
                     session.project.discardSelectionProposal()
@@ -473,10 +490,6 @@ struct GameProjectSpaceScreen: View {
         if pending == .play { return IDELanguageRunText.t("正在准备试玩…", "Preparing to play…") }
         if pending != nil { return IDELanguageRunText.t("正在处理…", "Working…") }
         if let snapshot = session.project.selectionSnapshot {
-            if snapshot.state == .empty {
-                return IDELanguageRunText.t("选择引擎后创建真实的起始文件。",
-                                            "Choose an engine to create real starter files.")
-            }
             if snapshot.state == .ambiguous {
                 return IDELanguageRunText.t("请先选择根目录和引擎。",
                                             "Choose a root and engine first.")
@@ -492,9 +505,7 @@ struct GameProjectSpaceScreen: View {
             if let recommendation = snapshot.aiRecommendation {
                 return IDELanguageRunText.t("AI 建议：\(recommendation.engine.rawValue)，可手动采用或覆盖。", "AI suggests \(recommendation.engine.rawValue). You can use or override it.")
             }
-            if let heuristic = snapshot.heuristicRecommendation {
-                return IDELanguageRunText.t("识别结果：\(heuristic.engine.rawValue)（规则匹配，不是 AI）", "Recognized \(heuristic.engine.rawValue) (heuristic, not AI)")
-            }
+
         }
         return nil
     }
@@ -504,9 +515,9 @@ struct GameProjectSpaceScreen: View {
             Button(IDELanguageRunText.t("游戏引擎", "Game engine"), systemImage: "gamecontroller") {
                 showingProjectSetup = true
             }
-            Button(IDELanguageRunText.t("导入文件夹或 ZIP", "Import folder or ZIP"),
-                   systemImage: "square.and.arrow.down") {
-                showingImporter = true
+            if session.project.project.files.isEmpty {
+                Button(IDELanguageRunText.t("导入文件夹或 ZIP", "Import folder or ZIP"),
+                       systemImage: "square.and.arrow.down") { showingImporter = true }
             }
             Button(IDELanguageRunText.t("切换引擎（新副本）", "Change engine (new copy)"),
                    systemImage: "arrow.triangle.branch") {
@@ -562,7 +573,8 @@ struct GameProjectSpaceScreen: View {
             Task { await prepareForAI(session) }
         case .simpleEdit:
             if session.project.selectionSnapshot?.selectedEngine == nil {
-                notice = IDELanguageRunText.t("请先选择引擎。", "Choose an engine first.")
+                requestedSetupAction = .simpleEdit
+                notice = IDELanguageRunText.t("请选择要编辑的游戏。", "Choose the game to edit.")
                 showingProjectSetup = true
             } else {
                 showingQuickEdit = true
@@ -615,6 +627,7 @@ struct GameProjectSpaceScreen: View {
             return
         }
         guard session.project.selectionSnapshot?.runSelection != nil else {
+            requestedSetupAction = .play
             if session.project.selectionSnapshot?.isManualUnverified == true {
                 notice = IDELanguageRunText.t(
                     "当前目录没有识别到所选引擎，请在游戏引擎中选择已识别的游戏目录。",
@@ -658,6 +671,9 @@ struct GameProjectSpaceScreen: View {
             defer { pending = nil }
             try await environment.gameWorkspaces.importSource(url, into: session)
             notice = session.project.importSummary
+            if session.project.selectionSnapshot?.requiresExplicitChoice == true {
+                showingProjectSetup = true
+            }
         } catch {
             let underlying = error as NSError
             if error is CancellationError || (underlying.domain == NSCocoaErrorDomain && underlying.code == NSUserCancelledError) { return }
@@ -692,8 +708,7 @@ struct GameProjectSpaceScreen: View {
             pending = .simpleEdit
             defer { pending = nil }
             try await session.project.select(root: root, engine: engine)
-            notice = IDELanguageRunText.t("已选择并保存 \(engine.rawValue)。",
-                                          "Selected and saved \(engine.rawValue).")
+            notice = nil
         } catch {
             self.error = error.localizedDescription
         }
@@ -936,10 +951,12 @@ struct GameProjectSetupPanel: View {
                        systemImage: "sparkles", action: onAskAI)
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("game.setup.askAI")
-                Button(IDELanguageRunText.t("导入文件", "Import files"),
-                       systemImage: "square.and.arrow.down", action: onImport)
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("game.setup.import")
+                if snapshot?.isEmptyProject == true {
+                    Button(IDELanguageRunText.t("导入游戏", "Import game"),
+                           systemImage: "square.and.arrow.down", action: onImport)
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("game.setup.import")
+                }
                 Spacer(minLength: 0)
             }
         }
@@ -1019,11 +1036,13 @@ struct GameProjectSetupPanel: View {
                                               "No game folders are available. Refresh or import again."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(snapshot.choices) { choice in
+                ForEach(snapshot.choices.filter { !$0.engines.isEmpty }) { choice in
                     choiceSection(choice, selectedEngine: snapshot.selectedEngine,
                                   selectedRoot: snapshot.selectedRoot, snapshot: snapshot)
                 }
-                manualSection(snapshot)
+                DisclosureGroup(IDELanguageRunText.t("手动选择目录和引擎", "Choose a folder and engine manually")) {
+                    manualSection(snapshot)
+                }
             }
             if !snapshot.ambiguities.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
@@ -1144,7 +1163,13 @@ struct GameProjectSetupPanel: View {
     private func engineMenu(title: String, root: GameRelativePath?) -> some View {
         Menu {
             ForEach(library?.entries ?? []) { entry in
-                Button(entry.displayName) { onManual(root, entry.engine) }
+                Button(entry.displayName) {
+                    if snapshot?.engines(forRoot: root).contains(where: { $0.engine == entry.engine }) == true {
+                        Task { await onRecognized(root, entry.engine) }
+                    } else {
+                        onManual(root, entry.engine)
+                    }
+                }
             }
         } label: {
             Label(title, systemImage: "slider.horizontal.3")

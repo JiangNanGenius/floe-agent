@@ -133,7 +133,7 @@ func scannedLayout(_ workspace: TestWorkspace, name: String,
     let index = try GameRunTreeScanner.scan(rootURL: root, relativeRoot: ".",
                                             limits: .default)
     let entry = GameRunRoutePlanner.defaultEntry(index)
-    let web = try GameRunWebProbe.evaluate(index: index, entry: entry, limits: .default)
+    let web = try GameRunWebProbe.evaluate(index: index, entry: entry, limits: .default, inspectTwine: true)
     return (index, web)
 }
 
@@ -303,6 +303,7 @@ final class GameRunPreparerTests: XCTestCase {
     func testRealWebExportsPlanStaticWeb() throws {
         let workspace = try TestWorkspace()
         let layouts: [(GameEngineID, [String: String], String)] = [
+            (.twine, ["index.html": #"<tw-storydata name="Story" startnode="1" format="Harlowe"><tw-passagedata pid="1">Start</tw-passagedata></tw-storydata><script>document.title='Story'</script>"#], "static.twine-web"),
             (.rpgMakerMZ, ["index.html": html([], inline: true),
                            "js/rmmz_core.js": "", "data/System.json": "{}"],
              "static.rpgmaker-mz-web"),

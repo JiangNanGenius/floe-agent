@@ -50,6 +50,10 @@ enum GameRunRoutePlanner {
             return try narrative(engine: .ink, index: index, hasMarker: index.anyFile(suffix: ".ink"),
                                  availability: availability)
         case .twine:
+            if let web, web.isPublishedTwine, web.isSelfContained, web.hasScriptTag {
+                return staticRoute(engine: engine, entry: web.entry, routeID: "static.twine-web",
+                    notes: [], evidence: [web.entry])
+            }
             if index.contains("story.twine.json") {
                 return try narrative(engine: .twine, index: index, hasMarker: true,
                                      availability: availability)

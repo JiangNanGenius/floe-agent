@@ -17,6 +17,20 @@ final class SelectionLifecycleTests: XCTestCase {
         ]
     }
 
+    func testLauncherHTMLDoesNotHideTheOnlyRecognizedGame() async throws {
+        try await withSelectionWorkspace { workspace in
+            let result = try await workspace.importFiles([
+                "index.html": Data("<title>Launcher</title>".utf8),
+                "www/Game.rpgproject": Data("RPGMV 1.6.2".utf8),
+                "www/js/rpg_core.js": Data("var RPGMAKER_NAME = 'MV';".utf8),
+                "www/data/System.json": Data("{}".utf8)
+            ])
+            XCTAssertEqual(result.snapshot.state, .automatic)
+            XCTAssertEqual(result.snapshot.runSelection?.engine, .rpgMakerMV)
+            XCTAssertEqual(result.snapshot.runSelection?.gameRoot?.value, "www")
+        }
+    }
+
     func testEmptyProjectAndRecordedEngineNeverClaimSelection() async throws {
         try await withSelectionWorkspace { workspace in
             let created = try await workspace.createEmpty()
