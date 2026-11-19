@@ -43,6 +43,8 @@ let package = Package(
                 "FloeProviders",
                 "FloeModels",
                 "FloeCore",
+                "FloeSync",
+                "FloeSyncCore",
                 "FloeMarkdown",
             ]
         )
@@ -57,6 +59,12 @@ let package = Package(
     ],
     targets: [
         .target(name: "FloeMarkdown", dependencies: ["FloeCore"]),
+        .target(name: "FloeSyncCore", dependencies: ["FloeCore"], swiftSettings: upstreamSwiftSettings),
+        .target(
+            name: "FloeSync",
+            dependencies: ["FloeCore", "FloeModels", "FloeSyncCore", "FloePersistence", "FloeSecurity"],
+            swiftSettings: upstreamSwiftSettings
+        ),
         // Narrow C primitives used by FloeCore. Exact upstream bytes.
         .target(
             name: "CFloeExtentShim",

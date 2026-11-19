@@ -2,8 +2,10 @@
 
 #if FLOE_MAC_HOST_SMOKE
 import AppKit
+import CloudKit
 import CryptoKit
 import Darwin
+import FloeCore
 import FloeMacBridgeProtocol
 import FloeMacToolbox
 import Foundation
@@ -55,6 +57,10 @@ final class UnifiedMacSmoke {
     }
 
     func exercise(model: BridgeAppModel) async {
+        if CommandLine.arguments.contains("--icloud-model-sync-smoke") {
+            await verifyCloudKitModelSync()
+            return
+        }
         let deadline = ContinuousClock.now + .seconds(8)
         while !model.listenerReady && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
@@ -196,6 +202,75 @@ final class UnifiedMacSmoke {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: root)
+    }
+
+    private func verifyCloudKitModelSync() async {
+        var status = "missingEntitlement"
+        var removedZone = false
+        var verified: [String: Bool] = [:]
+        defer {
+            let output: [String: Any] = ["status": status, "removedTestZone": removedZone, "checks": verified]
+            if let bytes = try? JSONSerialization.data(withJSONObject: output, options: .sortedKeys) {
+                try? bytes.write(to: report, options: .atomic)
+            }
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+        guard MacICloudModelSync.hasCloudKitEntitlement, let namespace = Bundle.main.bundleIdentifier else { return }
+        let container = CKContainer(identifier: MacICloudModelSync.containerIdentifier)
+        let zoneName = "FloeMacVerification-\(UUID().uuidString)"
+        let zoneID = CKRecordZone.ID(zoneName: zoneName, ownerName: CKCurrentUserDefaultName)
+        let secondRoot = root.appendingPathComponent("Second Repository", isDirectory: true)
+        do {
+            guard try await container.accountStatus() == .available else { status = "noSystemICloudAccount"; return }
+            let accountID = try await container.userRecordID()
+            let firstRuntime = try HostAgentDatabase.open(applicationSupport: root, namespace: namespace)
+            _ = try await firstRuntime.bootstrap()
+            try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            let secondRuntime = try HostAgentDatabase.open(applicationSupport: secondRoot, namespace: namespace)
+            _ = try await secondRuntime.bootstrap()
+            _ = try await firstRuntime.shutdown(cancelActive: false)
+            _ = try await secondRuntime.shutdown(cancelActive: false)
+            let sender = MacICloudModelSync(applicationSupport: root, namespace: namespace, zoneName: zoneName)
+            let receiver = MacICloudModelSync(applicationSupport: secondRoot, namespace: namespace, zoneName: zoneName)
+            let profile = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+                                          baseURL: URL(string: "https://example.invalid/v1")!,
+                                          displayName: "Floe Verification")
+            let configuredModel = ModelProfile(providerID: profile.id, remoteModelID: "cloud-fixture",
+                                               displayName: "Floe Cloud Fixture",
+                                               limits: .init(contextTokens: 8192, maxOutputTokens: 256),
+                                               capabilities: [.text])
+            do {
+                let entry = MacCloudModelEntry(provider: profile, model: configuredModel)
+                let published = try await sender.synchronize(publishing: entry)
+                verified["published"] = published.contains { $0.id == configuredModel.id }
+                let downloaded = try await receiver.synchronize()
+                verified["downloaded"] = downloaded.count == 1 && downloaded.first?.id == configuredModel.id
+                    && downloaded.first?.provider.id == profile.id
+                    && downloaded.first?.provider.secretRef == nil
+                status = verified.values.allSatisfy { $0 } ? "passed" : "readBackMismatch"
+            } catch let error as CKError {
+                status = "cloudKit-\(error.code.rawValue)"
+            } catch let error as MacICloudModelError {
+                status = String(describing: error)
+            } catch let error as FloeError {
+                status = "floe-\(error.self)"
+            } catch {
+                let underlying = error as NSError
+                status = "synchronizationFailure-\(underlying.domain)-\(underlying.code)"
+            }
+            guard try await container.userRecordID() == accountID else { status = "accountChanged"; return }
+            do {
+                _ = try await container.privateCloudDatabase.deleteRecordZone(withID: zoneID)
+                removedZone = true
+            } catch let error as CKError where error.code == .zoneNotFound {
+                removedZone = true
+            }
+        } catch let error as CKError {
+            status = "cloudKit-\(error.code.rawValue)"
+        } catch {
+            status = "fixtureSetupFailure"
+        }
     }
 
     private func verifyDraftStorage() -> Bool {

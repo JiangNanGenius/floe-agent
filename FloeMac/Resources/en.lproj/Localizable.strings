@@ -239,6 +239,7 @@
 "mac.workspace.selectVisionModel" = "Choose a model that supports image input, or remove the images.";
 "mac.workspace.removeAttachment" = "Remove Attachment";
 "mac.workspace.attachmentReferenceOnly" = "File reference only";
+"mac.workspace.textAttachment" = "Text attachment";
 "mac.workspace.noProject" = "No Project";
 "mac.workspace.runPreparing" = "Preparing";
 "mac.workspace.runStopping" = "Stopping";
@@ -265,6 +266,23 @@
 "mac.workspace.exportChat" = "Export Conversation…";
 "mac.workspace.loadEarlierMessages" = "Load Earlier Messages";
 "mac.workspace.attachmentUnavailable" = "The original attachment could not be found.";
+"mac.workspace.returnToActiveTask" = "Return to Running Task";
+"mac.icloud.models" = "iCloud Model Configuration";
+"mac.icloud.scope" = "Download provider and model settings from iCloud, or upload a saved configuration. Add any required API key on this Mac after importing.";
+"mac.icloud.empty" = "No compatible model configurations in iCloud.";
+"mac.icloud.refresh" = "Refresh";
+"mac.icloud.publish" = "Upload Configuration";
+"mac.icloud.confirmPublish" = "Upload this configuration to iCloud?";
+"mac.icloud.published" = "Configuration uploaded to iCloud.";
+"mac.icloud.addToMac" = "Add to Mac";
+"mac.icloud.done" = "Done";
+"mac.icloud.setupRequired" = "This build cannot access Floe’s iCloud container.";
+"mac.icloud.signIn" = "Sign in to iCloud in System Settings and try again.";
+"mac.icloud.accountChanged" = "The iCloud account changed. Refresh to continue.";
+"mac.icloud.providerConflict" = "The configuration has a different connection or model in iCloud.";
+"mac.icloud.uploadPending" = "iCloud hasn’t confirmed the upload yet. Refresh to try again.";
+"mac.icloud.importFailed" = "The model configuration could not be saved on this Mac.";
+"mac.icloud.unavailable" = "Couldn’t synchronize with iCloud. Try again.";
 "mac.workspace.saveFailed" = "Couldn’t update this task. Try again.";
 "mac.workspace.exportFailed" = "Couldn’t save the conversation. Choose another location and try again.";
 

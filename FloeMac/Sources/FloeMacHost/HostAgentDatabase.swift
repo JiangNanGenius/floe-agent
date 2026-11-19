@@ -2,6 +2,7 @@
 
 import Darwin
 import FloeMacSelfCore
+import FloePersistence
 import Foundation
 
 enum HostAgentDatabase {
@@ -56,6 +57,30 @@ enum HostAgentDatabase {
         return parent
             .appendingPathComponent(directoryName(for: namespace), isDirectory: true)
             .appendingPathComponent("floe-sync.sqlite")
+    }
+
+    /// CloudKit keeps account-specific change tokens and queued model updates.
+    /// Open that cache beside the host store, using the same private directory
+    /// and regular-file checks as the main database.
+    static func openConfigurationCache(
+        applicationSupport: URL, namespace: String, accountHash: String
+    ) throws -> DatabaseManager {
+        guard accountHash.utf8.count == 64,
+              accountHash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw StorageError.ownershipOrPermissions
+        }
+        let directory = applicationSupport.appendingPathComponent(directoryName(for: namespace), isDirectory: true)
+        let directoryFD = try openDirectory(directory)
+        defer { Darwin.close(directoryFD) }
+        _ = try checkedIdentity(directoryFD, type: S_IFDIR, permissions: 0o700)
+        let filename = "configuration-icloud-\(accountHash).sqlite"
+        let flags = O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        var descriptor = openat(directoryFD, filename, flags | O_CREAT | O_EXCL, 0o600)
+        if descriptor < 0 && errno == EEXIST { descriptor = openat(directoryFD, filename, flags) }
+        guard descriptor >= 0 else { throw StorageError.databaseOpen }
+        defer { Darwin.close(descriptor) }
+        _ = try checkedIdentity(descriptor, type: S_IFREG, permissions: 0o600)
+        return try DatabaseManager(path: directory.appendingPathComponent(filename))
     }
 
     private static func directoryName(for namespace: String) -> String {

@@ -95,10 +95,12 @@ struct WorkspaceLeaseAndAttachmentsTests {
         }
     }
 
-    @Test("A document attachment stays a durable reference and never reaches the model")
-    func documentAttachmentIsReferenceOnly() async throws {
+    @Test("Small text is sent only on the wire; over-limit text stays as a reference", arguments: [true, false])
+    func documentAttachmentVisibility(eligible: Bool) async throws {
         try await withSelfCoreFixture { fixture in
-            let attachment = try fixture.makeDocumentAttachment()
+            let marker = "fixture document body"
+            let attachment = try fixture.makeDocumentAttachment(
+                contents: eligible ? marker : marker + String(repeating: "x", count: 9_000))
             let (provider, adapter) = fixture.makeProvider(scripts: [[
                 .textDelta(.init(text: "Noted.")),
                 .completed(.init(stopReason: .endTurn)),
@@ -117,18 +119,20 @@ struct WorkspaceLeaseAndAttachmentsTests {
             let terminal = try #require(await handle.waitForTerminal(timeout: 15))
             #expect(terminal.confirmed)
 
-            // No image/content part reaches the provider for a document.
             let lastRequest = try #require(adapter.requests.last)
+            var containsBody = false
             for message in lastRequest.contentMessages where message.role == "user" {
-                #expect(!message.content.contains { part in
-                    if case .imageData = part { return true }
-                    return false
-                })
+                for part in message.content {
+                    if case .text(let text) = part, text.contains(marker) { containsBody = true }
+                    if case .imageData = part { Issue.record("Document unexpectedly became an image") }
+                }
             }
+            #expect(containsBody == eligible)
 
             // The durable turn keeps the file reference for the task history.
             let messages = try await handle.durableMessages()
             let userMessage = try #require(messages.last { $0.role == "user" })
+            #expect(userMessage.content == base.goal)
             #expect(userMessage.parts.count == 2)
             #expect(userMessage.parts[1].kind == .file)
             #expect(userMessage.parts[1].attachmentID == attachment.id)

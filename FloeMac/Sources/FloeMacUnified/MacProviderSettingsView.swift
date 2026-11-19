@@ -23,6 +23,7 @@ struct MacProviderSettingsView: View {
     @State private var editingID: UUID?
     @State private var draft = MacProviderDraft()
     @State private var removalCandidate: UUID?
+    @State private var showingICloud = false
 
     /// Shared chat-capable presets. Auxiliary (image-only) and on-device
     /// presets stay in their own surfaces, exactly like the App.
@@ -50,6 +51,12 @@ struct MacProviderSettingsView: View {
         .onChange(of: draft.key) { _, _ in scheduleDiscovery() }
         .onChange(of: draft.protocolKind) { _, _ in scheduleDiscovery() }
         .onDisappear { workspace.cancelModelDiscovery() }
+        .sheet(isPresented: $showingICloud) {
+            MacICloudModelsView(workspace: workspace, providerID: selectedRecord?.profile.id) { id in
+                editingID = id
+                activateCurrentSelection()
+            }
+        }
         .alert(MacProviderText.t("删除服务商", "Delete Provider"), isPresented: Binding(
             get: { removalCandidate != nil },
             set: { if !$0 { removalCandidate = nil } }
@@ -92,6 +99,13 @@ struct MacProviderSettingsView: View {
                     Label(MacProviderText.t("添加", "Add"), systemImage: "plus")
                 }
                 Spacer()
+                Button { showingICloud = true } label: {
+                    Label("mac.icloud.models", systemImage: "icloud")
+                        .labelStyle(.iconOnly)
+                }
+                .help("mac.icloud.models")
+                .accessibilityLabel("mac.icloud.models")
+                .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
             }
             .padding(8)
         }

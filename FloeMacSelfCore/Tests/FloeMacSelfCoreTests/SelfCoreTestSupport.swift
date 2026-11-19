@@ -509,8 +509,7 @@ final class SelfCoreFixture: @unchecked Sendable {
         )
     }
 
-    /// Stages a real document attachment: text bytes on disk behind a
-    /// bookmark. Documents stay durable-only references in this stage.
+    /// Stages real text bytes on disk behind a bookmark.
     func makeDocumentAttachment(
         named name: String = "notes.txt",
         contents: String = "fixture document body"

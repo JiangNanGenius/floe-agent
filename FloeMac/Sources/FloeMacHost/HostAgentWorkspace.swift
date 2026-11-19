@@ -16,9 +16,7 @@ import FloeModels
 /// One staged file attachment prepared for the next send. The draft carries
 /// a read-only security-scoped bookmark created at pick time plus verified
 /// size and digest metadata; it grants no tool or permission authority.
-/// `.image` drafts are inlined into the model request by the runtime;
-/// `.document` drafts stay durable-only references (the model does not read
-/// them in this stage).
+/// The runtime verifies eligible attachments again before sending any bytes.
 struct HostAgentAttachmentDraft: Hashable, Identifiable, Sendable {
     enum Kind: String, Hashable, Sendable {
         case image
@@ -34,9 +32,6 @@ struct HostAgentAttachmentDraft: Hashable, Identifiable, Sendable {
     let sha256: String
     let uti: String
 
-    /// UI hint mirroring the runtime contract: image bytes reach the model;
-    /// documents are saved with the task as references only.
-    var isModelVisible: Bool { kind == .image }
 }
 
 struct HostAgentProvider: Codable {
@@ -67,7 +62,8 @@ struct HostAgentProvider: Codable {
             throw InvalidConfiguration.key
         }
         profile = ProviderProfile(kind: .custom, wireProtocol: protocolKind, baseURL: endpointURL,
-                                  displayName: trimmedName?.isEmpty == false ? trimmedName : nil)
+                                  displayName: trimmedName?.isEmpty == false ? trimmedName : nil,
+                                  presetID: presetID)
         var capabilities: ModelCapabilities = [.text]
         if supportsImages { capabilities.insert(.vision) }
         if supportsTools { capabilities.insert(.tools) }
@@ -172,8 +168,7 @@ final class HostAgentWorkspace: ObservableObject {
     @Published var notice: String?
     private(set) var storageErrorKind: String?
 
-    /// Staged file bytes ceiling: image drafts are additionally capped by the
-    /// runtime's 8 MiB inline limit; documents stay references only.
+    /// Staged file ceiling. Inline content has narrower runtime limits.
     static let maximumAttachmentBytes = 32 * 1_024 * 1_024
     /// Mirrors the runtime's per-run attachment ceiling.
     static let maximumStagedAttachmentCount = 8
@@ -201,6 +196,9 @@ final class HostAgentWorkspace: ObservableObject {
     private let admitWork: AdmitWork
     private var runtime: FloeMacSelfRuntime?
     private var activeRun: FloeMacSelfSessionHandle?
+    #if FLOE_UNIFIED_MAC
+    private var isSynchronizingCloudModels = false
+    #endif
     #if FLOE_MAC_HOST_SMOKE
     private(set) var smokeRunDiagnostics: [String] = []
     #endif
@@ -308,14 +306,82 @@ final class HostAgentWorkspace: ObservableObject {
             guard let index = store.providers.firstIndex(where: { $0.profile.id == id }) else {
                 throw ProviderStoreError.missingRecord
             }
+            let previous = store.providers[index]
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
                                                protocolKind: protocolKind, modelID: modelID, apiKey: key, supportsImages: supportsImages, supportsTools: supportsTools, presetID: presetID)
             record.profile.id = id
-            record.model.id = store.providers[index].model.id
+            if previous.profile.baseURL == record.profile.baseURL && previous.profile.wireProtocol == protocolKind {
+                record.profile.kind = previous.profile.kind
+                record.profile.region = previous.profile.region
+                record.profile.nonSecretHeaders = previous.profile.nonSecretHeaders
+                record.profile.toolNameCompatibility = previous.profile.toolNameCompatibility
+                if previous.model.remoteModelID == record.model.remoteModelID {
+                    let editable: ModelCapabilities = [.vision, .tools]
+                    let selectedCapabilities = record.model.capabilities.intersection(editable)
+                    var model = previous.model
+                    let changed = model.capabilities.intersection(editable).symmetricDifference(selectedCapabilities)
+                    model.capabilities.subtract(editable)
+                    model.capabilities.formUnion(selectedCapabilities)
+                    if !changed.isEmpty {
+                        model.explicitCapabilities = (model.explicitCapabilities ?? []).union(changed)
+                    }
+                    record.model = model
+                }
+            }
+            record.model.id = previous.model.id
             record.model.providerID = id
             store.providers[index] = record
         }
     }
+
+    #if FLOE_UNIFIED_MAC
+    func synchronizeCloudModels(publishing providerID: UUID? = nil) async throws -> [MacCloudModelEntry] {
+        guard vault != nil, isReady, !isSending, !isTerminating, !isSynchronizingCloudModels,
+              let release = admit() else { throw MacICloudModelError.temporarilyUnavailable }
+        isSynchronizingCloudModels = true
+        defer { isSynchronizingCloudModels = false; release() }
+        let entry: MacCloudModelEntry?
+        if let providerID {
+            guard let record = providers.first(where: { $0.profile.id == providerID }),
+                  record.apiKey.isEmpty || !record.profile.baseURL.absoluteString.contains(record.apiKey),
+                  MacCloudModelEntry.accepts(record.profile, model: record.model) else {
+                throw MacICloudModelError.invalidProvider
+            }
+            var profile = record.profile
+            profile.presetID = record.presetID ?? profile.presetID
+            entry = .init(provider: profile, model: record.model)
+        } else {
+            entry = nil
+        }
+        let service = MacICloudModelSync(applicationSupport: supportDirectory, namespace: namespace)
+        return try await service.synchronize(publishing: entry)
+    }
+
+    func importCloudModel(_ entry: MacCloudModelEntry) -> Bool {
+        guard !isSynchronizingCloudModels, MacCloudModelEntry.accepts(entry.provider, model: entry.model) else {
+            return false
+        }
+        return updateProviderStore { store in
+            var base = entry.provider
+            base.secretRef = nil
+            let index = store.providers.firstIndex { $0.profile.id == base.id }
+            let previous = index.map { store.providers[$0] }
+            let sameConnection = previous?.profile.baseURL == base.baseURL
+                && previous?.profile.wireProtocol == base.wireProtocol && previous?.profile.kind == base.kind
+            var record = try HostAgentProvider(displayName: base.displayName, endpoint: base.baseURL.absoluteString,
+                                              protocolKind: base.wireProtocol, modelID: entry.model.remoteModelID,
+                                              apiKey: sameConnection ? previous?.apiKey ?? "" : "",
+                                              presetID: base.presetID)
+            record.profile = base
+            record.model = entry.model
+            if let index {
+                store.providers[index] = record
+            } else {
+                store.providers.append(record)
+            }
+        }
+    }
+    #endif
 
     /// Removes the record and its stored key. Chat history is kept; when the
     /// removed provider was selected, the first remaining one takes over.
@@ -1270,10 +1336,12 @@ final class HostAgentWorkspace: ObservableObject {
             guard messages.map(\.id) == transcript.map(\.id), !hasEarlierMessages,
                   let attachment = stageAttachments([reference]).first else { return false }
             let provider = FloeMacSelfProviderBinding(provider: config.profile, model: config.model,
-                                                      adapter: SmokeChatAdapter(), credentials: .init())
+                                                      adapter: SmokeChatAdapter(expectedAttachmentText: "Synthetic attachment"),
+                                                      credentials: .init())
             guard beginSend("Fixture follow-up", runtime: runtime, provider: provider), await waitForSmokeRun(),
                   messages.count == 109, messages.first?.id == transcript.first?.id,
-                  messages.contains(where: { $0.content == "Fixture follow-up" }) else { return false }
+                  messages.contains(where: { $0.content == "Fixture follow-up" }),
+                  messages.last?.content == "Synthetic persisted reply." else { return false }
             await select(nil)
             await select(id)
             var resolved: URL?
@@ -1288,11 +1356,21 @@ final class HostAgentWorkspace: ObservableObject {
 
     private struct SmokeChatAdapter: ProviderAdapter {
         let protocolKind: ModelProtocol = .openAIChatCompletions
+        var expectedAttachmentText: String? = nil
 
         func stream(request: ProviderStreamRequest,
                     credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
             AsyncThrowingStream { continuation in
-                continuation.yield(.textDelta(.init(text: "Synthetic persisted reply.")))
+                let received = expectedAttachmentText.map { marker in
+                    request.effectiveMessages.contains { message in
+                        message.role == "user" && message.content.contains { part in
+                            if case .text(let text) = part { return text.contains(marker) }
+                            return false
+                        }
+                    }
+                } ?? true
+                let reply = received ? "Synthetic persisted reply." : "Required attachment absent."
+                continuation.yield(.textDelta(.init(text: reply)))
                 continuation.yield(.completed(.init(stopReason: .endTurn)))
                 continuation.finish()
             }

@@ -2,6 +2,7 @@
 
 import FloeCore
 import FloeAgentRuntime
+import FloeMacSelfCore
 import FloePersistence
 import SwiftUI
 #if FLOE_UNIFIED_MAC
@@ -391,7 +392,10 @@ struct HostAgentWorkspaceView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(verbatim: attachment.displayName).lineLimit(1)
                             if !isImage {
-                                Text("mac.workspace.attachmentReferenceOnly").foregroundStyle(.secondary)
+                                let eligible = FloeMacSelfRuntime.canInlineTextDocument(
+                                    uti: attachment.uti, byteCount: attachment.byteCount)
+                                Text(LocalizedStringKey(eligible ? "mac.workspace.textAttachment" : "mac.workspace.attachmentReferenceOnly"))
+                                    .foregroundStyle(.secondary)
                             }
                         }
                         Button {

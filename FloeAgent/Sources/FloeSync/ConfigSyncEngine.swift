@@ -62,6 +62,14 @@ public actor ConfigSyncEngine {
     private let metadataStore: ConfigSyncMetadataStore?
     private let remoteHostStore: RemoteHostStore?
     private var credentialStore: CredentialStore?
+    private let recordTypes: Set<ConfigSyncRecordType>
+    private let automaticallySync: Bool
+    private let configuredZoneName: String
+    private let expectedAccountRecordName: String?
+
+    private var supportedRecordTypeNames: [String] {
+        ConfigSyncRecordType.allCases.filter { recordTypes.contains($0) }.map(\.rawValue)
+    }
 
     // MARK: - Inbound-apply observation seam
 
@@ -105,7 +113,11 @@ public actor ConfigSyncEngine {
         configurationStore: ModelConfigurationStore? = nil,
         metadataStore: ConfigSyncMetadataStore? = nil,
         remoteHostStore: RemoteHostStore? = nil,
-        credentialStore: CredentialStore? = nil
+        credentialStore: CredentialStore? = nil,
+        recordTypes: Set<ConfigSyncRecordType> = Set(ConfigSyncRecordType.allCases),
+        automaticallySync: Bool = true,
+        zoneName: String = ConfigSyncEngine.zoneName,
+        expectedAccountRecordName: String? = nil
     ) {
         let (stream, signal) = AsyncStream<UInt64>.makeStream(bufferingPolicy: .bufferingNewest(1))
         self.remoteConfigurationStream = stream
@@ -114,6 +126,10 @@ public actor ConfigSyncEngine {
         self.metadataStore = metadataStore
         self.remoteHostStore = remoteHostStore
         self.credentialStore = credentialStore
+        self.recordTypes = recordTypes
+        self.automaticallySync = automaticallySync
+        self.configuredZoneName = zoneName
+        self.expectedAccountRecordName = expectedAccountRecordName
     }
 
     /// AppEnvironment creates the v11 credential store after the sync engine.
@@ -337,6 +353,7 @@ public actor ConfigSyncEngine {
     }
 
     private func armTransientRetry(for failure: ConfigSyncFailure) {
+        guard automaticallySync else { return }
         guard failure.reason == .temporarilyUnavailable else {
             clearTransientRetryChain()
             return
@@ -659,9 +676,13 @@ public actor ConfigSyncEngine {
             status = .paused
             return
         }
-        let zoneID = CKRecordZone.ID(zoneName: Self.zoneName, ownerName: CKCurrentUserDefaultName)
-        let stateData = try await metadataStore.engineState(
-            supportedRecordTypes: ConfigSyncRecordType.allCases.map(\.rawValue))
+        if let expectedAccountRecordName {
+            let observedAccount = try await container.userRecordID()
+            try requireCurrentConfiguration(generation)
+            guard observedAccount.recordName == expectedAccountRecordName else { throw CancellationError() }
+        }
+        let zoneID = CKRecordZone.ID(zoneName: configuredZoneName, ownerName: CKCurrentUserDefaultName)
+        let stateData = try await metadataStore.engineState(supportedRecordTypes: supportedRecordTypeNames)
         try requireCurrentConfiguration(generation)
         let serialization = stateData.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
         // Finish every throwing/suspending preparation BEFORE publishing a
@@ -679,8 +700,9 @@ public actor ConfigSyncEngine {
             // No await between the merged handoff and publication. Writes
             // resumed later see this real engine and use the normal enqueue.
             let delegate = EngineDelegate(owner: owner)
-            let configuration = CKSyncEngine.Configuration(database: container.privateCloudDatabase,
+            var configuration = CKSyncEngine.Configuration(database: container.privateCloudDatabase,
                 stateSerialization: serialization, delegate: delegate)
+            configuration.automaticallySync = owner.automaticallySync
             let engine = CKSyncEngine(configuration)
             engine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))])
             for (id, action) in changes {
@@ -997,17 +1019,19 @@ public actor ConfigSyncEngine {
             try requireCurrentConfiguration(generation)
             if syncEngine == nil, let container { try await configure(container: container) }
             try requireCurrentConfiguration(generation)
-            guard let syncEngine else { throw FloeError.invalidConfiguration("CloudKit sync is not configured") }
+            guard let syncEngine, let zoneID else { throw FloeError.invalidConfiguration("CloudKit sync is not configured") }
             lastFailure = nil; status = .syncing
             // Establish the zone before fetching; preserve the same real
             // send/fetch/stage/send cycle and durable metadata/replay path.
-            try await syncEngine.sendChanges()
+            let sendOptions = CKSyncEngine.SendChangesOptions(scope: automaticallySync ? .all : .zoneIDs([zoneID]))
+            let fetchOptions = CKSyncEngine.FetchChangesOptions(scope: automaticallySync ? .all : .zoneIDs([zoneID]))
+            try await syncEngine.sendChanges(sendOptions)
             try requireCurrentConfiguration(generation)
-            try await syncEngine.fetchChanges()
+            try await syncEngine.fetchChanges(fetchOptions)
             try requireCurrentConfiguration(generation)
             try await stageUntrackedLocalConfiguration()
             try requireCurrentConfiguration(generation)
-            try await syncEngine.sendChanges()
+            try await syncEngine.sendChanges(sendOptions)
             try requireCurrentConfiguration(generation)
             let completion = await batchCompletionStatus()
             try requireCurrentConfiguration(generation)
@@ -1086,7 +1110,7 @@ public actor ConfigSyncEngine {
     /// one real CloudKit round trip. The task is actor-owned so it survives
     /// the editor view disappearing after Save.
     private func scheduleSynchronization() {
-        guard synchronizationEnabled else { return }
+        guard synchronizationEnabled, automaticallySync else { return }
         scheduledSync?.cancel()
         // CKSyncEngine forbids sendChanges/fetchChanges from recursively
         // inheriting one of its delegate callback tasks. A normal Task keeps
@@ -1177,7 +1201,8 @@ public actor ConfigSyncEngine {
         syncEngine: CKSyncEngine,
         zoneID: CKRecordZone.ID
     ) async throws {
-        guard try await metadataStore.metadata(recordType: type.rawValue, recordID: id) == nil else {
+        guard recordTypes.contains(type),
+              try await metadataStore.metadata(recordType: type.rawValue, recordID: id) == nil else {
             return
         }
         let payload = try Self.encode(value)
@@ -1245,16 +1270,17 @@ public actor ConfigSyncEngine {
                 guard let metadataStore, let current = self.syncEngine, current === syncEngine else { return }
                 try requireCurrentConfiguration(generation)
                 let data = try JSONEncoder().encode(update.stateSerialization)
-                try await metadataStore.saveEngineState(data,
-                    supportedRecordTypes: ConfigSyncRecordType.allCases.map(\.rawValue))
+                try await metadataStore.saveEngineState(data, supportedRecordTypes: supportedRecordTypeNames)
 
             case .accountChange(let change):
                 // A freshly constructed engine reports its initial sign-in.
                 // That is the same account availability just prepared above,
                 // not an obsolete runner returning after an account switch.
-                if case .signIn = change.changeType,
-                   let attempt = configurationAttempt, attempt.generation == configurationLifecycle,
-                   let current = self.syncEngine, current === syncEngine { break }
+                if case let .signIn(user) = change.changeType, let current = self.syncEngine, current === syncEngine {
+                    if let expectedAccountRecordName, user.recordName == expectedAccountRecordName { break }
+                    if expectedAccountRecordName == nil, let attempt = configurationAttempt,
+                       attempt.generation == configurationLifecycle { break }
+                }
                 configurationAccountDidChange()
 
             case .fetchedRecordZoneChanges(let changes):
@@ -1426,7 +1452,8 @@ public actor ConfigSyncEngine {
         var didStore = false
         var replayed = false
         defer { if didStore || replayed { signalRemoteConfigurationApplied() } }
-        guard let type = ConfigSyncRecordType(rawValue: record.recordType),
+        guard automaticallySync || record.recordID.zoneID.zoneName == configuredZoneName,
+              let type = ConfigSyncRecordType(rawValue: record.recordType), recordTypes.contains(type),
               let payload = record.encryptedValues["payload"] as? Data,
               let timestampsData = record.encryptedValues["fieldTimestamps"] as? Data,
               let metadataStore,
@@ -1759,7 +1786,8 @@ public actor ConfigSyncEngine {
     /// unknown-type record only tombstones metadata and returns FALSE.
     @discardableResult
     private func applyRemoteDeletion(recordID: CKRecord.ID, recordType: String) async throws -> Bool {
-        guard let type = ConfigSyncRecordType(rawValue: recordType),
+        guard automaticallySync || recordID.zoneID.zoneName == configuredZoneName,
+              let type = ConfigSyncRecordType(rawValue: recordType), recordTypes.contains(type),
               let configurationStore,
               let metadataStore
         else { return false }

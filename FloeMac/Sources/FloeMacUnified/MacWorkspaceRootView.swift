@@ -293,13 +293,21 @@ struct MacWorkspaceRootView: View {
         HStack(spacing: 14) {
             Text(title).font(.headline).lineLimit(1)
             Spacer(minLength: 8)
-            if showsTask {
-                if workspace.isSending {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small).accessibilityHidden(true)
-                        Text(runStatusTitle).font(.caption).foregroundStyle(.secondary)
+            if workspace.isSending {
+                if showsTask {
+                    activeTaskStatus
+                } else {
+                    Button {
+                        destination = workspace.selectedID.map(MacWorkspaceDestination.conversation) ?? .newTask
+                    } label: {
+                        activeTaskStatus
                     }
+                    .help("mac.workspace.returnToActiveTask")
+                    .accessibilityLabel("mac.workspace.returnToActiveTask")
+                    .accessibilityIdentifier("workspace.returnToActiveTask")
                 }
+            }
+            if showsTask {
                 Button { showInspector.toggle() } label: {
                     Label("mac.workspace.files", systemImage: "sidebar.trailing")
                 }
@@ -323,6 +331,13 @@ struct MacWorkspaceRootView: View {
         .padding(.horizontal, 20)
         .frame(minHeight: 44)
         .background(FloeTheme.chromeMaterial)
+    }
+
+    private var activeTaskStatus: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small).accessibilityHidden(true)
+            Text(runStatusTitle).font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private var runStatusTitle: LocalizedStringKey {

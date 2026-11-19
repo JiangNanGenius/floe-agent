@@ -15,6 +15,7 @@ RESOURCES = Path(__file__).resolve().parents[1] / "Resources"
 ENTITLEMENTS = RESOURCES / "FloeMacHost-OTA-CloudKit.entitlements"
 APPLICATION_ID = "com.apple.application-identifier"
 TEAM_ID = "com.apple.developer.team-identifier"
+PUSH_ENVIRONMENT = "com.apple.developer.aps-environment"
 CLOUD_CONTAINERS = "com.apple.developer.icloud-container-identifiers"
 CLOUD_SERVICES = "com.apple.developer.icloud-services"
 CLOUD_ENVIRONMENT = "com.apple.developer.icloud-container-environment"
@@ -43,7 +44,7 @@ def validate_claims(profile, requested, certificate, now):
             "The provisioning profile belongs to a different developer team.")
     require(certificate in profile.get("DeveloperCertificates", []),
             "The provisioning profile does not authorize the app's existing Developer ID certificate.")
-    for key in (APPLICATION_ID, TEAM_ID, CLOUD_CONTAINERS, CLOUD_SERVICES, CLOUD_ENVIRONMENT):
+    for key in (APPLICATION_ID, TEAM_ID, PUSH_ENVIRONMENT, CLOUD_CONTAINERS, CLOUD_SERVICES, CLOUD_ENVIRONMENT):
         expected = requested[key]
         allowed = entitlements.get(key)
         if key == CLOUD_SERVICES and allowed == "*":

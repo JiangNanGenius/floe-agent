@@ -176,6 +176,8 @@ Mac OTA 使用 `org.floeagent.macbridge`。CloudKit 使用和 iOS / iPadOS 相�
 
 签名配置只授予容器访问。实际同步需要应用接入适当的数据源，并在本机与另一台设备验证传输和冲突处理。
 
+Floe Agent 1.9.0 在模型设置中提供 iCloud 配置下载和上传。Mac 使用原有私有数据库中的供应商和模型记录，和 iOS 共用格式。导入后在这台 Mac 配置需要的 API 密钥。打包时还要核验生产推送授权，这是 Apple CloudKit 同步引擎的要求。
+
 ## 已验证与未完成
 
 M00 的 CLI/headless 证据见 `M00_VERIFICATION.md`。本轮新增的并发配对/停止准入/host takeover
