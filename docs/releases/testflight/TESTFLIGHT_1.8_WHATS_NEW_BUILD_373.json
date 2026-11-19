@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请导入包含 www 目录的完整 RPG Maker MV 游戏文件夹，记录从点「打开」到显示已导入文件数所需的时间。点「试玩」进入标题画面，关闭应用后再打开同一工程试玩。新用户可检查协议排版和底部按钮，已同意的设备升级后应直接进入应用。",
+  "en-US": "Import an entire RPG Maker MV game folder containing www. Time the interval from tapping Open to seeing the imported file count. Play to the title screen, quit Floe, reopen the same project, and play again. Check the agreement layout and buttons on a new installation. An upgrade with prior consent should open the app directly."
+}
