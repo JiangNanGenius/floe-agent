@@ -9,11 +9,26 @@ import SwiftUI
 /// admitted conversation or the shutdown of an open toolbox.
 @MainActor
 final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
+    enum CloseError: LocalizedError {
+        case agentBusy, pendingFiles, pendingAttachments, draftSaveFailed, runtimeCloseFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .agentBusy: String(localized: "host.mode.agentBusy")
+            case .pendingFiles: String(localized: "host.mode.pendingFiles")
+            case .pendingAttachments: String(localized: "host.mode.pendingAttachments")
+            case .draftSaveFailed: String(localized: "host.mode.draftSaveFailed")
+            case .runtimeCloseFailed: String(localized: "host.mode.runtimeCloseFailed")
+            }
+        }
+    }
+
     private let activity: BridgeUpdateActivity
     private let testSupport: URL?
     private(set) var agent: HostAgentWorkspace?
     private var agentWindow: NSWindow?
     private var draftStore: MacWorkspaceDraftStore?
+    private var agentLeases = Set<BridgeUpdateActivity.Lease>()
     private(set) var toolbox: MacToolboxWindowController?
     private var toolboxLease: BridgeUpdateActivity.Lease?
     private var drainingToolbox = false
@@ -30,9 +45,14 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
                   let namespace = Bundle.main.bundleIdentifier else { return }
             let workspace = HostAgentWorkspace(supportDirectory: root, namespace: namespace,
                                                 useKeychain: testSupport == nil,
-                                                admitWork: { [activity] in
+                                                admitWork: { [weak self] in
+                guard let self else { throw CloseError.agentBusy }
                 let lease = try activity.begin(.request)
-                return { activity.finish(lease) }
+                agentLeases.insert(lease)
+                return { [weak self, activity] in
+                    self?.agentLeases.remove(lease)
+                    activity.finish(lease)
+                }
             })
             agent = workspace
             let directory = try? HostAgentDatabase.committedSyncStoreURL(applicationSupport: root, namespace: namespace)
@@ -59,15 +79,27 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func openToolbox() { openToolbox(toolID: nil) }
-
-    func hideAgentWindow() {
+    func closeForBridgeMode() async throws -> Bool {
+        guard let agent, agentLeases.isEmpty, agent.beginTermination() else { throw CloseError.agentBusy }
+        defer { if self.agent != nil { agent.cancelTermination() } }
+        guard !agent.hasPendingWorkspaceFileChanges else { throw CloseError.pendingFiles }
+        guard agent.stagedAttachments.isEmpty else { throw CloseError.pendingAttachments }
         draftStore?.flush()
-        agentWindow?.orderOut(nil)
+        guard draftStore?.saveFailed != true else { throw CloseError.draftSaveFailed }
+        agent.cancelModelDiscovery()
+        guard await closeToolbox(promptForScannerDraft: true) else { return false }
+        do { try await agent.finishTermination() }
+        catch { throw CloseError.runtimeCloseFailed }
+        agentWindow?.close()
+        agentWindow?.contentViewController = nil
+        agentWindow = nil
+        draftStore = nil
+        self.agent = nil
+        return true
     }
 
     func openToolbox(toolID: String?) {
-        guard !drainingToolbox else { return }
+        guard agent?.isTerminating == false, !drainingToolbox else { return }
         if toolbox == nil {
             guard let lease = try? activity.begin(.maintenance) else { return }
             let storage = testSupport?.appendingPathComponent("Toolbox", isDirectory: true)

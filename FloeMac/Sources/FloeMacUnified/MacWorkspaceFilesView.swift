@@ -89,6 +89,8 @@ struct MacWorkspaceFilesView: View {
     var taskAttachmentURLs: Set<URL>? = nil
     var onRootChanged: ((URL?) -> Void)? = nil
     var onAttachmentsChanged: (([URL]) -> Void)? = nil
+    var canChangeFiles: () -> Bool = { true }
+    var onPendingChanges: ((Bool) -> Void)? = nil
     var onArtifact: ((MacWorkspaceArtifactEvent) -> Void)? = nil
     var layout: MacWorkspaceFilesLayout = .adaptive
 
@@ -107,6 +109,7 @@ struct MacWorkspaceFilesView: View {
     @State private var attachments: Set<URL> = []
     @State private var editing: MacWorkspaceTextEditSession?
     @State private var importingText = false
+    @State private var fileImportsInProgress = 0
     @State private var showTextImportError = false
     @State private var showSaveError = false
     @State private var showConflict = false
@@ -137,6 +140,7 @@ struct MacWorkspaceFilesView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear(perform: restoreSavedRoot)
         .task(id: reloadID) { await loadDirectory() }
+        .onChange(of: hasPendingChanges, initial: true) { _, pending in onPendingChanges?(pending) }
         .onChange(of: workspaceRevision) { reloadID = UUID() }
         .onChange(of: selection) { _, newSelection in
             guard newSelection.count == 1, let url = newSelection.first,
@@ -480,7 +484,15 @@ struct MacWorkspaceFilesView: View {
     }
 
     private var editorBinding: Binding<String> {
-        Binding(get: { editing?.text ?? "" }, set: { newValue in editing?.text = newValue })
+        Binding(get: { editing?.text ?? "" }, set: { newValue in
+            guard canChangeFiles() else { return }
+            editing?.text = newValue
+            onPendingChanges?(hasPendingChanges)
+        })
+    }
+
+    private var hasPendingChanges: Bool {
+        editing?.dirty == true || editing?.saving == true || fileImportsInProgress > 0
     }
 
     private func byteCountLabel(_ text: String) -> String {
@@ -715,7 +727,7 @@ struct MacWorkspaceFilesView: View {
     }
 
     private var canWriteInDirectory: Bool {
-        guard let root, let directory else { return false }
+        guard canChangeFiles(), let root, let directory else { return false }
         return MacWorkspaceFolderSnapshot.containsPhysicalDirectory(directory, in: root)
             && FileManager.default.isWritableFile(atPath: directory.path)
     }
@@ -726,7 +738,13 @@ struct MacWorkspaceFilesView: View {
     /// discipline as text saves, with `O_EXCL` so nothing is overwritten.
     private func importDroppedFiles(_ providers: [NSItemProvider]) {
         guard canWriteInDirectory, let root, let directory else { return }
+        fileImportsInProgress += 1
+        onPendingChanges?(true)
         Task {
+            defer {
+                fileImportsInProgress -= 1
+                onPendingChanges?(hasPendingChanges)
+            }
             var imported = 0
             for provider in providers {
                 guard let source = await loadDroppedURL(provider) else { continue }
@@ -787,7 +805,8 @@ struct MacWorkspaceFilesView: View {
     }
 
     private func saveEdits() {
-        guard let session = editing, session.dirty, !session.saving, let directory, let root else { return }
+        guard canChangeFiles(), let session = editing, session.dirty, !session.saving,
+              let directory, let root else { return }
         editing?.saving = true
         let text = session.text
         let baseName = session.entry.name

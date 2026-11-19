@@ -66,13 +66,13 @@ final class UnifiedMacSmoke {
     func exercise(model: BridgeAppModel) async {
         if CommandLine.arguments.contains("--verify-saved-launch-mode") {
             let deadline = ContinuousClock.now + .seconds(5)
-            while (!model.listenerReady || model.macWorkspace.agent == nil) && ContinuousClock.now < deadline {
+            while (!model.listenerReady || model.macWorkspace?.agent == nil) && ContinuousClock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(30))
             }
             let startedInAgent = model.isAgentMode && model.listenerReady && NSApp.activationPolicy() == .regular
                 && NSApp.windows.contains { $0.isVisible && $0.title == String(localized: "host.role.agent") }
                 && model.smokeSettingsWindow?.isVisible != true
-            if let agent = model.macWorkspace.agent {
+            if let agent = model.macWorkspace?.agent {
                 await agent.prepare()
                 while model.updates.installation.activity.activityCount != 0 && ContinuousClock.now < deadline {
                     try? await Task.sleep(for: .milliseconds(30))
@@ -90,6 +90,11 @@ final class UnifiedMacSmoke {
         while !model.listenerReady && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
+        // An Agent-only entry point must also be inert when invoked directly.
+        model.openToolbox(toolID: "ping")
+        let bridgeOnlyStartup = model.listenerReady && !model.isAgentMode && model.macWorkspace == nil
+            && !FileManager.default.fileExists(atPath: root.appendingPathComponent("Floe Mac Agent").path)
+            && !FileManager.default.fileExists(atPath: root.appendingPathComponent("Toolbox").path)
         var pairedRequest = false
         if let port = model.smokePort {
             let path = model.paths?.root.appendingPathComponent("State/paired-clients.json")
@@ -101,8 +106,8 @@ final class UnifiedMacSmoke {
         // The first leg uses a real button event. Other desktop windows can
         // intercept synthetic events, so also exercise the same handler in
         // the insulated fixture to keep independent task tests runnable.
-        if model.macWorkspace.agent == nil { model.openAgentWorkspace() }
-        let switchedToAgent = model.macWorkspace.agent != nil
+        if model.macWorkspace?.agent == nil { model.openAgentWorkspace() }
+        let switchedToAgent = model.macWorkspace?.agent != nil
         let workbenchVisible = NSApp.windows.contains {
             $0.isVisible && $0.title == String(localized: "host.role.agent")
         }
@@ -120,7 +125,7 @@ final class UnifiedMacSmoke {
         var agentApproval = (allowed: false, denied: false)
         var planning = (planSaved: false, goalSaved: false)
         var pressedApprovalButton = false
-        if let agent = model.macWorkspace.agent {
+        if let agent = model.macWorkspace?.agent {
             var normalChatID: UUID?
             await agent.prepare()
             // The visible SwiftUI view may already own preparation.
@@ -193,11 +198,12 @@ final class UnifiedMacSmoke {
                 deletedFixtureTask = removed && !agent.conversations.contains { $0.id == normalChatID }
             }
             catalog = await verifyProviderCatalog(in: agent)
-            if agent.beginTermination() { try? await agent.finishTermination() }
         }
         let toolbox = await exerciseToolbox(model: model)
+        if let agent = model.macWorkspace?.agent, agent.beginTermination() { try? await agent.finishTermination() }
         let output: [String: Any] = [
             "sameProcessBridgeReady": model.listenerReady,
+            "bridgeOnlyStartupVerified": bridgeOnlyStartup,
             "legacyPairAndSignatureVerified": pairedRequest,
             "switchedToAgentFromBridge": switchedToAgent,
             "bridgeSwitchUserEventVerified": bridgeSwitchUserEvent,
@@ -220,7 +226,7 @@ final class UnifiedMacSmoke {
             "planAcceptedAndReloaded": planning.planSaved,
             "goalRunBoundAndReloaded": planning.goalSaved,
             "workspaceApprovalAXPress": pressedApprovalButton,
-            "taskDiagnostics": model.macWorkspace.agent?.smokeRunDiagnostics ?? [],
+            "taskDiagnostics": model.macWorkspace?.agent?.smokeRunDiagnostics ?? [],
             "toolboxAndLoopbackVerified": toolbox,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
@@ -365,7 +371,7 @@ final class UnifiedMacSmoke {
     }
 
     private func exerciseBridgeSwitch(model: BridgeAppModel) async -> Bool {
-        guard model.macWorkspace.agent == nil else { return false }
+        guard model.macWorkspace?.agent == nil else { return false }
         model.openSettings()
         let deadline = ContinuousClock.now + .seconds(5)
         while ContinuousClock.now < deadline {
@@ -380,10 +386,10 @@ final class UnifiedMacSmoke {
                     let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
                     guard click(content, at: point, in: bridge) else { return false }
                 }
-                while model.macWorkspace.agent == nil && ContinuousClock.now < deadline {
+                while model.macWorkspace?.agent == nil && ContinuousClock.now < deadline {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
-                return model.macWorkspace.agent != nil
+                return model.macWorkspace?.agent != nil
             }
             try? await Task.sleep(for: .milliseconds(50))
         }
@@ -417,15 +423,15 @@ final class UnifiedMacSmoke {
     }
 
     private func exerciseToolbox(model: BridgeAppModel) async -> Bool {
-        let workspace = model.macWorkspace
-        workspace.openToolbox(toolID: "ping")
+        guard let workspace = model.macWorkspace else { return false }
+        model.openToolbox(toolID: "ping")
         guard let first = workspace.toolbox, first.window?.isVisible == true else { return false }
         let command = first.services.networkOwner
         let started = command.start(.ping("127.0.0.1"), locale: Locale(identifier: "en"))
         let completed = await command.drain(timeout: 9)
         let pingPassed = started && completed && command.result?.contains("4 packets received") == true
         guard await workspace.closeToolbox() else { return false }
-        workspace.openToolbox()
+        model.openToolbox()
         let reopened = workspace.toolbox
         let distinctOwner = reopened?.window?.isVisible == true
             && reopened?.services.mediaEnvironment !== first.services.mediaEnvironment
@@ -433,9 +439,9 @@ final class UnifiedMacSmoke {
         let remoteToolsAvailable = ["terminal", "vnc"].allSatisfy { id in
             tools.contains { $0.id == id && $0.isAvailable }
         }
-        workspace.openToolbox(toolID: "terminal")
+        model.openToolbox(toolID: "terminal")
         let terminalVisible = workspace.toolbox === reopened && reopened?.window?.isVisible == true
-        workspace.openToolbox(toolID: "vnc")
+        model.openToolbox(toolID: "vnc")
         let vncVisible = workspace.toolbox === reopened && reopened?.window?.isVisible == true
         let closed = await workspace.closeToolbox()
         return pingPassed && distinctOwner && remoteToolsAvailable && terminalVisible && vncVisible && closed
@@ -464,19 +470,41 @@ final class UnifiedMacSmoke {
     }
 
     private func exerciseModeRoundTrip(model: BridgeAppModel) async -> Bool {
-        guard let initialAgent = model.macWorkspace.agent, NSApp.activationPolicy() == .regular else { return false }
-        model.switchToBridge()
+        guard let initialWorkspace = model.macWorkspace, let agent = initialWorkspace.agent,
+              NSApp.activationPolicy() == .regular else { return false }
+        await agent.prepare()
+        let prepareDeadline = ContinuousClock.now + .seconds(5)
+        while agent.isPreparing && ContinuousClock.now < prepareDeadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard agent.isReady else { return false }
+        model.openToolbox(toolID: "ping")
+        guard let toolboxWindow = initialWorkspace.toolbox?.window, toolboxWindow.isVisible else { return false }
+        agent.hasPendingWorkspaceFileChanges = true
+        let editPreserved: Bool
+        do {
+            _ = try await model.switchToBridge()
+            editPreserved = false
+        } catch UnifiedMacWorkspace.CloseError.pendingFiles {
+            editPreserved = model.isAgentMode && model.macWorkspace === initialWorkspace && toolboxWindow.isVisible
+        } catch { editPreserved = false }
+        agent.hasPendingWorkspaceFileChanges = false
+        guard editPreserved, (try? await model.switchToBridge()) == true else { return false }
         let deadline = ContinuousClock.now + .seconds(3)
         while !NSApp.windows.contains(where: { $0.title == "Floe Bridge" && $0.isVisible }),
               ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        guard NSApp.activationPolicy() == .accessory,
+        guard !model.isAgentMode, model.macWorkspace == nil, initialWorkspace.agent == nil,
+              initialWorkspace.toolbox == nil, !toolboxWindow.isVisible, NSApp.activationPolicy() == .accessory,
               NSApp.windows.contains(where: { $0.title == "Floe Bridge" && $0.isVisible }) else { return false }
+        guard let port = model.smokePort, (try? await callPairedBridge(port: port)) == true else { return false }
         model.reopenPreferredWindow()
-        guard model.macWorkspace.agent === initialAgent else { return false }
+        model.openToolbox()
+        guard model.macWorkspace == nil else { return false }
         model.openAgentWorkspace()
-        return NSApp.activationPolicy() == .regular && model.macWorkspace.agent === initialAgent
+        return NSApp.activationPolicy() == .regular && model.isAgentMode
+            && model.macWorkspace?.agent != nil && model.macWorkspace !== initialWorkspace
             && NSApp.windows.contains { $0.isVisible && $0.title == String(localized: "host.role.agent") }
     }
 

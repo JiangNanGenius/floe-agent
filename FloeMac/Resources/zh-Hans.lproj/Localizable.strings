@@ -46,6 +46,12 @@
 "host.menu.mode" = "模式";
 "host.menu.agent" = "切换到 Agent 模式";
 "host.menu.bridge" = "切换到 Bridge 模式";
+"host.mode.switchUnavailable" = "无法切换到 Bridge 模式";
+"host.mode.agentBusy" = "请等待 Agent 完成当前操作后再试。";
+"host.mode.pendingFiles" = "请等待文件保存完成，或放弃未保存的修改后再试。";
+"host.mode.pendingAttachments" = "请发送或移除草稿中的附件后再试。";
+"host.mode.draftSaveFailed" = "对话草稿保存失败。请检查草稿后重试。";
+"host.mode.runtimeCloseFailed" = "Agent 未能关闭工作区。请稍后重试。";
 "host.menu.openAgent" = "打开 Agent 工作区";
 "host.menu.stopBridge" = "停止同包 Bridge";
 "host.quit" = "退出 %@";

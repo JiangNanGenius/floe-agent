@@ -44,6 +44,7 @@ struct MacWorkspaceRootView: View {
             workspacePanes
         }
         .navigationSplitViewStyle(.balanced)
+        .disabled(workspace.isTerminating)
         .task { await workspace.prepare() }
         .task(id: workspace.isReady) {
             guard workspace.isReady, !restoredInitialDestination else { return }
@@ -140,7 +141,9 @@ struct MacWorkspaceRootView: View {
             workspaceRevision: workspace.workspaceRevision,
             taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
             onRootChanged: { grantedFolder = $0 },
-            onAttachmentsChanged: updateFileAttachments
+            onAttachmentsChanged: updateFileAttachments,
+            canChangeFiles: { !workspace.isTerminating },
+            onPendingChanges: { workspace.hasPendingWorkspaceFileChanges = $0 }
         )
         .frame(minWidth: filesVisible ? 270 : 0,
                maxWidth: destination == .files ? .infinity : (filesVisible ? 310 : 0))

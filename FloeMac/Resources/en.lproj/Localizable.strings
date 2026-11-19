@@ -46,6 +46,12 @@
 "host.menu.mode" = "Mode";
 "host.menu.agent" = "Switch to Agent Mode";
 "host.menu.bridge" = "Switch to Bridge Mode";
+"host.mode.switchUnavailable" = "Couldn’t Switch to Bridge Mode";
+"host.mode.agentBusy" = "Wait for Agent to finish its current work, then try again.";
+"host.mode.pendingFiles" = "Finish saving or discard the unsaved file changes, then try again.";
+"host.mode.pendingAttachments" = "Send or remove the draft attachments, then try again.";
+"host.mode.draftSaveFailed" = "Your conversation draft couldn’t be saved. Check the draft, then try again.";
+"host.mode.runtimeCloseFailed" = "Agent couldn’t finish closing its workspace. Try again in a moment.";
 "host.menu.openAgent" = "Open Agent Workspace";
 "host.menu.stopBridge" = "Stop Embedded Bridge";
 "host.quit" = "Quit %@";

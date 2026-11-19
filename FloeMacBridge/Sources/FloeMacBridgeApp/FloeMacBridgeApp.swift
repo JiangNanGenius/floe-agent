@@ -27,9 +27,12 @@ struct FloeMacBridgeApp: App {
                     .disabled(!model.updates.canCheckForUpdates)
             }
             CommandGroup(after: .windowArrangement) {
-                Button("host.menu.openAgent") { model.openAgentWorkspace() }
-                Button("host.menu.bridge") { model.switchToBridge() }
-                Button("host.menu.tools") { model.macWorkspace.openToolbox() }
+                Button(LocalizedStringKey(model.isAgentMode ? "host.menu.openAgent" : "host.bridge.switchToAgent")) { model.openAgentWorkspace() }
+                    .disabled(model.isSwitchingMode)
+                if model.isAgentMode {
+                    Button("host.menu.bridge") { model.requestBridgeMode() }.disabled(model.isSwitchingMode)
+                    Button("host.menu.tools") { model.openToolbox() }.disabled(model.isSwitchingMode)
+                }
             }
             #endif
             CommandGroup(replacing: .appSettings) {
@@ -64,8 +67,11 @@ private struct BridgeMenuView: View {
         Text("Floe Bridge").font(.headline)
         Text(model.connectionStatus)
         #if FLOE_UNIFIED_MAC
-        Button("host.menu.openAgent") { model.openAgentWorkspace() }
-        Button("host.menu.tools") { model.macWorkspace.openToolbox() }
+        Button(LocalizedStringKey(model.isAgentMode ? "host.menu.openAgent" : "host.bridge.switchToAgent")) { model.openAgentWorkspace() }
+            .disabled(model.isSwitchingMode)
+        if model.isAgentMode {
+            Button("host.menu.tools") { model.openToolbox() }.disabled(model.isSwitchingMode)
+        }
         #endif
         Button("Settings…") { model.openSettings(.bridge) }
         Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
@@ -93,8 +99,9 @@ final class BridgeAppModel: ObservableObject {
     private var pendingSettingsPresentation: Task<Void, Never>?
     let updates: BridgeUpdaterModel
     #if FLOE_UNIFIED_MAC
-    let macWorkspace: UnifiedMacWorkspace
+    @Published private(set) var macWorkspace: UnifiedMacWorkspace?
     @Published var settingsPane: SettingsPane = .models
+    @Published private(set) var isSwitchingMode = false
     private enum LaunchMode: String {
         case bridge, agent
         static let preferenceKey = "floe.mac.launchMode"
@@ -143,11 +150,6 @@ final class BridgeAppModel: ObservableObject {
     init() {
         let activity = BridgeUpdateActivity()
         updates = BridgeUpdaterModel(activity: activity)
-        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
-        macWorkspace = UnifiedMacWorkspace(activity: activity, testSupport: smoke?.root)
-        #elseif FLOE_UNIFIED_MAC
-        macWorkspace = UnifiedMacWorkspace(activity: activity)
-        #endif
         #if FLOE_UNIFIED_MAC
         launchMode = preferences.string(forKey: LaunchMode.preferenceKey).flatMap(LaunchMode.init(rawValue:)) ?? .bridge
         #endif
@@ -306,6 +308,7 @@ final class BridgeAppModel: ObservableObject {
     }
     #if FLOE_UNIFIED_MAC
     func openAgentWorkspace() {
+        guard !isSwitchingMode else { return }
         if !isAgentMode {
             closeSettingsWindow()
             settingsPane = .models
@@ -315,17 +318,50 @@ final class BridgeAppModel: ObservableObject {
     }
 
     private func showAgentWindow() {
+        guard !isSwitchingMode else { return }
+        if macWorkspace == nil {
+            #if FLOE_MAC_HOST_SMOKE
+            macWorkspace = UnifiedMacWorkspace(activity: updates.installation.activity, testSupport: smoke?.root)
+            #else
+            macWorkspace = UnifiedMacWorkspace(activity: updates.installation.activity)
+            #endif
+        }
         NSApp.setActivationPolicy(.regular)
-        macWorkspace.openAgent(openBridgeSettings: { [weak self] in self?.openSettings(.bridge) },
-                               openModelSettings: { [weak self] in self?.openSettings(.models) })
+        macWorkspace?.openAgent(openBridgeSettings: { [weak self] in self?.openSettings(.bridge) },
+                                openModelSettings: { [weak self] in self?.openSettings(.models) })
     }
 
-    func switchToBridge() {
+    func openToolbox(toolID: String? = nil) {
+        guard isAgentMode, !isSwitchingMode else { return }
+        macWorkspace?.openToolbox(toolID: toolID)
+    }
+
+    func requestBridgeMode() {
+        Task {
+            do { _ = try await switchToBridge() }
+            catch {
+                let alert = NSAlert()
+                alert.messageText = String(localized: "host.mode.switchUnavailable")
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
+    }
+
+    func switchToBridge() async throws -> Bool {
+        guard isAgentMode, !isSwitchingMode, let workspace = macWorkspace else { return false }
+        let activity = updates.installation.activity
+        let transition = try activity.begin(.maintenance)
+        isSwitchingMode = true
+        defer { isSwitchingMode = false; activity.finish(transition) }
+        guard try await workspace.closeForBridgeMode() else { return false }
         rememberMode(.bridge)
         closeSettingsWindow()
-        macWorkspace.hideAgentWindow()
+        settingsWindow?.contentViewController = nil
+        macWorkspace = nil
         NSApp.setActivationPolicy(.accessory)
         openSettings(.bridge)
+        return true
     }
 
     func closeSettingsWindow() {
@@ -378,7 +414,8 @@ final class BridgeAppModel: ObservableObject {
     func quit() {
         #if FLOE_UNIFIED_MAC
         Task {
-            guard await macWorkspace.closeToolbox(promptForScannerDraft: true) else { return }
+            guard !isSwitchingMode else { return }
+            if let macWorkspace, !(await macWorkspace.closeToolbox(promptForScannerDraft: true)) { return }
             await service?.jobs.stopAllAndWait()
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
@@ -421,7 +458,7 @@ private struct UnifiedMacSettingsView: View {
     @ObservedObject var model: BridgeAppModel
 
     var body: some View {
-        if model.isAgentMode, let workspace = model.macWorkspace.agent {
+        if model.isAgentMode, let workspace = model.macWorkspace?.agent {
             TabView(selection: $model.settingsPane) {
                 MacProviderSettingsView(workspace: workspace, close: model.closeSettingsWindow)
                     .tabItem { Label("mac.settings.models", systemImage: "slider.horizontal.3") }

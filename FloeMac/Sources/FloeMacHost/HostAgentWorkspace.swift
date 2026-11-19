@@ -199,6 +199,7 @@ final class HostAgentWorkspace: ObservableObject {
     private var activeRun: FloeMacSelfSessionHandle?
     #if FLOE_UNIFIED_MAC
     private var isSynchronizingCloudModels = false
+    var hasPendingWorkspaceFileChanges = false
     #endif
     #if FLOE_MAC_HOST_SMOKE
     private(set) var smokeRunDiagnostics: [String] = []
@@ -1189,6 +1190,7 @@ final class HostAgentWorkspace: ObservableObject {
     /// briefly so a burst of edits collapses into one request; intermediate
     /// endpoints the user typed through never receive a request.
     func requestModelDiscovery(endpoint: String, protocolKind: ModelProtocol, apiKey: String, debounce: Bool) {
+        guard !isTerminating else { return }
         modelDiscoveryGeneration &+= 1
         let generation = modelDiscoveryGeneration
         modelDiscoveryTask?.cancel()
@@ -1291,6 +1293,7 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func admit() -> ReleaseWork? {
+        guard !isTerminating else { return nil }
         do {
             return try admitWork()
         } catch {
