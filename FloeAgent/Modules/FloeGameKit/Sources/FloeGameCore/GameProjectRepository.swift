@@ -146,19 +146,32 @@ public actor FileGameProjectRepository {
             let sourcePath = reader.rootURL.path + "/", storagePath = directory.path + "/"
             guard !storagePath.hasPrefix(sourcePath), !sourcePath.hasPrefix(storagePath) else { throw GameProjectError.invalidContext }
             let entries = try reader.tree(maximumEntries: limits.maximumEntries)
+            // Digest reuse is sound only for regular files on the reader's
+            // own local APFS device; files on nested or remote mounts keep
+            // the original full re-read verification.
+            let localDevice = reader.localAPFSDevice
             var files: [GameProjectFile] = [], total = 0
+            var identities = [GameRelativePath: GameFileFingerprint]()
+            identities.reserveCapacity(entries.count)
             for item in entries where !item.directory {
                 try Task.checkCancellation()
-                let file = try put(reader: reader, path: item.path)
-                guard total <= limits.maximumProjectBytes - file.bytes else { throw GameProjectError.limitExceeded("projectBytes") }
-                total += file.bytes
-                files.append(file)
+                let staged = try put(reader: reader, path: item.path)
+                guard total <= limits.maximumProjectBytes - staged.file.bytes else { throw GameProjectError.limitExceeded("projectBytes") }
+                total += staged.file.bytes
+                files.append(staged.file)
+                if let localDevice, staged.identity.device == localDevice {
+                    identities[item.path] = staged.identity
+                }
             }
+            try flushImportedObjects()
             let finalEntries = try reader.tree(maximumEntries: limits.maximumEntries)
             guard entries.map(\.path) == finalEntries.map(\.path), entries.map(\.directory) == finalEntries.map(\.directory) else { throw GameProjectError.corruptStorage }
+            // The captured identity lets the reader reuse its digest when the
+            // same file (inode, nanosecond change metadata, size) is reopened
+            // beneath the captured root; a changed file is re-read and compared.
             for file in files {
-                guard let actual = try reader.fingerprint(file.path), actual.bytes == file.bytes,
-                      actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
+                guard let actual = try reader.fingerprintWithIdentity(file.path, cached: identities[file.path]),
+                      actual.bytes == file.bytes, actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
             }
             let imported = GameStoredProject(version: 1, projectID: projectID, owner: owner,
                 revision: UUID().uuidString.lowercased(), parent: current.revision, title: current.title, engine: current.engine,
@@ -181,13 +194,20 @@ public actor FileGameProjectRepository {
             let sourcePath = reader.rootURL.path + "/", storagePath = directory.path + "/"
             guard !storagePath.hasPrefix(sourcePath), !sourcePath.hasPrefix(storagePath) else { throw GameProjectError.invalidContext }
             var files: [GameProjectFile] = [], total = 0
+            var identities = [GameRelativePath: GameFileFingerprint]()
+            identities.reserveCapacity(entries.count)
+            let localDevice = reader.localAPFSDevice
             for entry in entries where !entry.directory {
                 try Task.checkCancellation()
-                let file = try put(reader: reader, path: entry.path)
-                guard total <= limits.maximumProjectBytes - file.bytes else { throw GameProjectError.limitExceeded("projectBytes") }
-                total += file.bytes
-                files.append(file)
+                let staged = try put(reader: reader, path: entry.path)
+                guard total <= limits.maximumProjectBytes - staged.file.bytes else { throw GameProjectError.limitExceeded("projectBytes") }
+                total += staged.file.bytes
+                files.append(staged.file)
+                if let localDevice, staged.identity.device == localDevice {
+                    identities[entry.path] = staged.identity
+                }
             }
+            try flushImportedObjects()
             let result = GameStoredProject(version: 1, projectID: projectID, owner: owner,
                 revision: UUID().uuidString.lowercased(), parent: nil, title: title, engine: engine,
                 directories: entries.filter(\.directory).map(\.path), files: files)
@@ -198,7 +218,8 @@ public actor FileGameProjectRepository {
             guard entries.map({ $0.path }) == finalEntries.map({ $0.path }),
                   entries.map({ $0.directory }) == finalEntries.map({ $0.directory }) else { throw GameProjectError.corruptStorage }
             for file in result.files {
-                guard let actual = try reader.fingerprint(file.path), actual.bytes == file.bytes, actual.sha256 == file.sha256 else {
+                guard let actual = try reader.fingerprintWithIdentity(file.path, cached: identities[file.path]),
+                      actual.bytes == file.bytes, actual.sha256 == file.sha256 else {
                     throw GameProjectError.unreadableFile(file.path.value)
                 }
             }
@@ -517,13 +538,13 @@ public actor FileGameProjectRepository {
         }), actual.bytes == file.bytes, actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
         guard fsync(fd) == 0 else { throw GameProjectError.io("flush export") }
     }
-    private func put(reader: GameProjectReader, path: GameRelativePath) throws -> GameProjectFile {
+    private func put(reader: GameProjectReader, path: GameRelativePath) throws -> (file: GameProjectFile, identity: GameFileFingerprint) {
         let temporary = directory.appendingPathComponent("Objects/.game-import-" + UUID().uuidString)
         let descriptor = Darwin.open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
         if descriptor < 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
         guard descriptor >= 0 else { throw GameProjectError.io("stage import") }
         defer { Darwin.close(descriptor); unlink(temporary.path) }
-        guard let fingerprint = try reader.fingerprint(path, writeChunk: { chunk in
+        guard let fingerprint = try reader.fingerprintWithIdentity(path, writeChunk: { chunk in
             try chunk.withUnsafeBytes { bytes in
                 var offset = 0
                 while offset < bytes.count {
@@ -544,17 +565,25 @@ public actor FileGameProjectRepository {
         let target = try objectURL(file.sha256)
         try Task.checkCancellation()
         if link(temporary.path, target.path) == 0 {
+            // A single directory fsync after the whole import (see
+            // flushImportedObjects) replaces one fsync per linked object.
             stagedFiles.append(target)
-            let parent = Darwin.open(target.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard parent >= 0 else { throw GameProjectError.io("open import directory") }
-            defer { Darwin.close(parent) }
-            guard fsync(parent) == 0 else { throw GameProjectError.io("flush import directory") }
         } else if errno == EEXIST {
             let existing = try GameProjectReader(rootURL: target.deletingLastPathComponent(), maximumFileBytes: limits.maximumFileBytes)
             guard let actual = try existing.fingerprint(GameRelativePath(target.lastPathComponent)),
                   actual.bytes == file.bytes, actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
         } else { throw GameProjectError.io("commit import") }
-        return file
+        return (file, fingerprint)
+    }
+    /// One directory fsync after a bulk import makes every linked object
+    /// durable before HEAD publication, instead of fsyncing the same Objects
+    /// directory once per imported file.
+    private func flushImportedObjects() throws {
+        let parent = Darwin.open(directory.appendingPathComponent("Objects").path,
+                                 O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw GameProjectError.io("open import directory") }
+        defer { Darwin.close(parent) }
+        guard fsync(parent) == 0 else { throw GameProjectError.io("flush import directory") }
     }
     private func put(_ bytes: Data, path: GameRelativePath, executable: Bool = false) throws -> GameProjectFile {
         guard bytes.count <= limits.maximumFileBytes else { throw GameProjectError.limitExceeded(path.value) }
