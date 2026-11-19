@@ -11,28 +11,36 @@ import FloeJoystickVendor
 public struct GameTouchControlsView: View {
     @ObservedObject public var service: GameTouchInputService
     public let editingLayout: Bool
+    private let layoutProfile: GameTouchProfile?
+    private var profile: GameTouchProfile { editingLayout ? layoutProfile ?? service.profile : service.profile }
     public let onMove: @MainActor (GameTouchButton.ID?, GameTouchAnchor) -> Void
     public let onFinishLayout: @MainActor () -> Void
     @Environment(\.locale) private var locale
     @Environment(\.scenePhase) private var scenePhase
-    public init(service: GameTouchInputService, editingLayout: Bool = false,
+    public init(service: GameTouchInputService, editingLayout: Bool = false, layoutProfile: GameTouchProfile? = nil,
                 onMove: @escaping @MainActor (GameTouchButton.ID?, GameTouchAnchor) -> Void = { _, _ in },
                 onFinishLayout: @escaping @MainActor () -> Void = {}) {
+        self.layoutProfile = layoutProfile
         self.service = service; self.editingLayout = editingLayout; self.onMove = onMove; self.onFinishLayout = onFinishLayout
     }
     public var body: some View {
         let attachment = service.attachmentID
         GeometryReader { geometry in
             if service.profile.enabled || editingLayout {
-                let size = geometry.size, profile = service.profile
+                let size = geometry.size
+                if editingLayout {
+                    // The layout canvas owns blank space as well as controls.
+                    Color.clear.contentShape(Rectangle()).accessibilityHidden(true)
+                }
                 let stickSize = CGFloat(profile.stick == .directionPad ? max(132, 132 * profile.scale) : 126 * profile.scale)
                 if profile.stick != .none {
                     Group {
                         if profile.stick == .joystick { joystick }
                         else { directionPad }
                     }.frame(width: stickSize, height: stickSize)
-                        .position(position(profile.stickAnchor, fallback: .init(x: 0.16, y: 0.76), size: size, extent: .init(width: stickSize, height: stickSize)))
-                        .modifier(LayoutDrag(enabled: editingLayout, gesture: layoutGesture(nil, size: size)))
+                        .modifier(placement(nil, anchor: profile.stickAnchor, fallback: .init(x: 0.16, y: 0.76),
+                                            size: size, extent: .init(width: stickSize, height: stickSize),
+                                            label: locale.language.languageCode?.identifier == "zh" ? "方向控制" : "Movement"))
                 }
                 let visible = profile.buttons.filter { $0.visible || editingLayout }
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, button in
@@ -43,8 +51,8 @@ public struct GameTouchControlsView: View {
                         service.button(button.id, pressed: $0, forAttachment: attachment)
                     }
                         .frame(width: extent.width, height: extent.height)
-                        .position(position(button.anchor, fallback: defaultPosition(index: index, count: visible.count, size: size), size: size, extent: extent))
-                        .modifier(LayoutDrag(enabled: editingLayout, gesture: layoutGesture(button.id, size: size)))
+                        .modifier(placement(button.id, anchor: button.anchor, fallback: defaultPosition(index: index, count: visible.count, size: size),
+                                            size: size, extent: extent, label: button.label ?? button.binding.keyCap))
                         .opacity(button.visible ? 1 : 0.4)
                         .accessibilityIdentifier("game.touch." + button.id.rawValue)
                 }
@@ -58,7 +66,7 @@ public struct GameTouchControlsView: View {
                         .padding(12).frame(maxHeight: .infinity, alignment: .top)
                 }
             }
-        }.id(attachment)
+        }.id(editingLayout ? nil : attachment)
             .coordinateSpace(name: "gameTouchLayout").opacity(editingLayout ? 1 : service.profile.opacity).allowsHitTesting(service.isAttached || editingLayout)
             .onDisappear { if let attachment { Task { await service.releaseAll(forAttachment: attachment) } } }
             .onChange(of: scenePhase) { _, phase in
@@ -85,33 +93,32 @@ public struct GameTouchControlsView: View {
                 arrow(.right, symbol: "arrowtriangle.right.fill")
             }
             arrow(.down, symbol: "arrowtriangle.down.fill")
-        }.scaleEffect(max(1, service.profile.scale))
+        }.scaleEffect(max(1, profile.scale))
     }
     @ViewBuilder private func arrow(_ direction: GameTouchAction, symbol: String) -> some View {
         let attachment = service.attachmentID
-        if service.profile.directionBinding(for: direction) != nil {
+        if profile.directionBinding(for: direction) != nil {
             PressControl(label: "", symbol: symbol, editing: editingLayout) { service.direction(direction, pressed: $0, forAttachment: attachment) }
                 .frame(width: 44, height: 44).accessibilityLabel(direction.rawValue)
         } else { Color.clear.frame(width: 44, height: 44).allowsHitTesting(false) }
     }
-    private func position(_ anchor: GameTouchAnchor?, fallback: CGPoint, size: CGSize, extent: CGSize) -> CGPoint {
-        let canonicalX = anchor?.x ?? Double(fallback.x)
-        let x = service.profile.leftHanded ? 1 - canonicalX : canonicalX
-        let y = anchor?.y ?? Double(fallback.y)
-        return CGPoint(x: min(max(extent.width / 2 + 8, CGFloat(x) * size.width), max(extent.width / 2 + 8, size.width - extent.width / 2 - 8)),
-                       y: min(max(extent.height / 2 + 8, CGFloat(y) * size.height), max(extent.height / 2 + 8, size.height - extent.height / 2 - 8)))
-    }
-    private func layoutGesture(_ id: GameTouchButton.ID?, size: CGSize) -> some Gesture {
-        DragGesture(coordinateSpace: .named("gameTouchLayout")).onChanged { value in
-            guard editingLayout, size.width > 0, size.height > 0,
-                  let anchor = try? GameTouchAnchor(x: min(max(service.profile.leftHanded ? 1 - Double(value.location.x / size.width) : Double(value.location.x / size.width), 0), 1), y: min(max(Double(value.location.y / size.height), 0), 1)) else { return }
+    private func placement(_ id: GameTouchButton.ID?, anchor: GameTouchAnchor?, fallback: CGPoint,
+                           size: CGSize, extent: CGSize, label: String) -> LayoutPlacement {
+        let x = anchor?.x ?? fallback.x
+        let center = CGPoint(x: (profile.leftHanded ? 1 - x : x) * size.width,
+                             y: (anchor?.y ?? fallback.y) * size.height)
+        return LayoutPlacement(editing: editingLayout, center: center, size: size, extent: extent, label: label,
+                               identifier: "game.touch." + (id?.rawValue ?? "stick")) { point in
+            guard size.width > 0, size.height > 0,
+                  let anchor = try? GameTouchAnchor(x: profile.leftHanded ? 1 - point.x / size.width : point.x / size.width,
+                                                   y: point.y / size.height) else { return }
             onMove(id, anchor)
         }
     }
     private func buttonExtent(_ button: GameTouchButton) -> CGSize {
         let title = button.label?.isEmpty == false ? button.label! : button.binding.keyCap
         let width = button.width ?? min(180, max(52, Double(title.count) * 9 + 24))
-        return .init(width: max(44, width * service.profile.scale), height: max(44, (button.height ?? 52) * service.profile.scale))
+        return .init(width: max(44, width * profile.scale), height: max(44, (button.height ?? 52) * profile.scale))
     }
     private func defaultPosition(index: Int, count: Int, size: CGSize) -> CGPoint {
         let crowded = count > 8
@@ -126,14 +133,42 @@ public struct GameTouchControlsView: View {
     }
 }
 
-/// A disabled callback still leaves a drag recognizer installed. Keep layout
-/// gestures out of play mode so UIKit can track a held joystick touch itself.
-private struct LayoutDrag<G: Gesture>: ViewModifier {
-    let enabled: Bool
-    let gesture: G
+/// Track the finger locally; commit one normalized position when it lifts.
+private struct LayoutPlacement: ViewModifier {
+    let editing: Bool
+    let center: CGPoint
+    let size: CGSize
+    let extent: CGSize
+    let label: String
+    let identifier: String
+    let commit: (CGPoint) -> Void
+    @GestureState private var translation: CGSize = .zero
+
+    private func clamp(_ value: CGFloat, in length: CGFloat, extent: CGFloat) -> CGFloat {
+        let inset = min(length / 2, extent / 2 + 8)
+        return min(max(inset, value), length - inset)
+    }
+    private func position(_ delta: CGSize) -> CGPoint {
+        let x = clamp(center.x, in: size.width, extent: extent.width)
+        let y = clamp(center.y, in: size.height, extent: extent.height)
+        return CGPoint(x: clamp(x + delta.width, in: size.width, extent: extent.width),
+                       y: clamp(y + delta.height, in: size.height, extent: extent.height))
+    }
     @ViewBuilder func body(content: Content) -> some View {
-        if enabled { content.gesture(gesture) }
-        else { content }
+        if editing {
+            content.allowsHitTesting(false).accessibilityHidden(true)
+                .overlay {
+                    Color.clear.contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("gameTouchLayout"))
+                            .updating($translation) { value, state, _ in state = value.translation }
+                            .onEnded { value in commit(position(value.translation)) })
+                        .accessibilityElement(children: .ignore).accessibilityLabel(label)
+                        .accessibilityIdentifier(identifier)
+                }
+                .position(position(translation))
+        } else {
+            content.position(position(.zero))
+        }
     }
 }
 

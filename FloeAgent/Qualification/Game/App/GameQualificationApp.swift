@@ -108,11 +108,14 @@ private struct QualificationPlayer: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                GamePlayerView(player: play.player).ignoresSafeArea(edges: .bottom)
-                GameTouchControlsView(service: play.controls, editingLayout: arranging) { id, anchor in
+                GamePlayerView(player: play.player, arrangingControls: arranging)
+                    .allowsHitTesting(!arranging).ignoresSafeArea(edges: .bottom)
+                GameTouchControlsView(service: play.controls, editingLayout: arranging, layoutProfile: profile) { id, anchor in
                     if let id, var button = profile.buttons.first(where: { $0.id == id }) { button.anchor = anchor; try? profile.update(button) }
                     else { profile.stickAnchor = anchor }
-                    Task { await play.controls.updateProfile(profile) }
+                } onFinishLayout: {
+                    host.saveControls(profile, controls: play.controls, runID: play.runID)
+                    arranging = false
                 }
                 VStack {
                     HStack {
@@ -132,7 +135,8 @@ private struct QualificationPlayer: View {
                 }
         }.sheet(isPresented: $settings) {
             NavigationStack {
-                GameTouchSettingsView(profile: $profile, editingLayout: $arranging, saving: host.busy, defaults: play.defaultControls) { value in host.saveControls(value, controls: play.controls, runID: play.runID) }
+                GameTouchSettingsView(profile: $profile, editingLayout: $arranging, saving: host.busy, defaults: play.defaultControls,
+                    onArrange: { settings = false }) { value in host.saveControls(value, controls: play.controls, runID: play.runID) }
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { settings = false } } }
             }
         }

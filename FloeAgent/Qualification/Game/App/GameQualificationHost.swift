@@ -156,6 +156,7 @@ import FloeRPGCore
                 profile.stick = .joystick
                 let right = GameTouchButton(id: .a, binding: .key(.right), label: "→")
                 if profile.button(id: .a) == nil { try profile.add(right) } else { try profile.update(right) }
+                if profile.button(id: .b) == nil { try profile.add(.init(id: .b, binding: .key(.space))) }
             }
             let controls = GameTouchInputService(profile: profile)
             self.touchDispatch = "—"

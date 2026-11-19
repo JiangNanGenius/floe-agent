@@ -369,27 +369,26 @@ private struct KeyboardKeyChooser: View {
 private struct KeyboardLayoutPreview: View {
     @Binding var profile: GameTouchProfile
     @StateObject private var service: GameTouchInputService
-    let original: GameTouchProfile
+    @State private var original: GameTouchProfile
     @Environment(\.locale) private var locale
     @Environment(\.dismiss) private var dismiss
     private var zh: Bool { locale.language.languageCode?.identifier == "zh" }
     init(profile: Binding<GameTouchProfile>) {
-        _profile = profile; original = profile.wrappedValue
+        _profile = profile; _original = State(initialValue: profile.wrappedValue)
         _service = StateObject(wrappedValue: GameTouchInputService(profile: profile.wrappedValue))
     }
     var body: some View {
         NavigationStack {
             ZStack {
                 Color(white: 0.12)
-                GameTouchControlsView(service: service, editingLayout: true, onMove: { id, anchor in
+                GameTouchControlsView(service: service, editingLayout: true, layoutProfile: profile, onMove: { id, anchor in
                     do {
                         if let id, var value = profile.button(id: id) { value.anchor = anchor; try profile.update(value) }
                         else { profile.stickAnchor = anchor }
-                        Task { await service.updateProfile(profile) }
                     } catch {}
                 }, onFinishLayout: { dismiss() })
             }.navigationTitle(zh ? "按键布局" : "Key layout")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button(zh ? "取消" : "Cancel") { profile = original; dismiss() } } }
-        }
+        }.interactiveDismissDisabled()
     }
 }

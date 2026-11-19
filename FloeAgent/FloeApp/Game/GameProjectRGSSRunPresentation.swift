@@ -115,7 +115,7 @@ final class GameProjectRGSSRunPresentation {
             guard profile.engine == play.request.engine, profile.keyboardTransport == .x11 else {
                 throw GameProjectError.invalidContext
             }
-            draftProfile = profile
+            guard draftProfile == profile else { return }
             await input.updateProfile(profile)
             controlsError = nil
             await reconcileInput()
@@ -128,8 +128,6 @@ final class GameProjectRGSSRunPresentation {
                 guard var button = draftProfile.button(id: id) else { throw GameProjectError.invalidEdit }
                 button.anchor = anchor; try draftProfile.update(button)
             } else { draftProfile.stickAnchor = anchor }
-            let captured = draftProfile
-            Task { await self.previewControls(captured) }
         } catch { controlsError = error.localizedDescription }
     }
 
@@ -141,11 +139,13 @@ final class GameProjectRGSSRunPresentation {
             try captured.validate()
             revision = try await store.save(captured, expectedRevision: revision)
             savedProfile = captured; controlsError = nil
+            if draftProfile == captured { await previewControls(captured) }
             return draftProfile == captured
         } catch { controlsError = error.localizedDescription; return false }
     }
 
     func discardControlChanges() async {
+        draftProfile = savedProfile
         await previewControls(savedProfile)
     }
 

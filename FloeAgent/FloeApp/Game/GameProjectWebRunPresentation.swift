@@ -159,7 +159,7 @@ final class GameProjectWebRunPresentation: Identifiable {
     }
 
     func previewControls(_ profile: GameTouchProfile) async {
-        guard !stopping, !stopped else { return }
+        guard !stopping, !stopped, draftProfile == profile else { return }
         do { try profile.validate(); await input.updateProfile(profile) }
         catch { controlsError = error.localizedDescription }
     }
@@ -182,8 +182,6 @@ final class GameProjectWebRunPresentation: Identifiable {
                 guard var button = draftProfile.button(id: id) else { throw GameProjectError.invalidEdit }
                 button.anchor = anchor; try draftProfile.update(button)
             } else { draftProfile.stickAnchor = anchor }
-            let current = draftProfile
-            Task { await self.previewControls(current) }
         } catch { controlsError = error.localizedDescription }
     }
 

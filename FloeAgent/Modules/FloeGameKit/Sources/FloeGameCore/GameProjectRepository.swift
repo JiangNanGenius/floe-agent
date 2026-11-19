@@ -85,6 +85,9 @@ public actor FileGameProjectRepository {
     private let maximumMetadataBytes = 32 * 1_024 * 1_024
     private var stagedFiles: [URL] = []
     private var headCommitted = false
+    // The HEAD and revision bytes are read and authenticated on every open.
+    // Retain only the last validated decode, which repeated play handoffs share.
+    private var lastDecoded: (digest: String, project: GameStoredProject)?
     private struct Head: Codable { let revision: String; let sha256: String }
 
     public init(directory: URL, limits: GameRepositoryLimits? = nil, workingTree: (any GameWorkingTreePort)? = nil) throws {
@@ -611,10 +614,16 @@ public actor FileGameProjectRepository {
         let head = try JSONDecoder().decode(Head.self, from: GameFileStorage.read(headURL(id), maximum: 4_096, honorCancellation: honorCancellation))
         let bytes = try GameFileStorage.read(revisionURL(id, head.revision), maximum: maximumMetadataBytes, honorCancellation: honorCancellation)
         guard GameDigest.sha256(bytes) == head.sha256 else { throw GameProjectError.corruptStorage }
+        if let lastDecoded, lastDecoded.digest == head.sha256,
+           lastDecoded.project.projectID == id, lastDecoded.project.revision == head.revision {
+            guard lastDecoded.project.owner == owner else { throw GameProjectError.ownershipMismatch }
+            return lastDecoded.project
+        }
         let result = try JSONDecoder().decode(GameStoredProject.self, from: bytes)
         guard result.projectID == id, result.revision == head.revision else { throw GameProjectError.corruptStorage }
         try validate(result)
         guard result.owner == owner else { throw GameProjectError.ownershipMismatch }
+        lastDecoded = (head.sha256, result)
         return result
     }
     private func liveSnapshot(_ id: UUID, owner: GameProjectOwner, verifyBytes: Bool = false) throws -> GameWorkingTreeSnapshot? {
@@ -636,11 +645,11 @@ public actor FileGameProjectRepository {
                       verifyBytes: Bool = false) throws -> GameStoredProject {
         let stored = try loadStored(id, owner: owner, honorCancellation: honorCancellation)
         guard honorCancellation, let snapshot = try liveSnapshot(id, owner: owner, verifyBytes: verifyBytes), let workingTree else { return stored }
+        if snapshot.files == stored.files, snapshot.directories == stored.directories,
+           snapshot.revision == stored.workspaceRevision { return stored }
         try validate(GameStoredProject(version: 1, projectID: id, owner: owner, revision: stored.revision,
             parent: stored.parent, title: stored.title, engine: stored.engine,
             directories: snapshot.directories, files: snapshot.files, workspaceRevision: snapshot.revision))
-        if snapshot.files == stored.files, snapshot.directories == stored.directories,
-           snapshot.revision == stored.workspaceRevision { return stored }
         let originals = Dictionary(uniqueKeysWithValues: stored.files.map { ($0.path, $0) })
         var files: [GameProjectFile] = []
         for file in snapshot.files {

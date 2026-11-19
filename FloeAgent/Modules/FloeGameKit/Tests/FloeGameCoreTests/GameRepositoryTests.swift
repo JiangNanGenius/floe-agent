@@ -128,6 +128,26 @@ private func commitAttempt(_ repository: FileGameProjectRepository, id: UUID, ow
         catch { XCTAssertEqual(error as? GameProjectError, .corruptStorage) }
     }
 
+    func testRepeatedOpenStillRejectsChangedRevisionBytesAndWrongOwner() async throws {
+        let fixture = try RepositoryFixture(), root = try fixture.directory("store")
+        let id = UUID(), owner = GameProjectOwner.space(recordID: id)
+        let store = try FileGameProjectRepository(directory: root)
+        let created = try await store.createProject(projectID: id, owner: owner, title: "Game")
+        _ = try await store.open(id, owner: owner)
+        do {
+            _ = try await store.open(id, owner: .space(recordID: UUID()))
+            XCTFail("Expected ownership mismatch")
+        } catch { XCTAssertEqual(error as? GameProjectError, .ownershipMismatch) }
+        let revision = root.appendingPathComponent(id.uuidString.lowercased())
+            .appendingPathComponent("Revisions/" + created.revision + ".json")
+        let original = try Data(contentsOf: revision)
+        try (original + Data([0x20])).write(to: revision)
+        do {
+            _ = try await store.open(id, owner: owner)
+            XCTFail("Expected revision checksum mismatch")
+        } catch { XCTAssertEqual(error as? GameProjectError, .corruptStorage) }
+    }
+
     func testLargeArtifactIsSealedWithoutAnUnboundedResourceRead() throws {
         let fixture = try RepositoryFixture(), source = try fixture.source()
         try Data("<!doctype html>".utf8).write(to: source.appendingPathComponent("index.html"))
@@ -152,7 +172,17 @@ private func commitAttempt(_ repository: FileGameProjectRepository, id: UUID, ow
         let artifact = try GameWebArtifactPackage.build(source: context, engine: .phaser, entry: GameRelativePath("index.html"), to: fixture.root.appendingPathComponent("artifact"))
         try artifact.verify()
         XCTAssertEqual(try artifact.readResource(GameRelativePath("LICENSE.txt")), Data("fixture license".utf8))
-        try Data("changed".utf8).write(to: artifact.directory.appendingPathComponent("index.html"))
+        let scoped = try artifact.scoped(toGameRoot: "www")
+        let file = artifact.directory.appendingPathComponent("index.html")
+        let original = try Data(contentsOf: file)
+        let modified = try XCTUnwrap(file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        try Data(repeating: 65, count: original.count).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+        XCTAssertThrowsError(try scoped.verify()) { XCTAssertEqual($0 as? GameProjectError, .corruptStorage) }
+        try original.write(to: file, options: .atomic)
+        XCTAssertNoThrow(try scoped.verify())
+        try Data("changed".utf8).write(to: file, options: .atomic)
+        XCTAssertThrowsError(try artifact.verify()) { XCTAssertEqual($0 as? GameProjectError, .corruptStorage) }
         XCTAssertThrowsError(try artifact.readResource(GameRelativePath("index.html"))) { XCTAssertEqual($0 as? GameProjectError, .corruptStorage) }
     }
 

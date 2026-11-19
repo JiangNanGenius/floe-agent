@@ -373,7 +373,7 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
             total += data.bytes
             nextCache[entry.path] = data
             files.append(.init(path: entry.path, sha256: data.sha256, bytes: data.bytes,
-                               executable: try reader.isExecutable(entry.path)))
+                               executable: data.executable))
         }
         guard revision == (try target.revisions.revisionID()) else { throw GameProjectError.invalidContext }
         try verifyRoot(target)

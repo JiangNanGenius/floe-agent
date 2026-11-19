@@ -18,10 +18,14 @@ public struct GameWebArtifactPackage: Sendable {
     public let files: [GameProjectFile]
     public let maximumFileBytes: Int
 
+    // Only first-hand read-back identities from the sealed local APFS tree.
+    // Never accept these hints from a manifest or reuse them for serving bytes.
+    private let stagedFingerprints: [GameRelativePath: GameFileFingerprint]
     private let filesByPath: [GameRelativePath: GameProjectFile]
 
     private init(directory: URL, prepared: GamePreparedArtifact, files: [GameProjectFile],
-                 maximumFileBytes: Int) {
+                 maximumFileBytes: Int, stagedFingerprints: [GameRelativePath: GameFileFingerprint]) {
+        self.stagedFingerprints = stagedFingerprints
         self.directory = directory
         self.prepared = prepared
         self.files = files
@@ -51,6 +55,9 @@ public struct GameWebArtifactPackage: Sendable {
         try GameFileStorage.directory(stage)
         defer { try? FileManager.default.removeItem(at: stage) }
         let staged = try GameProjectReader(rootURL: stage, maximumFileBytes: bounds.maximumFileBytes)
+        let sourceDevice = reader.localAPFSDevice, stageDevice = staged.localAPFSDevice
+        var sourceFingerprints = [GameRelativePath: GameFileFingerprint]()
+        var stagedFingerprints = [GameRelativePath: GameFileFingerprint]()
         var files: [GameProjectFile] = [], total = 0
         for item in entries {
             try Task.checkCancellation()
@@ -58,9 +65,9 @@ public struct GameWebArtifactPackage: Sendable {
             if item.directory { try GameFileStorage.directory(output); continue }
             let fd = Darwin.open(output.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
             guard fd >= 0 else { throw GameProjectError.io("stage web artifact") }
-            let fingerprint: (bytes: Int, sha256: String)?
+            let fingerprint: GameFileFingerprint?
             do {
-                fingerprint = try reader.fingerprint(item.path, writeChunk: { chunk in
+                fingerprint = try reader.fingerprintWithIdentity(item.path, writeChunk: { chunk in
                     try chunk.withUnsafeBytes { bytes in
                         var offset = 0
                         while offset < bytes.count {
@@ -80,9 +87,11 @@ public struct GameWebArtifactPackage: Sendable {
                 throw GameProjectError.limitExceeded("artifactBytes")
             }
             total += bytes.bytes
-            let record = try GameProjectFile(path: item.path, sha256: bytes.sha256, bytes: bytes.bytes, executable: reader.isExecutable(item.path))
+            let record = GameProjectFile(path: item.path, sha256: bytes.sha256, bytes: bytes.bytes, executable: bytes.executable)
             if record.executable { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: output.path) }
-            guard let saved = try staged.fingerprint(item.path), saved.bytes == record.bytes, saved.sha256 == record.sha256 else { throw GameProjectError.corruptStorage }
+            guard let saved = try staged.fingerprintWithIdentity(item.path), saved.bytes == record.bytes, saved.sha256 == record.sha256 else { throw GameProjectError.corruptStorage }
+            if bytes.device == sourceDevice { sourceFingerprints[item.path] = bytes }
+            if saved.device == stageDevice { stagedFingerprints[item.path] = saved }
             files.append(record)
         }
         // Recheck all source bytes before claiming this snapshot belongs to the saved revision.
@@ -92,7 +101,7 @@ public struct GameWebArtifactPackage: Sendable {
             throw GameWebArtifactSourceChanged(path: nil)
         }
         for file in files {
-            guard let bytes = try reader.fingerprint(file.path), bytes.bytes == file.bytes, bytes.sha256 == file.sha256 else {
+            guard let bytes = try reader.fingerprintWithIdentity(file.path, cached: sourceFingerprints[file.path]), bytes.bytes == file.bytes, bytes.sha256 == file.sha256, bytes.executable == file.executable else {
                 throw GameWebArtifactSourceChanged(path: file.path)
             }
         }
@@ -103,7 +112,7 @@ public struct GameWebArtifactPackage: Sendable {
             throw GameProjectError.io("publish artifact")
         }
         return try .init(directory: target, prepared: .init(id: UUID(), engine: engine, source: source,
-            route: .webKit, sha256: digest, entry: entry), files: files, maximumFileBytes: bounds.maximumFileBytes)
+            route: .webKit, sha256: digest, entry: entry), files: files, maximumFileBytes: bounds.maximumFileBytes, stagedFingerprints: stagedFingerprints)
     }
 
     public func readResource(_ path: GameRelativePath) throws -> Data {
@@ -118,8 +127,10 @@ public struct GameWebArtifactPackage: Sendable {
 
     public func verify() throws {
         let reader = try GameProjectReader(rootURL: directory, maximumFileBytes: maximumFileBytes)
+        let localDevice = reader.localAPFSDevice
         for file in files {
-            guard let saved = try reader.fingerprint(file.path), saved.bytes == file.bytes, saved.sha256 == file.sha256 else {
+            let hint = stagedFingerprints[file.path]
+            guard let saved = try reader.fingerprintWithIdentity(file.path, cached: hint?.device == localDevice ? hint : nil), saved.bytes == file.bytes, saved.sha256 == file.sha256 else {
                 throw GameProjectError.corruptStorage
             }
         }
@@ -130,7 +141,7 @@ public struct GameWebArtifactPackage: Sendable {
     public func scoped(toGameRoot root: String) throws -> Self {
         try .init(directory: directory, prepared: .init(id: prepared.id, engine: prepared.engine,
             source: prepared.source, route: prepared.route, sha256: prepared.sha256,
-            entry: prepared.entry, gameRoot: root), files: files, maximumFileBytes: maximumFileBytes)
+            entry: prepared.entry, gameRoot: root), files: files, maximumFileBytes: maximumFileBytes, stagedFingerprints: stagedFingerprints)
     }
 
     public static func mimeType(for path: GameRelativePath) -> String {

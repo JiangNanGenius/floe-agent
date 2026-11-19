@@ -75,6 +75,7 @@ struct GameProjectWebPlayerSurface: View {
         .onChange(of: panel) { _, _ in refreshInput() }
         .onChange(of: presentation.editingLayout) { _, _ in refreshInput() }
         .onChange(of: presentation.draftProfile) { _, profile in
+            guard !presentation.editingLayout else { return }
             Task { await presentation.previewControls(profile) }
         }
         .onDisappear {
@@ -87,8 +88,10 @@ struct GameProjectWebPlayerSurface: View {
     private var viewport: some View {
         ZStack {
             Color.black
-            GamePlayerView(player: player)
+            GamePlayerView(player: player, arrangingControls: presentation.editingLayout)
+                .allowsHitTesting(!presentation.editingLayout)
             GameTouchControlsView(service: presentation.input, editingLayout: presentation.editingLayout,
+                layoutProfile: presentation.draftProfile,
                 onMove: { id, anchor in presentation.moveControl(id, to: anchor) },
                 onFinishLayout: {
                     Task {

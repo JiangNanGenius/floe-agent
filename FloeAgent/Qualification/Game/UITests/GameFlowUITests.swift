@@ -61,6 +61,64 @@ final class GameFlowUITests: XCTestCase {
     }
     private func number(_ text: String) -> Double { Double(text.replacingOccurrences(of: "x: ", with: "")) ?? -1 }
 
+    @MainActor func testArrangeTwoKeysAndResumePlay() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.buttons["game.new"].tap()
+        app.buttons["game.import"].tap()
+        app.buttons["game.import.phaser"].tap()
+        let imported = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已完整导入")).firstMatch
+        XCTAssertTrue(imported.waitForExistence(timeout: 20))
+        app.buttons["game.overview.play"].tap()
+        let a = app.descendants(matching: .any).matching(identifier: "game.touch.a").firstMatch
+        let b = app.descendants(matching: .any).matching(identifier: "game.touch.b").firstMatch
+        XCTAssertTrue(a.waitForExistence(timeout: 20))
+        app.buttons["game.touch.settings"].tap()
+        let arrange = app.buttons["game.touch.settings.arrange"]
+        reveal(arrange, in: app)
+        arrange.tap()
+        let done = app.buttons["game.touch.layout.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 10))
+        let center = CGVector(dx: 0.5, dy: 0.5)
+        let initialA = a.frame
+        let initialB = b.frame
+        let x = app.staticTexts["game.run.x"]
+        let beforeEditing = x.label
+        let blank = app.coordinate(withNormalizedOffset: .init(dx: 0.42, dy: 0.4))
+        blank.press(forDuration: 0.1, thenDragTo: blank.withOffset(.init(dx: 0, dy: 110)))
+        XCTAssertTrue(done.isHittable)
+        XCTAssertEqual(a.frame, initialA)
+        XCTAssertEqual(b.frame, initialB)
+        func move(_ key: XCUIElement, dx: CGFloat, dy: CGFloat) {
+            let start = key.coordinate(withNormalizedOffset: center)
+            start.press(forDuration: 0.15, thenDragTo: start.withOffset(.init(dx: dx, dy: dy)))
+        }
+        move(a, dx: -100, dy: -55)
+        XCTAssertEqual(a.frame.midX, initialA.midX - 100, accuracy: 8)
+        let movedA = a.frame
+        move(b, dx: -40, dy: -100)
+        XCTAssertEqual(b.frame.midY, initialB.midY - 100, accuracy: 8)
+        XCTAssertEqual(a.frame.midX, movedA.midX, accuracy: 2)
+        let movedB = b.frame
+        XCTAssertEqual(x.label, beforeEditing)
+        done.tap()
+        XCTAssertTrue(a.waitForExistence(timeout: 10))
+        app.buttons["game.run.close"].tap()
+        app.buttons["game.overview.play"].tap()
+        XCTAssertTrue(a.waitForExistence(timeout: 20))
+        XCTAssertEqual(a.frame.midX, movedA.midX, accuracy: 3)
+        XCTAssertEqual(b.frame.midY, movedB.midY, accuracy: 3)
+        expectation(for: NSPredicate(format: "label != %@", "x: —"), evaluatedWith: x)
+        waitForExpectations(timeout: 10)
+        let before = number(x.label)
+        a.press(forDuration: 0.6)
+        expectation(for: NSPredicate { _, _ in self.number(x.label) > before + 20 }, evaluatedWith: nil)
+        waitForExpectations(timeout: 10)
+        app.buttons["game.run.close"].tap()
+    }
+
     @MainActor func testRuntimeBrowserCapabilities() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launch(); XCUIDevice.shared.orientation = .landscapeLeft

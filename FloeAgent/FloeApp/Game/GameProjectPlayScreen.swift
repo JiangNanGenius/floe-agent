@@ -182,9 +182,10 @@ private struct GameRGSSControlsViewport: View {
     var body: some View {
         ZStack {
             Color.black
-            if let vnc { VNCViewer(session: vnc) }
+            if let vnc { VNCViewer(session: vnc).allowsHitTesting(!presentation.editingLayout) }
             else { ProgressView(copy("正在连接画面", "Connecting display")) }
             GameTouchControlsView(service: presentation.input, editingLayout: presentation.editingLayout,
+                layoutProfile: presentation.draftProfile,
                 onMove: { id, point in presentation.moveControl(id, to: point) },
                 onFinishLayout: { Task {
                     if await presentation.saveControls() { presentation.editingLayout = false }
@@ -214,6 +215,7 @@ private struct GameRGSSControlsViewport: View {
                 .inspectorColumnWidth(min: 320, ideal: 380, max: 520)
         }
         .onChange(of: presentation.draftProfile) { _, value in
+            guard !presentation.editingLayout else { return }
             Task { await presentation.previewControls(value) }
         }
         .onChange(of: showControls) { _, _ in updateInput() }

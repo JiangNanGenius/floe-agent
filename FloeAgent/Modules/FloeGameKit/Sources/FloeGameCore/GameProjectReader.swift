@@ -16,6 +16,7 @@ public struct GameFileFingerprint: Equatable, Sendable {
     let device: UInt64
     fileprivate let inode: UInt64
     fileprivate let mode: UInt32
+    public var executable: Bool { mode & UInt32(S_IXUSR | S_IXGRP | S_IXOTH) != 0 }
     fileprivate let modifiedSeconds: Int64
     fileprivate let modifiedNanoseconds: Int64
     fileprivate let changedSeconds: Int64

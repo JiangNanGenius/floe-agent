@@ -12,8 +12,15 @@ public struct GamePlayerView: NSViewRepresentable {
 #else
 public struct GamePlayerView: UIViewRepresentable {
     public let player: GameWebPlayer
-    public init(player: GameWebPlayer) { self.player = player }
+    private let arrangingControls: Bool
+
+    public init(player: GameWebPlayer, arrangingControls: Bool = false) {
+        self.player = player
+        self.arrangingControls = arrangingControls
+    }
     public func makeUIView(context: Context) -> WKWebView { player.webView }
-    public func updateUIView(_ view: WKWebView, context: Context) {}
+    public func updateUIView(_ view: WKWebView, context: Context) {
+        if arrangingControls { view.scrollView.stopScrollingAndZooming() }
+    }
 }
 #endif
