@@ -540,13 +540,14 @@ final class GameWorkspaceRegistry {
 
     func restoreChatGame(conversationID: UUID, workspaceID: UUID, leasedRoot: URL?,
                          openedCenter: WorkspaceCenter? = nil) async throws -> GameWorkspaceSession? {
-        guard let leasedRoot else { return nil }
         let owner = GameProjectOwner.conversation(conversationID: conversationID, workspaceID: workspaceID)
         if let existing = session(projectID: workspaceID, owner: owner) {
-            guard existing.key.rootPath == Self.canonical(leasedRoot) else { throw GameIDEBridgeError.workspaceChanged }
+            if let leasedRoot, existing.key.rootPath != Self.canonical(leasedRoot) {
+                throw GameIDEBridgeError.workspaceChanged
+            }
             return existing
         }
-        guard hasSavedChatGame(conversationID: conversationID, workspaceID: workspaceID) else { return nil }
+        guard let leasedRoot, hasSavedChatGame(conversationID: conversationID, workspaceID: workspaceID) else { return nil }
         let center = openedCenter ?? WorkspaceCenter(environment: environment, publishesSharedState: false)
         try await center.openTaskWorkspace(conversationID: conversationID)
         guard let workspace = center.currentWorkspace, workspace.id == workspaceID,
