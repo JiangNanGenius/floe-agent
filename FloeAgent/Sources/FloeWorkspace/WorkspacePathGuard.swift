@@ -200,23 +200,30 @@ public struct WorkspacePathGuard: Sendable {
     static func resolveComponents(_ url: URL) throws -> URL {
         var pending = url.standardizedFileURL.pathComponents.filter { $0 != "/" && !$0.isEmpty }
         var index = 0, links = 0
-        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        var current = "/"
         while index < pending.count {
             let name = pending[index]; index += 1
             if name == "." { continue }
-            if name == ".." { if current.path != "/" { current.deleteLastPathComponent() }; continue }
-            let next = current.appendingPathComponent(name)
+            if name == ".." {
+                if let slash = current.lastIndex(of: "/"), slash != current.startIndex {
+                    current.removeSubrange(slash...)
+                } else {
+                    current = "/"
+                }
+                continue
+            }
+            let next = current == "/" ? "/" + name : current + "/" + name
             var info = stat()
-            if lstat(next.path, &info) == 0 {
+            if lstat(next, &info) == 0 {
                 if info.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK) {
                     links += 1
                     guard links <= 40 else { throw WorkspaceToolError.invalidArguments("path contains too many symbolic links") }
-                    let target = try FileManager.default.destinationOfSymbolicLink(atPath: next.path)
+                    let target = try FileManager.default.destinationOfSymbolicLink(atPath: next)
                     guard !target.isEmpty else { throw WorkspaceToolError.invalidArguments("empty symbolic-link target") }
                     let tail = Array(pending[index...])
                     pending = target.split(separator: "/", omittingEmptySubsequences: true).map(String.init) + tail
                     index = 0
-                    if target.hasPrefix("/") { current = URL(fileURLWithPath: "/", isDirectory: true) }
+                    if target.hasPrefix("/") { current = "/" }
                     continue
                 }
             } else if errno != ENOENT {
@@ -227,7 +234,7 @@ public struct WorkspacePathGuard: Sendable {
         // The walk already normalizes dot segments. Re-standardizing here
         // can rewrite an existing /private/var prefix to /var while leaving
         // a missing descendant unchanged, producing inconsistent identities.
-        return current
+        return URL(fileURLWithPath: current)
     }
 }
 
