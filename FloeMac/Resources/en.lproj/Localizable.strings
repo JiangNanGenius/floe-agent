@@ -304,3 +304,17 @@
 "mac.agent.goal.failed" = "Failed";
 "mac.agent.runPlan" = "Run Plan";
 "mac.agent.goalEvidence" = "Verification Evidence";
+
+"mac.provider.preset" = "Provider Type";
+"mac.provider.models" = "Models";
+"mac.provider.refreshModels" = "Refresh Models";
+"mac.provider.refreshModelsHelp" = "Fetch the model list from this provider again.";
+"mac.provider.discovering" = "Fetching models from this provider…";
+"mac.provider.discoveryKeyHint" = "Enter an API key to discover models automatically.";
+"mac.provider.discoveryCount %lld" = "Found %lld models. Choose one or type a model ID manually.";
+"mac.provider.discoveryEmpty" = "The model list came back empty. Enter the model ID manually.";
+"mac.provider.discoveryUnavailable" = "This provider doesn't publish a model list. Enter the model ID manually.";
+"mac.provider.discoveryFailed %@" = "Couldn't fetch the model list (%@). You can still enter a model ID manually.";
+"mac.provider.keyInvalid" = "The API key contains invalid characters.";
+"mac.provider.images" = "Image input";
+"mac.provider.tools" = "Tool calling";

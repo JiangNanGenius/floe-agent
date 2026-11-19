@@ -13,6 +13,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
     private let testSupport: URL?
     private(set) var agent: HostAgentWorkspace?
     private var agentWindow: NSWindow?
+    private var draftStore: MacWorkspaceDraftStore?
     private(set) var toolbox: MacToolboxWindowController?
     private var toolboxLease: BridgeUpdateActivity.Lease?
     private var drainingToolbox = false
@@ -34,10 +35,14 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
                 return { activity.finish(lease) }
             })
             agent = workspace
+            let directory = try? HostAgentDatabase.committedSyncStoreURL(applicationSupport: root, namespace: namespace)
+                .deletingLastPathComponent().appendingPathComponent("Drafts", isDirectory: true)
+            let drafts = MacWorkspaceDraftStore(directory: directory)
+            draftStore = drafts
             let host = NSHostingController(rootView: MacWorkspaceRootView(
                 workspace: workspace, openBridge: openBridge,
                 openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) },
-                remembersFileRoot: testSupport == nil
+                remembersFileRoot: testSupport == nil, draftStore: drafts
             ))
             let window = NSWindow(contentViewController: host)
             window.title = String(localized: "host.role.agent")
@@ -55,7 +60,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
 
     func openToolbox() { openToolbox(toolID: nil) }
 
-    func hideAgentWindow() { agentWindow?.orderOut(nil) }
+    func hideAgentWindow() {
+        draftStore?.flush()
+        agentWindow?.orderOut(nil)
+    }
 
     func openToolbox(toolID: String?) {
         guard !drainingToolbox else { return }

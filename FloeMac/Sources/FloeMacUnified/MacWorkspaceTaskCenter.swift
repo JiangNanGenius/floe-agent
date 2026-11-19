@@ -11,15 +11,21 @@ struct MacWorkspaceTaskCenter: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let onOpen: (UUID) -> Void
     let onNew: () -> Void
+    let onArchive: (UUID, Bool) -> Void
+    let onDelete: (ConversationRecord) -> Void
 
     @Environment(\.locale) private var locale
     @State private var query = ""
+    @State private var showsArchived = false
     private let relativeFormatter: RelativeDateTimeFormatter
 
-    init(workspace: HostAgentWorkspace, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void) {
+    init(workspace: HostAgentWorkspace, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
+         onArchive: @escaping (UUID, Bool) -> Void, onDelete: @escaping (ConversationRecord) -> Void) {
         self.workspace = workspace
         self.onOpen = onOpen
         self.onNew = onNew
+        self.onArchive = onArchive
+        self.onDelete = onDelete
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         self.relativeFormatter = formatter
@@ -62,6 +68,12 @@ struct MacWorkspaceTaskCenter: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Picker(t("任务列表", "Task List"), selection: $showsArchived) {
+                Text(t("当前任务", "Current")).tag(false)
+                Text(t("已归档", "Archived")).tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField(t("搜索任务", "Search Tasks"), text: $query)
@@ -89,7 +101,10 @@ struct MacWorkspaceTaskCenter: View {
     }
 
     @ViewBuilder private var content: some View {
-        if tasks.isEmpty {
+        if tasks.isEmpty && showsArchived {
+            ContentUnavailableView(t("暂无已归档任务", "No Archived Tasks"), systemImage: "archivebox")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if tasks.isEmpty {
             ContentUnavailableView {
                 Label(t("暂无任务", "No Tasks Yet"), systemImage: "checklist")
             } description: {
@@ -115,10 +130,11 @@ struct MacWorkspaceTaskCenter: View {
         }
     }
 
-    /// Ordinary tasks only: notes, archived and editor-owned rows stay out of
-    /// the task center exactly as they stay out of the ordinary chat list.
     private var tasks: [ConversationRecord] {
-        workspace.conversations.filter(\.isVisibleInOrdinaryList)
+        if !showsArchived { return workspace.conversations.filter(\.isVisibleInOrdinaryList) }
+        return workspace.conversations.filter {
+            $0.purpose == .ordinary && $0.visibility == .normal && $0.editorOwnership == nil && $0.archivedAt != nil
+        }
     }
 
     private var visible: [ConversationRecord] {
@@ -137,43 +153,60 @@ struct MacWorkspaceTaskCenter: View {
         // A persisted nonterminal row is the LAST RECORDED state, not proof of
         // live ownership: only the workspace's actual current send spins.
         let sendingHere = workspace.isSending && workspace.selectedID == record.id
-        return Button { onOpen(record.id) } label: {
-            HStack(alignment: .center, spacing: 10) {
-                if sendingHere {
-                    ProgressView().controlSize(.mini)
-                        .accessibilityHidden(true)
-                } else {
-                    Circle()
-                        .fill(run.map { statusColor(for: $0.state) } ?? Color.clear)
-                        .frame(width: 8, height: 8)
-                        .accessibilityHidden(true)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        if record.isPinned {
-                            Image(systemName: "pin.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .accessibilityHidden(true)
+        return HStack {
+            Button {
+                if !showsArchived { onOpen(record.id) }
+            } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    if sendingHere {
+                        ProgressView().controlSize(.mini)
+                            .accessibilityHidden(true)
+                    } else {
+                        Circle()
+                            .fill(run.map { statusColor(for: $0.state) } ?? Color.clear)
+                            .frame(width: 8, height: 8)
+                            .accessibilityHidden(true)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            if record.isPinned {
+                                Image(systemName: "pin.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityHidden(true)
+                            }
+                            Text(title(for: record))
+                                .font(.body)
+                                .lineLimit(1)
                         }
-                        Text(title(for: record))
-                            .font(.body)
+                        caption(run: run, sendingHere: sendingHere)
+                            .font(.caption)
                             .lineLimit(1)
                     }
-                    caption(run: run, sendingHere: sendingHere)
+                    Spacer(minLength: 8)
+                    Text(timeText(run?.startedAt ?? record.updatedAt))
                         .font(.caption)
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 8)
-                Text(timeText(run?.startedAt ?? record.updatedAt))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                .contentShape(Rectangle())
+                .padding(.vertical, 2)
             }
-            .contentShape(Rectangle())
-            .padding(.vertical, 2)
+            .buttonStyle(.plain)
+            .disabled(showsArchived)
+            if showsArchived {
+                Button(t("恢复", "Restore")) { onArchive(record.id, false) }
+                    .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
+            }
         }
-        .buttonStyle(.plain)
+        .contextMenu {
+            if !showsArchived {
+                Button(t("归档", "Archive"), systemImage: "archivebox") { onArchive(record.id, true) }
+                    .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
+            }
+            Button(t("删除任务…", "Delete Task…"), systemImage: "trash", role: .destructive) { onDelete(record) }
+                .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
+        }
         .listRowBackground(workspace.selectedID == record.id
                            ? Color.accentColor.opacity(0.12) : Color.clear)
         .accessibilityIdentifier("workspace.task.row.\(record.id.uuidString)")

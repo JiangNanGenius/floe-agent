@@ -180,6 +180,36 @@ struct RuntimeLifecycleTests {
         }
     }
 
+    @Test("Saved tasks archive, restore and delete through the canonical store")
+    func savedTaskManagementPersists() async throws {
+        try await withSelfCoreFixture { fixture in
+            let (provider, _) = fixture.makeProvider(scripts: [[
+                .textDelta(.init(text: "Saved reply.")),
+                .completed(.init(stopReason: .endTurn)),
+            ]])
+            let handle = try await fixture.runtime.startSession(
+                fixture.newConversationRequest(goal: "Saved task"), provider: provider
+            )
+            let id = handle.identity.conversationID
+            let terminal = try #require(await handle.waitForTerminal())
+            #expect(terminal.confirmed)
+            _ = try await handle.close()
+
+            try await fixture.runtime.changeConversationMetadata(id: id, change: .archive(true))
+            #expect(try await fixture.runtime.conversations().isEmpty)
+            let archived = try await fixture.runtime.conversations(includeArchived: true)
+            #expect(archived.first?.id == id && archived.first?.archivedAt != nil)
+
+            try await fixture.runtime.changeConversationMetadata(id: id, change: .archive(false))
+            let restored = try await fixture.runtime.conversations()
+            #expect(restored.first?.id == id && restored.first?.archivedAt == nil)
+            #expect(try await fixture.runtime.conversationMessages(conversationID: id).count == 2)
+
+            try await fixture.runtime.changeConversationMetadata(id: id, change: .delete)
+            #expect(try await fixture.runtime.conversations(includeArchived: true).isEmpty)
+        }
+    }
+
     @Test("Missing Goal criteria, missing Plan tools and malformed requests fail before a durable write")
     func incompleteModeInputsAndRequestsFailClosed() async throws {
         try await withSelfCoreFixture { fixture in

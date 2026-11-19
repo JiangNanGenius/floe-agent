@@ -79,11 +79,15 @@ final class UnifiedMacSmoke {
         var nativeChat = false
         var storedTaskRun = false
         var taskMetadataSaved = false
+        var archivedTaskRestored = false
+        var deletedFixtureTask = false
         var workspaceAndAttachmentStaging = false
+        var catalog = false
         var agentApproval = (allowed: false, denied: false)
         var planning = (planSaved: false, goalSaved: false)
         var pressedApprovalButton = false
         if let agent = model.macWorkspace.agent {
+            var normalChatID: UUID?
             await agent.prepare()
             // The visible SwiftUI view may already own preparation.
             let prepareDeadline = ContinuousClock.now + .seconds(8)
@@ -108,6 +112,7 @@ final class UnifiedMacSmoke {
             await agent.loadTaskRuns()
             let historyDeadline = ContinuousClock.now + .seconds(3)
             if let id = agent.selectedID {
+                normalChatID = id
                 while agent.recentTaskRuns[id] == nil && ContinuousClock.now < historyDeadline {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
@@ -116,6 +121,12 @@ final class UnifiedMacSmoke {
                 let pinned = await agent.changeConversationMetadata(id: id, change: .pin(true))
                 let saved = agent.conversations.first { $0.id == id }
                 taskMetadataSaved = renamed && pinned && saved?.title == "Fixture desktop task" && saved?.isPinned == true
+                let archived = await agent.changeConversationMetadata(id: id, change: .archive(true))
+                let archivedRow = agent.conversations.first { $0.id == id }
+                let restored = await agent.changeConversationMetadata(id: id, change: .archive(false))
+                let restoredRow = agent.conversations.first { $0.id == id }
+                archivedTaskRestored = archived && archivedRow?.archivedAt != nil && restored
+                    && restoredRow?.isVisibleInOrdinaryList == true && restoredRow?.isPinned == true
             }
             if let content = NSApp.windows.first(where: {
                 $0.isVisible && $0.title == String(localized: "host.role.agent")
@@ -135,6 +146,11 @@ final class UnifiedMacSmoke {
                 }
                 planning = await agent.verifyPlanningSmoke(project: project)
             }
+            if let normalChatID {
+                let removed = await agent.changeConversationMetadata(id: normalChatID, change: .delete)
+                deletedFixtureTask = removed && !agent.conversations.contains { $0.id == normalChatID }
+            }
+            catalog = await verifyProviderCatalog(in: agent)
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
         let toolbox = await exerciseToolbox(model: model)
@@ -148,6 +164,10 @@ final class UnifiedMacSmoke {
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
             "taskMetadataSaved": taskMetadataSaved,
+            "archivedTaskRestored": archivedTaskRestored,
+            "deletedFixtureTask": deletedFixtureTask,
+            "composerDraftsReloaded": verifyDraftStorage(),
+            "providerCatalogFetched": catalog,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
             "agentApprovedFileCreated": agentApproval.allowed,
             "agentDeclinedFileAbsent": agentApproval.denied,
@@ -167,6 +187,59 @@ final class UnifiedMacSmoke {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: root)
+    }
+
+    private func verifyDraftStorage() -> Bool {
+        let directory = root.appendingPathComponent("Draft Storage Probe", isDirectory: true)
+        let conversation = UUID()
+        let first = MacWorkspaceDraftStore(directory: directory)
+        first.setText("New task text", for: nil)
+        first.setText("Saved task text", for: conversation)
+        first.flush()
+        let reopened = MacWorkspaceDraftStore(directory: directory)
+        let readBack = reopened.text(for: nil) == "New task text"
+            && reopened.text(for: conversation) == "Saved task text" && reopened.text(for: UUID()).isEmpty
+        reopened.setText("", for: conversation)
+        reopened.flush()
+        return readBack && !first.saveFailed && !reopened.saveFailed
+            && MacWorkspaceDraftStore(directory: directory).text(for: conversation).isEmpty
+    }
+
+    private func verifyProviderCatalog(in workspace: HostAgentWorkspace) async -> Bool {
+        let arguments = CommandLine.arguments
+        guard let flag = arguments.firstIndex(of: "--model-catalog-fixture"), flag < arguments.count - 1,
+              let endpoint = URL(string: arguments[flag + 1]), endpoint.scheme == "http",
+              endpoint.host == "127.0.0.1", endpoint.port != nil else {
+            return false
+        }
+        defer { workspace.cancelModelDiscovery() }
+        workspace.requestModelDiscovery(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
+                                        apiKey: "superseded-fixture-key", debounce: true)
+        workspace.requestModelDiscovery(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
+                                        apiKey: "floe-catalog-fixture", debounce: true)
+        let deadline = ContinuousClock.now + .seconds(6)
+        while workspace.modelDiscoveryState == .idle || workspace.modelDiscoveryState == .discovering {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard case .succeeded = workspace.modelDiscoveryState,
+              Set(workspace.discoveredModels.map(\.remoteModelID)) == ["fixture-model-a", "fixture-model-b"] else {
+            return false
+        }
+        workspace.requestModelDiscovery(endpoint: endpoint.appendingPathComponent("redirect").absoluteString,
+                                        protocolKind: .anthropicMessages,
+                                        apiKey: "redirect-fixture-key", debounce: false)
+        while ContinuousClock.now < deadline {
+            switch workspace.modelDiscoveryState {
+            case .failed:
+                return workspace.discoveredModels.isEmpty
+            case .succeeded, .listingUnavailable:
+                return false
+            case .idle, .discovering:
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+        }
+        return false
     }
 
     private func exerciseBridgeSwitch(model: BridgeAppModel) async -> Bool {

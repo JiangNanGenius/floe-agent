@@ -44,6 +44,11 @@ struct HostAgentProvider: Codable {
     var model: ModelProfile
     /// This record is encoded only for the app's device-bound Keychain.
     let apiKey: String
+    /// Optional preset identity (`ProviderTemplateID.rawValue`) this record
+    /// was created from. Records written before presets existed decode this
+    /// as nil and keep working; the effective preset is still resolvable
+    /// from the endpoint when needed.
+    var presetID: String?
 
     /// The label shown in the provider list: the user-chosen name when set,
     /// otherwise the model ID (the 1.3.0 single-profile behavior).
@@ -51,7 +56,7 @@ struct HostAgentProvider: Codable {
 
     @MainActor
     init(displayName: String? = nil, endpoint: String, protocolKind: ModelProtocol, modelID: String, apiKey: String,
-         supportsImages: Bool = false, supportsTools: Bool = false) throws {
+         supportsImages: Bool = false, supportsTools: Bool = false, presetID: String? = nil) throws {
         guard let endpointURL = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw InvalidConfiguration.endpoint
         }
@@ -70,6 +75,7 @@ struct HostAgentProvider: Codable {
                              limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0),
                              capabilities: capabilities)
         self.apiKey = apiKey
+        self.presetID = presetID
         try validate()
     }
 
@@ -221,9 +227,11 @@ final class HostAgentWorkspace: ObservableObject {
             }
             guard let runtime else { return }
             try await runtime.bootstrap()
-            conversations = try await runtime.conversations()
+            // Archived tasks stay out of the workspace; they are only
+            // reachable again after an explicit restore.
+            conversations = try await runtime.conversations(includeArchived: true)
             workspaces = try await runtime.workspaces()
-            if let recent = conversations.first {
+            if let recent = conversations.first(where: { $0.isVisibleInOrdinaryList }) {
                 selectedID = recent.id
                 messages = try await runtime.conversationMessages(conversationID: recent.id)
                 await loadPlanning(conversationID: recent.id, runtime: runtime)
@@ -274,10 +282,11 @@ final class HostAgentWorkspace: ObservableObject {
     /// Adds a provider and makes it the selected one for chat.
     @discardableResult
     func addProvider(name: String?, endpoint: String, protocolKind: ModelProtocol,
-                     modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false) -> Bool {
+                     modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false,
+                     presetID: String? = nil) -> Bool {
         updateProviderStore { store in
             let record = try HostAgentProvider(displayName: name, endpoint: endpoint,
-                                               protocolKind: protocolKind, modelID: modelID, apiKey: key, supportsImages: supportsImages, supportsTools: supportsTools)
+                                               protocolKind: protocolKind, modelID: modelID, apiKey: key, supportsImages: supportsImages, supportsTools: supportsTools, presetID: presetID)
             store.providers.append(record)
             store.selectedProviderID = record.profile.id
         }
@@ -287,13 +296,14 @@ final class HostAgentWorkspace: ObservableObject {
     /// selections and conversations stay bound to the same provider.
     @discardableResult
     func updateProvider(id: UUID, name: String?, endpoint: String, protocolKind: ModelProtocol,
-                        modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false) -> Bool {
+                        modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false,
+                        presetID: String? = nil) -> Bool {
         updateProviderStore { store in
             guard let index = store.providers.firstIndex(where: { $0.profile.id == id }) else {
                 throw ProviderStoreError.missingRecord
             }
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
-                                               protocolKind: protocolKind, modelID: modelID, apiKey: key, supportsImages: supportsImages, supportsTools: supportsTools)
+                                               protocolKind: protocolKind, modelID: modelID, apiKey: key, supportsImages: supportsImages, supportsTools: supportsTools, presetID: presetID)
             record.profile.id = id
             record.model.id = store.providers[index].model.id
             record.model.providerID = id
@@ -493,7 +503,7 @@ final class HostAgentWorkspace: ObservableObject {
         defer { release() }
         do {
             try await runtime.changeConversationMetadata(id: id, change: change)
-            conversations = try await runtime.conversations()
+            conversations = try await runtime.conversations(includeArchived: true)
             return true
         } catch {
             return false
@@ -667,7 +677,7 @@ final class HostAgentWorkspace: ObservableObject {
                 }
                 #endif
                 messages = try await handle.durableMessages()
-                conversations = try await runtime.conversations()
+                conversations = try await runtime.conversations(includeArchived: true)
                 workspaces = try await runtime.workspaces()
                 if mode == .plan || mode == .goal {
                     await loadPlanning(conversationID: handle.identity.conversationID, runtime: runtime)
@@ -980,6 +990,144 @@ final class HostAgentWorkspace: ObservableObject {
             notice = String(localized: "host.chat.providerSaveFailed")
             return false
         }
+    }
+
+    // MARK: - Model discovery
+
+    /// Live result state for the provider editor's model listing. Results
+    /// come straight from the endpoint's own listing through the shared
+    /// factory adapter; nothing is invented locally.
+    enum HostModelDiscoveryState: Equatable {
+        /// No request yet, or the draft fields are not ready (blank endpoint
+        /// or a key still required before discovery may run).
+        case idle
+        case discovering
+        case succeeded(modelCount: Int)
+        /// The endpoint publishes no model listing (subscription gateways):
+        /// manual model entry is the honest path.
+        case listingUnavailable
+        /// Redacted, localized failure the editor shows next to the manual
+        /// model field.
+        case failed(String)
+    }
+
+    /// Live model candidates for the editor's current draft fields. Every
+    /// entry keeps the capability metadata the endpoint reported.
+    @Published private(set) var discoveredModels: [ModelProfile] = []
+    @Published private(set) var modelDiscoveryState: HostModelDiscoveryState = .idle
+
+    /// Debounce for automatic discovery while the user types.
+    static let modelDiscoveryDebounceNanoseconds: UInt64 = 600_000_000
+    private var modelDiscoveryGeneration: UInt64 = 0
+    private var modelDiscoveryTask: Task<Void, Never>?
+
+    /// Starts one model-listing pass for the editor's draft fields. Every
+    /// call invalidates the previous pass synchronously: the old task is
+    /// cancelled, the generation is bumped and the visible stale results are
+    /// cleared before this function returns, so a stale listing can never
+    /// cross a provider, endpoint or key change. The debounced form waits
+    /// briefly so a burst of edits collapses into one request; intermediate
+    /// endpoints the user typed through never receive a request.
+    func requestModelDiscovery(endpoint: String, protocolKind: ModelProtocol, apiKey: String, debounce: Bool) {
+        modelDiscoveryGeneration &+= 1
+        let generation = modelDiscoveryGeneration
+        modelDiscoveryTask?.cancel()
+        discoveredModels = []
+        modelDiscoveryState = .idle
+        let trimmedEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        modelDiscoveryTask = Task { [weak self] in
+            if debounce {
+                try? await Task.sleep(nanoseconds: Self.modelDiscoveryDebounceNanoseconds)
+            }
+            guard !Task.isCancelled, let self else { return }
+            await self.runModelDiscovery(generation: generation, endpoint: trimmedEndpoint,
+                                         protocolKind: protocolKind, apiKey: trimmedKey)
+        }
+    }
+
+    /// Abandons any in-flight listing and clears the live results. Called
+    /// when the editor closes or switches records.
+    func cancelModelDiscovery() {
+        modelDiscoveryGeneration &+= 1
+        modelDiscoveryTask?.cancel()
+        modelDiscoveryTask = nil
+        modelDiscoveryState = .idle
+        discoveredModels = []
+    }
+
+    private func runModelDiscovery(generation: UInt64, endpoint: String,
+                                   protocolKind: ModelProtocol, apiKey: String) async {
+        // The endpoint must parse to an absolute http(s) URL before any
+        // network work; everything else stays idle.
+        guard !endpoint.isEmpty,
+              let url = URL(string: endpoint),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              url.host?.isEmpty == false else {
+            applyModelDiscoveryResult(generation: generation, state: .idle, models: [])
+            return
+        }
+        // Subscription gateways publish no `/models` listing; their honest
+        // path here is manual model entry, never a fabricated catalog.
+        let preset = ProviderPreset.preset(for: .custom, baseURL: url)
+        guard preset.supportsModelDiscovery else {
+            applyModelDiscoveryResult(generation: generation, state: .listingUnavailable, models: [])
+            return
+        }
+        // A blank key is allowed only for keyless (local) endpoints; every
+        // other listing runs with the exact current key and the key is sent
+        // only to this settled endpoint.
+        guard preset.authStyle == .none || !apiKey.isEmpty else {
+            applyModelDiscoveryResult(generation: generation, state: .idle, models: [])
+            return
+        }
+        // The same key admission rule as save: control characters are never
+        // transmitted.
+        guard !apiKey.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            applyModelDiscoveryResult(generation: generation,
+                                      state: .failed(String(localized: "mac.provider.keyInvalid")), models: [])
+            return
+        }
+        applyModelDiscoveryResult(generation: generation, state: .discovering, models: [])
+        do {
+            var profile = ProviderProfile(kind: .custom, wireProtocol: protocolKind,
+                                          baseURL: url, displayName: nil)
+            // Plain HTTP is admitted only for the packaged smoke fixture's
+            // exact loopback host with Keychain disabled; production listings
+            // stay on the validated save rules (https, or acknowledged
+            // private-network http through the ordinary editor flow).
+            #if FLOE_MAC_HOST_SMOKE
+            if vault == nil, url.host == "127.0.0.1" {
+                profile.allowsPlainHTTP = true
+            }
+            #endif
+            // Save-rule validation before any byte leaves the device: this
+            // rejects plaintext http, non-http(s) schemes and URLs embedding
+            // credentials, so a key is never transmitted to an invalid URL.
+            try ProviderConfigurationValidation.validate(profile)
+            let adapter = ProviderAdapterFactory().adapter(for: profile)
+            let models = try await adapter.listModels(
+                provider: profile,
+                credentials: ProviderCredentials(apiKey: apiKey.isEmpty ? nil : apiKey)
+            )
+            try Task.checkCancellation()
+            applyModelDiscoveryResult(generation: generation,
+                                      state: .succeeded(modelCount: models.count), models: models)
+        } catch is CancellationError {
+            // A newer request owns the editor now; it republishes state.
+        } catch {
+            let message = SecretRedactor.redact(error.localizedDescription,
+                                                secret: apiKey.isEmpty ? nil : apiKey)
+            applyModelDiscoveryResult(generation: generation, state: .failed(message), models: [])
+        }
+    }
+
+    private func applyModelDiscoveryResult(generation: UInt64, state: HostModelDiscoveryState,
+                                           models: [ModelProfile]) {
+        guard generation == modelDiscoveryGeneration else { return }
+        modelDiscoveryState = state
+        discoveredModels = models
     }
 
     private func admit() -> ReleaseWork? {

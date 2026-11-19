@@ -305,3 +305,17 @@
 "mac.agent.goal.failed" = "失败";
 "mac.agent.runPlan" = "执行计划";
 "mac.agent.goalEvidence" = "验收证据";
+
+"mac.provider.preset" = "服务商类型";
+"mac.provider.models" = "模型";
+"mac.provider.refreshModels" = "刷新模型列表";
+"mac.provider.refreshModelsHelp" = "重新从此服务商获取模型列表。";
+"mac.provider.discovering" = "正在从服务商获取模型列表…";
+"mac.provider.discoveryKeyHint" = "输入 API 密钥后将自动获取模型列表。";
+"mac.provider.discoveryCount %lld" = "找到 %lld 个模型。可选择一个，或手动输入模型 ID。";
+"mac.provider.discoveryEmpty" = "模型列表为空，请手动输入模型 ID。";
+"mac.provider.discoveryUnavailable" = "此服务商不提供模型列表，请手动输入模型 ID。";
+"mac.provider.discoveryFailed %@" = "无法获取模型列表（%@）。仍可手动输入模型 ID。";
+"mac.provider.keyInvalid" = "API 密钥包含无效字符。";
+"mac.provider.images" = "图片输入";
+"mac.provider.tools" = "工具调用";

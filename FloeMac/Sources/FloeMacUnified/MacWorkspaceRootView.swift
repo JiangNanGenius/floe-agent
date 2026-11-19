@@ -15,6 +15,8 @@ struct MacWorkspaceRootView: View {
     let openBridge: () -> Void
     let openToolbox: (String) -> Void
     var remembersFileRoot = true
+    @ObservedObject var draftStore: MacWorkspaceDraftStore
+    @AppStorage("floe.mac.workspace.lastConversation") private var lastConversation = ""
 
     @State private var destination: MacWorkspaceDestination? = .newTask
     @State private var showInspector = false
@@ -22,12 +24,13 @@ struct MacWorkspaceRootView: View {
     @State private var showHistorySearch = false
     @FocusState private var historySearchFocused: Bool
     @State private var historySearch = ""
-    @State private var drafts: [UUID?: String] = [:]
     @State private var taskToRename: ConversationRecord?
     @State private var taskTitle = ""
     @State private var showRename = false
     @State private var showExportError = false
     @State private var showMetadataError = false
+    @State private var taskToDelete: ConversationRecord?
+    @State private var showDelete = false
     @State private var grantedFolder: URL?
     @State private var registeredFolder: URL?
 
@@ -36,38 +39,21 @@ struct MacWorkspaceRootView: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 190, ideal: 234, max: 320)
         } detail: {
-            VStack(spacing: 0) {
-                header
-                Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
-                HStack(spacing: 0) {
-                    if destination != .files { detail.frame(maxWidth: .infinity, maxHeight: .infinity) }
-                    if showInspector && destination != .files { Divider() }
-                    MacWorkspaceFilesView(
-                        insertInDraft: insertFileText,
-                        canInsertInDraft: canSelectTask,
-                        remembersRoot: remembersFileRoot,
-                        workspaceRevision: workspace.workspaceRevision,
-                        taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
-                        onRootChanged: { grantedFolder = $0 },
-                        onAttachmentsChanged: updateFileAttachments
-                    )
-                        .frame(minWidth: filesVisible ? 270 : 0,
-                               maxWidth: destination == .files ? .infinity : (filesVisible ? 310 : 0))
-                        .background(FloeTheme.readingSurface)
-                        .clipped()
-                        .opacity(filesVisible ? 1 : 0)
-                        .allowsHitTesting(filesVisible)
-                        .accessibilityHidden(!filesVisible)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            workspacePanes
         }
         .navigationSplitViewStyle(.balanced)
         .task {
             await workspace.prepare()
-            if destination == .newTask, workspace.selectedID != nil { await workspace.select(nil) }
+            guard destination == .newTask else { return }
+            if remembersFileRoot, let savedID = UUID(uuidString: lastConversation),
+               workspace.conversations.contains(where: { $0.id == savedID && $0.isVisibleInOrdinaryList }) {
+                destination = .conversation(savedID)
+            } else if workspace.selectedID != nil {
+                await workspace.select(nil)
+            }
         }
         .task(id: destination) {
+            draftStore.flush()
             guard workspace.isReady else { return }
             switch destination {
             case .newTask:
@@ -83,6 +69,10 @@ struct MacWorkspaceRootView: View {
             default: break
             }
         }
+        .onDisappear { draftStore.flush() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            draftStore.flush()
+        }
         .task(id: canSelectTask ? grantedFolder : nil) {
             guard canSelectTask, let folder = grantedFolder, folder != registeredFolder else { return }
             if await workspace.addWorkspace(name: folder.lastPathComponent, rootURL: folder) {
@@ -95,6 +85,9 @@ struct MacWorkspaceRootView: View {
         .onChange(of: destination) { _, newDestination in
             if newDestination == nil { destination = .taskCenter }
             if !showsTask { showInspector = false }
+            guard remembersFileRoot else { return }
+            if case .conversation(let id) = newDestination { lastConversation = id.uuidString }
+            if case .newTask = newDestination { lastConversation = "" }
         }
         .sheet(isPresented: $showModelSettings) {
             MacProviderSettingsView(workspace: workspace, isPresented: $showModelSettings)
@@ -114,6 +107,47 @@ struct MacWorkspaceRootView: View {
         .alert("mac.workspace.saveFailed", isPresented: $showMetadataError) {
             Button("OK", role: .cancel) {}
         }
+        .alert(workspaceText("删除任务？", "Delete Task?"), isPresented: $showDelete, presenting: taskToDelete) { task in
+            Button("host.chat.cancel", role: .cancel) {}
+            Button(workspaceText("删除任务", "Delete Task"), role: .destructive) {
+                updateTask(id: task.id, change: .delete)
+            }
+        } message: { task in
+            Text(workspaceText("「\(task.title)」及其会话记录将被永久删除。",
+                               "“\(task.title)” and its conversation history will be deleted permanently."))
+        }
+    }
+
+    private var workspacePanes: some View {
+        VStack(spacing: 0) {
+            header
+            Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+            HStack(spacing: 0) {
+                if destination != .files { detail.frame(maxWidth: .infinity, maxHeight: .infinity) }
+                if showInspector && destination != .files { Divider() }
+                filesPane
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var filesPane: some View {
+        MacWorkspaceFilesView(
+            insertInDraft: insertFileText,
+            canInsertInDraft: canSelectTask,
+            remembersRoot: remembersFileRoot,
+            workspaceRevision: workspace.workspaceRevision,
+            taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
+            onRootChanged: { grantedFolder = $0 },
+            onAttachmentsChanged: updateFileAttachments
+        )
+        .frame(minWidth: filesVisible ? 270 : 0,
+               maxWidth: destination == .files ? .infinity : (filesVisible ? 310 : 0))
+        .background(FloeTheme.readingSurface)
+        .clipped()
+        .opacity(filesVisible ? 1 : 0)
+        .allowsHitTesting(filesVisible)
+        .accessibilityHidden(!filesVisible)
     }
 
     private var sidebar: some View {
@@ -166,6 +200,10 @@ struct MacWorkspaceRootView: View {
                                 Button(LocalizedStringKey(conversation.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
                                        systemImage: conversation.isPinned ? "pin.slash" : "pin") {
                                     updateTask(id: conversation.id, change: .pin(!conversation.isPinned))
+                                }
+                                .disabled(!canSelectTask)
+                                Button(workspaceText("删除任务…", "Delete Task…"), systemImage: "trash", role: .destructive) {
+                                    confirmDelete(conversation)
                                 }
                                 .disabled(!canSelectTask)
                                 Button("mac.workspace.rename", systemImage: "pencil") {
@@ -233,7 +271,7 @@ struct MacWorkspaceRootView: View {
 
     private var taskDraft: Binding<String> {
         let id = destinationConversationID
-        return Binding(get: { drafts[id] ?? "" }, set: { drafts[id] = $0 })
+        return Binding(get: { draftStore.text(for: id) }, set: { draftStore.setText($0, for: id) })
     }
 
     private var title: String {
@@ -295,9 +333,16 @@ struct MacWorkspaceRootView: View {
         switch destination {
         case .newTask, .conversation:
             if destinationConversationID == workspace.selectedID {
-                HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
-                                       openModelSettings: { showModelSettings = true },
-                                       openFiles: { showInspector = true })
+                VStack(spacing: 0) {
+                    if draftStore.saveFailed {
+                        let language = Locale.preferredLanguages.first ?? "en"
+                        ErrorEventView(message: language.hasPrefix("zh") ? "草稿保存失败。" : "The draft could not be saved.")
+                            .padding(.horizontal)
+                    }
+                    HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
+                                           openModelSettings: { showModelSettings = true },
+                                           openFiles: { showInspector = true })
+                }
             } else {
                 ProgressView("host.chat.opening")
             }
@@ -314,7 +359,8 @@ struct MacWorkspaceRootView: View {
             }
             .formStyle(.grouped)
         default:
-            MacWorkspaceTaskCenter(workspace: workspace, onOpen: openTask, onNew: startNewTask)
+            MacWorkspaceTaskCenter(workspace: workspace, onOpen: openTask, onNew: startNewTask,
+                                   onArchive: { updateTask(id: $0, change: .archive($1)) }, onDelete: confirmDelete)
         }
     }
 
@@ -325,8 +371,8 @@ struct MacWorkspaceRootView: View {
     private func insertFileText(_ text: String) {
         guard canSelectTask, filesVisible else { return }
         let id = destinationConversationID
-        let current = drafts[id] ?? ""
-        drafts[id] = current.isEmpty ? text : current + "\n\n" + text
+        let current = draftStore.text(for: id)
+        draftStore.setText(current.isEmpty ? text : current + "\n\n" + text, for: id)
         if !showsTask { destination = .newTask }
     }
 
@@ -350,8 +396,35 @@ struct MacWorkspaceRootView: View {
     private func updateTask(id: UUID, change: FloeMacSelfRuntime.ConversationMetadataChange) {
         Task {
             let saved = await workspace.changeConversationMetadata(id: id, change: change)
-            if !saved { showMetadataError = true }
+            if !saved {
+                showMetadataError = true
+            } else {
+                switch change {
+                case .delete:
+                    draftStore.setText("", for: id)
+                    fallthrough
+                case .archive(true):
+                    if remembersFileRoot, lastConversation == id.uuidString { lastConversation = "" }
+                    if workspace.selectedID == id {
+                        workspace.clearStagedAttachments()
+                        await workspace.select(nil)
+                        destination = .taskCenter
+                    }
+                default:
+                    break
+                }
+            }
         }
+    }
+
+    private func confirmDelete(_ task: ConversationRecord) {
+        guard canSelectTask else { return }
+        taskToDelete = task
+        showDelete = true
+    }
+
+    private func workspaceText(_ chinese: String, _ english: String) -> String {
+        Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese : english
     }
 
     private func exportConversation() {

@@ -1284,10 +1284,10 @@ public actor FloeMacSelfRuntime {
         }
     }
 
-    public func conversations() async throws -> [ConversationRecord] {
+    public func conversations(includeArchived: Bool = false) async throws -> [ConversationRecord] {
         let stores = try requireStores()
         do {
-            return try await stores.conversations.conversations()
+            return try await stores.conversations.conversations(includeArchived: includeArchived)
         } catch {
             throw Self.surface(error)
         }
@@ -1296,6 +1296,8 @@ public actor FloeMacSelfRuntime {
     public enum ConversationMetadataChange: Sendable {
         case rename(String)
         case pin(Bool)
+        case archive(Bool)
+        case delete
     }
 
     public func changeConversationMetadata(id: UUID, change: ConversationMetadataChange) async throws {
@@ -1311,20 +1313,34 @@ public actor FloeMacSelfRuntime {
             activeAdmissions.remove(operation)
             claims.release(conversationID: id, runID: operation)
         }
-        guard try await stores.conversations.conversation(id: id)?.isVisibleInOrdinaryList == true else {
+        guard let conversation = try await stores.conversations.conversation(id: id),
+              conversation.purpose == .ordinary, conversation.visibility == .normal,
+              conversation.editorOwnership == nil else {
             throw FloeMacSelfCoreError.invalidRequest("Only ordinary saved tasks can be edited.")
         }
         try ensureAdmissionStillAllowed()
         try requireAuthority()
         switch change {
         case .rename(let proposed):
+            guard conversation.archivedAt == nil else {
+                throw FloeMacSelfCoreError.invalidRequest("Restore this task before editing it.")
+            }
             let title = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty, title.utf8.count <= 200, !title.utf8.contains(0) else {
                 throw FloeMacSelfCoreError.invalidRequest("Invalid conversation title.")
             }
             try await stores.conversations.renameConversation(id: id, title: title)
         case .pin(let pinned):
+            guard conversation.archivedAt == nil else {
+                throw FloeMacSelfCoreError.invalidRequest("Restore this task before editing it.")
+            }
             try await stores.conversations.setPinned(id: id, pinnedAt: pinned ? Date() : nil)
+        case .archive(let archived):
+            if (conversation.archivedAt != nil) != archived {
+                try await stores.conversations.setArchived(id: id, archived: archived)
+            }
+        case .delete:
+            try await stores.conversations.deleteConversation(id: id)
         }
     }
 

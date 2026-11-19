@@ -163,6 +163,8 @@ struct AnthropicModelListResponse: Decodable {
 
 /// Fetches model listings from provider endpoints. Static, no state.
 enum ModelDiscovery {
+    // Reuse the same-origin transport used for credential-bearing speech requests.
+    private static let session = ASRTransportSecurity.makeHTTPSession()
 
     /// Fetches the OpenAI-compatible `/models` listing. Applies the provider's
     /// bearer credential and non-secret headers. Maps remote identifiers to
@@ -189,7 +191,7 @@ enum ModelDiscovery {
         for (field, value) in provider.nonSecretHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
-        let (data, response) = try await BoundedHTTP.data(for: request, maxBytes: 4 * 1_024 * 1_024)
+        let (data, response) = try await BoundedHTTP.data(for: request, session: session, maxBytes: 4 * 1_024 * 1_024)
         try ensureSuccess(response, data: data, secret: credentials.apiKey)
         let decoded = try JSONDecoder().decode(OpenAIModelListResponse.self, from: data)
         return decoded.data.prefix(500).compactMap { item in
@@ -220,7 +222,7 @@ enum ModelDiscovery {
         for (field, value) in provider.nonSecretHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
-        let (data, response) = try await BoundedHTTP.data(for: request, maxBytes: 4 * 1_024 * 1_024)
+        let (data, response) = try await BoundedHTTP.data(for: request, session: session, maxBytes: 4 * 1_024 * 1_024)
         try ensureSuccess(response, data: data, secret: credentials.apiKey)
         let decoded = try JSONDecoder().decode(AnthropicModelListResponse.self, from: data)
         return decoded.data.prefix(500).compactMap { item in

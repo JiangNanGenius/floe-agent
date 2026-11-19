@@ -168,6 +168,14 @@ FloeMac/scripts/verify_m00_isolated.sh \
 祖先替换以及启动后 Control 替换。旧的 `verify_m00.sh` 含真实 Keychain/生产探针，只保留为
 生产路径历史记录，不得用于隔离验收。
 
+## Developer ID 版 CloudKit 签名
+
+Mac OTA 使用 `org.floeagent.macbridge`。CloudKit 使用和 iOS / iPadOS 相同的 `iCloud.org.floeagent.ios` Production 容器。在 Apple Developer 为 Mac App ID 关联该容器，并为现有 Developer ID Application 证书生成 Developer ID 描述文件。
+
+在打包工作副本上运行 `python3 FloeMac/scripts/sign_ota_cloudkit.py --check <app> <profile>` 检查描述文件。移除 `--check` 后，脚本将通过校验的描述文件嵌入 `Contents/embedded.provisionprofile`，并用原证书签署 `FloeMacHost-OTA-CloudKit.entitlements`。随后按 OTA 流程公证应用与 DMG，校验旧 Bridge 的签名要求和已发布安装包的更新签名。描述文件从 Apple Developer 下载并保存在构建机的私有配置目录。
+
+签名配置只授予容器访问。实际同步需要应用接入适当的数据源，并在本机与另一台设备验证传输和冲突处理。
+
 ## 已验证与未完成
 
 M00 的 CLI/headless 证据见 `M00_VERIFICATION.md`。本轮新增的并发配对/停止准入/host takeover
