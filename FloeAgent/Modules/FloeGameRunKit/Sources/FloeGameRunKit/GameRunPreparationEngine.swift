@@ -223,14 +223,48 @@ struct GameRunPreparationEngine: Sendable {
 
     func prepare(request: GameWebRunRequest, selection: GameRunSelection?) async throws -> GamePreparedWebRun {
         do {
-            return try await prepareOnce(request: request, selection: selection)
+            return try await prepareVerified(request: request, selection: selection)
         } catch is CancellationError {
             throw GameRunPreparationError.cancelled
         }
     }
 
-    private func prepareOnce(request: GameWebRunRequest,
-                             selection: GameRunSelection?) async throws -> GamePreparedWebRun {
+    /// Plan only: live revision validation, selection, bounded scan, route
+    /// evaluation and inspection. No build side effect has run at this point.
+    private struct Planned: Sendable {
+        let route: GameRunRoutePlan
+        let source: ScannedSource
+        let chosen: GameRunSelection
+        let entry: GameRelativePath?
+        let inspection: GameProjectInspection
+        let target: URL
+    }
+
+    private func prepareVerified(request: GameWebRunRequest,
+                                 selection: GameRunSelection?) async throws -> GamePreparedWebRun {
+        var retryRoute: GameRunRoutePlan?
+        while true {
+            try Task.checkCancellation()
+            let plan = try await preparePlanned(request: request, selection: selection)
+            if let retryRoute, plan.route.routeID != retryRoute.routeID || plan.route.action != retryRoute.action {
+                throw GameRunPreparationError.sourceChanged("")
+            }
+            do {
+                return try await prepareBuiltAndVerified(request: request, planned: plan)
+            } catch let change as GameWebArtifactSourceChanged {
+                // Only local staging can be repeated. Re-plan against the same
+                // saved revision before the one permitted second attempt.
+                guard retryRoute == nil,
+                      [.staticWeb, .narrativeAssembly, .runtimePackAssembly].contains(plan.route.action) else {
+                    throw GameRunPreparationError.sourceChanged(change.path?.value ?? "")
+                }
+                retryRoute = plan.route
+            }
+        }
+    }
+
+    private func preparePlanned(request: GameWebRunRequest,
+                                selection: GameRunSelection?) async throws -> Planned {
         try await checkCurrent(request.context)
         let chosen = try resolvedSelection(context: request.context, provided: selection)
         try validateArtifactLocation(request.context)
@@ -262,48 +296,71 @@ struct GameRunPreparationEngine: Sendable {
         guard !FileManager.default.fileExists(atPath: target.path) else {
             throw GameProjectError.destinationExists
         }
+        return Planned(route: route, source: source, chosen: chosen, entry: entry,
+                       inspection: inspection, target: target)
+    }
+
+    /// Build, then verify the staged artifact and the live source once. The
+    /// staged read-back (`GameWebArtifactPackage.verify()`) proving corrupt is
+    /// an artifact-side failure, not a source race: it maps to the existing
+    /// `.invalidArtifact` and is never recovered by retrying the source.
+    private func prepareBuiltAndVerified(request: GameWebRunRequest,
+                                         planned: Planned) async throws -> GamePreparedWebRun {
         let staging = try makeStagingURL()
         var published = false
         defer {
             try? FileManager.default.removeItem(at: staging)
-            if !published { try? FileManager.default.removeItem(at: target) }
+            // The build publishes at `target` before it returns; a failure at
+            // any later point must not leave the owned artifact behind.
+            if !published { try? FileManager.default.removeItem(at: planned.target) }
         }
         let package: GameWebArtifactPackage
-        switch route.action {
+        switch planned.route.action {
         case .staticWeb:
             package = try buildStatic(context: request.context, engine: request.engine,
-                                      selectedRoot: source.root, entry: entry,
-                                      selection: chosen, target: target)
+                                      selectedRoot: planned.source.root,
+                                      entry: planned.entry,
+                                      selection: planned.chosen, target: planned.target)
         case .portableAssembly:
             package = try await buildPortable(context: request.context, engine: request.engine,
-                                              index: index, entry: entry, selection: chosen,
-                                              staging: staging, target: target)
+                                              index: planned.source.index,
+                                              entry: planned.entry,
+                                              selection: planned.chosen,
+                                              staging: staging, target: planned.target)
         case .narrativeAssembly:
             package = try buildNarrative(context: request.context, engine: request.engine,
-                                         selectedRoot: source.root.url, entry: entry,
-                                         selection: chosen, staging: staging, target: target)
+                                         selectedRoot: planned.source.root.url,
+                                         entry: planned.entry,
+                                         selection: planned.chosen,
+                                         staging: staging, target: planned.target)
         case .runtimePackAssembly:
             package = try await buildRuntimePack(context: request.context, engine: request.engine,
-                                                 source: source.index, entry: entry,
-                                                 selection: chosen, staging: staging, target: target)
+                                                 source: planned.source.index,
+                                                 entry: planned.entry,
+                                                 selection: planned.chosen,
+                                                 staging: staging, target: planned.target)
         case .externalBuild:
             package = try await buildExternal(context: request.context, engine: request.engine,
-                                              source: source.index, entry: entry,
-                                              selection: chosen, staging: staging, target: target,
-                                              route: route)
+                                              source: planned.source.index,
+                                              entry: planned.entry,
+                                              selection: planned.chosen,
+                                              staging: staging, target: planned.target,
+                                              route: planned.route)
         case .guestRuntime, .unavailable:
             throw GameRunPreparationError.unsupportedEngine(request.engine)
         }
-        // Hash readback and a final authoritative revision fence. The package
-        // already verified every copied byte; this catches a late context switch
-        // before the controller creates its player.
-        try package.verify()
+        do {
+            try package.verify()
+        } catch let error as GameProjectError where error == .corruptStorage {
+            throw GameRunPreparationError.invalidArtifact(
+                "the prepared game data failed read-back verification")
+        }
         try Task.checkCancellation()
-        try verifySourceUnchanged(index)
+        try verifySourceUnchanged(planned.source.index)
         try await checkCurrent(request.context)
-        let scoped = try package.scoped(toGameRoot: chosen.root)
+        let scoped = try package.scoped(toGameRoot: planned.chosen.root)
         published = true
-        return GamePreparedWebRun(inspection: inspection, package: scoped)
+        return GamePreparedWebRun(inspection: planned.inspection, package: scoped)
     }
 
     // MARK: - Static Web
@@ -773,8 +830,7 @@ struct GameRunPreparationEngine: Sendable {
         guard after.files.map(\.path) == index.files.map(\.path),
               after.files.map(\.bytes) == index.files.map(\.bytes),
               after.files.map(\.executable) == index.files.map(\.executable) else {
-            throw GameRunPreparationError.invalidProject(
-                "the source tree changed during preparation; the saved revision must be retried")
+            throw GameWebArtifactSourceChanged()
         }
     }
 

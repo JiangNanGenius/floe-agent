@@ -107,6 +107,11 @@ public enum GameRunPreparationError: Error, Equatable, Sendable {
     case engineNotDetected(GameEngineID)
     case invalidProject(String)
     case invalidArtifact(String)
+    /// Proven transient source race: a source file or entry changed while it
+    /// was being prepared or verified. A fresh validated pass succeeds; the
+    /// player launch must simply be run again. Distinct from staged/immutable
+    /// corruption, which keeps failing closed instead.
+    case sourceChanged(String)
     case contextChanged(GameContextChange)
     case externalBuildFailed(String)
     case cancelled
@@ -135,6 +140,9 @@ extension GameRunPreparationError: LocalizedError {
             return "The selected game project is invalid: \(detail)"
         case .invalidArtifact(let detail):
             return "The prepared game artifact is invalid: \(detail)"
+        case .sourceChanged(let detail):
+            let message = "A game file changed while the game was being prepared. Run it again."
+            return detail.isEmpty ? message : message + " " + detail
         case .contextChanged(let change):
             return "The project changed (\(change.rawValue)) while it was being prepared. Run again from the saved revision."
         case .externalBuildFailed(let detail):

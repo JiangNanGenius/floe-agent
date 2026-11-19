@@ -9,6 +9,7 @@ import FloeGameAuthoring
 import FloeGameAuthoringUI
 import FloeGameIDEBridge
 import FloeGameProjectFlow
+import FloeGameRunKit
 import FloeGameStarterKit
 import FloeGameAppIntegration
 import FloeWorkspace
@@ -668,6 +669,11 @@ struct GameProjectSpaceScreen: View {
         }
     }
     private func playErrorMessage(_ error: Error) -> String {
+        if case GameRunPreparationError.sourceChanged = error {
+            return IDELanguageRunText.t(
+                "游戏文件仍在更改。请等保存或同步完成后再试玩。",
+                "Game files are still changing. Wait for saving or syncing to finish, then try Play again.")
+        }
         if let projectError = error as? GameProjectError, projectError == .corruptStorage {
             return IDELanguageRunText.t(
                 "校验游戏文件时发现内容不一致。请在工程文件中检查最近的修改，再重新试玩。",

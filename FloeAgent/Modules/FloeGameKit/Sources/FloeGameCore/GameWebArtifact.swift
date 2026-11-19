@@ -2,6 +2,14 @@
 import Foundation
 import Darwin
 
+/// The original tree changed while it was being staged. Discard this attempt;
+/// verification failures in the staged copy are reported separately.
+public struct GameWebArtifactSourceChanged: Error, Sendable {
+    public let path: GameRelativePath?
+
+    public init(path: GameRelativePath? = nil) { self.path = path }
+}
+
 /// A real, immutable Web-ready source snapshot. Source bytes, including licenses,
 /// are copied, hashed and read back. This does not transpile npm/Unity projects.
 public struct GameWebArtifactPackage: Sendable {
@@ -81,10 +89,12 @@ public struct GameWebArtifactPackage: Sendable {
         // The host also rechecks its authoritative revision/lease after this synchronous operation.
         let finalEntries = try reader.tree(maximumEntries: bounds.maximumEntries, excludingNames: GameProjectReader.versionControlNames)
         guard entries.map(\.path) == finalEntries.map(\.path), entries.map(\.directory) == finalEntries.map(\.directory) else {
-            throw GameProjectError.corruptStorage
+            throw GameWebArtifactSourceChanged(path: nil)
         }
         for file in files {
-            guard let bytes = try reader.fingerprint(file.path), bytes.bytes == file.bytes, bytes.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
+            guard let bytes = try reader.fingerprint(file.path), bytes.bytes == file.bytes, bytes.sha256 == file.sha256 else {
+                throw GameWebArtifactSourceChanged(path: file.path)
+            }
         }
         let digest = try GameDigest.sha256(GameFileStorage.encode(ContentManifest(engine: engine, files: files)))
         try Task.checkCancellation()
