@@ -228,6 +228,9 @@ struct GameProjectRecognitionProbe {
                  (_, "rmmzproject"), (_, "ink"), (_, "twee"), (_, "tic"),
                  (_, "love"), (_, "ms"):
                 roots.insert(parent)
+            case (_, "pck"):
+                // The inspector confirms the same-directory loader and matching WASM.
+                roots.insert(parent)
             case (_, "wasm"):
                 if try isWasm4Cartridge(path: entry.path) { roots.insert(parent) }
             case (_, "html"), (_, "htm"):
@@ -371,9 +374,6 @@ struct GameProjectRecognitionProbe {
         let hasApplicationJS = try exists("application.js")
         let hasCocosSettings = try exists("src/settings.json")
         if hasApplicationJS, hasCocosSettings { return true }
-        let hasGodotWasm = try exists("game.wasm")
-        let hasGodotPack = try exists("game.pck")
-        if hasGodotWasm, hasGodotPack { return true }
         let hasLoveWasm = try exists("love.wasm")
         let hasLoveData = try exists("game.data")
         let hasLoveLoader = try exists("love.js")

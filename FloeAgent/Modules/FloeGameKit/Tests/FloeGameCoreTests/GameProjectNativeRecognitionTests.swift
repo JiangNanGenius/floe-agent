@@ -404,8 +404,8 @@ private func recognitionFixtureBase() -> URL {
         ], .unity),
         ([
             "index.html": Data("<!doctype html>".utf8),
-            "game.wasm": Data("wasm".utf8),
-            "game.pck": Data("pck".utf8)
+            "index.wasm": Data("wasm".utf8),
+            "index.pck": Data("pck".utf8)
         ], .godot),
         ([
             "index.html": Data("<!doctype html>".utf8),

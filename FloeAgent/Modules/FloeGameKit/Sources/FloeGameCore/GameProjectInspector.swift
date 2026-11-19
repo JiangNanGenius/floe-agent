@@ -322,11 +322,16 @@ public struct GameProjectInspector: Sendable {
                     add(.cocosCreator, path: settings, kind: .dataLayout)
                 }
             }
-            if evidence[.godot] == nil, has("game.wasm"), has("game.pck") {
+            // Godot names both export files after the chosen output basename.
+            if evidence[.godot] == nil,
+               let pack = lowerNames.keys.sorted().first(where: { name in
+                   name.hasSuffix(".pck") && name.count > 4 && has(String(name.dropLast(4)) + ".wasm")
+               }),
+               let packPath = try file(pack),
+               let wasmPath = try file(String(pack.dropLast(4)) + ".wasm") {
                 add(.godot, path: entry, kind: .dataLayout)
-                for name in ["game.wasm", "game.pck"] {
-                    if let path = try file(name) { add(.godot, path: path, kind: .dataLayout) }
-                }
+                add(.godot, path: packPath, kind: .dataLayout)
+                add(.godot, path: wasmPath, kind: .dataLayout)
             }
             if evidence[.love] == nil, has("love.wasm"), has("game.data"), has("love.js") {
                 add(.love, path: entry, kind: .dataLayout)
