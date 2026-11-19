@@ -10,13 +10,12 @@ import SwiftUI
 @MainActor
 final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
     enum CloseError: LocalizedError {
-        case agentBusy, pendingFiles, pendingAttachments, draftSaveFailed, runtimeCloseFailed
+        case agentBusy, pendingFiles, draftSaveFailed, runtimeCloseFailed
 
         var errorDescription: String? {
             switch self {
             case .agentBusy: String(localized: "host.mode.agentBusy")
             case .pendingFiles: String(localized: "host.mode.pendingFiles")
-            case .pendingAttachments: String(localized: "host.mode.pendingAttachments")
             case .draftSaveFailed: String(localized: "host.mode.draftSaveFailed")
             case .runtimeCloseFailed: String(localized: "host.mode.runtimeCloseFailed")
             }
@@ -59,6 +58,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
                 .deletingLastPathComponent().appendingPathComponent("Drafts", isDirectory: true)
             let drafts = MacWorkspaceDraftStore(directory: directory)
             draftStore = drafts
+            workspace.loadAttachmentDraft = { [weak drafts] in drafts?.attachments(for: $0) ?? [] }
+            workspace.saveAttachmentDraft = { [weak drafts] id, attachments in drafts?.setAttachments(attachments, for: id) }
             let host = NSHostingController(rootView: MacWorkspaceRootView(
                 workspace: workspace, openBridgeSettings: openBridgeSettings,
                 openModelSettings: openModelSettings,
@@ -83,7 +84,6 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
         guard let agent, agentLeases.isEmpty, agent.beginTermination() else { throw CloseError.agentBusy }
         defer { if self.agent != nil { agent.cancelTermination() } }
         guard !agent.hasPendingWorkspaceFileChanges else { throw CloseError.pendingFiles }
-        guard agent.stagedAttachments.isEmpty else { throw CloseError.pendingAttachments }
         draftStore?.flush()
         guard draftStore?.saveFailed != true else { throw CloseError.draftSaveFailed }
         agent.cancelModelDiscovery()

@@ -4,14 +4,12 @@ import Combine
 import FloeAgentRuntime
 import FloeCore
 import FloeMacSelfCore
+import FloeModels
 import FloePersistence
 import FloeProviders
 import FloeSecurity
 import Foundation
 import UniformTypeIdentifiers
-#if FLOE_MAC_HOST_SMOKE
-import FloeModels
-#endif
 
 /// One staged file attachment prepared for the next send. The draft carries
 /// a read-only security-scoped bookmark created at pick time plus verified
@@ -31,7 +29,13 @@ struct HostAgentAttachmentDraft: Hashable, Identifiable, Sendable {
     let byteCount: Int
     let sha256: String
     let uti: String
+    var createdAt = Date()
 
+    var reference: AttachmentRef {
+        AttachmentRef(id: id, kind: kind == .image ? .image : .document,
+                      displayName: displayName, uti: uti, byteCount: byteCount, sha256: sha256,
+                      storage: .securityScopedBookmark, urlBookmark: bookmark, createdAt: createdAt)
+    }
 }
 
 struct HostAgentProvider: Codable {
@@ -195,6 +199,8 @@ final class HostAgentWorkspace: ObservableObject {
     private let namespace: String
     private let vault: KeychainStore?
     private let admitWork: AdmitWork
+    var loadAttachmentDraft: ((UUID?) -> [AttachmentRef])?
+    var saveAttachmentDraft: ((UUID?, [AttachmentRef]) -> Void)?
     private var runtime: FloeMacSelfRuntime?
     private var activeRun: FloeMacSelfSessionHandle?
     #if FLOE_UNIFIED_MAC
@@ -243,6 +249,7 @@ final class HostAgentWorkspace: ObservableObject {
                 await loadPlanning(conversationID: recent.id, runtime: runtime)
             }
             isReady = true
+            restoreStagedAttachments(for: selectedID)
             reloadProviders()
         } catch {
             if let error = error as? HostAgentDatabase.StorageError {
@@ -424,6 +431,7 @@ final class HostAgentWorkspace: ObservableObject {
         plan = nil
         goal = nil
         notice = nil
+        restoreStagedAttachments(for: id)
         guard let id else { return }
         defer {
             if historySelection == selection { isLoadingHistory = false }
@@ -597,6 +605,7 @@ final class HostAgentWorkspace: ObservableObject {
         }
         guard !staged.isEmpty else { return [] }
         stagedAttachments.append(contentsOf: staged)
+        saveAttachmentDraft?(selectedID, stagedAttachments.map(\.reference))
         return staged
     }
 
@@ -624,10 +633,30 @@ final class HostAgentWorkspace: ObservableObject {
 
     func unstageAttachment(_ id: UUID) {
         stagedAttachments.removeAll { $0.id == id }
+        saveAttachmentDraft?(selectedID, stagedAttachments.map(\.reference))
     }
 
     func clearStagedAttachments() {
         stagedAttachments.removeAll()
+    }
+
+    private func restoreStagedAttachments(for conversationID: UUID?) {
+        guard let references = loadAttachmentDraft?(conversationID) else { return }
+        stagedAttachments = references.prefix(Self.maximumStagedAttachmentCount).compactMap { reference in
+            guard reference.storage == .securityScopedBookmark, let bookmark = reference.urlBookmark,
+                  reference.kind == .image || reference.kind == .document,
+                  reference.byteCount > 0, reference.byteCount <= Self.maximumAttachmentBytes else { return nil }
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI],
+                                     relativeTo: nil, bookmarkDataIsStale: &stale), !stale else { return nil }
+            return .init(id: reference.id, kind: reference.kind == .image ? .image : .document,
+                         url: url, bookmark: bookmark, displayName: reference.displayName,
+                         byteCount: reference.byteCount, sha256: reference.sha256, uti: reference.uti,
+                         createdAt: reference.createdAt)
+        }
+        if stagedAttachments.count != references.count {
+            notice = String(localized: "mac.workspace.attachmentUnavailable")
+        }
     }
 
     /// Raster signatures accepted by the runtime's image inlining. Kept in
@@ -683,7 +712,7 @@ final class HostAgentWorkspace: ObservableObject {
     /// task keeps its original workspace when the sidebar selection changes.
     @discardableResult
     func send(_ goal: String, workspaceID: UUID? = nil, mode: HostAgentMode = .chat,
-              criterion: String = "") -> Bool {
+              criterion: String = "", onAdmitted: (() -> Void)? = nil) -> Bool {
         let text = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let runtime, isReady, !isSending, !isTerminating, !isAcceptingPlan,
               !isLoadingHistory, !historyLoadFailed, !text.isEmpty else { return false }
@@ -701,7 +730,8 @@ final class HostAgentWorkspace: ObservableObject {
                 return false
             }
             return beginSend(text, runtime: runtime, provider: config.binding(), workspaceID: workspaceID,
-                             mode: mode, criterion: criterion.trimmingCharacters(in: .whitespacesAndNewlines))
+                             mode: mode, criterion: criterion.trimmingCharacters(in: .whitespacesAndNewlines),
+                             onAdmitted: onAdmitted)
         } catch {
             notice = String(localized: "host.chat.keychainUnavailable")
             return false
@@ -711,7 +741,7 @@ final class HostAgentWorkspace: ObservableObject {
     private func beginSend(_ text: String, runtime: FloeMacSelfRuntime,
                            provider: FloeMacSelfProviderBinding,
                            workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "",
-                           acceptedPlan: PlanConfirmationSnapshot? = nil) -> Bool {
+                           acceptedPlan: PlanConfirmationSnapshot? = nil, onAdmitted: (() -> Void)? = nil) -> Bool {
         let currentID = selectedID
         let currentGoal = mode == .goal && criterion.isEmpty && goal?.conversationID == currentID ? goal : nil
         let selectedProject = workspaces.first { $0.id == workspaceID && $0.kind == .project }
@@ -726,7 +756,6 @@ final class HostAgentWorkspace: ObservableObject {
         rejectedPrompt = nil
         pendingPrompt = acceptedPlan == nil ? text : nil
         let drafts = stagedAttachments
-        if !drafts.isEmpty { stagedAttachments = [] }
         Task {
             var admitted = false
             defer {
@@ -749,7 +778,6 @@ final class HostAgentWorkspace: ObservableObject {
                     project = selectedProject
                 }
                 if requiresProject && project == nil {
-                    stagedAttachments = drafts
                     rejectedPrompt = text
                     notice = String(localized: "mac.agent.projectRequired")
                     return
@@ -802,6 +830,11 @@ final class HostAgentWorkspace: ObservableObject {
                 )
                 let handle = try await runtime.startSession(request, provider: provider, tools: tools)
                 admitted = true
+                if !drafts.isEmpty {
+                    stagedAttachments = []
+                    saveAttachmentDraft?(currentID, [])
+                }
+                onAdmitted?()
                 activeRun = handle
                 selectedID = handle.identity.conversationID
                 runPhase = await handle.phase()
@@ -849,13 +882,19 @@ final class HostAgentWorkspace: ObservableObject {
                 // User input and provider errors can contain private material.
                 // Show the action that failed and preserve the draft for retry.
                 if !admitted {
-                    stagedAttachments = drafts
                     if acceptedPlan == nil { rejectedPrompt = text }
                 }
                 #if FLOE_MAC_HOST_SMOKE
                 if vault == nil { smokeRunDiagnostics.append("\(mode.rawValue): \(error)") }
                 #endif
-                notice = String(localized: "host.chat.runFailed")
+                switch error as? FloeMacSelfCoreError {
+                case .attachmentUnavailable(let name):
+                    notice = String(format: String(localized: "mac.workspace.documentChanged"), name)
+                case .attachmentUnreadable(let name):
+                    notice = String(format: String(localized: "mac.workspace.documentUnreadable"), name)
+                default:
+                    notice = String(localized: "host.chat.runFailed")
+                }
             }
         }
         return true

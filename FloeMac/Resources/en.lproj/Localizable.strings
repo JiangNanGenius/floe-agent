@@ -49,7 +49,6 @@
 "host.mode.switchUnavailable" = "Couldn’t Switch to Bridge Mode";
 "host.mode.agentBusy" = "Wait for Agent to finish its current work, then try again.";
 "host.mode.pendingFiles" = "Finish saving or discard the unsaved file changes, then try again.";
-"host.mode.pendingAttachments" = "Send or remove the draft attachments, then try again.";
 "host.mode.draftSaveFailed" = "Your conversation draft couldn’t be saved. Check the draft, then try again.";
 "host.mode.runtimeCloseFailed" = "Agent couldn’t finish closing its workspace. Try again in a moment.";
 "host.menu.openAgent" = "Open Agent Workspace";
@@ -279,6 +278,8 @@
 "mac.workspace.exportChat" = "Export Conversation…";
 "mac.workspace.loadEarlierMessages" = "Load Earlier Messages";
 "mac.workspace.attachmentUnavailable" = "The original attachment could not be found.";
+"mac.workspace.documentChanged" = "“%@” changed or couldn’t be opened. Attach it again.";
+"mac.workspace.documentUnreadable" = "Couldn’t read text from “%@”. Try an unlocked document with selectable text or fewer pages.";
 "mac.workspace.returnToActiveTask" = "Return to Running Task";
 "mac.icloud.models" = "iCloud Model Configuration";
 "mac.icloud.scope" = "Download provider and model settings from iCloud, or upload a saved configuration. Add any required API key on this Mac after importing.";

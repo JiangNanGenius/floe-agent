@@ -40,6 +40,8 @@ public enum FloeMacSelfCoreError: Error, Sendable, Hashable {
     case admissionUnknown(UUID)
     case admissionConflict(UUID)
     case invalidRequest(String)
+    case attachmentUnavailable(String)
+    case attachmentUnreadable(String)
     case unsupportedConversationMode(String)
     case providerUnavailable(String)
     case adapterProtocolMismatch(expected: String, actual: String)
@@ -78,6 +80,8 @@ public enum FloeMacSelfCoreError: Error, Sendable, Hashable {
         case .admissionUnknown: return "admissionUnknown"
         case .admissionConflict: return "admissionConflict"
         case .invalidRequest: return "invalidRequest"
+        case .attachmentUnavailable: return "attachmentUnavailable"
+        case .attachmentUnreadable: return "attachmentUnreadable"
         case .unsupportedConversationMode: return "unsupportedConversationMode"
         case .providerUnavailable: return "providerUnavailable"
         case .adapterProtocolMismatch: return "adapterProtocolMismatch"
@@ -133,6 +137,10 @@ extension FloeMacSelfCoreError: LocalizedError {
 
         case .invalidRequest(let detail):
             return "The Mac session request is invalid: \(detail)"
+        case .attachmentUnavailable:
+            return "The document changed or could not be opened. Attach it again."
+        case .attachmentUnreadable:
+            return "No readable text could be extracted within the attachment limit."
         case .unsupportedConversationMode(let detail):
             return "This Mac runtime stage does not support that conversation mode: \(detail)"
         case .providerUnavailable(let detail):

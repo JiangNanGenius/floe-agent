@@ -3,11 +3,13 @@
 #if FLOE_MAC_HOST_SMOKE
 import AppKit
 import CloudKit
+import CoreText
 import CryptoKit
 import Darwin
 import FloeCore
 import FloeMacBridgeProtocol
 import FloeMacToolbox
+import FloeModels
 import Foundation
 
 @MainActor
@@ -148,10 +150,8 @@ final class UnifiedMacSmoke {
                 }
             }
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
-            if nativeChat, workspaceAndAttachmentStaging {
-                conversationHistoryVerified = await agent.verifyConversationHistorySmoke(
-                    reference: root.appendingPathComponent("Fixture Project/fixture.md")
-                )
+            if nativeChat, workspaceAndAttachmentStaging, let pdf = try? writePDFTextAttachment() {
+                conversationHistoryVerified = await agent.verifyConversationHistorySmoke(reference: pdf)
             }
             await agent.loadTaskRuns()
             let historyDeadline = ContinuousClock.now + .seconds(3)
@@ -228,6 +228,8 @@ final class UnifiedMacSmoke {
             "workspaceApprovalAXPress": pressedApprovalButton,
             "taskDiagnostics": model.macWorkspace?.agent?.smokeRunDiagnostics ?? [],
             "toolboxAndLoopbackVerified": toolbox,
+            "enabledToolboxEntries": MacToolboxCatalog.groups(locale: .current)
+                .flatMap(\.tools).filter(\.isAvailable).count,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
         ]
@@ -320,17 +322,31 @@ final class UnifiedMacSmoke {
     private func verifyDraftStorage() -> Bool {
         let directory = root.appendingPathComponent("Draft Storage Probe", isDirectory: true)
         let conversation = UUID()
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            try Data("Legacy draft".utf8).write(to: directory.appendingPathComponent("new-task"))
+            try Data("Saved task text".utf8).write(to: directory.appendingPathComponent(conversation.uuidString))
+        } catch { return false }
         let first = MacWorkspaceDraftStore(directory: directory)
-        first.setText("New task text", for: nil)
-        first.setText("Saved task text", for: conversation)
+        guard first.text(for: nil) == "Legacy draft" else { return false }
+        let attachment = AttachmentRef(kind: .document, displayName: "Synthetic reference")
+        first.setAttachments([attachment], for: conversation)
         first.flush()
+        typealias Archive = ComposerDraftDocument<DesignJSONValue, DesignJSONValue>
+        guard let bytes = try? Data(contentsOf: directory.appendingPathComponent("drafts.json")),
+              let archive = try? JSONDecoder().decode(Archive.self, from: bytes),
+              archive.drafts[Archive.homeDraftID.uuidString]?.text == "Legacy draft",
+              archive.drafts[conversation.uuidString]?.attachments == [attachment] else { return false }
         let reopened = MacWorkspaceDraftStore(directory: directory)
-        let readBack = reopened.text(for: nil) == "New task text"
+        let readBack = reopened.text(for: nil) == "Legacy draft"
             && reopened.text(for: conversation) == "Saved task text" && reopened.text(for: UUID()).isEmpty
-        reopened.setText("", for: conversation)
+            && reopened.attachments(for: conversation) == [attachment]
+        reopened.clear(for: conversation)
         reopened.flush()
+        let cleared = MacWorkspaceDraftStore(directory: directory)
         return readBack && !first.saveFailed && !reopened.saveFailed
-            && MacWorkspaceDraftStore(directory: directory).text(for: conversation).isEmpty
+            && cleared.text(for: conversation).isEmpty && cleared.attachments(for: conversation).isEmpty
     }
 
     private func verifyProviderCatalog(in workspace: HostAgentWorkspace) async -> Bool {
@@ -464,9 +480,33 @@ final class UnifiedMacSmoke {
               let staged = agent.stageAttachments([reference]).first,
               staged.displayName == "fixture.md",
               agent.stagedAttachments.count == 1 else { return false }
+        let conversationID = agent.selectedID
+        agent.clearStagedAttachments()
+        await agent.select(conversationID)
+        guard agent.stagedAttachments.map(\.id) == [staged.id] else { return false }
         agent.unstageAttachment(staged.id)
         agent.selectWorkspace(nil)
         return agent.stagedAttachments.isEmpty
+    }
+
+    private func writePDFTextAttachment() throws -> URL {
+        let output = NSMutableData()
+        var bounds = CGRect(x: 0, y: 0, width: 300, height: 300)
+        guard let consumer = CGDataConsumer(data: output as CFMutableData),
+              let context = CGContext(consumer: consumer, mediaBox: &bounds, nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        context.beginPDFPage(nil)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "Synthetic attachment", attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+        ]))
+        context.textPosition = CGPoint(x: 24, y: 120)
+        CTLineDraw(line, context)
+        context.endPDFPage()
+        context.closePDF()
+        let path = root.appendingPathComponent("fixture-document.pdf")
+        try (output as Data).write(to: path, options: .withoutOverwriting)
+        return path
     }
 
     private func exerciseModeRoundTrip(model: BridgeAppModel) async -> Bool {

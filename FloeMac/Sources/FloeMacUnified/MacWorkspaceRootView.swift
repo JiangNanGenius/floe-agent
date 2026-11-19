@@ -421,7 +421,7 @@ struct MacWorkspaceRootView: View {
             } else {
                 switch change {
                 case .delete:
-                    draftStore.setText("", for: id)
+                    draftStore.clear(for: id)
                     fallthrough
                 case .archive(true):
                     if remembersFileRoot, lastConversation == id.uuidString { lastConversation = "" }

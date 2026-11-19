@@ -5,6 +5,8 @@
 // user database, Keychain item or workspace is touched.
 
 import Foundation
+import CoreGraphics
+import CoreText
 import Testing
 import FloeCore
 import FloeModels
@@ -137,6 +139,102 @@ struct WorkspaceLeaseAndAttachmentsTests {
             #expect(userMessage.parts[1].kind == .file)
             #expect(userMessage.parts[1].attachmentID == attachment.id)
             _ = try await handle.close()
+        }
+    }
+
+    @Test("A PDF attachment reveals its text only to the current model request")
+    func pdfAttachmentReachesProvider() async throws {
+        try await withSelfCoreFixture { fixture in
+            let data = NSMutableData()
+            let consumer = try #require(CGDataConsumer(data: data as CFMutableData))
+            var paper = CGRect(x: 0, y: 0, width: 300, height: 300)
+            let page = try #require(CGContext(consumer: consumer, mediaBox: &paper, nil))
+            page.beginPDFPage(nil)
+            let marker = "Synthetic PDF page text"
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: marker, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+            ]))
+            page.textPosition = CGPoint(x: 24, y: 120)
+            CTLineDraw(line, page)
+            page.endPDFPage()
+            page.closePDF()
+            let url = fixture.root.appendingPathComponent("fixture.pdf")
+            let bytes = data as Data
+            try bytes.write(to: url)
+            let attachment = FloeMacSelfSessionAttachment(kind: .document, displayName: url.lastPathComponent,
+                uti: "com.adobe.pdf", byteCount: bytes.count, sha256: FloeDigest.sha256Hex(bytes),
+                bookmark: try url.bookmarkData())
+            let (binding, adapter) = fixture.makeProvider(scripts: [[
+                .textDelta(.init(text: "PDF fixture response.")), .completed(.init(stopReason: .endTurn))
+            ]])
+            let handle = try await fixture.runtime.startSession(
+                .init(goal: "Read the attached PDF", mode: .chat, attachments: [attachment]), provider: binding)
+            #expect(await handle.waitForTerminal(timeout: 15)?.confirmed == true)
+            let sent = try #require(adapter.requests.first)
+            #expect(sent.effectiveMessages.contains { message in
+                message.role == "user" && message.content.contains { part in
+                    if case .text(let text) = part { return text.contains(marker) }
+                    return false
+                }
+            })
+            let messages = try await handle.durableMessages()
+            let userMessage = try #require(messages.first { $0.role == "user" })
+            #expect(userMessage.content == "Read the attached PDF")
+            #expect(userMessage.parts.contains { $0.attachmentID == attachment.id && $0.kind == .file })
+            _ = try await handle.close()
+        }
+    }
+
+    @Test("A deflated Word attachment reaches the provider as text")
+    func wordAttachmentReachesProvider() async throws {
+        try await withSelfCoreFixture { fixture in
+            // A ZIP fixture containing one word/document.xml member with a single text paragraph.
+            let bytes = try #require(Data(base64Encoded: """
+                UEsDBBQAAAAIAAcQdF1wSJ1ongAAANMAAAARAAAAd29yZC9kb2N1bWVudC54bWxFjkkOwjAMRa8SZU9TWCBUd
+                dhxAUCsQ2KaSM0gx3S4PUlZsHmW9b+f3A6rm9gMmGzwHT9WNWfgVdDWjx1/3K+HCx/6dml0UB8Hnlju+9QsHT
+                dEsREiKQNOpipE8Dl7B3SS8oqjWALqiEFBSlnnJnGq67Nw0npelK+gtzJjARZQf9s8GSCr2DMfM4nK2BkYwUq
+                tKIVC3Bl3/iTi/2D/BVBLAQIUAxQAAAAIAAcQdF1wSJ1ongAAANMAAAARAAAAAAAAAAAAAACAAQAAAAB3b3Jk
+                L2RvY3VtZW50LnhtbFBLBQYAAAAAAQABAD8AAADNAAAAAAA=
+                """, options: .ignoreUnknownCharacters))
+            let url = fixture.root.appendingPathComponent("fixture.docx")
+            try bytes.write(to: url)
+            let attachment = FloeMacSelfSessionAttachment(kind: .document, displayName: url.lastPathComponent,
+                uti: "org.openxmlformats.wordprocessingml.document", byteCount: bytes.count,
+                sha256: FloeDigest.sha256Hex(bytes), bookmark: try url.bookmarkData())
+            let (binding, adapter) = fixture.makeProvider(scripts: [[
+                .textDelta(.init(text: "Word fixture response.")), .completed(.init(stopReason: .endTurn))
+            ]])
+            let handle = try await fixture.runtime.startSession(
+                .init(goal: "Read the Word attachment", mode: .chat, attachments: [attachment]), provider: binding)
+            #expect(await handle.waitForTerminal(timeout: 15)?.confirmed == true)
+            let request = try #require(adapter.requests.first)
+            #expect(request.effectiveMessages.contains { message in
+                message.role == "user" && message.content.contains { part in
+                    if case .text(let text) = part { return text.contains("Synthetic Word archive text") }
+                    return false
+                }
+            })
+            _ = try await handle.close()
+        }
+    }
+
+    @Test("An unreadable formatted attachment fails before a request or visible task is created")
+    func malformedDocumentIsRecoverable() async throws {
+        try await withSelfCoreFixture { fixture in
+            let url = fixture.root.appendingPathComponent("fixture.docx")
+            let bytes = Data("not a Word archive".utf8)
+            try bytes.write(to: url)
+            let attachment = FloeMacSelfSessionAttachment(kind: .document, displayName: url.lastPathComponent,
+                uti: "org.openxmlformats.wordprocessingml.document", byteCount: bytes.count,
+                sha256: FloeDigest.sha256Hex(bytes), bookmark: try url.bookmarkData())
+            let (binding, adapter) = fixture.makeProvider(scripts: [])
+            let error = await selfCoreError {
+                _ = try await fixture.runtime.startSession(.init(goal: "Read it", mode: .chat, attachments: [attachment]),
+                                                          provider: binding)
+            }
+            #expect(error?.code == "attachmentUnreadable")
+            #expect(adapter.requests.isEmpty)
+            #expect(try await fixture.runtime.conversations().isEmpty)
         }
     }
 

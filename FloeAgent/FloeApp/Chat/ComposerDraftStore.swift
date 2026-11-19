@@ -64,20 +64,7 @@ import FloeModels
 @MainActor
 final class ComposerDraftStore: ObservableObject {
 
-    struct Entry: Codable, Equatable {
-        var text: String
-        var attachments: [AttachmentRef]
-        var revision: Int
-        var updatedAt: Date
-        var selectionLocation: Int?
-        var selectionLength: Int?
-
-        /// Stored caret/selection, nil when nothing was captured yet.
-        var selection: NSRange? {
-            guard let selectionLocation else { return nil }
-            return NSRange(location: selectionLocation, length: selectionLength ?? 0)
-        }
-    }
+    typealias Entry = ComposerDraftEntry
 
     /// Identity of the draft text at the moment a send consumed it.
     ///
@@ -600,7 +587,7 @@ final class ComposerDraftStore: ObservableObject {
         if isHomeComposerUITestEnabled {
             return UUID(uuidString: "B8C9FB32-82EC-4D16-BEA3-29DA33B18302")!
         }
-        return UUID(uuidString: "8F4D0A6E-3B1C-4E2A-9D55-2C8F1A77E010")!
+        return PersistedDocument.homeDraftID
     }
 
     /// A separate DEBUG-only draft identity protects the reused simulator's
@@ -1313,13 +1300,7 @@ final class ComposerDraftStore: ObservableObject {
     /// write leaves the recoverable bytes readable: each entry survives a
     /// process restart and the missing receipt/proof ledgers simply prove
     /// nothing, which is exactly the honest default.
-    private struct PersistedDocument: Codable {
-        var drafts: [String: Entry]
-        var handoffs: [String: ShortcutHandoffReceipt]
-        /// Optional on decode: documents written before import proofs
-        /// existed carry no field, which decodes as an empty ledger.
-        var landingProofs: [String: ImportedDraftProof]?
-    }
+    private typealias PersistedDocument = ComposerDraftDocument<ShortcutHandoffReceipt, ImportedDraftProof>
 
     private nonisolated static func decodeDocument(
         _ data: Data

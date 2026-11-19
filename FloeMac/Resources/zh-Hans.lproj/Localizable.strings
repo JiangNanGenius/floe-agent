@@ -49,7 +49,6 @@
 "host.mode.switchUnavailable" = "无法切换到 Bridge 模式";
 "host.mode.agentBusy" = "请等待 Agent 完成当前操作后再试。";
 "host.mode.pendingFiles" = "请等待文件保存完成，或放弃未保存的修改后再试。";
-"host.mode.pendingAttachments" = "请发送或移除草稿中的附件后再试。";
 "host.mode.draftSaveFailed" = "对话草稿保存失败。请检查草稿后重试。";
 "host.mode.runtimeCloseFailed" = "Agent 未能关闭工作区。请稍后重试。";
 "host.menu.openAgent" = "打开 Agent 工作区";
@@ -280,6 +279,8 @@
 "mac.workspace.exportChat" = "导出完整对话…";
 "mac.workspace.loadEarlierMessages" = "加载更早的消息";
 "mac.workspace.attachmentUnavailable" = "找不到原始附件。";
+"mac.workspace.documentChanged" = "“%@”已变动或无法打开，请重新添加。";
+"mac.workspace.documentUnreadable" = "无法从“%@”读取文字。请试用未加密、可选中文字或页数更少的文档。";
 "mac.workspace.returnToActiveTask" = "返回正在运行的任务";
 "mac.icloud.models" = "iCloud 模型配置";
 "mac.icloud.scope" = "从 iCloud 下载供应商和模型设置，也可以上传已保存的配置。导入后，请在这台 Mac 上填写需要的 API 密钥。";

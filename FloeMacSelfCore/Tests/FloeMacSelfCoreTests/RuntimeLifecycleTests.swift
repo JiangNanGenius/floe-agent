@@ -210,6 +210,53 @@ struct RuntimeLifecycleTests {
         }
     }
 
+    @Test("A fresh Mac run restores the shared iPad context snapshot and prior tool results")
+    func restoresSharedContext() async throws {
+        try await withSelfCoreFixture { fixture in
+            let script: [AgentEvent] = [
+                .textDelta(.init(text: "Prior durable reply.")),
+                .completed(.init(stopReason: .endTurn)),
+            ]
+            let (firstProvider, _) = fixture.makeProvider(scripts: [script], capabilities: [.text, .tools])
+            let first = try await fixture.runtime.startSession(
+                fixture.newConversationRequest(goal: "The long original context"), provider: firstProvider)
+            #expect(await first.waitForTerminal(timeout: 15)?.confirmed == true)
+            let identity = first.identity
+            _ = try await first.close()
+            _ = try await fixture.shutdown(cancelActive: false)
+
+            // Write the exact projection persisted by the shared iPad store.
+            let database = try DatabaseManager(path: fixture.databaseURL)
+            let compaction = ContextCompactionRecord(sourceMessageIDs: [identity.userMessageID],
+                sourceDigest: "fixture-digest", beforeEstimatedTokens: 120, afterEstimatedTokens: 25)
+            try await SQLiteIntelligenceStore(database: database).saveCompaction(
+                runID: identity.runID, record: compaction,
+                summary: ContextHistorySnapshot.automaticPrefix + ContextHistorySnapshot.noticePrefix
+                    + "\nHistorical summary: durable blue notebook")
+            try await SQLiteRunStore(database: database).appendEvent(runID: identity.runID, kind: .toolResult,
+                payloadJSON: #"{"tool":"workspace.readFile","status":"ok","id":"reviewed-file","summary":"verified note contents"}"#)
+            try await database.close()
+
+            let runtime = try FloeMacSelfRuntime(databaseURL: fixture.databaseURL,
+                owner: FloeMacSelfHostIdentity(displayName: "Context fixture"),
+                provenance: makeHostProvenance(databaseURL: fixture.databaseURL))
+            _ = try await runtime.bootstrap()
+            let (provider, adapter) = fixture.makeProvider(scripts: [script], capabilities: [.text, .tools])
+            let request = FloeMacSelfSessionRequest(conversationID: identity.conversationID,
+                                                    goal: "Continue the task", mode: .chat)
+            let next = try await runtime.startSession(request, provider: provider)
+            #expect(await next.waitForTerminal(timeout: 15)?.confirmed == true)
+            let context = try #require(adapter.requests.first).messages.map(\.content).joined(separator: "\n")
+            #expect(context.contains("durable blue notebook"))
+            #expect(context.contains("verified note contents"))
+            #expect(!context.contains("The long original context"))
+            let timeline = try await runtime.conversationMessages(conversationID: identity.conversationID)
+            #expect(timeline.contains { $0.id == identity.userMessageID && $0.content == "The long original context" })
+            _ = try await next.close()
+            _ = try await runtime.shutdown(cancelActive: false)
+        }
+    }
+
     @Test("Missing Goal criteria, missing Plan tools and malformed requests fail before a durable write")
     func incompleteModeInputsAndRequestsFailClosed() async throws {
         try await withSelfCoreFixture { fixture in

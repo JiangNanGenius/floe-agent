@@ -29,6 +29,14 @@ struct HostAgentWorkspaceView: View {
         workspaceDraft ?? $standaloneDraft
     }
 
+    private func submitDraft(workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "") {
+        let binding = draft
+        let submitted = binding.wrappedValue
+        workspace.send(submitted, workspaceID: workspaceID, mode: mode, criterion: criterion) {
+            if binding.wrappedValue == submitted { binding.wrappedValue = "" }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             #if !FLOE_UNIFIED_MAC
@@ -79,7 +87,7 @@ struct HostAgentWorkspaceView: View {
                             .disabled(!workspace.canStop)
                     } else {
                         Button("host.chat.send") {
-                            if workspace.send(draft.wrappedValue) { draft.wrappedValue = "" }
+                            submitDraft()
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workspace.isTerminating)
@@ -189,10 +197,7 @@ struct HostAgentWorkspaceView: View {
                         && (!needsCriterion || !criterion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button {
                         let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
-                        if workspace.send(draft.wrappedValue, workspaceID: project, mode: mode,
-                                          criterion: needsCriterion ? criterion : "") {
-                            draft.wrappedValue = ""
-                        }
+                        submitDraft(workspaceID: project, mode: mode, criterion: needsCriterion ? criterion : "")
                     } label: {
                         FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSend)
                     }
