@@ -163,7 +163,7 @@ struct MacWorkspaceTaskCenter: View {
                             .accessibilityHidden(true)
                     } else {
                         Circle()
-                            .fill(run.map { statusColor(for: $0.state) } ?? Color.clear)
+                        .fill(run.map { statusColor(for: displayedState($0)) } ?? Color.clear)
                             .frame(width: 8, height: 8)
                             .accessibilityHidden(true)
                     }
@@ -222,12 +222,27 @@ struct MacWorkspaceTaskCenter: View {
             return text
         }
         guard let run else { return Text(" ").foregroundStyle(.secondary) }
-        var text = Text(statusText(for: run.state)).foregroundStyle(statusColor(for: run.state))
+        let state = displayedState(run)
+        var text = Text(statusText(for: state)).foregroundStyle(statusColor(for: state))
         if let duration = durationText(startedAt: run.startedAt, endedAt: run.endedAt) {
             text = text + Text(" · ").foregroundStyle(.secondary)
                 + Text(t("用时 ", "Took ") + duration).foregroundStyle(.secondary)
         }
         return text
+    }
+
+    private func displayedState(_ run: RunRecord) -> String {
+        guard run.endedAt == nil,
+              !(workspace.isSending && workspace.selectedID == run.conversationID) else { return run.state }
+        switch run.state {
+        case "idle", "preparing", "running", "streamingModel", "preparingToolCall", "executingTool",
+             "verifying", "committingResults", "reconnecting", "compacting", "reviewingApproval",
+             "waitingApproval", "waitingTool", "waitingUser", "waitingUserQuestion", "waitingNativeInput",
+             "cancelling":
+            return "interrupted"
+        default:
+            return run.state
+        }
     }
 
     private func title(for record: ConversationRecord) -> String {

@@ -262,7 +262,9 @@
 "mac.workspace.taskName" = "Task Name";
 "mac.workspace.pin" = "Pin Task";
 "mac.workspace.unpin" = "Unpin Task";
-"mac.workspace.exportChat" = "Export Displayed Messages…";
+"mac.workspace.exportChat" = "Export Conversation…";
+"mac.workspace.loadEarlierMessages" = "Load Earlier Messages";
+"mac.workspace.attachmentUnavailable" = "The original attachment could not be found.";
 "mac.workspace.saveFailed" = "Couldn’t update this task. Try again.";
 "mac.workspace.exportFailed" = "Couldn’t save the conversation. Choose another location and try again.";
 

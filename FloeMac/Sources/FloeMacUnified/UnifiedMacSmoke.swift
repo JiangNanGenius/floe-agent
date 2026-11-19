@@ -82,6 +82,7 @@ final class UnifiedMacSmoke {
         var archivedTaskRestored = false
         var deletedFixtureTask = false
         var workspaceAndAttachmentStaging = false
+        var conversationHistoryVerified = false
         var catalog = false
         var agentApproval = (allowed: false, denied: false)
         var planning = (planSaved: false, goalSaved: false)
@@ -109,6 +110,11 @@ final class UnifiedMacSmoke {
                 }
             }
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
+            if nativeChat, workspaceAndAttachmentStaging {
+                conversationHistoryVerified = await agent.verifyConversationHistorySmoke(
+                    reference: root.appendingPathComponent("Fixture Project/fixture.md")
+                )
+            }
             await agent.loadTaskRuns()
             let historyDeadline = ContinuousClock.now + .seconds(3)
             if let id = agent.selectedID {
@@ -123,9 +129,11 @@ final class UnifiedMacSmoke {
                 taskMetadataSaved = renamed && pinned && saved?.title == "Fixture desktop task" && saved?.isPinned == true
                 let archived = await agent.changeConversationMetadata(id: id, change: .archive(true))
                 let archivedRow = agent.conversations.first { $0.id == id }
+                await agent.loadTaskRuns()
+                let archivedRunIsVisible = agent.recentTaskRuns[id]?.conversationID == id
                 let restored = await agent.changeConversationMetadata(id: id, change: .archive(false))
                 let restoredRow = agent.conversations.first { $0.id == id }
-                archivedTaskRestored = archived && archivedRow?.archivedAt != nil && restored
+                archivedTaskRestored = archived && archivedRunIsVisible && archivedRow?.archivedAt != nil && restored
                     && restoredRow?.isVisibleInOrdinaryList == true && restoredRow?.isPinned == true
             }
             if let content = NSApp.windows.first(where: {
@@ -169,6 +177,7 @@ final class UnifiedMacSmoke {
             "composerDraftsReloaded": verifyDraftStorage(),
             "providerCatalogFetched": catalog,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
+            "conversationHistoryVerified": conversationHistoryVerified,
             "agentApprovedFileCreated": agentApproval.allowed,
             "agentDeclinedFileAbsent": agentApproval.denied,
             "planAcceptedAndReloaded": planning.planSaved,

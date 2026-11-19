@@ -263,7 +263,9 @@
 "mac.workspace.taskName" = "任务名称";
 "mac.workspace.pin" = "置顶任务";
 "mac.workspace.unpin" = "取消置顶";
-"mac.workspace.exportChat" = "导出当前消息…";
+"mac.workspace.exportChat" = "导出完整对话…";
+"mac.workspace.loadEarlierMessages" = "加载更早的消息";
+"mac.workspace.attachmentUnavailable" = "找不到原始附件。";
 "mac.workspace.saveFailed" = "无法更新此任务，请重试。";
 "mac.workspace.exportFailed" = "无法保存对话，请选择其他位置后重试。";
 

@@ -1275,6 +1275,15 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    public func latestRuns(conversationIDs: [UUID]) async throws -> [UUID: RunRecord] {
+        let stores = try requireStores()
+        do {
+            return try await stores.runs.latestRuns(conversationIDs: conversationIDs)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
     public func nonTerminalRuns() async throws -> [RunRecord] {
         let stores = try requireStores()
         do {
@@ -1353,6 +1362,40 @@ public actor FloeMacSelfRuntime {
             return try await stores.conversations.recentMessages(
                 conversationID: conversationID, limit: min(500, max(1, limit))
             )
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    public func conversationMessagePage(
+        conversationID: UUID,
+        before cursor: ConversationMessageCursor? = nil,
+        limit: Int = 100
+    ) async throws -> ConversationMessagePage {
+        let stores = try requireStores()
+        do {
+            return try await stores.conversations.messagePage(
+                conversationID: conversationID, before: cursor, limit: limit
+            )
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    public func conversationTranscript(conversationID: UUID) async throws -> [PersistedMessage] {
+        let stores = try requireStores()
+        do {
+            return try await stores.conversations.messages(conversationID: conversationID)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    public func conversationAttachment(id: UUID, conversationID: UUID) async throws -> AttachmentRef? {
+        let stores = try requireStores()
+        do {
+            let attachment = try await stores.conversations.attachment(id: id)
+            return attachment?.conversationID == conversationID ? attachment : nil
         } catch {
             throw Self.surface(error)
         }

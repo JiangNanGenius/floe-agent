@@ -51,6 +51,16 @@ struct HostAgentWorkspaceView: View {
             } else if !workspace.isReady {
                 Button("host.chat.tryAgain") { Task { await workspace.prepare() } }
                     .disabled(workspace.isTerminating)
+            } else if workspace.isLoadingHistory {
+                ProgressView("host.chat.opening")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if workspace.historyLoadFailed {
+                VStack(spacing: 10) {
+                    Text("host.chat.historyUnavailable")
+                    Button("host.chat.tryAgain") { Task { await workspace.select(workspace.selectedID) } }
+                        .disabled(workspace.isTerminating)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 conversation
                 #if FLOE_UNIFIED_MAC
@@ -114,6 +124,26 @@ struct HostAgentWorkspaceView: View {
             HostAgentProviderForm(workspace: workspace, isPresented: $showingSettings)
         }
         #endif
+    }
+
+    @ViewBuilder
+    private func earlierHistoryButton(_ scroll: ScrollViewProxy) -> some View {
+        if workspace.hasEarlierMessages {
+            Button("mac.workspace.loadEarlierMessages") {
+                let firstID = workspace.messages.first?.id
+                let conversationID = workspace.selectedID
+                Task {
+                    await workspace.loadEarlierMessages()
+                    if workspace.selectedID == conversationID, let firstID,
+                       workspace.messages.first?.id != firstID {
+                        scroll.scrollTo(firstID, anchor: .top)
+                    }
+                }
+            }
+            .disabled(workspace.isSending || workspace.isLoadingEarlierMessages || workspace.isTerminating)
+            .accessibilityIdentifier("workspace.history.earlier")
+            .frame(maxWidth: .infinity)
+        }
     }
 
     #if FLOE_UNIFIED_MAC
@@ -443,76 +473,91 @@ struct HostAgentWorkspaceView: View {
 
     private var conversation: some View {
         GeometryReader { proxy in
-            ScrollView {
-                if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
-                    FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
-                        Text("home.welcome")
-                    }
-                    .frame(maxWidth: .infinity, minHeight: max(240, proxy.size.height))
-                } else {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(workspace.messages) { message in
-                            VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
-                                if PlanConfirmationSnapshot.from(message: message) != nil {
-                                    Label("mac.agent.planAccepted", systemImage: "checkmark.circle")
-                                        .foregroundStyle(.secondary)
-                                } else if message.role == "user" {
-                                    UserMessageBubble(text: message.content, attachments: AttachmentChipItem.items(in: message.parts))
-                                } else if message.role == "assistant" {
-                                    MarkdownRendererView(source: message.content)
-                                } else {
-                                    Text(verbatim: message.content).foregroundStyle(.secondary)
+            ScrollViewReader { scroll in
+                ScrollView {
+                    if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
+                        FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
+                            Text("home.welcome")
+                        }
+                        .frame(maxWidth: .infinity, minHeight: max(240, proxy.size.height))
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 16) {
+                            earlierHistoryButton(scroll)
+                            ForEach(workspace.messages) { message in
+                                VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
+                                    if PlanConfirmationSnapshot.from(message: message) != nil {
+                                        Label("mac.agent.planAccepted", systemImage: "checkmark.circle")
+                                            .foregroundStyle(.secondary)
+                                    } else if message.role == "user" {
+                                        UserMessageBubble(text: message.content,
+                                                          attachments: AttachmentChipItem.items(in: message.parts),
+                                                          onOpenAttachment: { item in
+                                            guard let id = item.attachmentID else { return }
+                                            Task {
+                                                await workspace.withSavedAttachment(id: id, conversationID: message.conversationID) {
+                                                    NSWorkspace.shared.activateFileViewerSelecting([$0])
+                                                }
+                                            }
+                                        })
+                                    } else if message.role == "assistant" {
+                                        MarkdownRendererView(source: message.content)
+                                    } else {
+                                        Text(verbatim: message.content).foregroundStyle(.secondary)
+                                    }
+                                    ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
+                                                      userText: message.role == "user" ? message.content : nil)
                                 }
-                                ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
-                                                  userText: message.role == "user" ? message.content : nil)
-                            }
-                            .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
-                            .contextMenu {
-                                if let text = CredentialMessagePart.clipboardText(message.content) {
-                                    Button("action.copy") {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(text, forType: .string)
+                                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                                .contextMenu {
+                                    if let text = CredentialMessagePart.clipboardText(message.content) {
+                                        Button("action.copy") {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(text, forType: .string)
+                                        }
                                     }
                                 }
                             }
+                            if let prompt = workspace.pendingPrompt { UserMessageBubble(text: prompt) }
+                            if !workspace.streamedText.isEmpty {
+                                MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
+                            }
                         }
-                        if let prompt = workspace.pendingPrompt { UserMessageBubble(text: prompt) }
-                        if !workspace.streamedText.isEmpty {
-                            MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
-                        }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
+                        .frame(maxWidth: 760)
+                        .frame(maxWidth: .infinity)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
-                    .frame(maxWidth: 760)
-                    .frame(maxWidth: .infinity)
                 }
+                .defaultScrollAnchor(.bottom)
             }
-            .defaultScrollAnchor(.bottom)
         }
     }
     #else
     private var conversation: some View {
-        ScrollView {
-            if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
-                ContentUnavailableView("mac.workspace.newTask", systemImage: "bubble.left.and.bubble.right")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 36)
+        ScrollViewReader { scroll in
+            ScrollView {
+                if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
+                    ContentUnavailableView("mac.workspace.newTask", systemImage: "bubble.left.and.bubble.right")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 36)
+                }
+                LazyVStack(alignment: .leading, spacing: 15) {
+                    earlierHistoryButton(scroll)
+                    ForEach(workspace.messages) { message in
+                        row(message.content, user: message.role == "user")
+                    }
+                    if let prompt = workspace.pendingPrompt {
+                        row(prompt, user: true)
+                    }
+                    if !workspace.streamedText.isEmpty {
+                        row(workspace.streamedText, user: false)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            LazyVStack(alignment: .leading, spacing: 15) {
-                ForEach(workspace.messages) { message in
-                    row(message.content, user: message.role == "user")
-                }
-                if let prompt = workspace.pendingPrompt {
-                    row(prompt, user: true)
-                }
-                if !workspace.streamedText.isEmpty {
-                    row(workspace.streamedText, user: false)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minHeight: 240, idealHeight: 300)
+            .defaultScrollAnchor(.bottom)
         }
-        .frame(minHeight: 240, idealHeight: 300)
-        .defaultScrollAnchor(.bottom)
     }
 
     private func row(_ text: String, user: Bool) -> some View {

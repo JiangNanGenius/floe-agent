@@ -446,6 +446,37 @@ public actor SQLiteRunStore: RunStore {
         }
     }
 
+    public func latestRuns(conversationIDs: [UUID]) async throws -> [UUID: RunRecord] {
+        guard !conversationIDs.isEmpty else { return [:] }
+        let batchSize = 300
+        return try await database.reader { db in
+            var result: [UUID: RunRecord] = [:]
+            for offset in stride(from: 0, to: conversationIDs.count, by: batchSize) {
+                let identifiers = conversationIDs[offset..<min(offset + batchSize, conversationIDs.count)]
+                let placeholders = Array(repeating: "?", count: identifiers.count).joined(separator: ", ")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                        SELECT latest.* FROM conversations AS task
+                        JOIN runs AS latest ON latest.id = (
+                            SELECT candidate.id FROM runs AS candidate
+                            WHERE candidate.conversation_id = task.id
+                            ORDER BY candidate.started_at DESC, candidate.id DESC
+                            LIMIT 1
+                        )
+                        WHERE task.id IN (\(placeholders))
+                        """,
+                    arguments: StatementArguments(identifiers.map(\.uuidString))
+                )
+                for row in rows {
+                    let record = try Self.run(from: row)
+                    result[record.conversationID] = record
+                }
+            }
+            return result
+        }
+    }
+
     public func nonTerminalRuns() async throws -> [RunRecord] {
         try await database.reader { db in
             try Row.fetchAll(

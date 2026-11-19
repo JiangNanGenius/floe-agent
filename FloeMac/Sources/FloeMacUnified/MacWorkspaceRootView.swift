@@ -19,6 +19,7 @@ struct MacWorkspaceRootView: View {
     @AppStorage("floe.mac.workspace.lastConversation") private var lastConversation = ""
 
     @State private var destination: MacWorkspaceDestination? = .newTask
+    @State private var restoredInitialDestination = false
     @State private var showInspector = false
     @State private var showModelSettings = false
     @State private var showHistorySearch = false
@@ -28,6 +29,7 @@ struct MacWorkspaceRootView: View {
     @State private var taskTitle = ""
     @State private var showRename = false
     @State private var showExportError = false
+    @State private var isExportingConversation = false
     @State private var showMetadataError = false
     @State private var taskToDelete: ConversationRecord?
     @State private var showDelete = false
@@ -42,8 +44,10 @@ struct MacWorkspaceRootView: View {
             workspacePanes
         }
         .navigationSplitViewStyle(.balanced)
-        .task {
-            await workspace.prepare()
+        .task { await workspace.prepare() }
+        .task(id: workspace.isReady) {
+            guard workspace.isReady, !restoredInitialDestination else { return }
+            restoredInitialDestination = true
             guard destination == .newTask else { return }
             if remembersFileRoot, let savedID = UUID(uuidString: lastConversation),
                workspace.conversations.contains(where: { $0.id == savedID && $0.isVisibleInOrdinaryList }) {
@@ -311,7 +315,8 @@ struct MacWorkspaceRootView: View {
                 }
                 .labelStyle(.iconOnly)
                 .help("mac.workspace.exportChat")
-                .disabled(!canSelectTask || workspace.messages.isEmpty || destinationConversationID != workspace.selectedID)
+                .disabled(!canSelectTask || isExportingConversation || workspace.messages.isEmpty
+                          || destinationConversationID != workspace.selectedID)
             }
         }
         .buttonStyle(.borderless)
@@ -332,7 +337,7 @@ struct MacWorkspaceRootView: View {
     @ViewBuilder private var detail: some View {
         switch destination {
         case .newTask, .conversation:
-            if destinationConversationID == workspace.selectedID {
+            if !workspace.isReady || destinationConversationID == workspace.selectedID {
                 VStack(spacing: 0) {
                     if draftStore.saveFailed {
                         let language = Locale.preferredLanguages.first ?? "en"
@@ -428,26 +433,45 @@ struct MacWorkspaceRootView: View {
     }
 
     private func exportConversation() {
-        guard canSelectTask, let id = destinationConversationID, id == workspace.selectedID else { return }
+        guard canSelectTask, !isExportingConversation, let id = destinationConversationID,
+              id == workspace.selectedID else { return }
         let name = workspace.conversations.first { $0.id == id }?.title ?? String(localized: "mac.workspace.task")
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.nameFieldStringValue = "Floe Conversation.md"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        isExportingConversation = true
+        Task {
+            defer { isExportingConversation = false }
+            do {
+                let messages = try await workspace.transcript(conversationID: id)
+                let output = Self.markdownTranscript(name: name, messages: messages)
+                try await Task.detached(priority: .utility) {
+                    try Data(output.utf8).write(to: url, options: .atomic)
+                }.value
+            } catch {
+                showExportError = true
+            }
+        }
+    }
+
+    static func markdownTranscript(name: String, messages: [PersistedMessage]) -> String {
         var sections = ["# \(name)"]
-        sections += workspace.messages.compactMap { message in
+        sections += messages.compactMap { message in
             let role: String
             switch message.role {
             case "user": role = String(localized: "thread.role.user")
             case "assistant": role = String(localized: "thread.role.assistant")
             default: return nil
             }
-            guard let text = CredentialMessagePart.clipboardText(message.content) else { return nil }
-            return "## \(role)\n\n\(text)"
+            let text = CredentialMessagePart.clipboardText(message.content)
+            let files = AttachmentChipItem.items(in: message.parts).map(\.name)
+            let paragraphs = [text].compactMap { $0 } + files.map { "- \($0)" }
+            guard !paragraphs.isEmpty else { return nil }
+            let body = paragraphs.joined(separator: "\n\n")
+            return "## \(role)\n\n\(body)"
         }
-        let output = sections.joined(separator: "\n\n") + "\n"
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.nameFieldStringValue = "Floe Conversation.md"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try Data(output.utf8).write(to: url, options: .atomic) }
-        catch { showExportError = true }
+        return sections.joined(separator: "\n\n") + "\n"
     }
 }
 

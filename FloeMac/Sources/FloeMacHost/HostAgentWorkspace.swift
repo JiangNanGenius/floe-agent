@@ -148,6 +148,10 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var taskRunLookupFailed = false
     @Published private(set) var selectedID: UUID?
     @Published private(set) var messages: [PersistedMessage] = []
+    @Published private(set) var hasEarlierMessages = false
+    @Published private(set) var isLoadingHistory = false
+    @Published private(set) var isLoadingEarlierMessages = false
+    @Published private(set) var historyLoadFailed = false
     @Published private(set) var pendingPrompt: String?
     @Published private(set) var streamedText = ""
     /// Durable project workspaces for task selection; nil selection means
@@ -201,6 +205,8 @@ final class HostAgentWorkspace: ObservableObject {
     private(set) var smokeRunDiagnostics: [String] = []
     #endif
     private var taskRunLookup = UUID()
+    private var historySelection = UUID()
+    private var earlierMessageCursor: ConversationMessageCursor?
     private static let settingsAccount = "selected-chat-provider.v1"
     private static let providerListAccount = "chat-providers.v2"
     private static let currentProviderListVersion = 1
@@ -233,7 +239,7 @@ final class HostAgentWorkspace: ObservableObject {
             workspaces = try await runtime.workspaces()
             if let recent = conversations.first(where: { $0.isVisibleInOrdinaryList }) {
                 selectedID = recent.id
-                messages = try await runtime.conversationMessages(conversationID: recent.id)
+                applyHistory(try await runtime.conversationMessagePage(conversationID: recent.id))
                 await loadPlanning(conversationID: recent.id, runtime: runtime)
             }
             isReady = true
@@ -340,21 +346,98 @@ final class HostAgentWorkspace: ObservableObject {
         guard isReady, !isSending, !isTerminating, !isAcceptingPlan, let runtime else { return }
         guard let release = admit() else { return }
         defer { release() }
+        let selection = UUID()
+        historySelection = selection
+        isLoadingHistory = id != nil
+        isLoadingEarlierMessages = false
+        historyLoadFailed = false
+        applyHistory(.init(messages: [], earlierCursor: nil, hasEarlier: false))
         selectedID = id
-        messages = []
         plan = nil
         goal = nil
         notice = nil
         guard let id else { return }
-        do {
-            let history = try await runtime.conversationMessages(conversationID: id)
-            if selectedID == id && !isSending {
-                messages = history
-                await loadPlanning(conversationID: id, runtime: runtime)
-            }
-        } catch {
-            if selectedID == id && !isSending { notice = String(localized: "host.chat.historyUnavailable") }
+        defer {
+            if historySelection == selection { isLoadingHistory = false }
         }
+        do {
+            let page = try await runtime.conversationMessagePage(conversationID: id)
+            guard historySelection == selection, !Task.isCancelled else { return }
+            applyHistory(page)
+            await loadPlanning(conversationID: id, runtime: runtime)
+        } catch {
+            if historySelection == selection, !Task.isCancelled { historyLoadFailed = true }
+        }
+    }
+
+    func loadEarlierMessages() async {
+        guard let id = selectedID, let cursor = earlierMessageCursor, hasEarlierMessages,
+              !isLoadingHistory, !isLoadingEarlierMessages, !isSending, !isTerminating,
+              let runtime, let release = admit() else { return }
+        let selection = historySelection
+        isLoadingEarlierMessages = true
+        defer {
+            if historySelection == selection { isLoadingEarlierMessages = false }
+            release()
+        }
+        do {
+            let page = try await runtime.conversationMessagePage(conversationID: id, before: cursor)
+            guard historySelection == selection, !isSending, !Task.isCancelled else { return }
+            messages.insert(contentsOf: page.messages, at: 0)
+            earlierMessageCursor = page.earlierCursor
+            hasEarlierMessages = page.hasEarlier
+        } catch {
+            if historySelection == selection, !Task.isCancelled {
+                notice = String(localized: "host.chat.historyUnavailable")
+            }
+        }
+    }
+
+    func transcript(conversationID: UUID) async throws -> [PersistedMessage] {
+        guard let runtime, isReady, !isSending, !isTerminating,
+              conversations.contains(where: { $0.id == conversationID && $0.isVisibleInOrdinaryList }),
+              let release = admit() else { throw CancellationError() }
+        defer { release() }
+        return try await runtime.conversationTranscript(conversationID: conversationID)
+    }
+
+    func withSavedAttachment(id: UUID, conversationID: UUID, use: (URL) -> Void) async {
+        guard let runtime, selectedID == conversationID, !isTerminating,
+              let release = admit() else { return }
+        let selection = historySelection
+        defer { release() }
+        do {
+            guard let attachment = try await runtime.conversationAttachment(id: id, conversationID: conversationID),
+                  attachment.storage == .securityScopedBookmark, let bookmark = attachment.urlBookmark else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            guard historySelection == selection, selectedID == conversationID, !Task.isCancelled else { return }
+            var stale = false
+            let url = try URL(resolvingBookmarkData: bookmark,
+                              options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                              relativeTo: nil, bookmarkDataIsStale: &stale)
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            guard url.isFileURL, try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            use(url)
+        } catch {
+            if historySelection == selection, !Task.isCancelled {
+                notice = String(localized: "mac.workspace.attachmentUnavailable")
+            }
+        }
+    }
+
+    private func applyHistory(_ page: ConversationMessagePage, retainingVisibleHistory: Bool = false) {
+        if retainingVisibleHistory, let first = page.messages.first,
+           let overlap = messages.firstIndex(where: { $0.id == first.id }) {
+            messages = Array(messages.prefix(upTo: overlap)) + page.messages
+            return
+        }
+        messages = page.messages
+        earlierMessageCursor = page.earlierCursor
+        hasEarlierMessages = page.hasEarlier
     }
 
     /// Chooses the project workspace shown for task selection. Nil shows
@@ -515,12 +598,11 @@ final class HostAgentWorkspace: ObservableObject {
         defer { release() }
         let lookup = UUID()
         taskRunLookup = lookup
-        var records: [UUID: RunRecord] = [:]
+        let ids = conversations.filter {
+            $0.purpose == .ordinary && $0.visibility == .normal && $0.editorOwnership == nil
+        }.map(\.id)
         do {
-            for conversation in conversations.lazy.filter(\.isVisibleInOrdinaryList).prefix(60) {
-                guard !Task.isCancelled, lookup == taskRunLookup else { return }
-                records[conversation.id] = try await runtime.recentRuns(conversationID: conversation.id, limit: 1).first
-            }
+            let records = try await runtime.latestRuns(conversationIDs: ids)
             guard !Task.isCancelled, lookup == taskRunLookup else { return }
             recentTaskRuns = records
             taskRunLookupFailed = false
@@ -535,7 +617,8 @@ final class HostAgentWorkspace: ObservableObject {
     func send(_ goal: String, workspaceID: UUID? = nil, mode: HostAgentMode = .chat,
               criterion: String = "") -> Bool {
         let text = goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let runtime, isReady, !isSending, !isTerminating, !isAcceptingPlan, !text.isEmpty else { return false }
+        guard let runtime, isReady, !isSending, !isTerminating, !isAcceptingPlan,
+              !isLoadingHistory, !historyLoadFailed, !text.isEmpty else { return false }
         do {
             guard let config = try configuration() else {
                 notice = String(localized: "host.chat.configureFirst")
@@ -676,7 +759,8 @@ final class HostAgentWorkspace: ObservableObject {
                     }
                 }
                 #endif
-                messages = try await handle.durableMessages()
+                let page = try await runtime.conversationMessagePage(conversationID: handle.identity.conversationID)
+                applyHistory(page, retainingVisibleHistory: true)
                 conversations = try await runtime.conversations(includeArchived: true)
                 workspaces = try await runtime.workspaces()
                 if mode == .plan || mode == .goal {
@@ -1159,6 +1243,48 @@ final class HostAgentWorkspace: ObservableObject {
         await select(conversationID)
         return heldAdmission && messages.map(\.content) == ["Synthetic Mac chat", "Synthetic persisted reply."]
     }
+
+    #if FLOE_UNIFIED_MAC
+    func verifyConversationHistorySmoke(reference: URL) async -> Bool {
+        guard vault == nil, let runtime, let id = selectedID, !isSending,
+              let config = try? HostAgentProvider(endpoint: "https://example.invalid/v1",
+                  protocolKind: .openAIChatCompletions, modelID: "mac-smoke", apiKey: "") else { return false }
+        do {
+            let database = try DatabaseManager(path: runtime.databaseURL)
+            let store = SQLiteConversationStore(database: database)
+            for index in 0..<105 {
+                try await store.appendMessage(PersistedMessage(
+                    id: UUID(), conversationID: id, role: "assistant",
+                    content: "Fixture earlier message \(index)",
+                    createdAt: Date(timeIntervalSince1970: 1_000 + Double(index))
+                ))
+            }
+            try await database.close()
+            await select(id)
+            guard messages.count == 100, hasEarlierMessages else { return false }
+            let transcript = try await transcript(conversationID: id)
+            let exported = MacWorkspaceRootView.markdownTranscript(name: "Fixture", messages: transcript)
+            guard transcript.count == 107, exported.contains("Fixture earlier message 0\n"),
+                  exported.contains("Synthetic persisted reply.") else { return false }
+            await loadEarlierMessages()
+            guard messages.map(\.id) == transcript.map(\.id), !hasEarlierMessages,
+                  let attachment = stageAttachments([reference]).first else { return false }
+            let provider = FloeMacSelfProviderBinding(provider: config.profile, model: config.model,
+                                                      adapter: SmokeChatAdapter(), credentials: .init())
+            guard beginSend("Fixture follow-up", runtime: runtime, provider: provider), await waitForSmokeRun(),
+                  messages.count == 109, messages.first?.id == transcript.first?.id,
+                  messages.contains(where: { $0.content == "Fixture follow-up" }) else { return false }
+            await select(nil)
+            await select(id)
+            var resolved: URL?
+            await withSavedAttachment(id: attachment.id, conversationID: id) { resolved = $0 }
+            return resolved?.standardizedFileURL == reference.standardizedFileURL
+                && messages.contains(where: { $0.parts.contains(where: { $0.attachmentID == attachment.id }) })
+        } catch {
+            return false
+        }
+    }
+    #endif
 
     private struct SmokeChatAdapter: ProviderAdapter {
         let protocolKind: ModelProtocol = .openAIChatCompletions
