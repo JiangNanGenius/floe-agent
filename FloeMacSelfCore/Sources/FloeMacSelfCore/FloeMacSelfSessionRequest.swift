@@ -42,9 +42,8 @@ public struct FloeMacSelfRunContext: Sendable, Hashable {
 /// One durable file attachment for a Mac session. The host supplies a
 /// read-only security-scoped bookmark created at pick time; the composition
 /// persists only metadata and the digest beside the launch transaction.
-/// Image attachments are inlined into the model request by the existing
-/// runtime; document attachments are durable-only in this stage and are not
-/// model-visible yet.
+/// Images and supported text documents are included in the model request
+/// after verification. Other documents remain available in task history.
 public struct FloeMacSelfSessionAttachment: Sendable, Hashable, Identifiable {
     public enum Kind: String, Sendable, Hashable {
         case image
@@ -173,6 +172,7 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
     /// grants a tool; the tool binding still requires the explicit ceiling.
     /// Plan and Goal launches always use the full task envelope.
     public let chatFastMode: Bool
+    public let verifyFinalAnswer: Bool
     /// Host-authored acceptance criteria for a new durable Goal (mode
     /// `.goal`). 1...12 items, each non-empty and bounded; these become the
     /// Goal's `acceptanceCriteria` verbatim. Empty for every other mode.
@@ -202,6 +202,7 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         context: FloeMacSelfRunContext = FloeMacSelfRunContext(),
         attachments: [FloeMacSelfSessionAttachment] = [],
         chatFastMode: Bool = true,
+        verifyFinalAnswer: Bool = false,
         goalCriteria: [String] = [],
         goalBudgets: GoalBudgets? = nil,
         reusingUserMessageID: UUID? = nil,
@@ -219,6 +220,7 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         self.context = context
         self.attachments = attachments
         self.chatFastMode = chatFastMode
+        self.verifyFinalAnswer = verifyFinalAnswer
         self.goalCriteria = goalCriteria
         self.goalBudgets = goalBudgets
         self.reusingUserMessageID = reusingUserMessageID

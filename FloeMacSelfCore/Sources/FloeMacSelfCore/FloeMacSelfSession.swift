@@ -345,6 +345,9 @@ actor FloeMacSelfSession {
         guard let pending = snapshot.pendingApproval else {
             return .rejected(.noPendingApproval)
         }
+        if let requestedAt = command.requestedAt, pending.requestedAt != requestedAt {
+            return .notPending
+        }
         guard pending.toolCall.id == command.callID else {
             return .rejected(.callMismatch)
         }

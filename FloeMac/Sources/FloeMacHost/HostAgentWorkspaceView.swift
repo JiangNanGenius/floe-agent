@@ -71,13 +71,21 @@ struct HostAgentWorkspaceView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                conversation
                 #if FLOE_UNIFIED_MAC
                 if let plan = workspace.plan { planCard(plan) }
                 if let goal = workspace.goal { goalCard(goal) }
-                if let approval = workspace.pendingApproval { approvalCard(approval) }
+                conversation
+                if let failed = workspace.failedUserMessage,
+                   let text = CredentialMessagePart.clipboardText(failed.content), !workspace.isSending {
+                    Button("mac.agent.editFailedPrompt") {
+                        draft.wrappedValue = text
+                    }
+                    .disabled(!draft.wrappedValue.isEmpty)
+                    .padding(.horizontal, 16)
+                }
                 composer
                 #else
+                conversation
                 HStack(alignment: .bottom) {
                     TextField("host.chat.prompt", text: draft, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
@@ -109,6 +117,15 @@ struct HostAgentWorkspaceView: View {
         }
         #if FLOE_UNIFIED_MAC
         .background(FloeTheme.readingSurface)
+        .onChange(of: workspace.selectedID, initial: true) { _, id in
+            if id == nil {
+                mode = workspace.defaultMode
+                criterion = ""
+            }
+        }
+        .onChange(of: workspace.defaultMode) { _, mode in
+            if workspace.selectedID == nil { self.mode = mode }
+        }
         .onChange(of: workspace.rejectedPrompt) { _, text in
             if let text, draft.wrappedValue.isEmpty { draft.wrappedValue = text }
         }
@@ -210,11 +227,11 @@ struct HostAgentWorkspaceView: View {
             }
             if let openModelSettings {
                 HStack(spacing: 6) {
-                    modeControl
                     modelControl(openSettings: openModelSettings)
                     if let openFiles, workspace.selectedID == nil {
                         projectControl(openFiles: openFiles)
                     }
+                    modeControl
                     Spacer()
                 }
                 .padding(.leading, 4)
@@ -373,12 +390,12 @@ struct HostAgentWorkspaceView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("mac.agent.originalText").font(.caption.weight(.semibold))
-                            Text(verbatim: previousText).font(.caption.monospaced()).textSelection(.enabled)
+                        approvalText(previousText)
                             Text("mac.agent.replacementText").font(.caption.weight(.semibold))
                             if text.isEmpty {
                                 Text("mac.agent.removeText").font(.caption).foregroundStyle(.secondary)
                             } else {
-                                Text(verbatim: text).font(.caption.monospaced()).textSelection(.enabled)
+                                approvalText(text)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -388,9 +405,7 @@ struct HostAgentWorkspaceView: View {
             } else if let text = approval.text, !text.isEmpty {
                 DisclosureGroup("mac.agent.reviewFileContents") {
                     ScrollView {
-                        Text(verbatim: text).font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        approvalText(text)
                     }
                     .frame(maxHeight: 120)
                 }
@@ -399,15 +414,75 @@ struct HostAgentWorkspaceView: View {
                 Spacer()
                 Button("mac.agent.deny") { Task { await workspace.resolveApproval(approval, allow: false) } }
                     .accessibilityIdentifier("mac.agent.deny")
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(ApprovalButtonAnchor { frame in workspace.smokeApprovalFrames[false] = frame })
+                    #endif
                 Button("mac.agent.allowOnce") { Task { await workspace.resolveApproval(approval, allow: true) } }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("mac.agent.allowOnce")
-                    .disabled(approval.path == nil)
+                    .disabled(!approval.canAllow)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(ApprovalButtonAnchor { frame in workspace.smokeApprovalFrames[true] = frame })
+                    #endif
             }
             .disabled(workspace.isStopping || workspace.isResolvingApproval || workspace.isTerminating)
         }
         .modifier(HostTaskCardChrome())
         .accessibilityIdentifier("mac.agent.approvalCard")
+    }
+
+    private func approvalText(_ text: String) -> some View {
+        let preview = text.prefix(24_000)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: String(preview))
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if preview.endIndex != text.endIndex {
+                Button("mac.agent.copyFullApprovalText") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+            }
+        }
+    }
+
+    private func toolActivityCard(_ activity: [HostAgentToolActivity]) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(activity) { step in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(step.toolName).font(.callout.monospaced())
+                            Spacer()
+                            Text(toolStateTitle(step.state)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let summary = step.summary, !summary.isEmpty {
+                            Text(summary).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                .lineLimit(6)
+                        }
+                    }
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            Label("mac.run.activity", systemImage: "square.stack")
+                .font(.callout.weight(.semibold))
+        }
+        .padding(12)
+        .background(FloeTheme.stepSurface, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityIdentifier("mac.run.activity")
+    }
+
+    private func toolStateTitle(_ state: String) -> LocalizedStringKey {
+        switch state {
+        case "pending": "mac.run.tool.waiting"
+        case "running": "mac.run.tool.running"
+        case "ok": "mac.run.tool.done"
+        case "denied": "mac.run.tool.denied"
+        case "cancelled": "mac.run.tool.cancelled"
+        default: "mac.run.tool.failed"
+        }
     }
 
     private var attachmentStrip: some View {
@@ -482,9 +557,9 @@ struct HostAgentWorkspaceView: View {
             Menu {
                 ForEach(workspace.providers, id: \.profile.id) { provider in
                     Button {
-                        workspace.selectChatProvider(id: provider.profile.id)
+                        workspace.selectComposerProvider(provider.profile.id)
                     } label: {
-                        if provider.profile.id == workspace.selectedProviderID {
+                        if provider.profile.id == workspace.composerProvider?.profile.id {
                             Label(provider.displayTitle, systemImage: "checkmark")
                         } else {
                             Text(verbatim: provider.displayTitle)
@@ -494,7 +569,7 @@ struct HostAgentWorkspaceView: View {
                 Divider()
                 Button("host.chat.provider", action: openSettings)
             } label: {
-                Label(workspace.modelName ?? String(localized: "host.chat.provider"), systemImage: "cpu")
+                Label(workspace.composerProvider?.displayTitle ?? String(localized: "host.chat.provider"), systemImage: "cpu")
                     .font(FloeTheme.Typography.metadata)
                     .lineLimit(1)
             }
@@ -548,8 +623,19 @@ struct HostAgentWorkspaceView: View {
                                         }
                                     }
                                 }
+                                if message.role == "user", let runID = message.runID,
+                                   let steps = workspace.runToolActivity[runID], !steps.isEmpty {
+                                    toolActivityCard(steps)
+                                }
                             }
-                            if let prompt = workspace.pendingPrompt { UserMessageBubble(text: prompt) }
+                            if let prompt = workspace.pendingPrompt {
+                                UserMessageBubble(text: prompt)
+                                let steps = workspace.liveToolActivity
+                                if !steps.isEmpty { toolActivityCard(steps) }
+                            }
+                            if let approval = workspace.pendingApproval {
+                                approvalCard(approval).id(approval.callID)
+                            }
                             if !workspace.streamedText.isEmpty {
                                 MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
                             }
@@ -561,6 +647,9 @@ struct HostAgentWorkspaceView: View {
                     }
                 }
                 .defaultScrollAnchor(.bottom)
+                .onChange(of: workspace.pendingApproval?.callID) { _, callID in
+                    if let callID { scroll.scrollTo(callID, anchor: .bottom) }
+                }
             }
         }
     }
@@ -621,7 +710,7 @@ private struct HostTaskCardChrome: ViewModifier {
     }
 }
 
-private extension HostAgentMode {
+extension HostAgentMode {
     var title: LocalizedStringKey {
         switch self {
         case .chat: "mac.agent.mode.chat"
@@ -637,6 +726,36 @@ private extension HostAgentMode {
         case .agent: "bolt"
         case .plan: "list.bullet.clipboard"
         case .goal: "scope"
+        }
+    }
+}
+#endif
+
+#if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+private struct ApprovalButtonAnchor: NSViewRepresentable {
+    let record: (CGRect) -> Void
+
+    func makeNSView(context: Context) -> Anchor { Anchor() }
+
+    func updateNSView(_ view: Anchor, context: Context) {
+        view.record = record
+        view.recordFrame()
+    }
+
+    final class Anchor: NSView {
+        var record: ((CGRect) -> Void)?
+
+        override func viewDidMoveToWindow() { recordFrame() }
+
+        override func layout() {
+            super.layout()
+            recordFrame()
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        func recordFrame() {
+            if window != nil, !bounds.isEmpty { record?(convert(bounds, to: nil)) }
         }
     }
 }

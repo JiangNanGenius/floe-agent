@@ -18,10 +18,9 @@ import SwiftUI
 /// available as the fallback.
 struct MacProviderSettingsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    let close: () -> Void
 
     @State private var editingID: UUID?
-    @State private var startedEditing = false
+    @State private var showsEditor = false
     @State private var draft = MacProviderDraft()
     @State private var removalCandidate: UUID?
     @State private var showingICloud = false
@@ -36,26 +35,36 @@ struct MacProviderSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 0) {
-                providerList
-                    .frame(width: 236)
-                Divider()
+            if showsEditor {
+                HStack {
+                    Button(action: closeEditor) {
+                        Label("mac.provider.backToProviders", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    if selectedRecord != nil {
+                        Button { showingICloud = true } label: {
+                            Label("mac.icloud.models", systemImage: "icloud").labelStyle(.iconOnly)
+                        }
+                        .help("mac.icloud.models")
+                        .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
                 editor
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                footer
+            } else {
+                providerList
             }
-            Divider()
-            footer
         }
-        .frame(width: 760, height: 540)
-        .onAppear(perform: beginInitialEditing)
-        .onChange(of: editingID) { _, _ in activateCurrentSelection() }
         .onChange(of: draft.key) { _, _ in scheduleDiscovery() }
         .onChange(of: draft.protocolKind) { _, _ in scheduleDiscovery() }
         .onDisappear { workspace.cancelModelDiscovery() }
         .sheet(isPresented: $showingICloud) {
             MacICloudModelsView(workspace: workspace, providerID: selectedRecord?.profile.id) { id in
-                editingID = id
-                activateCurrentSelection()
+                if let record = workspace.providers.first(where: { $0.profile.id == id }) { beginEditing(record) }
             }
         }
         .alert(MacProviderText.t("删除服务商", "Delete Provider"), isPresented: Binding(
@@ -66,7 +75,7 @@ struct MacProviderSettingsView: View {
                 if let id = removalCandidate {
                     let removedEditing = id == editingID
                     if workspace.removeProvider(id: id), removedEditing {
-                        beginAdding()
+                        closeEditor()
                     }
                 }
                 removalCandidate = nil
@@ -85,20 +94,8 @@ struct MacProviderSettingsView: View {
 
     private var providerList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            List(selection: $editingID) {
-                if workspace.providers.isEmpty {
-                    Text(MacProviderText.t("还没有服务商。点“添加”开始配置。", "No providers yet. Choose Add to set one up."))
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(workspace.providers, id: \.profile.id) { record in
-                    providerRow(record)
-                        .tag(Optional(record.profile.id))
-                }
-            }
             HStack {
-                Button(action: beginAdding) {
-                    Label(MacProviderText.t("添加", "Add"), systemImage: "plus")
-                }
+                Text("mac.settings.models").font(.title2.weight(.semibold))
                 Spacer()
                 Button { showingICloud = true } label: {
                     Label("mac.icloud.models", systemImage: "icloud")
@@ -107,8 +104,28 @@ struct MacProviderSettingsView: View {
                 .help("mac.icloud.models")
                 .accessibilityLabel("mac.icloud.models")
                 .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
+                Button(action: beginAdding) {
+                    Label("mac.provider.add", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
             }
-            .padding(8)
+            .padding(20)
+            Divider()
+            if workspace.providers.isEmpty {
+                ContentUnavailableView("mac.provider.noProviders", systemImage: "antenna.radiowaves.left.and.right")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(workspace.providers, id: \.profile.id) { record in
+                        Button { beginEditing(record) } label: {
+                            providerRow(record)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .listStyle(.inset)
+            }
         }
     }
 
@@ -116,10 +133,12 @@ struct MacProviderSettingsView: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(record.displayTitle).lineLimit(1)
-                Text(record.model.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if record.model.displayName != record.displayTitle {
+                    Text(record.model.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
             if workspace.selectedProviderID == record.profile.id {
@@ -127,8 +146,10 @@ struct MacProviderSettingsView: View {
                     .foregroundStyle(.tint)
                     .help(MacProviderText.t("当前用于对话", "Used for chat"))
             }
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
         .contextMenu {
             Button(MacProviderText.t("用于对话", "Use for Chat")) {
                 workspace.selectChatProvider(id: record.profile.id)
@@ -188,13 +209,18 @@ struct MacProviderSettingsView: View {
                 Toggle(MacProviderText.t("支持图片输入", "Supports Image Input"), isOn: $draft.supportsImages)
                 Toggle("mac.agent.modelSupportsTools", isOn: $draft.supportsTools)
             }
+            Section {
+                TextField("mac.provider.contextTokens", value: $draft.limits.contextTokens, format: .number)
+                TextField("mac.provider.outputTokens", value: $draft.limits.maxOutputTokens, format: .number)
+                Text("mac.provider.tokenLimits.detail").font(.caption).foregroundStyle(.secondary)
+            }
             if let record = selectedRecord {
                 Section {
-                    LabeledContent(MacProviderText.t("对话", "Chat")) {
+                    LabeledContent(MacProviderText.t("默认对话模型", "Default Chat Model")) {
                         if workspace.selectedProviderID == record.profile.id {
                             Label(MacProviderText.t("使用中", "In use"), systemImage: "checkmark.circle.fill")
                         } else {
-                            Button(MacProviderText.t("用于对话", "Use for Chat")) {
+                            Button(MacProviderText.t("设为默认", "Set as Default")) {
                                 workspace.selectChatProvider(id: record.profile.id)
                             }
                             .disabled(workspace.isSending || workspace.isTerminating)
@@ -280,6 +306,7 @@ struct MacProviderSettingsView: View {
     private func discoveredModelRow(_ model: ModelProfile) -> some View {
         let selected = draft.modelID == model.remoteModelID
         return Button {
+            if !selected { draft.limits = model.limits }
             draft.modelID = model.remoteModelID
             draft.supportsImages = model.capabilities.contains(.vision)
             draft.supportsTools = model.capabilities.contains(.tools)
@@ -333,10 +360,6 @@ struct MacProviderSettingsView: View {
                     removalCandidate = editingID
                 }
             }
-            Button(MacProviderText.t("取消", "Cancel"), role: .cancel) {
-                close()
-            }
-            .keyboardShortcut(.cancelAction)
             Button(MacProviderText.t("保存", "Save")) { save() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -409,6 +432,7 @@ struct MacProviderSettingsView: View {
     }
 
     private func scheduleDiscovery() {
+        guard showsEditor else { return }
         workspace.requestModelDiscovery(endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                         apiKey: draft.key, debounce: true)
     }
@@ -445,18 +469,23 @@ struct MacProviderSettingsView: View {
 
     // MARK: - Actions
 
-    private func beginInitialEditing() {
-        guard !startedEditing else { return }
-        startedEditing = true
-        editingID = workspace.providers.first?.profile.id
-    }
-
     private func beginEditing(_ record: HostAgentProvider) {
         editingID = record.profile.id
+        showsEditor = true
+        activateCurrentSelection()
     }
 
     private func beginAdding() {
         editingID = nil
+        showsEditor = true
+        activateCurrentSelection()
+    }
+
+    private func closeEditor() {
+        showsEditor = false
+        editingID = nil
+        draft = MacProviderDraft()
+        workspace.cancelModelDiscovery()
     }
 
     private func save() {
@@ -469,15 +498,15 @@ struct MacProviderSettingsView: View {
                                              endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                              modelID: draft.modelID, key: draft.key,
                                              supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
-                                             presetID: presetID)
+                                             presetID: presetID, limits: draft.limits)
         } else {
             saved = workspace.addProvider(name: displayName,
                                           endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                           modelID: draft.modelID, key: draft.key,
                                           supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
-                                          presetID: presetID)
+                                          presetID: presetID, limits: draft.limits)
         }
-        if saved { close() }
+        if saved { closeEditor() }
     }
 }
 
@@ -492,11 +521,13 @@ private struct MacProviderDraft {
     var key: String
     var supportsImages: Bool
     var supportsTools: Bool
+    var limits: ModelLimits
 
     init(name: String = "", endpoint: String = "",
          protocolKind: ModelProtocol = .openAIChatCompletions,
          modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool = false,
-         presetID: ProviderTemplateID? = .custom) {
+         presetID: ProviderTemplateID? = .custom,
+         limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0)) {
         self.name = name
         self.endpoint = endpoint
         self.protocolKind = protocolKind
@@ -505,6 +536,7 @@ private struct MacProviderDraft {
         self.supportsImages = supportsImages
         self.supportsTools = supportsTools
         self.presetID = presetID
+        self.limits = limits
     }
 
     init(record: HostAgentProvider) {
@@ -520,7 +552,7 @@ private struct MacProviderDraft {
                   modelID: record.model.remoteModelID,
                   key: record.apiKey, supportsImages: record.model.capabilities.contains(.vision),
                   supportsTools: record.model.capabilities.contains(.tools),
-                  presetID: resolved.id)
+                  presetID: resolved.id, limits: record.model.limits)
     }
 }
 

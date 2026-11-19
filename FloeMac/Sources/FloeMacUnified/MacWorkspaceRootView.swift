@@ -7,14 +7,16 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 private enum MacWorkspaceDestination: Hashable {
-    case newTask, taskCenter, files, toolbox, services, conversation(UUID)
+    case newTask, taskCenter, files, toolbox, images, conversation(UUID)
 }
 
 struct MacWorkspaceRootView: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    let openBridgeSettings: () -> Void
+    let openSettings: () -> Void
     let openModelSettings: () -> Void
     let openToolbox: (String) -> Void
+    let settingsContent: () -> AnyView
+    let imageContent: () -> AnyView
     var remembersFileRoot = true
     @ObservedObject var draftStore: MacWorkspaceDraftStore
     @AppStorage("floe.mac.workspace.lastConversation") private var lastConversation = ""
@@ -44,6 +46,15 @@ struct MacWorkspaceRootView: View {
             workspacePanes
         }
         .navigationSplitViewStyle(.balanced)
+        .sheet(isPresented: $workspace.isSettingsPresented, content: settingsContent)
+        .onChange(of: workspace.windowCommand?.id, initial: true) {
+            guard let command = workspace.windowCommand else { return }
+            workspace.windowCommand = nil
+            switch command.action {
+            case .newTask: startNewTask()
+            case .findTask: focusTaskSearch()
+            }
+        }
         .disabled(workspace.isTerminating)
         .task { await workspace.prepare() }
         .task(id: workspace.isReady) {
@@ -123,7 +134,7 @@ struct MacWorkspaceRootView: View {
     private var workspacePanes: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+            Divider()
             HStack(spacing: 0) {
                 if destination != .files { detail.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 if showInspector && destination != .files { Divider() }
@@ -159,16 +170,12 @@ struct MacWorkspaceRootView: View {
             HStack {
                 Text("host.role.agent").font(.headline)
                 Spacer(minLength: 8)
-                Button {
-                    showHistorySearch.toggle()
-                    if !showHistorySearch { historySearch = "" }
-                } label: {
+                Button(action: focusTaskSearch) {
                     Label("mac.workspace.findTask", systemImage: "magnifyingglass")
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .help("mac.workspace.findTask")
-                .keyboardShortcut("f", modifiers: .command)
             }
             .padding(.horizontal, 16)
             .frame(height: 44)
@@ -176,7 +183,20 @@ struct MacWorkspaceRootView: View {
                 TextField("mac.workspace.findTask", text: $historySearch)
                     .textFieldStyle(.roundedBorder)
                     .focused($historySearchFocused)
-                    .onAppear { historySearchFocused = true }
+                    .accessibilityIdentifier("workspace.taskSearch")
+                    .onAppear {
+                        historySearchFocused = true
+                        #if FLOE_MAC_HOST_SMOKE
+                        workspace.smokeTaskSearchMounted = true
+                        #endif
+                    }
+                    #if FLOE_MAC_HOST_SMOKE
+                    .onDisappear { workspace.smokeTaskSearchMounted = false }
+                    #endif
+                    .onExitCommand {
+                        historySearch = ""
+                        showHistorySearch = false
+                    }
                     .padding(.horizontal, 13)
                     .padding(.bottom, 8)
             }
@@ -184,9 +204,9 @@ struct MacWorkspaceRootView: View {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     sidebarLink(.newTask, title: "workbench.new_task", icon: "square.and.pencil")
                         .disabled(!canSelectTask)
-                        .keyboardShortcut("n", modifiers: .command)
                     sidebarLink(.taskCenter, title: "app.floe_agent_app.task_center", icon: "checklist")
                     sidebarLink(.files, title: "mac.workspace.files", icon: "folder")
+                    sidebarLink(.images, title: "mac.settings.images", icon: "photo")
                     sidebarLink(.toolbox, title: "host.menu.tools", icon: "wrench.and.screwdriver")
                     if !workspace.conversations.isEmpty {
                         Text("host.chat.history")
@@ -222,7 +242,7 @@ struct MacWorkspaceRootView: View {
                 .padding(.horizontal, 8)
                 .padding(.bottom, 10)
             }
-            FloeWorkbenchSidebarFooter { destination = .services }
+            FloeWorkbenchSidebarFooter(openSettings: openSettings)
         }
         .background(FloeTheme.sidebarSurface)
     }
@@ -284,15 +304,25 @@ struct MacWorkspaceRootView: View {
         case .conversation(let id): workspace.conversations.first { $0.id == id }?.title ?? String(localized: "mac.workspace.task")
         case .files: String(localized: "mac.workspace.files")
         case .toolbox: String(localized: "host.menu.tools")
-        case .services: String(localized: "mac.workspace.services")
+        case .images: String(localized: "mac.settings.images")
         default: String(localized: "mac.workspace.taskCenter")
         }
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
+            Spacer().frame(width: 80)
             Text(title).font(.headline).lineLimit(1)
-            Spacer(minLength: 8)
+                .frame(maxWidth: .infinity)
+            headerActions
+        }
+        .padding(.horizontal, 18)
+        .frame(minHeight: 46)
+        .background(FloeTheme.chromeMaterial)
+    }
+
+    private var headerActions: some View {
+        HStack(spacing: 12) {
             if workspace.isSending {
                 if showsTask {
                     activeTaskStatus
@@ -314,7 +344,6 @@ struct MacWorkspaceRootView: View {
                 .labelStyle(.iconOnly)
                 .help("mac.workspace.files")
                 .accessibilityIdentifier("workspace.files.toggle")
-                .keyboardShortcut("i", modifiers: [.command, .option])
                 .accessibilityAddTraits(showInspector ? .isSelected : [])
             }
             if case .conversation = destination {
@@ -328,9 +357,7 @@ struct MacWorkspaceRootView: View {
             }
         }
         .buttonStyle(.borderless)
-        .padding(.horizontal, 20)
-        .frame(minHeight: 44)
-        .background(FloeTheme.chromeMaterial)
+        .frame(minWidth: 80, alignment: .trailing)
     }
 
     private var activeTaskStatus: some View {
@@ -369,15 +396,8 @@ struct MacWorkspaceRootView: View {
         case .files: EmptyView()
         case .toolbox:
             MacWorkspaceToolboxView(openToolbox: openToolbox)
-        case .services:
-            Form {
-                Section("mac.workspace.connections") {
-                    Button("host.role.bridge", action: openBridgeSettings)
-                    Button("host.chat.provider", action: openModelSettings)
-                        .disabled(!canSelectTask)
-                }
-            }
-            .formStyle(.grouped)
+        case .images:
+            imageContent()
         default:
             MacWorkspaceTaskCenter(workspace: workspace, onOpen: openTask, onNew: startNewTask,
                                    onArchive: { updateTask(id: $0, change: .archive($1)) }, onDelete: confirmDelete)
@@ -386,6 +406,14 @@ struct MacWorkspaceRootView: View {
 
     private func startNewTask() {
         if canSelectTask { destination = .newTask }
+    }
+
+    private func focusTaskSearch() {
+        showHistorySearch = true
+        historySearchFocused = true
+        #if FLOE_MAC_HOST_SMOKE
+        workspace.smokeTaskFindInvocations += 1
+        #endif
     }
 
     private func insertFileText(_ text: String) {

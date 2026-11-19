@@ -15,7 +15,7 @@ public enum ConversationToolAccess: String, Sendable, Codable {
     ]) // Three runtime helpers and plan.submit complete the 24.
     static let planInvestigationNames = planBaseNames.union([
         "git.status", "git.diff", "git.log", "skill.read", "checklist.resetPlan", "memory.sources.read",
-        "document.pdf.inspect", "document.office.inspect", "document.readSheet"
+        "document.pdf.inspect", "document.office.inspect", "document.readSheet", "workspace.readDocument"
     ])
 
     public func allows(_ descriptor: ToolCatalog.Descriptor) -> Bool {

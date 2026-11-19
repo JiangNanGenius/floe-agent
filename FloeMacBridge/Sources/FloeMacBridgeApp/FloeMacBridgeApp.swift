@@ -86,7 +86,7 @@ private struct BridgeMenuView: View {
 
 @MainActor
 final class BridgeAppModel: ObservableObject {
-    enum SettingsPane: Hashable { case models, bridge }
+    enum SettingsPane: String, CaseIterable { case general, models, images, permissions, bridge }
 
     @Published var error: String?
     @Published var clients: [(String, String)] = []
@@ -100,7 +100,14 @@ final class BridgeAppModel: ObservableObject {
     let updates: BridgeUpdaterModel
     #if FLOE_UNIFIED_MAC
     @Published private(set) var macWorkspace: UnifiedMacWorkspace?
-    @Published var settingsPane: SettingsPane = .models
+    @Published var settingsPane: SettingsPane = .general
+    enum Appearance: String, CaseIterable { case system, light, dark }
+    @Published var appearance: Appearance = .system {
+        didSet {
+            preferences.set(appearance.rawValue, forKey: "floe.mac.appearance")
+            applyAppearance()
+        }
+    }
     @Published private(set) var isSwitchingMode = false
     private enum LaunchMode: String {
         case bridge, agent
@@ -126,6 +133,7 @@ final class BridgeAppModel: ObservableObject {
     private let smoke = UnifiedMacSmoke.configured()
     var smokePort: UInt16? { server?.boundPort }
     var smokeSettingsWindow: NSWindow? { settingsWindow }
+    var smokeAgentSettingsSheet: NSWindow? { macWorkspace?.settingsSheet }
     private(set) var smokeSwitchFrame: CGRect?
 
     func recordSmokeSwitchFrame(_ frame: CGRect) {
@@ -152,6 +160,7 @@ final class BridgeAppModel: ObservableObject {
         updates = BridgeUpdaterModel(activity: activity)
         #if FLOE_UNIFIED_MAC
         launchMode = preferences.string(forKey: LaunchMode.preferenceKey).flatMap(LaunchMode.init(rawValue:)) ?? .bridge
+        appearance = preferences.string(forKey: "floe.mac.appearance").flatMap(Appearance.init(rawValue:)) ?? .system
         #endif
         BridgeApplicationDelegate.model = self
         do {
@@ -200,6 +209,9 @@ final class BridgeAppModel: ObservableObject {
     }
 
     private func finishLaunching() {
+        #if FLOE_UNIFIED_MAC
+        applyAppearance()
+        #endif
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         if let smoke {
             presentStartupMode()
@@ -311,7 +323,7 @@ final class BridgeAppModel: ObservableObject {
         guard !isSwitchingMode else { return }
         if !isAgentMode {
             closeSettingsWindow()
-            settingsPane = .models
+            settingsPane = .general
         }
         rememberMode(.agent)
         showAgentWindow()
@@ -321,14 +333,28 @@ final class BridgeAppModel: ObservableObject {
         guard !isSwitchingMode else { return }
         if macWorkspace == nil {
             #if FLOE_MAC_HOST_SMOKE
-            macWorkspace = UnifiedMacWorkspace(activity: updates.installation.activity, testSupport: smoke?.root)
+            macWorkspace = UnifiedMacWorkspace(activity: updates.installation.activity, testSupport: smoke?.root,
+                                               preferences: preferences)
             #else
-            macWorkspace = UnifiedMacWorkspace(activity: updates.installation.activity)
+            macWorkspace = UnifiedMacWorkspace(activity: updates.installation.activity, preferences: preferences)
             #endif
         }
         NSApp.setActivationPolicy(.regular)
-        macWorkspace?.openAgent(openBridgeSettings: { [weak self] in self?.openSettings(.bridge) },
-                                openModelSettings: { [weak self] in self?.openSettings(.models) })
+        macWorkspace?.openAgent(openSettings: { [weak self] in self?.openSettings() },
+                                openImageSettings: { [weak self] in self?.openSettings(.images) },
+                                openModelSettings: { [weak self] in self?.openSettings(.models) },
+                                settingsContent: { [weak self] in
+            guard let self else { return AnyView(EmptyView()) }
+            return AnyView(UnifiedMacSettingsView(model: self))
+        })
+    }
+
+    private func applyAppearance() {
+        switch appearance {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     func openToolbox(toolID: String? = nil) {
@@ -367,6 +393,7 @@ final class BridgeAppModel: ObservableObject {
     func closeSettingsWindow() {
         pendingSettingsPresentation?.cancel()
         pendingSettingsPresentation = nil
+        macWorkspace?.agent?.isSettingsPresented = false
         settingsWindow?.close()
     }
     #endif
@@ -377,10 +404,13 @@ final class BridgeAppModel: ObservableObject {
         let persistsPresentation = true
         #endif
         #if FLOE_UNIFIED_MAC
-        if let pane { settingsPane = pane }
-        let title = isAgentMode ? String(localized: "mac.settings.title") : "Floe Bridge"
-        #else
-        let title = "Floe Bridge"
+        if isAgentMode {
+            guard !isSwitchingMode else { return }
+            if let pane { settingsPane = pane }
+            if macWorkspace?.agent?.isSettingsPresented != true { showAgentWindow() }
+            macWorkspace?.agent?.isSettingsPresented = true
+            return
+        }
         #endif
         let window = settingsWindow ?? NSWindow()
         if settingsWindow == nil {
@@ -389,15 +419,10 @@ final class BridgeAppModel: ObservableObject {
             if persistsPresentation { window.setFrameAutosaveName("FloeBridgeSettings") }
         }
         if (!window.isVisible && !window.isMiniaturized) || window.contentViewController == nil {
-            #if FLOE_UNIFIED_MAC
-            window.contentViewController = NSHostingController(rootView: UnifiedMacSettingsView(model: self))
-            window.setContentSize(isAgentMode ? NSSize(width: 800, height: 630) : NSSize(width: 520, height: 560))
-            #else
             window.contentViewController = NSHostingController(
                 rootView: BridgeSettingsView(model: self).frame(width: 520, height: 560))
-            #endif
         }
-        window.title = title
+        window.title = "Floe Bridge"
         if settingsWindow == nil { window.center() }
         settingsWindow = window
         if window.isMiniaturized { window.deminiaturize(nil) }
@@ -459,18 +484,114 @@ private struct UnifiedMacSettingsView: View {
 
     var body: some View {
         if model.isAgentMode, let workspace = model.macWorkspace?.agent {
-            TabView(selection: $model.settingsPane) {
-                MacProviderSettingsView(workspace: workspace, close: model.closeSettingsWindow)
-                    .tabItem { Label("mac.settings.models", systemImage: "slider.horizontal.3") }
-                    .tag(BridgeAppModel.SettingsPane.models)
-                BridgeSettingsView(model: model)
-                    .tabItem { Label("host.role.bridge", systemImage: "link") }
-                    .tag(BridgeAppModel.SettingsPane.bridge)
+            VStack(spacing: 0) {
+                HStack {
+                    Text("mac.settings.title").font(.title3.weight(.semibold))
+                    Spacer()
+                    Button("Done", action: model.closeSettingsWindow)
+                        .keyboardShortcut(.cancelAction)
+                }
+                .padding(16)
+                Divider()
+                HStack(spacing: 0) {
+                    List(selection: Binding<BridgeAppModel.SettingsPane?>(
+                        get: { model.settingsPane },
+                        set: { if let pane = $0 { model.settingsPane = pane } }
+                    )) {
+                        ForEach(BridgeAppModel.SettingsPane.allCases, id: \.self) { pane in
+                            Label(pane.title, systemImage: pane.icon).tag(pane)
+                        }
+                    }
+                    .listStyle(.sidebar)
+                    .frame(width: 142)
+                    Divider()
+                    pane(workspace)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
-            .padding(12)
-            .frame(width: 800, height: 630)
+            .frame(width: 880, height: 585)
+            .accessibilityIdentifier("mac.settings.sheet")
         } else {
             BridgeSettingsView(model: model).frame(width: 520, height: 560)
+        }
+    }
+
+    @ViewBuilder
+    private func pane(_ workspace: HostAgentWorkspace) -> some View {
+        switch model.settingsPane {
+        case .general:
+            HostAgentGeneralSettings(model: model, workspace: workspace)
+        case .models:
+            MacProviderSettingsView(workspace: workspace)
+        case .images:
+            if let images = model.macWorkspace?.images {
+                MacImageSettingsView(images: images)
+            } else {
+                ContentUnavailableView("mac.images.unavailable", systemImage: "photo")
+            }
+        case .permissions:
+            HostAgentPermissionsSettings(workspace: workspace)
+        case .bridge:
+            BridgeSettingsView(model: model)
+        }
+    }
+}
+
+private struct HostAgentGeneralSettings: View {
+    @ObservedObject var model: BridgeAppModel
+    @ObservedObject var workspace: HostAgentWorkspace
+
+    var body: some View {
+        Form {
+            Picker("mac.settings.appearance", selection: $model.appearance) {
+                Text("mac.settings.appearance.system").tag(BridgeAppModel.Appearance.system)
+                Text("mac.settings.appearance.light").tag(BridgeAppModel.Appearance.light)
+                Text("mac.settings.appearance.dark").tag(BridgeAppModel.Appearance.dark)
+            }
+            Picker("mac.settings.defaultMode", selection: $workspace.defaultMode) {
+                ForEach(HostAgentMode.allCases, id: \.self) { mode in
+                    Label(mode.title, systemImage: mode.symbol).tag(mode)
+                }
+            }
+            Toggle("mac.settings.verifyAnswers", isOn: $workspace.verifyAgentAnswers)
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct HostAgentPermissionsSettings: View {
+    @ObservedObject var workspace: HostAgentWorkspace
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("mac.settings.workspaceWrites", isOn: $workspace.allowsWorkspaceWrites)
+            } footer: {
+                Text("mac.settings.workspaceWrites.detail")
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private extension BridgeAppModel.SettingsPane {
+    var title: LocalizedStringKey {
+        switch self {
+        case .general: "General"
+        case .models: "mac.settings.models"
+        case .images: "mac.settings.images"
+        case .permissions: "Permissions"
+        case .bridge: "host.role.bridge"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: "gearshape"
+        case .models: "slider.horizontal.3"
+        case .images: "photo"
+        case .permissions: "hand.raised"
+        case .bridge: "link"
         }
     }
 }

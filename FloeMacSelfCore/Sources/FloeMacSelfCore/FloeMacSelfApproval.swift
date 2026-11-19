@@ -15,6 +15,7 @@ public struct FloeMacSelfApprovalCommand: Sendable, Hashable {
     public let callID: String
     public let toolName: String
     public let decision: ApprovalDecision
+    public let requestedAt: Date?
 
     public init(
         conversationID: UUID,
@@ -22,7 +23,8 @@ public struct FloeMacSelfApprovalCommand: Sendable, Hashable {
         workspaceID: UUID,
         callID: String,
         toolName: String,
-        decision: ApprovalDecision
+        decision: ApprovalDecision,
+        requestedAt: Date? = nil
     ) {
         self.conversationID = conversationID
         self.runID = runID
@@ -30,6 +32,7 @@ public struct FloeMacSelfApprovalCommand: Sendable, Hashable {
         self.callID = callID
         self.toolName = toolName
         self.decision = decision
+        self.requestedAt = requestedAt
     }
 }
 

@@ -9,9 +9,10 @@
 // to `FloeMacSelfRuntime.startSession(_:provider:tools:)`.
 //
 // Design constraints honored here:
-// - Explicit known-safe initial catalog only: three reads
+// - Explicit known-safe initial catalog only: five reads
 //   (workspace.listDirectory / workspace.readFile /
-//   workspace.inspectFileMetadata) and approved text creation/replacement.
+//   workspace.inspectFileMetadata / workspace.searchFiles /
+//   workspace.readDocument) and approved text creation/replacement.
 //   Tool and argument names intentionally match the existing public Floe
 //   workspace contract so host prompts, provider schemas and approval
 //   vocabulary stay aligned.
@@ -97,6 +98,9 @@ public enum MacAgentWorkspaceToolsError: Error, LocalizedError {
     case notFound(String)
     /// readFile bytes are not UTF-8 plain text.
     case notTextFile(String)
+    /// A formatted document (PDF/DOCX/RTF) could not be decoded or has no
+    /// readable text layer.
+    case documentTextUnavailable(String)
     /// Payload or file exceeds the bounded size cap.
     case tooLarge(limit: Int)
 
@@ -134,6 +138,8 @@ public enum MacAgentWorkspaceToolsError: Error, LocalizedError {
             "'\(path)' does not exist"
         case .notTextFile(let path):
             "'\(path)' is not a UTF-8 plain-text file"
+        case .documentTextUnavailable(let reason):
+            "the document text is unavailable: \(reason)"
         case .tooLarge(let limit):
             "the payload exceeds the \(limit)-byte limit"
         }
@@ -149,15 +155,21 @@ public enum MacAgentWorkspaceTools {
     public static let listDirectoryToolName = "workspace.listDirectory"
     public static let readFileToolName = "workspace.readFile"
     public static let inspectFileMetadataToolName = "workspace.inspectFileMetadata"
+    public static let searchFilesToolName = "workspace.searchFiles"
+    public static let readDocumentToolName = "workspace.readDocument"
     public static let createFileToolName = "workspace.createFile"
     public static let replaceTextToolName = "workspace.replaceText"
 
     /// Read-only tools: allowed in both plan-style (`readOnly: true`) and
-    /// agent/goal sessions. Plan sessions bind exactly this set.
+    /// agent/goal sessions. Plan sessions bind exactly this set, so every
+    /// name here must also pass `ConversationToolAccess.plan` and the
+    /// `PlanToolPolicy` (see `FloeMacSelfCapabilityResolver.validatePlanCeiling`).
     public static let readToolNames: Set<String> = [
         listDirectoryToolName,
         readFileToolName,
         inspectFileMetadataToolName,
+        searchFilesToolName,
+        readDocumentToolName,
     ]
     public static let writeToolNames: Set<String> = [createFileToolName, replaceTextToolName]
 
@@ -171,6 +183,17 @@ public enum MacAgentWorkspaceTools {
     public static let maxWriteBytes = 4 * 1024 * 1024
     public static let readChunkBytes = 64 * 1024
     public static let listPageSize = 200
+    /// Search bounds, mirroring the existing public workspace search
+    /// contract (`WorkspaceFileService`).
+    public static let maxSearchHits = 100
+    public static let maxHitContextCharacters = 200
+    public static let maxSearchFiles = 10_000
+    /// Directories pruned during search (VCS internals, build products),
+    /// matching the existing workspace search skip list. Dot-prefixed
+    /// entries are additionally skipped as hidden names.
+    static let searchSkipDirectories: Set<String> = [
+        ".git", ".svn", ".hg", "node_modules", ".build", "DerivedData", ".swiftpm"
+    ]
 
     /// Composes the complete tool capability for one explicit user-selected
     /// project workspace.
@@ -966,6 +989,346 @@ public struct MacAgentWorkspaceReadFileTool: AgentTool, MacAgentWorkspaceExecuta
     }
 }
 
+// MARK: workspace.searchFiles
+
+/// Case-insensitive literal substring search over the workspace text files
+/// or file names, mirroring the public `workspace.searchFiles` contract. The
+/// tree walk is iterative (an explicit frame stack, never recursion, so deep
+/// trees cannot exhaust a small concurrency stack) and every directory is
+/// opened relative to its pinned parent descriptor with `O_NOFOLLOW` and
+/// verified by device/inode against its canonical path, exactly like
+/// `workspace.listDirectory`; files are opened by descriptor through the
+/// shared verified-file admission. Hidden names, VCS/build directories and
+/// the shared secret denylist are skipped before any filesystem call, per
+/// file the read is size-bounded and best-effort (a file deleted or mutated
+/// mid-scan is skipped, never fatal), and the whole scan is capped at
+/// `maxSearchFiles` entries with at most `maxSearchHits` hits of at most
+/// `maxHitContextCharacters` context characters.
+public struct MacAgentWorkspaceSearchFilesTool: AgentTool, MacAgentWorkspaceExecutable {
+    public struct Arguments: Decodable, Sendable {
+        public var query: String
+        public var path: String?
+        public var maxResults: Int?
+        /// "content" (default) searches file text; "filename" matches names.
+        public var mode: String?
+        public var scope: String?
+
+        public init(query: String, path: String? = nil, maxResults: Int? = nil, mode: String? = nil, scope: String? = nil) {
+            self.query = query
+            self.path = path
+            self.maxResults = maxResults
+            self.mode = mode
+            self.scope = scope
+        }
+    }
+
+    public static let name = MacAgentWorkspaceTools.searchFilesToolName
+    public static let toolDescription =
+        "Search the selected project workspace with a case-insensitive substring. mode=\"content\" (default) searches UTF-8 text files and returns up to 100 hits as path:line: context. mode=\"filename\" matches file and directory names and returns up to 100 workspace-relative paths (directories end with /)."
+    public static let parametersJSON = #"""
+    {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "Substring to search for (case-insensitive)"},
+        "path": {"type": "string", "description": "Workspace-relative directory or file to search; defaults to the root"},
+        "maxResults": {"type": "integer", "description": "Maximum hits; clamped to 100"},
+        "mode": {"type": "string", "enum": ["content", "filename"], "description": "Search file contents (default) or file/directory names"}
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    }
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    public static let isSideEffecting = false
+
+    static let descriptor = ToolCatalog.Descriptor(
+        name: name,
+        toolDescription: toolDescription,
+        parametersJSON: parametersJSON,
+        riskLabels: riskLabels,
+        isSideEffecting: isSideEffecting,
+        requiresHostScope: false
+    )
+
+    private let root: MacAgentWorkspaceRoot
+    public init(rootURL: URL) {
+        self.root = MacAgentWorkspaceRoot(rootURL)
+    }
+
+    public func validate(_ args: Arguments) throws {
+        if args.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MacAgentWorkspaceToolsError.invalidArguments("query must not be empty")
+        }
+        if let maxResults = args.maxResults, maxResults <= 0 {
+            throw MacAgentWorkspaceToolsError.invalidArguments("maxResults must be > 0")
+        }
+        if let mode = args.mode, mode != "content", mode != "filename" {
+            throw MacAgentWorkspaceToolsError.invalidArguments("mode must be \"content\" or \"filename\"")
+        }
+    }
+
+    /// One open directory frame: the owned pinned descriptor, its verified
+    /// canonical path and its workspace-relative display prefix.
+    private struct Frame {
+        var descriptor: Int32
+        var physicalPath: String
+        var relative: String
+    }
+
+    private struct SearchState {
+        var visited = 0
+        var remainingReadBytes = 16 * 1_024 * 1_024
+        var truncated = false
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try macWorkspacePreflight(path: args.path ?? ".", context: context, scopeArgument: args.scope)
+        let (physicalRoot, relative) = try macWorkspacePinSetup(root: root, path: args.path ?? ".")
+        let needle = args.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hitLimit = max(1, min(args.maxResults ?? MacAgentWorkspaceTools.maxSearchHits,
+                                MacAgentWorkspaceTools.maxSearchHits))
+        let filenameOnly = args.mode == "filename"
+        let directoryOpenFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+
+        var state = SearchState()
+        let hits: [String] = try MacAgentWorkspacePinSupport.withPinnedTarget(
+            physicalRoot: physicalRoot, relative: relative, root: root
+        ) { pin in
+            var hits: [String] = []
+            if pin.name.isEmpty {
+                // Root directory target: the pinned descriptor IS the root.
+                let descriptor = dup(pin.parentFileDescriptor)
+                guard descriptor >= 0 else {
+                    throw MacAgentWorkspaceToolsError.notFound(args.path ?? ".")
+                }
+                try self.walk(
+                    initial: Frame(descriptor: descriptor, physicalPath: physicalRoot, relative: "."),
+                    physicalRoot: physicalRoot, needle: needle, hitLimit: hitLimit,
+                    filenameOnly: filenameOnly, directoryOpenFlags: directoryOpenFlags,
+                    context: context, state: &state, hits: &hits
+                )
+                return hits
+            }
+            let status = MacAgentWorkspacePinSupport.leafStatus(pin)
+            guard status.exists, !status.symlink else {
+                if status.symlink {
+                    throw MacAgentWorkspaceToolsError.invalidArguments(
+                        "symbolic links are not searchable: \(args.path ?? ".")"
+                    )
+                }
+                throw MacAgentWorkspaceToolsError.notFound(args.path ?? ".")
+            }
+            if status.info.st_mode & S_IFMT == S_IFDIR {
+                let descriptor = openat(pin.parentFileDescriptor, pin.name, directoryOpenFlags)
+                guard descriptor >= 0 else {
+                    throw MacAgentWorkspaceToolsError.notFound(args.path ?? ".")
+                }
+                // The child must be the same directory the canonical path names.
+                var expected = stat(), pinned = stat()
+                let childPhysical = pin.parentPhysicalPath + "/" + pin.name
+                guard stat(childPhysical, &expected) == 0, fstat(descriptor, &pinned) == 0,
+                      expected.st_dev == pinned.st_dev, expected.st_ino == pinned.st_ino else {
+                    Darwin.close(descriptor)
+                    throw MacAgentWorkspaceToolsError.pathEscapesWorkspace(args.path ?? ".")
+                }
+                try self.walk(
+                    initial: Frame(descriptor: descriptor, physicalPath: childPhysical, relative: relative),
+                    physicalRoot: physicalRoot, needle: needle, hitLimit: hitLimit,
+                    filenameOnly: filenameOnly, directoryOpenFlags: directoryOpenFlags,
+                    context: context, state: &state, hits: &hits
+                )
+                return hits
+            }
+            guard status.info.st_mode & S_IFMT == S_IFREG, status.info.st_nlink == 1 else {
+                throw MacAgentWorkspaceToolsError.invalidArguments(
+                    "'\(args.path ?? ".")' is neither a regular file nor a directory"
+                )
+            }
+            state.visited = 1
+            if filenameOnly {
+                if pin.name.range(of: needle, options: .caseInsensitive) != nil {
+                    hits.append(relative)
+                }
+            } else {
+                self.searchFile(
+                    pin, physicalRoot: physicalRoot, relative: relative,
+                    size: Int(status.info.st_size), needle: needle,
+                    hitLimit: hitLimit, context: context, state: &state, hits: &hits
+                )
+            }
+            return hits
+        }
+
+        var lines = ["query=\(args.query) hits=\(hits.count) truncated=\(state.truncated || hits.count == hitLimit)"]
+        if filenameOnly { lines[0] += " mode=filename" }
+        lines.append(contentsOf: hits)
+        return ToolExecutionOutput(
+            digesting: lines.joined(separator: "\n"),
+            maximumSummaryCharacters: 32_768
+        )
+    }
+
+    /// Iterative pinned tree walk. Each frame descriptor is always closed:
+    /// `scan` closes the frame it processes, and any frames left unprocessed
+    /// after a hit-limit early exit are closed here.
+    private func walk(
+        initial: Frame,
+        physicalRoot: String,
+        needle: String,
+        hitLimit: Int,
+        filenameOnly: Bool,
+        directoryOpenFlags: Int32,
+        context: ToolContext,
+        state: inout SearchState,
+        hits: inout [String]
+    ) throws {
+        var pending: [Frame] = [initial]
+        defer { for frame in pending { Darwin.close(frame.descriptor) } }
+        while let frame = pending.popLast() {
+            let reachedLimit = try scan(
+                frame, physicalRoot: physicalRoot, needle: needle, hitLimit: hitLimit,
+                filenameOnly: filenameOnly, directoryOpenFlags: directoryOpenFlags,
+                context: context, state: &state, hits: &hits
+            ) { child in
+                guard pending.count < 64 else { return false }
+                pending.append(child)
+                return true
+            }
+            if reachedLimit { break }
+        }
+    }
+
+    /// Scans one pinned directory frame, appending child directory frames
+    /// through `push` and returning true once `hitLimit` hits are collected.
+    /// The frame descriptor is always closed.
+    private func scan(
+        _ frame: Frame,
+        physicalRoot: String,
+        needle: String,
+        hitLimit: Int,
+        filenameOnly: Bool,
+        directoryOpenFlags: Int32,
+        context: ToolContext,
+        state: inout SearchState,
+        hits: inout [String],
+        push: (Frame) -> Bool
+    ) throws -> Bool {
+        defer { Darwin.close(frame.descriptor) }
+        let streamDescriptor = dup(frame.descriptor)
+        guard streamDescriptor >= 0 else { return false }
+        guard let stream = fdopendir(streamDescriptor) else {
+            Darwin.close(streamDescriptor)
+            return false
+        }
+        defer { closedir(stream) }
+        while let entry = readdir(stream) {
+            try context.cancellation.throwIfCancelled()
+            guard hits.count < hitLimit else { return true }
+            state.visited += 1
+            if state.visited > MacAgentWorkspaceTools.maxSearchFiles {
+                state.truncated = true
+                return true
+            }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                    String(validatingCString: $0)
+                }
+            }
+            guard let name, name != ".", name != ".." else { continue }
+            // Mirror the existing workspace search: hidden names are skipped.
+            guard !name.hasPrefix(".") else { continue }
+            let childRelative = frame.relative == "." ? name : frame.relative + "/" + name
+            // The shared admission checks (secret denylist, ambiguous scalars,
+            // component validation) apply to every walked entry.
+            guard (try? MacAgentWorkspacePinSupport.standardizedRelativePath(childRelative)) == childRelative,
+                  (try? context.authorizeWorkspacePath(childRelative)) != nil else {
+                continue
+            }
+            var info = stat()
+            guard fstatat(frame.descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+            let kind = info.st_mode & S_IFMT
+            if kind == S_IFDIR {
+                guard !MacAgentWorkspaceTools.searchSkipDirectories.contains(name) else { continue }
+                if filenameOnly, name.range(of: needle, options: .caseInsensitive) != nil {
+                    hits.append(childRelative + "/")
+                    if hits.count == hitLimit { return true }
+                }
+                let child = openat(frame.descriptor, name, directoryOpenFlags)
+                guard child >= 0 else { continue }
+                let childPhysical = frame.physicalPath + "/" + name
+                var expected = stat(), pinned = stat()
+                guard stat(childPhysical, &expected) == 0, fstat(child, &pinned) == 0,
+                      expected.st_dev == pinned.st_dev, expected.st_ino == pinned.st_ino else {
+                    Darwin.close(child)
+                    throw MacAgentWorkspaceToolsError.pathEscapesWorkspace(childRelative)
+                }
+                if !push(Frame(descriptor: child, physicalPath: childPhysical, relative: childRelative)) {
+                    Darwin.close(child)
+                    state.truncated = true
+                }
+            } else if kind == S_IFREG, info.st_nlink == 1 {
+                if filenameOnly {
+                    if name.range(of: needle, options: .caseInsensitive) != nil {
+                        hits.append(childRelative)
+                    }
+                } else {
+                    let childPin = MacAgentWorkspacePinSupport.Pin(
+                        parentFileDescriptor: frame.descriptor,
+                        name: name,
+                        parentPhysicalPath: frame.physicalPath
+                    )
+                    searchFile(
+                        childPin, physicalRoot: physicalRoot, relative: childRelative,
+                        size: Int(info.st_size), needle: needle, hitLimit: hitLimit,
+                        context: context, state: &state, hits: &hits
+                    )
+                }
+            }
+            // Symbolic links and special files are never followed or searched.
+        }
+        return false
+    }
+
+    /// Best-effort content search of one already-admitted regular file: the
+    /// file is re-opened by descriptor through the shared verified-file
+    /// admission, read with an exact-size check, and scanned line by line.
+    /// Concurrent deletion or mutation skips this file only.
+    private func searchFile(
+        _ pin: MacAgentWorkspacePinSupport.Pin,
+        physicalRoot: String,
+        relative: String,
+        size: Int,
+        needle: String,
+        hitLimit: Int,
+        context: ToolContext,
+        state: inout SearchState,
+        hits: inout [String]
+    ) {
+        guard size <= MacAgentWorkspaceTools.maxReadBytes, size <= state.remainingReadBytes else {
+            state.truncated = true
+            return
+        }
+        state.remainingReadBytes -= size
+        guard let descriptor = try? MacAgentWorkspacePinSupport.openVerifiedRegularFile(
+            pin, physicalRoot: physicalRoot, displayPath: relative
+        ) else { return }
+        defer { Darwin.close(descriptor) }
+        guard let data = try? FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            .read(upToCount: size + 1), data.count == size else { return }
+        guard !data.prefix(1024).contains(0) else { return }
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        var lineNumber = 0
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if context.cancellation.isCancelled || hits.count >= hitLimit { return }
+            lineNumber += 1
+            var contextLine = String(line)
+            if contextLine.hasSuffix("\r") { contextLine.removeLast() }
+            guard contextLine.range(of: needle, options: .caseInsensitive) != nil else { continue }
+            hits.append("\(relative):\(lineNumber): \(contextLine.prefix(MacAgentWorkspaceTools.maxHitContextCharacters))")
+        }
+    }
+}
+
 // MARK: workspace.inspectFileMetadata
 
 /// Reports size/mtime/UTI/sha256/symlink facts for one workspace path.
@@ -1115,6 +1478,93 @@ public struct MacAgentWorkspaceInspectMetadataTool: AgentTool, MacAgentWorkspace
         sha256=\(sha256)
         isSymlink=\(isSymlink)
         """
+    }
+}
+
+// MARK: workspace.readDocument
+
+public struct MacAgentWorkspaceReadDocumentTool: AgentTool, MacAgentWorkspaceExecutable {
+    public struct Arguments: Decodable, Sendable {
+        let path: String
+        let limit: Int?
+        let scope: String?
+    }
+
+    public static let name = MacAgentWorkspaceTools.readDocumentToolName
+    public static let toolDescription =
+        "Read the text layer of one PDF or Word DOCX document in the selected project. Use workspace.readFile for UTF-8 text. Documents that exceed the character budget return an error."
+    public static let parametersJSON = #"""
+    {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Workspace-relative PDF or DOCX file path"},
+        "limit": {"type": "integer", "description": "Extraction limit in characters (default 65536, up to 131072)"}
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    }
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    public static let isSideEffecting = false
+    static let descriptor = ToolCatalog.Descriptor(
+        name: name,
+        toolDescription: toolDescription,
+        parametersJSON: parametersJSON,
+        riskLabels: riskLabels,
+        isSideEffecting: isSideEffecting,
+        requiresHostScope: false
+    )
+
+    private let root: MacAgentWorkspaceRoot
+
+    public init(rootURL: URL) {
+        self.root = MacAgentWorkspaceRoot(rootURL)
+    }
+
+    public func validate(_ args: Arguments) throws {
+        guard !args.path.isEmpty, (args.limit ?? 1) > 0 else {
+            throw MacAgentWorkspaceToolsError.invalidArguments("path and a positive extraction limit are required")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try macWorkspacePreflight(path: args.path, context: context, scopeArgument: args.scope)
+        guard let kind = FloeMacDocumentText.Kind(rawValue: (args.path as NSString).pathExtension.lowercased()) else {
+            throw MacAgentWorkspaceToolsError.invalidArguments("choose a PDF or DOCX document")
+        }
+        let (physicalRoot, relative) = try macWorkspacePinSetup(root: root, path: args.path)
+        let bytes = try MacAgentWorkspacePinSupport.withPinnedTarget(
+            physicalRoot: physicalRoot, relative: relative, root: root
+        ) { pin in
+            let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(
+                pin, physicalRoot: physicalRoot, displayPath: args.path
+            )
+            defer { Darwin.close(descriptor) }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0 else { throw MacAgentWorkspaceToolsError.notFound(args.path) }
+            let maxBytes = MacAgentWorkspaceTools.maxReadBytes
+            guard info.st_size <= maxBytes else { throw MacAgentWorkspaceToolsError.tooLarge(limit: maxBytes) }
+            let data = try FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+                .read(upToCount: maxBytes + 1) ?? Data()
+            guard data.count == info.st_size else { throw MacAgentWorkspaceToolsError.revisionChanged }
+            return data
+        }
+        try context.cancellation.throwIfCancelled()
+        let limit = min(args.limit ?? MacAgentWorkspaceTools.readChunkBytes, 131_072)
+        do {
+            let text = try FloeMacDocumentText.extract(bytes, type: kind, limit: limit)
+            try context.cancellation.throwIfCancelled()
+            return ToolExecutionOutput(
+                digesting: "path=\(relative) format=\(kind.rawValue) characters=\(text.count)\n\(text)",
+                maximumSummaryCharacters: 196_608
+            )
+        } catch FloeMacDocumentTextError.limitExceeded {
+            throw MacAgentWorkspaceToolsError.documentTextUnavailable(
+                "the extracted text exceeds \(limit) characters; try with a higher limit up to 131072"
+            )
+        } catch let error as FloeMacDocumentTextError {
+            throw MacAgentWorkspaceToolsError.documentTextUnavailable(error.rawValue)
+        }
     }
 }
 
@@ -1462,6 +1912,8 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             MacAgentWorkspaceTools.listDirectoryToolName: MacAgentWorkspaceListDirectoryTool(rootURL: root),
             MacAgentWorkspaceTools.readFileToolName: MacAgentWorkspaceReadFileTool(rootURL: root),
             MacAgentWorkspaceTools.inspectFileMetadataToolName: MacAgentWorkspaceInspectMetadataTool(rootURL: root),
+            MacAgentWorkspaceTools.searchFilesToolName: MacAgentWorkspaceSearchFilesTool(rootURL: root),
+            MacAgentWorkspaceTools.readDocumentToolName: MacAgentWorkspaceReadDocumentTool(rootURL: root),
         ]
         if !readOnly {
             table[MacAgentWorkspaceTools.createFileToolName] = MacAgentWorkspaceCreateFileTool(rootURL: root)
@@ -1506,7 +1958,9 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
                 ? .cancelled
                 : ((output.exitStatus ?? 0) == 0 ? .ok : .failed)
             // Match the runtime's page-size treatment for bounded JSON pages.
-            let summaryCap = call.toolName == MacAgentWorkspaceTools.readFileToolName ? 196_608 : 4096
+            let longReads = [MacAgentWorkspaceTools.readFileToolName, MacAgentWorkspaceTools.readDocumentToolName]
+            let summaryCap = longReads.contains(call.toolName) ? 196_608
+                : (call.toolName == MacAgentWorkspaceTools.searchFilesToolName ? 32_768 : 4096)
             return ToolResult(
                 callID: call.id,
                 status: status,

@@ -638,6 +638,7 @@ public actor FloeMacSelfRuntime {
                 allowedWorkspacePaths: resolvedTools.boundary?.allowedWorkspacePaths ?? [],
                 toolsEnabled: resolvedTools.enabled,
                 goalBudgets: request.mode == .goal ? request.goalBudgets : nil,
+                verifyFinalAnswer: request.verifyFinalAnswer && !effectiveChatFastMode && request.mode != .plan,
                 chatFastMode: effectiveChatFastMode,
                 environmentID: nil,
                 executionBinding: nil,
@@ -1553,6 +1554,11 @@ public actor FloeMacSelfRuntime {
         } catch {
             throw Self.surface(error)
         }
+    }
+
+    public func recentRunEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
+        let stores = try requireStores()
+        return try await stores.runs.recentEvents(runID: runID, limit: min(500, max(1, limit)))
     }
 
     /// Read-only recovery point. This stage does not resume it automatically;

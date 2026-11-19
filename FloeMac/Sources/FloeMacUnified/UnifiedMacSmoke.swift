@@ -123,10 +123,13 @@ final class UnifiedMacSmoke {
         var workspaceAndAttachmentStaging = false
         var conversationHistoryVerified = false
         var workspaceTextEditsVerified = false
+        var workspaceModelReadTools = false
         var catalog = false
+        var standardTaskMenus = false
+        var imageGeneration = false
         var agentApproval = (allowed: false, denied: false)
         var planning = (planSaved: false, goalSaved: false)
-        var pressedApprovalButton = false
+        var pressedApprovalButtons = Set<Bool>()
         if let agent = model.macWorkspace?.agent {
             var normalChatID: UUID?
             await agent.prepare()
@@ -181,23 +184,39 @@ final class UnifiedMacSmoke {
             }
             if let project = agent.workspaces.first(where: { $0.name == "Fixture Project" }) {
                 let folder = root.appendingPathComponent("Fixture Project", isDirectory: true)
+                let openedNewTask = await openNewTaskFromMenu(workspace: agent)
                 agentApproval = await agent.verifyAgentApprovalSmoke(project: project, checkingFile: folder) { allow in
-                    guard let content = NSApp.windows.first(where: {
+                    guard openedNewTask, let window = NSApp.windows.first(where: {
                         $0.isVisible && $0.title == String(localized: "host.role.agent")
-                    })?.contentView else { return false }
+                    }), let content = window.contentView else { return false }
                     capture(content, extension: "approval.png")
-                    let pressed = pressAccessibilityButton(content, id: allow ? "mac.agent.allowOnce" : "mac.agent.deny")
-                    pressedApprovalButton = pressedApprovalButton || pressed
-                    return pressed
+                    let id = allow ? "mac.agent.allowOnce" : "mac.agent.deny"
+                    if pressAccessibilityButton(content, id: id) {
+                        pressedApprovalButtons.insert(allow)
+                        return true
+                    }
+                    guard let frame = agent.smokeApprovalFrames[allow], !frame.isEmpty else { return false }
+                    let point = NSPoint(x: frame.midX, y: frame.midY)
+                    guard content.bounds.contains(content.convert(point, from: nil)),
+                          clickWindowLocation(point, in: window) else { return false }
+                    pressedApprovalButtons.insert(allow)
+                    return true
                 }
                 workspaceTextEditsVerified = await agent.verifyAgentTextEditSmoke(project: project, folder: folder)
                 planning = await agent.verifyPlanningSmoke(project: project)
+                if let document = try? writePDFTextAttachment(in: folder) {
+                    workspaceModelReadTools = await agent.verifyReadOnlyModelToolsSmoke(
+                        project: project, documentName: document.lastPathComponent
+                    )
+                }
             }
             if let normalChatID {
                 let removed = await agent.changeConversationMetadata(id: normalChatID, change: .delete)
                 deletedFixtureTask = removed && !agent.conversations.contains { $0.id == normalChatID }
             }
             catalog = await verifyProviderCatalog(in: agent)
+            standardTaskMenus = await verifyTaskMenus(model: model, workspace: agent)
+            imageGeneration = await verifyImageGeneration()
         }
         let toolbox = await exerciseToolbox(model: model)
         if let agent = model.macWorkspace?.agent, agent.beginTermination() { try? await agent.finishTermination() }
@@ -210,6 +229,8 @@ final class UnifiedMacSmoke {
             "workbenchWindowVisible": workbenchVisible,
             "modeRoundTripVerified": modeRoundTrip,
             "unifiedSettingsVerified": unifiedSettings,
+            "standardTaskMenuVerified": standardTaskMenus,
+            "imageGenerationVerified": imageGeneration,
             "settingsDiagnostics": settingsDiagnostics,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
@@ -220,12 +241,13 @@ final class UnifiedMacSmoke {
             "providerCatalogFetched": catalog,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
             "workspaceTextEditsVerified": workspaceTextEditsVerified,
+            "workspaceModelReadToolsVerified": workspaceModelReadTools,
             "conversationHistoryVerified": conversationHistoryVerified,
             "agentApprovedFileCreated": agentApproval.allowed,
             "agentDeclinedFileAbsent": agentApproval.denied,
             "planAcceptedAndReloaded": planning.planSaved,
             "goalRunBoundAndReloaded": planning.goalSaved,
-            "workspaceApprovalAXPress": pressedApprovalButton,
+            "workspaceApprovalUserEvents": pressedApprovalButtons.count == 2,
             "taskDiagnostics": model.macWorkspace?.agent?.smokeRunDiagnostics ?? [],
             "toolboxAndLoopbackVerified": toolbox,
             "enabledToolboxEntries": MacToolboxCatalog.groups(locale: .current)
@@ -386,6 +408,101 @@ final class UnifiedMacSmoke {
         return false
     }
 
+    private func verifyImageGeneration() async -> Bool {
+        let arguments = CommandLine.arguments
+        guard let flag = arguments.firstIndex(of: "--model-catalog-fixture"), flag < arguments.count - 1,
+              let endpoint = URL(string: arguments[flag + 1]), endpoint.scheme == "http",
+              endpoint.host == "127.0.0.1", endpoint.port != nil else { return false }
+        let directory = root.appendingPathComponent("Generated Images Fixture", isDirectory: true)
+        let images = MacImageGeneration(directory: directory, namespace: "fixture.no-keychain",
+                                        useKeychain: false, admitWork: { {} })
+        do {
+            try images.save(.init(presetID: .openAI, endpoint: endpoint.absoluteString,
+                                  modelID: "gpt-image-fixture"), apiKey: "floe-image-fixture")
+        } catch {
+            settingsDiagnostics.append("Fixture image settings: \(error.localizedDescription)")
+            return false
+        }
+        do {
+            try images.save(.init(presetID: .openAI, endpoint: "https://example.invalid/v1",
+                                  modelID: "gpt-image-fixture"), apiKey: nil)
+            return false
+        } catch MacImageGeneration.MacImageGenerationError.keyRequired {
+            guard images.configuration?.endpoint == endpoint.absoluteString else { return false }
+        } catch {
+            return false
+        }
+        images.generate(prompt: "Synthetic image prompt")
+        let deadline = ContinuousClock.now + .seconds(6)
+        while images.isGenerating && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard let item = images.history.first, item.prompt == "Synthetic image prompt",
+              NSImage(contentsOf: images.imageURL(for: item))?.isValid == true else {
+            settingsDiagnostics.append("Fixture image generation: \(images.notice ?? "no saved image")")
+            images.cancel()
+            return false
+        }
+        let reloaded = MacImageGeneration(directory: directory, namespace: "fixture.no-keychain",
+                                           useKeychain: false, admitWork: { {} })
+        return !reloaded.hasCredential && reloaded.history.first?.id == item.id
+            && reloaded.imageData(for: item).flatMap(NSImage.init(data:))?.isValid == true
+    }
+
+    private func verifyTaskMenus(model: BridgeAppModel, workspace: HostAgentWorkspace) async -> Bool {
+        model.openAgentWorkspace()
+        let activated = ContinuousClock.now + .seconds(2)
+        while NSApp.keyWindow?.title != String(localized: "host.role.agent") && ContinuousClock.now < activated {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard NSApp.keyWindow?.title == String(localized: "host.role.agent") else {
+            settingsDiagnostics.append("Workbench was not key during the shortcut test.")
+            return false
+        }
+        let findTitle = String(localized: "mac.workspace.findTask")
+        guard performMenuShortcut("f", title: findTitle) else { return false }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !workspace.smokeTaskSearchMounted && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard workspace.smokeTaskSearchMounted, performMenuShortcut("f", title: findTitle) else {
+            settingsDiagnostics.append("Find did not show the task search field.")
+            return false
+        }
+        while workspace.smokeTaskFindInvocations < 2 && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard workspace.smokeTaskSearchMounted, workspace.smokeTaskFindInvocations == 2,
+              await openNewTaskFromMenu(workspace: workspace) else { return false }
+        return workspace.smokeTaskSearchMounted
+    }
+
+    private func openNewTaskFromMenu(workspace: HostAgentWorkspace) async -> Bool {
+        guard performMenuShortcut("n", title: String(localized: "workbench.new_task")) else { return false }
+        let newTaskDeadline = ContinuousClock.now + .seconds(2)
+        while workspace.selectedID != nil && ContinuousClock.now < newTaskDeadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        return workspace.selectedID == nil
+    }
+
+    private func performMenuShortcut(_ key: String, title: String) -> Bool {
+        for root in NSApp.mainMenu?.items ?? [] {
+            guard let menu = root.submenu else { continue }
+            menu.update()
+            if let index = menu.items.firstIndex(where: {
+                $0.keyEquivalent == key && $0.keyEquivalentModifierMask == .command && $0.title == title
+            }) {
+                menu.performActionForItem(at: index)
+                return true
+            }
+        }
+        let bound = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items)
+            .filter { $0.keyEquivalent == key }.map(\.title) ?? []
+        settingsDiagnostics.append("Command-\(key) could not find \(title). Matching keys: \(bound)")
+        return false
+    }
+
     private func exerciseBridgeSwitch(model: BridgeAppModel) async -> Bool {
         guard model.macWorkspace?.agent == nil else { return false }
         model.openSettings()
@@ -434,6 +551,17 @@ final class UnifiedMacSmoke {
                                                  windowNumber: window.windowNumber, context: nil,
                                                  eventNumber: 0, clickCount: 1, pressure: 1) else { return false }
             NSApp.postEvent(event, atStart: false)
+        }
+        return true
+    }
+
+    private func clickWindowLocation(_ point: NSPoint, in window: NSWindow) -> Bool {
+        for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                                 timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: window.windowNumber, context: nil,
+                                                 eventNumber: 0, clickCount: 1, pressure: 1) else { return false }
+            window.sendEvent(event)
         }
         return true
     }
@@ -489,7 +617,7 @@ final class UnifiedMacSmoke {
         return agent.stagedAttachments.isEmpty
     }
 
-    private func writePDFTextAttachment() throws -> URL {
+    private func writePDFTextAttachment(in directory: URL? = nil) throws -> URL {
         let output = NSMutableData()
         var bounds = CGRect(x: 0, y: 0, width: 300, height: 300)
         guard let consumer = CGDataConsumer(data: output as CFMutableData),
@@ -504,7 +632,7 @@ final class UnifiedMacSmoke {
         CTLineDraw(line, context)
         context.endPDFPage()
         context.closePDF()
-        let path = root.appendingPathComponent("fixture-document.pdf")
+        let path = (directory ?? root).appendingPathComponent("fixture-document.pdf")
         try (output as Data).write(to: path, options: .withoutOverwriting)
         return path
     }
@@ -558,22 +686,39 @@ final class UnifiedMacSmoke {
         }
         appMenu.performActionForItem(at: index)
         let deadline = ContinuousClock.now + .seconds(3)
-        while model.smokeSettingsWindow?.isVisible != true && ContinuousClock.now < deadline {
+        while model.smokeAgentSettingsSheet?.isVisible != true && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        guard let window = model.smokeSettingsWindow, window.isVisible, model.settingsPane == .models,
-              window.title == String(localized: "mac.settings.title") else {
-            settingsDiagnostics.append("Settings after menu: \(model.settingsPane), \(model.smokeSettingsWindow?.title ?? "missing"), visible=\(model.smokeSettingsWindow?.isVisible == true)")
+        guard let window = model.smokeAgentSettingsSheet, window.isVisible, model.settingsPane == .general,
+              model.smokeSettingsWindow?.isVisible != true,
+              let workspace = model.macWorkspace?.agent else {
+            settingsDiagnostics.append("Settings after menu: \(model.settingsPane), sheet visible=\(model.smokeAgentSettingsSheet?.isVisible == true)")
             return false
         }
         defer { model.closeSettingsWindow() }
+        workspace.defaultMode = .plan
+        workspace.verifyAgentAnswers = true
+        workspace.allowsWorkspaceWrites = false
+        let preferencesSaved = preferences.string(forKey: "floe.mac.agent.defaultMode") == "plan"
+            && preferences.bool(forKey: "floe.mac.agent.verifyAnswers")
+            && !preferences.bool(forKey: "floe.mac.workspace.allowWrites")
+        workspace.defaultMode = .chat
+        workspace.verifyAgentAnswers = false
+        workspace.allowsWorkspaceWrites = true
+        guard preferencesSaved else { return false }
+        model.openSettings(.models)
+        while model.settingsPane != .models && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard model.settingsPane == .models, model.smokeAgentSettingsSheet === window else { return false }
+        try? await Task.sleep(for: .milliseconds(200))
         if let content = window.contentView { capture(content, extension: "settings-models.png") }
 
         model.openSettings(.bridge)
         while model.settingsPane != .bridge && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        guard model.settingsPane == .bridge, model.isAgentMode, model.smokeSettingsWindow === window,
+        guard model.settingsPane == .bridge, model.isAgentMode, model.smokeAgentSettingsSheet === window,
               window.isVisible, NSApp.activationPolicy() == .regular else { return false }
         // Allow the selected SwiftUI tab to render before capturing it.
         try? await Task.sleep(for: .milliseconds(200))
