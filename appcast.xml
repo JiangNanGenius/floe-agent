@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.10.3</title>
+      <pubDate>Thu, 19 Nov 2026 15:09:49 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.3</link>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>1.10.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;对齐 iPad 的本地上下文和草稿格式，支持读取 PDF 和 Word 附件。&lt;/p&gt;&lt;p&gt;Use the same local context and draft format as iPad and read text from PDF and Word attachments.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.10.3/Floe-Agent-1.10.3.dmg" length="29575448" type="application/octet-stream" sparkle:edSignature="3C4XkVrqJauFJ/92tYlzZtZsJFx5+adB2G23Ngpj7iq5WxaI88YIxcYXHcWOc6OvDcPj11LYzHLAaXz/1k5nBA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.10.2</title>
       <pubDate>Thu, 19 Nov 2026 14:14:49 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.2</link>
