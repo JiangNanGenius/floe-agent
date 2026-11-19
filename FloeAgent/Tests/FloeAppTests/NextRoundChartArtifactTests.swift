@@ -73,7 +73,15 @@ struct NextRoundChartArtifactTests {
 
     @Test func fieldSchemaResolvesEveryReferenceAndListsAllFortyTypes() throws {
         let schema = try #require(JSONSerialization.jsonObject(with: Data(PresentationArtifactTool.parametersJSON.utf8)) as? [String: Any])
-        let definitions = try #require(schema["$defs"] as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        let chart = try #require(properties["chart"] as? [String: Any])
+        let fields = try #require(chart["properties"] as? [String: [String: Any]])
+        #expect(Set(fields["type"]?["enum"] as? [String] ?? []) == Set(ChartKind.allCases.map(\.rawValue)))
+        #expect(Set(chart["required"] as? [String] ?? []) == ["schemaVersion", "type", "data"])
+        #expect(!PresentationArtifactTool.parametersJSON.contains("\"$ref\""))
+        #expect(schema["$defs"] == nil)
+        let contract = try #require(JSONSerialization.jsonObject(with: ChartWireSchema.documentSchema()) as? [String: Any])
+        let definitions = try #require(contract["$defs"] as? [String: Any])
         func check(_ value: Any) {
             if let object = value as? [String: Any] {
                 if let reference = object["$ref"] as? String {
@@ -82,7 +90,7 @@ struct NextRoundChartArtifactTests {
                 for child in object.values { check(child) }
             } else if let array = value as? [Any] { for child in array { check(child) } }
         }
-        check(schema)
+        check(contract)
         let kinds = try #require(definitions["ChartKind"] as? [String: Any])
         #expect(Set(kinds["enum"] as? [String] ?? []) == Set(ChartKind.allCases.map(\.rawValue)))
     }

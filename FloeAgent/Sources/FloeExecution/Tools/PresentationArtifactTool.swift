@@ -124,10 +124,21 @@ public struct PresentationArtifactTool: AgentTool {
     public static let parametersJSON: String = {
         do {
             var root = try JSONSerialization.jsonObject(with: Data(legacyParametersJSON.utf8)) as! [String: Any]
-            let chart = try JSONSerialization.jsonObject(with: ChartWireSchema.documentSchema()) as! [String: Any]
             var properties = root["properties"] as! [String: Any]
-            properties["chart"] = ["$ref": "#/$defs/ChartDocument"]
-            root["properties"] = properties; root["$defs"] = chart["$defs"]
+            // The full contract includes facets containing other chart documents.
+            // Return that schema on demand via chartContract, outside the provider's
+            // function grammar. Execution still decodes and validates the full input.
+            properties["chart"] = [
+                "type": "object",
+                "description": "Use the complete document returned by document.presentation.chartContract for the chosen chart type.",
+                "properties": [
+                    "schemaVersion": ["type": "integer", "enum": [2]],
+                    "type": ["type": "string", "enum": ChartKind.allCases.map(\.rawValue)],
+                    "data": ["type": "object", "description": "The payload for this chart type, including kind and records."]
+                ],
+                "required": ["schemaVersion", "type", "data"]
+            ]
+            root["properties"] = properties
             return String(decoding: try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]), as: UTF8.self)
         } catch { preconditionFailure("The static chart field contract is invalid") }
     }()
