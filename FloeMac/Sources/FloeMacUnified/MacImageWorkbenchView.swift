@@ -9,10 +9,12 @@ import UniformTypeIdentifiers
 struct MacImageWorkbenchView: View {
     @ObservedObject var images: MacImageGeneration
     let openSettings: () -> Void
+    var attachToTask: ((URL) -> Bool)?
     @State private var prompt = ""
     @State private var selectedID: UUID?
     @State private var preview: NSImage?
     @State private var exportFailed = false
+    @State private var attachmentFailed = false
 
     private var selection: MacImageGeneration.ResultItem? {
         images.history.first(where: { $0.id == selectedID }) ?? images.history.first
@@ -69,6 +71,12 @@ struct MacImageWorkbenchView: View {
                             HStack {
                                 Button("mac.images.reusePrompt") { prompt = item.prompt }.disabled(images.isGenerating)
                                 Spacer()
+                                if let attachToTask {
+                                    Button("mac.images.attachToTask") {
+                                        attachmentFailed = !attachToTask(images.imageURL(for: item))
+                                    }
+                                    .disabled(preview == nil)
+                                }
                                 Button("mac.images.saveAs") { export(item) }.disabled(preview == nil)
                             }
                         }
@@ -84,6 +92,9 @@ struct MacImageWorkbenchView: View {
             preview = selection.flatMap { images.imageData(for: $0).flatMap(NSImage.init(data:)) }
         }
         .alert("mac.images.exportFailed", isPresented: $exportFailed) {
+            Button("OK", role: .cancel) {}
+        }
+        .alert("mac.workspace.attachFailed", isPresented: $attachmentFailed) {
             Button("OK", role: .cancel) {}
         }
     }

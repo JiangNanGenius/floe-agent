@@ -76,8 +76,11 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                 openModelSettings: openModelSettings,
                 openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) },
                 settingsContent: settingsContent,
-                imageContent: {
-                    if let images { return AnyView(MacImageWorkbenchView(images: images, openSettings: openImageSettings)) }
+                imageContent: { attach in
+                    if let images {
+                        return AnyView(MacImageWorkbenchView(images: images, openSettings: openImageSettings,
+                                                             attachToTask: attach))
+                    }
                     return AnyView(ContentUnavailableView("mac.images.unavailable", systemImage: "photo"))
                 },
                 remembersFileRoot: testSupport == nil, draftStore: drafts
@@ -113,9 +116,13 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         let newTask = menu.addItem(withTitle: String(localized: "workbench.new_task"),
                                    action: #selector(newTaskFromMenu(_:)), keyEquivalent: "n")
         newTask.target = self
-        let findTask = menu.addItem(withTitle: String(localized: "mac.workspace.findTask"),
+        let findTask = menu.addItem(withTitle: String(localized: "mac.workspace.find"),
                                     action: #selector(findTaskFromMenu(_:)), keyEquivalent: "f")
         findTask.target = self
+        menu.addItem(.separator())
+        let stopTask = menu.addItem(withTitle: String(localized: "host.chat.stop"),
+                                    action: #selector(stopTaskFromMenu(_:)), keyEquivalent: ".")
+        stopTask.target = self
         item.submenu = menu
         mainMenu.insertItem(item, at: min(2, mainMenu.items.count))
         taskMenuItem = item
@@ -130,12 +137,18 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         performWindowAction(.findTask)
     }
 
+    @objc private func stopTaskFromMenu(_ sender: NSMenuItem) {
+        performWindowAction(.stopTask)
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard let agent, !agent.isTerminating, !agent.isSettingsPresented else { return false }
         if menuItem.action == #selector(newTaskFromMenu(_:)) {
-            return agent.isReady && !agent.isSending && !agent.isAcceptingPlan
+            return agent.isReady && !agent.isAcceptingPlan
         }
-        return agentWindow === NSApp.keyWindow
+        guard agentWindow === NSApp.keyWindow, agentWindow?.attachedSheet == nil else { return false }
+        if menuItem.action == #selector(stopTaskFromMenu(_:)) { return agent.canStop }
+        return true
     }
 
     func windowDidBecomeKey(_ notification: Notification) {

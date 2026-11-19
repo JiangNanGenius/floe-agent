@@ -86,7 +86,7 @@ private struct BridgeMenuView: View {
 
 @MainActor
 final class BridgeAppModel: ObservableObject {
-    enum SettingsPane: String, CaseIterable { case general, models, images, permissions, bridge }
+    enum SettingsPane: String, CaseIterable { case general, models, permissions, bridge }
 
     @Published var error: String?
     @Published var clients: [(String, String)] = []
@@ -101,6 +101,7 @@ final class BridgeAppModel: ObservableObject {
     #if FLOE_UNIFIED_MAC
     @Published private(set) var macWorkspace: UnifiedMacWorkspace?
     @Published var settingsPane: SettingsPane = .general
+    @Published var settingsShowsImageModel = false
     enum Appearance: String, CaseIterable { case system, light, dark }
     @Published var appearance: Appearance = .system {
         didSet {
@@ -306,7 +307,7 @@ final class BridgeAppModel: ObservableObject {
         if let error, service == nil { return error }
         return listenerReady ? String(localized: "Ready to connect") : String(localized: "Starting…")
     }
-    func openSettings(_ pane: SettingsPane? = nil) {
+    func openSettings(_ pane: SettingsPane? = nil, imageModel: Bool = false) {
         // A MenuBarExtra label is not a persistent settings presentation
         // host. Own the window explicitly and present after menu tracking
         // returns, so opening from Finder or the connection URL is reliable.
@@ -315,6 +316,9 @@ final class BridgeAppModel: ObservableObject {
             await Task.yield()
             guard !Task.isCancelled, let self else { return }
             pendingSettingsPresentation = nil
+            #if FLOE_UNIFIED_MAC
+            if pane == .models { settingsShowsImageModel = imageModel }
+            #endif
             presentSettingsWindow(pane)
         }
     }
@@ -341,7 +345,7 @@ final class BridgeAppModel: ObservableObject {
         }
         NSApp.setActivationPolicy(.regular)
         macWorkspace?.openAgent(openSettings: { [weak self] in self?.openSettings() },
-                                openImageSettings: { [weak self] in self?.openSettings(.images) },
+                                openImageSettings: { [weak self] in self?.openSettings(.models, imageModel: true) },
                                 openModelSettings: { [weak self] in self?.openSettings(.models) },
                                 settingsContent: { [weak self] in
             guard let self else { return AnyView(EmptyView()) }
@@ -496,7 +500,10 @@ private struct UnifiedMacSettingsView: View {
                 HStack(spacing: 0) {
                     List(selection: Binding<BridgeAppModel.SettingsPane?>(
                         get: { model.settingsPane },
-                        set: { if let pane = $0 { model.settingsPane = pane } }
+                        set: { if let pane = $0 {
+                            model.settingsPane = pane
+                            model.settingsShowsImageModel = false
+                        } }
                     )) {
                         ForEach(BridgeAppModel.SettingsPane.allCases, id: \.self) { pane in
                             Label(pane.title, systemImage: pane.icon).tag(pane)
@@ -523,12 +530,20 @@ private struct UnifiedMacSettingsView: View {
         case .general:
             HostAgentGeneralSettings(model: model, workspace: workspace)
         case .models:
-            MacProviderSettingsView(workspace: workspace)
-        case .images:
-            if let images = model.macWorkspace?.images {
-                MacImageSettingsView(images: images)
+            if model.settingsShowsImageModel, let images = model.macWorkspace?.images {
+                VStack(alignment: .leading, spacing: 0) {
+                    Button { model.settingsShowsImageModel = false } label: {
+                        Label("mac.provider.backToProviders", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    MacImageSettingsView(images: images)
+                }
             } else {
-                ContentUnavailableView("mac.images.unavailable", systemImage: "photo")
+                MacProviderSettingsView(workspace: workspace, openImageModelSettings: {
+                    model.settingsShowsImageModel = true
+                })
             }
         case .permissions:
             HostAgentPermissionsSettings(workspace: workspace)
@@ -580,7 +595,6 @@ private extension BridgeAppModel.SettingsPane {
         switch self {
         case .general: "General"
         case .models: "mac.settings.models"
-        case .images: "mac.settings.images"
         case .permissions: "Permissions"
         case .bridge: "host.role.bridge"
         }
@@ -590,7 +604,6 @@ private extension BridgeAppModel.SettingsPane {
         switch self {
         case .general: "gearshape"
         case .models: "slider.horizontal.3"
-        case .images: "photo"
         case .permissions: "hand.raised"
         case .bridge: "link"
         }

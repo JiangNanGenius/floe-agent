@@ -16,17 +16,19 @@ struct MacWorkspaceRootView: View {
     let openModelSettings: () -> Void
     let openToolbox: (String) -> Void
     let settingsContent: () -> AnyView
-    let imageContent: () -> AnyView
+    let imageContent: (((URL) -> Bool)?) -> AnyView
     var remembersFileRoot = true
     @ObservedObject var draftStore: MacWorkspaceDraftStore
     @AppStorage("floe.mac.workspace.lastConversation") private var lastConversation = ""
 
     @State private var destination: MacWorkspaceDestination? = .newTask
+    @State private var imageReturnDestination: MacWorkspaceDestination = .toolbox
     @State private var restoredInitialDestination = false
     @State private var showInspector = false
     @State private var showHistorySearch = false
     @FocusState private var historySearchFocused: Bool
     @State private var historySearch = ""
+    @State private var conversationFindRequest: UUID?
     @State private var taskToRename: ConversationRecord?
     @State private var taskTitle = ""
     @State private var showRename = false
@@ -35,8 +37,12 @@ struct MacWorkspaceRootView: View {
     @State private var showMetadataError = false
     @State private var taskToDelete: ConversationRecord?
     @State private var showDelete = false
+    @State private var taskToMove: ConversationRecord?
+    @State private var showMove = false
+    @State private var showMoveError = false
     @State private var grantedFolder: URL?
     @State private var registeredFolder: URL?
+    @State private var displayedFileProject: WorkspaceRecord?
 
     var body: some View {
         NavigationSplitView {
@@ -52,7 +58,9 @@ struct MacWorkspaceRootView: View {
             workspace.windowCommand = nil
             switch command.action {
             case .newTask: startNewTask()
-            case .findTask: focusTaskSearch()
+            case .findTask: findInActiveView()
+            case .stopTask:
+                if showsTask, destinationConversationID == workspace.selectedID { workspace.stop() }
             }
         }
         .disabled(workspace.isTerminating)
@@ -99,11 +107,15 @@ struct MacWorkspaceRootView: View {
             if let id, destination == .newTask, workspace.isSending { destination = .conversation(id) }
         }
         .onChange(of: destination) { _, newDestination in
+            conversationFindRequest = nil
             if newDestination == nil { destination = .taskCenter }
             if !showsTask { showInspector = false }
             guard remembersFileRoot else { return }
             if case .conversation(let id) = newDestination { lastConversation = id.uuidString }
             if case .newTask = newDestination { lastConversation = "" }
+        }
+        .onChange(of: preferredFileProject, initial: true) { _, project in
+            if !workspace.hasPendingWorkspaceFileChanges { displayedFileProject = project }
         }
         .alert("mac.workspace.rename", isPresented: $showRename) {
             TextField("mac.workspace.taskName", text: $taskTitle)
@@ -119,6 +131,18 @@ struct MacWorkspaceRootView: View {
         }
         .alert("mac.workspace.saveFailed", isPresented: $showMetadataError) {
             Button("OK", role: .cancel) {}
+        }
+        .alert("mac.workspace.moveFailed", isPresented: $showMoveError) {
+            Button("OK", role: .cancel) {}
+        }
+        .confirmationDialog("mac.workspace.moveTask", isPresented: $showMove, presenting: taskToMove) { task in
+            ForEach(workspace.workspaces.filter { $0.kind == .project }) { project in
+                Button { moveTask(task.id, to: project.id) } label: { Text(verbatim: project.name) }
+            }
+            Button("mac.workspace.moveToPersonal") { moveTask(task.id, to: nil) }
+            Button("host.chat.cancel", role: .cancel) {}
+        } message: { task in
+            Text(task.workbenchDisplayTitle)
         }
         .alert(workspaceText("删除任务？", "Delete Task?"), isPresented: $showDelete, presenting: taskToDelete) { task in
             Button("host.chat.cancel", role: .cancel) {}
@@ -147,15 +171,20 @@ struct MacWorkspaceRootView: View {
     private var filesPane: some View {
         MacWorkspaceFilesView(
             insertInDraft: insertFileText,
-            canInsertInDraft: canSelectTask,
+            canInsertInDraft: canUseFileInTask,
             remembersRoot: remembersFileRoot,
+            fixedRootBookmark: displayedFileProject?.rootBookmark,
             workspaceRevision: workspace.workspaceRevision,
             taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
             onRootChanged: { grantedFolder = $0 },
             onAttachmentsChanged: updateFileAttachments,
             canChangeFiles: { !workspace.isTerminating },
-            onPendingChanges: { workspace.hasPendingWorkspaceFileChanges = $0 }
+            onPendingChanges: { pending in
+                workspace.hasPendingWorkspaceFileChanges = pending
+                if !pending { displayedFileProject = preferredFileProject }
+            }
         )
+        .id(displayedFileProject?.id)
         .frame(minWidth: filesVisible ? 270 : 0,
                maxWidth: destination == .files ? .infinity : (filesVisible ? 310 : 0))
         .background(FloeTheme.readingSurface)
@@ -206,7 +235,6 @@ struct MacWorkspaceRootView: View {
                         .disabled(!canSelectTask)
                     sidebarLink(.taskCenter, title: "app.floe_agent_app.task_center", icon: "checklist")
                     sidebarLink(.files, title: "mac.workspace.files", icon: "folder")
-                    sidebarLink(.images, title: "mac.settings.images", icon: "photo")
                     sidebarLink(.toolbox, title: "host.menu.tools", icon: "wrench.and.screwdriver")
                     if !workspace.conversations.isEmpty {
                         Text("host.chat.history")
@@ -221,21 +249,30 @@ struct MacWorkspaceRootView: View {
                                     icon: conversation.isPinned ? "pin" : "bubble.left", conversationTitle: conversation.workbenchDisplayTitle)
                             .disabled(!canSelectTask && workspace.selectedID != conversation.id)
                             .contextMenu {
+                                if workspace.isTaskRunning(conversation.id) {
+                                    Button("host.chat.stop", systemImage: "stop.circle") { workspace.stopTask(conversation.id) }
+                                }
                                 Button(LocalizedStringKey(conversation.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
                                        systemImage: conversation.isPinned ? "pin.slash" : "pin") {
                                     updateTask(id: conversation.id, change: .pin(!conversation.isPinned))
                                 }
-                                .disabled(!canSelectTask)
+                                .disabled(!canSelectTask || workspace.isTaskRunning(conversation.id))
                                 Button(workspaceText("删除任务…", "Delete Task…"), systemImage: "trash", role: .destructive) {
                                     confirmDelete(conversation)
                                 }
-                                .disabled(!canSelectTask)
+                                .disabled(!canSelectTask || workspace.isTaskRunning(conversation.id))
                                 Button("mac.workspace.rename", systemImage: "pencil") {
                                     taskToRename = conversation
                                     taskTitle = conversation.title
                                     showRename = true
                                 }
-                                .disabled(!canSelectTask)
+                                .disabled(!canSelectTask || workspace.isTaskRunning(conversation.id))
+                                Button("mac.workspace.archiveTask", systemImage: "archivebox") {
+                                    updateTask(id: conversation.id, change: .archive(true))
+                                }
+                                .disabled(!canSelectTask || workspace.isTaskRunning(conversation.id))
+                                Button("mac.workspace.moveTask", systemImage: "folder") { chooseTaskWorkspace(conversation) }
+                                    .disabled(!canSelectTask || workspace.isTaskRunning(conversation.id))
                             }
                     }
                 }
@@ -250,11 +287,18 @@ struct MacWorkspaceRootView: View {
     private func sidebarLink(_ route: MacWorkspaceDestination, title: LocalizedStringKey, icon: String,
                              conversationTitle: String? = nil) -> some View {
         Button { destination = route } label: {
-            Group {
+            HStack(spacing: 6) {
                 if let conversationTitle {
                     Label { Text(verbatim: conversationTitle) } icon: { Image(systemName: icon) }
                 } else {
                     FloeWorkbenchSidebarItem(title: title, systemImage: icon)
+                }
+                if case .conversation(let id) = route, workspace.isTaskRunning(id) {
+                    Spacer(minLength: 0)
+                    Image(systemName: workspace.hasPendingApproval(in: id) ? "hand.raised.fill" : "circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(workspace.hasPendingApproval(in: id) ? Color.orange : Color.accentColor)
+                        .accessibilityHidden(true)
                 }
             }
             .labelStyle(MacWorkspaceLabelStyle())
@@ -276,7 +320,26 @@ struct MacWorkspaceRootView: View {
     }
 
     private var canSelectTask: Bool {
-        workspace.isReady && !workspace.isSending && !workspace.isTerminating && !workspace.isAcceptingPlan
+        workspace.isReady && !workspace.isTerminating && !workspace.isAcceptingPlan
+    }
+
+    private var canEditVisibleDraft: Bool { canSelectTask && !workspace.isSending && !workspace.isLoadingHistory }
+
+    private var preferredFileProject: WorkspaceRecord? {
+        switch destination {
+        case .conversation(let id) where id == workspace.selectedID:
+            guard workspace.selectedConversationWorkspace?.kind == .project else { return nil }
+            return workspace.selectedConversationWorkspace
+        case .newTask where workspace.selectedID == nil:
+            return workspace.workspaces.first { $0.id == workspace.selectedWorkspaceID && $0.kind == .project }
+        default:
+            return nil
+        }
+    }
+
+    private var canUseFileInTask: Bool {
+        canEditVisibleDraft && displayedFileProject?.id == preferredFileProject?.id
+            && (!showsTask || destinationConversationID == workspace.selectedID)
     }
 
     private var filesVisible: Bool { destination == .files || showInspector }
@@ -312,7 +375,18 @@ struct MacWorkspaceRootView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Spacer().frame(width: 80)
+            HStack {
+                if destination == .images {
+                    Button { destination = imageReturnDestination } label: {
+                        Label("mac.workspace.back", systemImage: "chevron.left")
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("mac.workspace.back")
+                }
+                Spacer()
+            }
+            .frame(width: 80)
             Text(title).font(.headline).lineLimit(1)
                 .frame(maxWidth: .infinity)
             headerActions
@@ -324,6 +398,12 @@ struct MacWorkspaceRootView: View {
 
     private var headerActions: some View {
         HStack(spacing: 12) {
+            if destination == .toolbox {
+                Button(action: openImageWorkbench) {
+                    Label("mac.settings.images", systemImage: "photo.badge.plus")
+                }
+                .accessibilityIdentifier("workspace.toolbox.images")
+            }
             if workspace.isSending {
                 if showsTask {
                     activeTaskStatus
@@ -338,6 +418,19 @@ struct MacWorkspaceRootView: View {
                     .accessibilityIdentifier("workspace.returnToActiveTask")
                 }
             }
+            if !workspace.backgroundTaskIDs.isEmpty {
+                Menu {
+                    ForEach(workspace.backgroundTaskIDs, id: \.self) { id in
+                        Button(workspace.conversations.first { $0.id == id }?.workbenchDisplayTitle
+                               ?? String(localized: "mac.workspace.untitledTask")) { openTask(id) }
+                    }
+                } label: {
+                    Label("mac.workspace.backgroundTasks", systemImage: "square.stack")
+                        .labelStyle(.iconOnly)
+                }
+                .menuStyle(.borderlessButton)
+                .help("mac.workspace.backgroundTasks")
+            }
             if showsTask {
                 Button { showInspector.toggle() } label: {
                     Label("mac.workspace.files", systemImage: "sidebar.trailing")
@@ -348,6 +441,12 @@ struct MacWorkspaceRootView: View {
                 .accessibilityAddTraits(showInspector ? .isSelected : [])
             }
             if case .conversation = destination {
+                Button(action: findInActiveView) {
+                    Label("mac.workspace.findConversation", systemImage: "magnifyingglass")
+                }
+                .labelStyle(.iconOnly)
+                .help("mac.workspace.findConversation")
+                .disabled(workspace.isLoadingHistory || destinationConversationID != workspace.selectedID)
                 Button(action: exportConversation) {
                     Label("mac.workspace.exportChat", systemImage: "square.and.arrow.up")
                 }
@@ -389,7 +488,11 @@ struct MacWorkspaceRootView: View {
                     }
                     HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
                                            openModelSettings: openModelSettings,
-                                           openFiles: { showInspector = true })
+                                           openFiles: { showInspector = true },
+                                           openImageWorkbench: openImageWorkbench,
+                                           findRequest: conversationFindRequest,
+                                           findConversationID: destinationConversationID)
+                        .id(destinationConversationID)
                 }
             } else {
                 ProgressView("host.chat.opening")
@@ -398,15 +501,46 @@ struct MacWorkspaceRootView: View {
         case .toolbox:
             MacWorkspaceToolboxView(openToolbox: openToolbox)
         case .images:
-            imageContent()
+            imageWorkbench
         default:
             MacWorkspaceTaskCenter(workspace: workspace, onOpen: openTask, onNew: startNewTask,
-                                   onArchive: { updateTask(id: $0, change: .archive($1)) }, onDelete: confirmDelete)
+                                   onArchive: { updateTask(id: $0, change: .archive($1)) },
+                                   onMove: chooseTaskWorkspace, onDelete: confirmDelete)
+        }
+    }
+
+    private var imageWorkbench: AnyView {
+        switch imageReturnDestination {
+        case .newTask, .conversation:
+            imageContent { url in attachGeneratedImage(url) }
+        default:
+            imageContent(nil)
         }
     }
 
     private func startNewTask() {
         if canSelectTask { destination = .newTask }
+    }
+
+    private func openImageWorkbench() {
+        guard let destination, destination != .images else { return }
+        imageReturnDestination = destination
+        self.destination = .images
+    }
+
+    private func attachGeneratedImage(_ url: URL) -> Bool {
+        guard destination == .images, canEditVisibleDraft else { return false }
+        switch imageReturnDestination {
+        case .newTask:
+            guard workspace.selectedID == nil else { return false }
+        case .conversation(let id):
+            guard workspace.selectedID == id else { return false }
+        default:
+            return false
+        }
+        guard !workspace.stageAttachments([url]).isEmpty else { return false }
+        destination = imageReturnDestination
+        return true
     }
 
     private func focusTaskSearch() {
@@ -417,16 +551,24 @@ struct MacWorkspaceRootView: View {
         #endif
     }
 
+    private func findInActiveView() {
+        if case .conversation(let id) = destination, id == workspace.selectedID {
+            conversationFindRequest = UUID()
+        } else {
+            focusTaskSearch()
+        }
+    }
+
     private func insertFileText(_ text: String) {
-        guard canSelectTask, filesVisible else { return }
-        let id = destinationConversationID
+        guard canUseFileInTask, filesVisible else { return }
+        let id = workspace.selectedID
         let current = draftStore.text(for: id)
         draftStore.setText(current.isEmpty ? text : current + "\n\n" + text, for: id)
-        if !showsTask { destination = .newTask }
+        if !showsTask { destination = id.map(MacWorkspaceDestination.conversation) ?? .newTask }
     }
 
     private func updateFileAttachments(_ files: [URL]) {
-        guard canSelectTask else { return }
+        guard canUseFileInTask else { return }
         let wanted = Set(files)
         let alreadyStaged = Set(workspace.stagedAttachments.map(\.url))
         for draft in workspace.stagedAttachments where !wanted.contains(draft.url) {
@@ -467,9 +609,21 @@ struct MacWorkspaceRootView: View {
     }
 
     private func confirmDelete(_ task: ConversationRecord) {
-        guard canSelectTask else { return }
+        guard canSelectTask, !workspace.isTaskRunning(task.id) else { return }
         taskToDelete = task
         showDelete = true
+    }
+
+    private func chooseTaskWorkspace(_ task: ConversationRecord) {
+        guard canSelectTask, !workspace.isTaskRunning(task.id) else { return }
+        taskToMove = task
+        showMove = true
+    }
+
+    private func moveTask(_ id: UUID, to workspaceID: UUID?) {
+        Task {
+            if !(await workspace.moveTask(id, to: workspaceID)) { showMoveError = true }
+        }
     }
 
     private func workspaceText(_ chinese: String, _ english: String) -> String {

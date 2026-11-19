@@ -18,12 +18,16 @@ import SwiftUI
 /// available as the fallback.
 struct MacProviderSettingsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
+    let openImageModelSettings: () -> Void
 
     @State private var editingID: UUID?
     @State private var showsEditor = false
     @State private var draft = MacProviderDraft()
     @State private var removalCandidate: UUID?
     @State private var showingICloud = false
+    @State private var connectionCheck: Task<Void, Never>?
+    @State private var connectionCheckID = UUID()
+    @State private var connectionStatus: String?
 
     /// Shared chat-capable presets. Auxiliary (image-only) and on-device
     /// presets stay in their own surfaces, exactly like the App.
@@ -61,7 +65,12 @@ struct MacProviderSettingsView: View {
         }
         .onChange(of: draft.key) { _, _ in scheduleDiscovery() }
         .onChange(of: draft.protocolKind) { _, _ in scheduleDiscovery() }
-        .onDisappear { workspace.cancelModelDiscovery() }
+        .onChange(of: draft.allowsPlainHTTP) { _, _ in scheduleDiscovery() }
+        .onChange(of: draft) { _, _ in cancelConnectionCheck() }
+        .onDisappear {
+            cancelConnectionCheck()
+            workspace.cancelModelDiscovery()
+        }
         .sheet(isPresented: $showingICloud) {
             MacICloudModelsView(workspace: workspace, providerID: selectedRecord?.profile.id) { id in
                 if let record = workspace.providers.first(where: { $0.profile.id == id }) { beginEditing(record) }
@@ -112,6 +121,12 @@ struct MacProviderSettingsView: View {
             }
             .padding(20)
             Divider()
+            Button(action: openImageModelSettings) {
+                Label("mac.provider.imageModel", systemImage: "photo")
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
             if workspace.providers.isEmpty {
                 ContentUnavailableView("mac.provider.noProviders", systemImage: "antenna.radiowaves.left.and.right")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -185,6 +200,10 @@ struct MacProviderSettingsView: View {
                 /// through here, so a loaded record's key is never erased.
                 TextField(MacProviderText.t("API 基础地址", "API base URL"), text: endpointField)
                     .textContentType(.URL)
+                if allowsLocalHTTP {
+                    Toggle("mac.provider.allowLocalHTTP", isOn: $draft.allowsPlainHTTP)
+                        .help("mac.provider.allowLocalHTTPHelp")
+                }
                 Picker(MacProviderText.t("协议", "Protocol"), selection: $draft.protocolKind) {
                     Text("OpenAI Chat Completions").tag(ModelProtocol.openAIChatCompletions)
                     Text("OpenAI Responses").tag(ModelProtocol.openAIResponses)
@@ -214,6 +233,22 @@ struct MacProviderSettingsView: View {
                 TextField("mac.provider.outputTokens", value: $draft.limits.maxOutputTokens, format: .number)
                 Text("mac.provider.tokenLimits.detail").font(.caption).foregroundStyle(.secondary)
             }
+            Section {
+                if connectionCheck != nil {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("mac.provider.testingConnection")
+                        Spacer()
+                        Button("host.chat.cancel", action: cancelConnectionCheck)
+                    }
+                } else {
+                    Button("mac.provider.testConnection", action: testConnection)
+                        .disabled(draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || draft.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || !workspace.isReady || workspace.isTerminating)
+                }
+                if let connectionStatus { Text(connectionStatus).font(.caption).foregroundStyle(.secondary) }
+            }
             if let record = selectedRecord {
                 Section {
                     LabeledContent(MacProviderText.t("默认对话模型", "Default Chat Model")) {
@@ -238,7 +273,7 @@ struct MacProviderSettingsView: View {
     private var refreshButton: some View {
         Button {
             workspace.requestModelDiscovery(endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                            apiKey: draft.key, debounce: false)
+                                             apiKey: draft.key, debounce: false, allowsPlainHTTP: draft.allowsPlainHTTP)
         } label: {
             Label("mac.provider.refreshModels", systemImage: "arrow.triangle.2.circlepath")
                 .labelStyle(.iconOnly)
@@ -372,6 +407,11 @@ struct MacProviderSettingsView: View {
 
     // MARK: - Discovery wiring
 
+    private var allowsLocalHTTP: Bool {
+        guard let url = URL(string: draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
+        return url.scheme?.lowercased() == "http" && url.isLocalOrPrivateNetwork
+    }
+
     /// True when the current endpoint supports listing but no key is entered:
     /// discovery stays idle and the editor shows the key hint instead.
     private var needsKeyForDiscovery: Bool {
@@ -379,7 +419,7 @@ struct MacProviderSettingsView: View {
               let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
               url.host?.isEmpty == false else { return false }
         let preset = ProviderPreset.preset(for: .custom, baseURL: url)
-        return preset.supportsModelDiscovery && preset.authStyle != .none
+        return preset.supportsModelDiscovery && preset.authStyle != .none && !draft.allowsPlainHTTP
             && draft.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -410,6 +450,7 @@ struct MacProviderSettingsView: View {
                 draft.endpoint = newValue
                 if connectionIdentity(previous) != connectionIdentity(newValue) {
                     draft.key = ""
+                    draft.allowsPlainHTTP = false
                 }
                 scheduleDiscovery()
             }
@@ -434,7 +475,7 @@ struct MacProviderSettingsView: View {
     private func scheduleDiscovery() {
         guard showsEditor else { return }
         workspace.requestModelDiscovery(endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                        apiKey: draft.key, debounce: true)
+                                        apiKey: draft.key, debounce: true, allowsPlainHTTP: draft.allowsPlainHTTP)
     }
 
     /// Applies a user-picked preset: endpoint/protocol pre-fill and, only
@@ -452,9 +493,10 @@ struct MacProviderSettingsView: View {
         }
         if previousIdentity != connectionIdentity(draft.endpoint) {
             draft.key = ""
+            draft.allowsPlainHTTP = false
         }
         workspace.requestModelDiscovery(endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                        apiKey: draft.key, debounce: false)
+                                        apiKey: draft.key, debounce: false, allowsPlainHTTP: draft.allowsPlainHTTP)
     }
 
     /// Single record-activation path for every selection change (list
@@ -482,10 +524,39 @@ struct MacProviderSettingsView: View {
     }
 
     private func closeEditor() {
+        cancelConnectionCheck()
         showsEditor = false
         editingID = nil
         draft = MacProviderDraft()
         workspace.cancelModelDiscovery()
+    }
+
+    private func testConnection() {
+        let id = UUID()
+        let candidate = draft
+        connectionCheckID = id
+        connectionStatus = nil
+        connectionCheck = Task {
+            let status: String
+            do {
+                try await workspace.testProviderConnection(endpoint: candidate.endpoint, protocolKind: candidate.protocolKind,
+                                                           modelID: candidate.modelID, key: candidate.key,
+                                                           allowsPlainHTTP: candidate.allowsPlainHTTP)
+                status = String(localized: "mac.provider.connectionSucceeded")
+            } catch {
+                status = String(localized: "mac.provider.connectionFailed")
+            }
+            guard !Task.isCancelled, connectionCheckID == id else { return }
+            connectionStatus = status
+            connectionCheck = nil
+        }
+    }
+
+    private func cancelConnectionCheck() {
+        connectionCheckID = UUID()
+        connectionCheck?.cancel()
+        connectionCheck = nil
+        connectionStatus = nil
     }
 
     private func save() {
@@ -498,13 +569,13 @@ struct MacProviderSettingsView: View {
                                              endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                              modelID: draft.modelID, key: draft.key,
                                              supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
-                                             presetID: presetID, limits: draft.limits)
+                                             presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP)
         } else {
             saved = workspace.addProvider(name: displayName,
                                           endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                           modelID: draft.modelID, key: draft.key,
                                           supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
-                                          presetID: presetID, limits: draft.limits)
+                                          presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP)
         }
         if saved { closeEditor() }
     }
@@ -512,13 +583,14 @@ struct MacProviderSettingsView: View {
 
 // MARK: - Draft
 
-private struct MacProviderDraft {
+private struct MacProviderDraft: Equatable {
     var name: String
     var presetID: ProviderTemplateID?
     var endpoint: String
     var protocolKind: ModelProtocol
     var modelID: String
     var key: String
+    var allowsPlainHTTP: Bool
     var supportsImages: Bool
     var supportsTools: Bool
     var limits: ModelLimits
@@ -527,12 +599,13 @@ private struct MacProviderDraft {
          protocolKind: ModelProtocol = .openAIChatCompletions,
          modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool = false,
          presetID: ProviderTemplateID? = .custom,
-         limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0)) {
+         limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false) {
         self.name = name
         self.endpoint = endpoint
         self.protocolKind = protocolKind
         self.modelID = modelID
         self.key = key
+        self.allowsPlainHTTP = allowsPlainHTTP
         self.supportsImages = supportsImages
         self.supportsTools = supportsTools
         self.presetID = presetID
@@ -552,7 +625,7 @@ private struct MacProviderDraft {
                   modelID: record.model.remoteModelID,
                   key: record.apiKey, supportsImages: record.model.capabilities.contains(.vision),
                   supportsTools: record.model.capabilities.contains(.tools),
-                  presetID: resolved.id, limits: record.model.limits)
+                  presetID: resolved.id, limits: record.model.limits, allowsPlainHTTP: record.profile.allowsPlainHTTP)
     }
 }
 

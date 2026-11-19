@@ -118,17 +118,21 @@ final class UnifiedMacSmoke {
         var nativeChat = false
         var storedTaskRun = false
         var taskMetadataSaved = false
+        var taskMoveVerified = false
         var archivedTaskRestored = false
         var deletedFixtureTask = false
         var workspaceAndAttachmentStaging = false
         var conversationHistoryVerified = false
         var workspaceTextEditsVerified = false
         var workspaceModelReadTools = false
+        var concurrentTasks = false
         var catalog = false
+        var providerConnectionVerified = false
         var standardTaskMenus = false
         var imageGeneration = false
         var agentApproval = (allowed: false, denied: false)
         var planning = (planSaved: false, goalSaved: false)
+        var goalControls = false
         var pressedApprovalButtons = Set<Bool>()
         if let agent = model.macWorkspace?.agent {
             var normalChatID: UUID?
@@ -184,6 +188,9 @@ final class UnifiedMacSmoke {
             }
             if let project = agent.workspaces.first(where: { $0.name == "Fixture Project" }) {
                 let folder = root.appendingPathComponent("Fixture Project", isDirectory: true)
+                if let normalChatID {
+                    taskMoveVerified = await agent.verifyTaskMoveSmoke(normalChatID, project: project)
+                }
                 let openedNewTask = await openNewTaskFromMenu(workspace: agent)
                 agentApproval = await agent.verifyAgentApprovalSmoke(project: project, checkingFile: folder) { allow in
                     guard openedNewTask, let window = NSApp.windows.first(where: {
@@ -204,21 +211,25 @@ final class UnifiedMacSmoke {
                 }
                 workspaceTextEditsVerified = await agent.verifyAgentTextEditSmoke(project: project, folder: folder)
                 planning = await agent.verifyPlanningSmoke(project: project)
+                if planning.goalSaved { goalControls = await agent.verifyGoalControlsSmoke() }
                 if let document = try? writePDFTextAttachment(in: folder) {
                     workspaceModelReadTools = await agent.verifyReadOnlyModelToolsSmoke(
                         project: project, documentName: document.lastPathComponent
                     )
                 }
+                concurrentTasks = await agent.verifyConcurrentTasksSmoke(project: project, folder: folder)
             }
             if let normalChatID {
                 let removed = await agent.changeConversationMetadata(id: normalChatID, change: .delete)
                 deletedFixtureTask = removed && !agent.conversations.contains { $0.id == normalChatID }
             }
             catalog = await verifyProviderCatalog(in: agent)
+            providerConnectionVerified = await verifyProviderConnection(in: agent)
             standardTaskMenus = await verifyTaskMenus(model: model, workspace: agent)
             imageGeneration = await verifyImageGeneration()
         }
         let toolbox = await exerciseToolbox(model: model)
+        let fileEditorFailures = MacWorkspaceFileEditingSmoke.runSyntheticChecks()
         if let agent = model.macWorkspace?.agent, agent.beginTermination() { try? await agent.finishTermination() }
         let output: [String: Any] = [
             "sameProcessBridgeReady": model.listenerReady,
@@ -235,18 +246,24 @@ final class UnifiedMacSmoke {
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
             "taskMetadataSaved": taskMetadataSaved,
+            "taskMoveVerified": taskMoveVerified,
             "archivedTaskRestored": archivedTaskRestored,
             "deletedFixtureTask": deletedFixtureTask,
             "composerDraftsReloaded": verifyDraftStorage(),
             "providerCatalogFetched": catalog,
+            "providerConnectionVerified": providerConnectionVerified,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
             "workspaceTextEditsVerified": workspaceTextEditsVerified,
+            "fileEditorSaveVerified": fileEditorFailures.isEmpty,
+            "fileEditorFailures": fileEditorFailures,
             "workspaceModelReadToolsVerified": workspaceModelReadTools,
+            "concurrentTasksIsolated": concurrentTasks,
             "conversationHistoryVerified": conversationHistoryVerified,
             "agentApprovedFileCreated": agentApproval.allowed,
             "agentDeclinedFileAbsent": agentApproval.denied,
             "planAcceptedAndReloaded": planning.planSaved,
             "goalRunBoundAndReloaded": planning.goalSaved,
+            "goalControlsVerified": goalControls,
             "workspaceApprovalUserEvents": pressedApprovalButtons.count == 2,
             "taskDiagnostics": model.macWorkspace?.agent?.smokeRunDiagnostics ?? [],
             "toolboxAndLoopbackVerified": toolbox,
@@ -380,9 +397,9 @@ final class UnifiedMacSmoke {
         }
         defer { workspace.cancelModelDiscovery() }
         workspace.requestModelDiscovery(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
-                                        apiKey: "superseded-fixture-key", debounce: true)
+                                        apiKey: "superseded-fixture-key", debounce: true, allowsPlainHTTP: true)
         workspace.requestModelDiscovery(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
-                                        apiKey: "floe-catalog-fixture", debounce: true)
+                                        apiKey: "floe-catalog-fixture", debounce: true, allowsPlainHTTP: true)
         let deadline = ContinuousClock.now + .seconds(6)
         while workspace.modelDiscoveryState == .idle || workspace.modelDiscoveryState == .discovering {
             guard ContinuousClock.now < deadline else { return false }
@@ -394,7 +411,7 @@ final class UnifiedMacSmoke {
         }
         workspace.requestModelDiscovery(endpoint: endpoint.appendingPathComponent("redirect").absoluteString,
                                         protocolKind: .anthropicMessages,
-                                        apiKey: "redirect-fixture-key", debounce: false)
+                                        apiKey: "redirect-fixture-key", debounce: false, allowsPlainHTTP: true)
         while ContinuousClock.now < deadline {
             switch workspace.modelDiscoveryState {
             case .failed:
@@ -406,6 +423,31 @@ final class UnifiedMacSmoke {
             }
         }
         return false
+    }
+
+    private func verifyProviderConnection(in workspace: HostAgentWorkspace) async -> Bool {
+        let arguments = CommandLine.arguments
+        guard let flag = arguments.firstIndex(of: "--model-catalog-fixture"), flag < arguments.count - 1,
+              let endpoint = URL(string: arguments[flag + 1]), endpoint.scheme == "http",
+              endpoint.host == "127.0.0.1", endpoint.port != nil else { return false }
+        do {
+            try await workspace.testProviderConnection(endpoint: endpoint.absoluteString,
+                protocolKind: .openAIChatCompletions, modelID: "fixture-model-a", key: "floe-catalog-fixture")
+            return false
+        } catch FloeError.invalidConfiguration {
+            // The unacknowledged fixture URL must fail before reaching the model catalog.
+        } catch {
+            settingsDiagnostics.append("Fixture HTTP validation: \(error.localizedDescription)")
+            return false
+        }
+        do {
+            try await workspace.testProviderConnection(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
+                modelID: "fixture-model-a", key: "floe-catalog-fixture", allowsPlainHTTP: true)
+            return true
+        } catch {
+            settingsDiagnostics.append("Fixture connection test: \(error.localizedDescription)")
+            return false
+        }
     }
 
     private func verifyImageGeneration() async -> Bool {
@@ -459,8 +501,9 @@ final class UnifiedMacSmoke {
             settingsDiagnostics.append("Workbench was not key during the shortcut test.")
             return false
         }
-        let findTitle = String(localized: "mac.workspace.findTask")
-        guard performMenuShortcut("f", title: findTitle) else { return false }
+        let findTitle = String(localized: "mac.workspace.find")
+        guard await openNewTaskFromMenu(workspace: workspace),
+              performMenuShortcut("f", title: findTitle) else { return false }
         let deadline = ContinuousClock.now + .seconds(2)
         while !workspace.smokeTaskSearchMounted && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
@@ -473,8 +516,13 @@ final class UnifiedMacSmoke {
             try? await Task.sleep(for: .milliseconds(30))
         }
         guard workspace.smokeTaskSearchMounted, workspace.smokeTaskFindInvocations == 2,
-              await openNewTaskFromMenu(workspace: workspace) else { return false }
-        return workspace.smokeTaskSearchMounted
+              await workspace.verifyChatSmoke(admissionIsClosedToInstall: { true }),
+              performMenuShortcut("f", title: findTitle) else { return false }
+        let conversationDeadline = ContinuousClock.now + .seconds(2)
+        while !workspace.smokeConversationSearchMounted && ContinuousClock.now < conversationDeadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        return workspace.smokeConversationSearchMounted && workspace.smokeTaskFindInvocations == 2
     }
 
     private func openNewTaskFromMenu(workspace: HostAgentWorkspace) async -> Bool {

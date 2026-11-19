@@ -74,14 +74,23 @@ enum MacWorkspaceFilesLayout: Sendable {
 /// containment checks, `O_NOFOLLOW` descriptor verification, and
 /// `BridgeAbsoluteFileRead.isSecretPath`, so no path outside the chosen root —
 /// and no credential material — is ever read or written. Lightweight text
-/// editing (UTF-8, at most 32 KB, no NUL bytes) never overwrites the original:
-/// saving publishes an exclusive copy (`RENAME_EXCL` hard-link exchange inside
-/// a pinned directory) and the editor switches to that new file, with bounded
-/// read-back verification before the save is accepted.
+/// editing (UTF-8, at most 32 KB, no NUL bytes) saves in place on Command-S:
+/// the bytes are staged as an exclusive temp file inside the pinned
+/// directory with the opened file's metadata (permissions, ACLs, extended
+/// attributes) and atomically exchanged with it (`renameatx_np(RENAME_SWAP)`
+/// — never a plain rename) after the on-disk revision still matches the
+/// identity captured at open, so an external edit or a path replacement is a
+/// conflict that leaves the original recoverable and keeps the user's text in
+/// the editor. The
+/// separate "Save a Copy" keeps the earlier behavior: the text is published
+/// under a new, previously non-existing name (`RENAME_EXCL` hard-link
+/// exchange inside a pinned directory) and the editor switches to that file,
+/// with bounded read-back verification before the save is accepted.
 struct MacWorkspaceFilesView: View {
     let insertInDraft: (String) -> Void
     var canInsertInDraft: Bool
     var remembersRoot: Bool = true
+    var fixedRootBookmark: Data?
     var workspaceRevision: UUID? = nil
     /// When the host composer tracks staged file URLs for the active task it
     /// injects them here; while non-nil the UI reads this set verbatim and
@@ -120,7 +129,10 @@ struct MacWorkspaceFilesView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if directory == nil {
+            if directory == nil && fixedRootBookmark != nil {
+                ContentUnavailableView(t("无法读取项目文件夹", "Project Folder Unavailable"),
+                                       systemImage: "folder.badge.questionmark")
+            } else if directory == nil {
                 ContentUnavailableView {
                     Label(t("选择文件夹", "Choose a Folder"), systemImage: "folder")
                 } description: {
@@ -159,12 +171,13 @@ struct MacWorkspaceFilesView: View {
             Text(t("请确认文件仍在所选文件夹内，且未被其他应用锁定。",
                    "Make sure the file is still inside the chosen folder and not locked by another app."))
         }
-        .alert(t("副本校验失败", "Copy Verification Failed"), isPresented: $showConflict) {
-            Button(t("重新加载", "Reload")) { reloadEdits() }
+        .alert(t("保存冲突", "Save Conflict"), isPresented: $showConflict) {
             Button(t("取消", "Cancel"), role: .cancel) {}
+            Button(t("重新加载", "Reload")) { reloadEdits() }
+            Button(t("另存副本", "Save a Copy")) { saveEditsAsCopy() }
         } message: {
-            Text(t("写入后回读的内容与保存内容不一致。请重新加载后重试。",
-                   "What was read back after saving doesn’t match what was written. Reload and try again."))
+            Text(t("文件在打开后被其他应用修改或替换，因此没有覆盖它。你的更改仍保留在编辑器中，可另存副本或重新加载。",
+                   "The file was changed or replaced by another app after it was opened, so it was not overwritten. Your edits remain in the editor; save a copy or reload."))
         }
         .alert(t("放弃未保存的更改？", "Discard Unsaved Changes?"), isPresented: $showDiscard) {
             Button(t("放弃更改", "Discard Changes"), role: .destructive) { editing = nil }
@@ -188,7 +201,7 @@ struct MacWorkspaceFilesView: View {
                     .font(.headline)
                     .lineLimit(1)
                     .contextMenu {
-                        if directory != nil {
+                        if directory != nil && fixedRootBookmark == nil {
                             Button(t("清除此文件夹", "Clear Folder"), role: .destructive, action: clearFolder)
                         }
                     }
@@ -204,8 +217,10 @@ struct MacWorkspaceFilesView: View {
                         .help(t("刷新", "Refresh"))
                         .accessibilityLabel(t("刷新", "Refresh"))
                         .accessibilityIdentifier("workspace.files.reload")
-                    Button(t("更换文件夹…", "Change Folder…"), action: chooseFolder)
-                        .accessibilityIdentifier("workspace.files.changeFolder")
+                    if fixedRootBookmark == nil {
+                        Button(t("更换文件夹…", "Change Folder…"), action: chooseFolder)
+                            .accessibilityIdentifier("workspace.files.changeFolder")
+                    }
                     Button { chooseFiles() } label: {
                         Image(systemName: "doc.badge.plus")
                     }
@@ -443,11 +458,17 @@ struct MacWorkspaceFilesView: View {
                         .accessibilityHidden(true)
                 }
                 Spacer()
-                Button { saveEdits() } label: { Image(systemName: "doc.on.doc") }
-                    .help(t("另存副本", "Save a Copy"))
-                    .accessibilityLabel(t("另存副本", "Save a Copy"))
+                Button { saveEdits() } label: { Image(systemName: "square.and.arrow.down") }
+                    .help(t("保存", "Save"))
+                    .accessibilityLabel(t("保存", "Save"))
                     .accessibilityIdentifier("workspace.files.save")
                     .keyboardShortcut("s", modifiers: .command)
+                    .disabled(!session.dirty || session.saving)
+                Button { saveEditsAsCopy() } label: { Image(systemName: "doc.on.doc") }
+                    .help(t("另存副本", "Save a Copy"))
+                    .accessibilityLabel(t("另存副本", "Save a Copy"))
+                    .accessibilityIdentifier("workspace.files.saveCopy")
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
                     .disabled(!session.dirty || session.saving)
                 Button { reloadEdits() } label: { Image(systemName: "arrow.clockwise") }
                     .help(t("重新加载", "Reload From Disk"))
@@ -590,6 +611,7 @@ struct MacWorkspaceFilesView: View {
     // MARK: - Root folder
 
     private func chooseFolder() {
+        guard fixedRootBookmark == nil else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -603,7 +625,7 @@ struct MacWorkspaceFilesView: View {
 
     private func setRoot(_ resolved: URL) {
         root = resolved
-        if remembersRoot {
+        if fixedRootBookmark == nil && remembersRoot {
             savedRootBookmark = try? resolved.bookmarkData(options: [],
                                                            includingResourceValuesForKeys: nil, relativeTo: nil)
         }
@@ -615,10 +637,22 @@ struct MacWorkspaceFilesView: View {
             editing = nil
         }
         navigate(to: resolved)
-        onRootChanged?(resolved)
+        if fixedRootBookmark == nil { onRootChanged?(resolved) }
     }
 
     private func restoreSavedRoot() {
+        if let fixedRootBookmark {
+            var stale = false
+            guard root == nil,
+                  let url = try? URL(resolvingBookmarkData: fixedRootBookmark, options: [.withoutUI],
+                                     relativeTo: nil, bookmarkDataIsStale: &stale),
+                  !stale else { return }
+            let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+            guard FileManager.default.isReadableFile(atPath: resolved.path),
+                  (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return }
+            setRoot(resolved)
+            return
+        }
 #if FLOE_MAC_HOST_SMOKE
         return
 #else
@@ -804,7 +838,49 @@ struct MacWorkspaceFilesView: View {
         }
     }
 
+    /// Command-S: atomically replaces the open file's contents in place. Any
+    /// external modification or path replacement since the file was opened is
+    /// a conflict: the original stays on disk and the session keeps the
+    /// user's text.
     private func saveEdits() {
+        guard canChangeFiles(), let session = editing, session.dirty, !session.saving,
+              let root else { return }
+        editing?.saving = true
+        let text = session.text
+        let entryURL = session.entry.url
+        let fileName = entryURL.lastPathComponent
+        let fileDirectory = entryURL.deletingLastPathComponent()
+        let baseline = session.baseline
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try MacWorkspaceFolderSnapshot.saveEditInPlace(
+                    text, fileName: fileName, in: fileDirectory, root: root, expected: baseline) }
+            }.value
+            self.reloadID = UUID()
+            guard self.editing?.entry.url == entryURL else { return }
+            switch result {
+            case .success(let identity):
+                if var session = self.editing {
+                    session.savedText = text
+                    session.baseline = identity
+                    session.saving = false
+                    self.editing = session
+                }
+            case .failure(let error as MacWorkspaceFileEditError) where error == .conflict:
+                // Disk revision untouched (or restored); keep the user's text.
+                self.editing?.saving = false
+                self.showConflict = true
+            case .failure:
+                self.editing?.saving = false
+                self.showSaveError = true
+            }
+        }
+    }
+
+    /// "Save a Copy": publishes the edited text under a new, previously
+    /// non-existing name in the current folder and switches the editor to
+    /// that file; the file that was opened is left untouched.
+    private func saveEditsAsCopy() {
         guard canChangeFiles(), let session = editing, session.dirty, !session.saving,
               let directory, let root else { return }
         editing?.saving = true
@@ -914,6 +990,11 @@ private enum MacWorkspaceFileEditError: Error, Equatable {
     case tooLarge
     case conflict
     case vanished
+    /// Another app holds a non-blocking-incompatible exclusive lock.
+    case locked
+    /// The filesystem cannot perform the required atomic exchange; the save
+    /// fails closed (Save a Copy remains available).
+    case unsupported
 }
 
 // MARK: - File entry
@@ -1081,6 +1162,192 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
             throw MacWorkspaceFileEditError.conflict
         }
         return (name, MacWorkspaceFileIdentity(finalInfo))
+    }
+
+    /// Atomically replaces the contents of the tracked file while keeping
+    /// its name and parent directory, preserving the metadata (mode, ACLs,
+    /// extended attributes) of the opened revision.
+    ///
+    /// Mirrors the proven `MacAgentWorkspaceReplaceTextTool` exchange. The
+    /// revision the editor opened is re-opened `O_NOFOLLOW` through the
+    /// pinned descriptor and locked `flock(LOCK_EX | LOCK_NB)`; its device/
+    /// inode/size/timestamps must still equal the identity captured at open,
+    /// otherwise the save is rejected as `.conflict` and the file is never
+    /// touched. The edited bytes are staged as an exclusive temp file inside
+    /// the pinned directory carrying the original's metadata
+    /// (`fcopyfile(COPYFILE_METADATA)`), fsynced and verified. After
+    /// re-validating the pinned parent and both names, the staged file and
+    /// the tracked file are exchanged with `renameatx_np(RENAME_SWAP)` —
+    /// never a plain rename, which could overwrite a distinct inode a
+    /// concurrent editor swapped into the path. The displaced entry lands at
+    /// the temp name and is validated against the original identity, and the
+    /// still-open original descriptor is re-read, so both a path replacement
+    /// and an in-place write inside the window are observed; either triggers
+    /// a guarded swap-back that restores whatever occupied the path, and the
+    /// save fails closed as `.conflict`. Filesystems without exchange support
+    /// fail closed as `.unsupported` ("Save a Copy" remains available there).
+    /// Only after every check does the displaced original get unlinked, and
+    /// the published identity is returned.
+    static func saveEditInPlace(_ text: String, fileName: String, in directory: URL, root: URL,
+                                expected baseline: MacWorkspaceFileIdentity) throws -> MacWorkspaceFileIdentity {
+        let limit = textLimit
+        guard let data = text.data(using: .utf8), data.count <= limit, !data.contains(0) else {
+            throw MacWorkspaceFileEditError.tooLarge
+        }
+        let dirfd = try openPinnedDirectory(directory, in: root)
+        defer { Darwin.close(dirfd) }
+        guard let directoryPath = physicalPath(directory.path) else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+
+        // 1) Open and exclusively lock the tracked revision; it must still be
+        //    the revision the editor opened.
+        let originalFD = openat(dirfd, fileName, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard originalFD >= 0 else {
+            if errno == ENOENT { throw MacWorkspaceFileEditError.vanished }
+            throw CocoaError(.fileReadNoPermission)
+        }
+        defer { Darwin.close(originalFD) }
+        guard flock(originalFD, LOCK_EX | LOCK_NB) == 0 else {
+            throw MacWorkspaceFileEditError.locked
+        }
+        var originalInfo = stat()
+        guard fstat(originalFD, &originalInfo) == 0, originalInfo.st_mode & S_IFMT == S_IFREG else {
+            throw MacWorkspaceFileEditError.vanished
+        }
+        guard originalInfo.st_mode & (S_ISUID | S_ISGID) == 0 else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        guard MacWorkspaceFileIdentity(originalInfo) == baseline else {
+            throw MacWorkspaceFileEditError.conflict
+        }
+        let originalBytes = try readAll(originalFD, limit: limit)
+
+        // 2) Stage the edited bytes beside the original with its metadata.
+        let tempName = ".floe-edit-\(UUID().uuidString).tmp"
+        let stagedFD = openat(dirfd, tempName, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard stagedFD >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        var stagedInfo = stat()
+        guard fstat(stagedFD, &stagedInfo) == 0 else {
+            Darwin.close(stagedFD)
+            unlinkat(dirfd, tempName, 0)
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer {
+            // Unlink only the inode we staged: after a successful exchange
+            // this name holds the displaced original (removed explicitly
+            // below), and after a failed or restored exchange it may hold a
+            // concurrent writer's entry, which must be kept.
+            if matches(stagedInfo, named: tempName, in: dirfd) {
+                unlinkat(dirfd, tempName, 0)
+            }
+            Darwin.close(stagedFD)
+        }
+        guard fcopyfile(originalFD, stagedFD, nil, copyfile_flags_t(COPYFILE_METADATA)) == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try writeAll(stagedFD, bytes: [UInt8](data))
+        guard fsync(stagedFD) == 0, try readAll(stagedFD, limit: limit) == data else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        // 3) Re-validate the pinned parent, both names and the open revision
+        //    immediately before the exchange.
+        var heldParent = stat(), currentParent = stat()
+        guard fstat(dirfd, &heldParent) == 0, stat(directoryPath, &currentParent) == 0,
+              heldParent.st_dev == currentParent.st_dev, heldParent.st_ino == currentParent.st_ino,
+              matches(originalInfo, named: fileName, in: dirfd),
+              matches(stagedInfo, named: tempName, in: dirfd),
+              try readAll(originalFD, limit: limit) == originalBytes else {
+            throw MacWorkspaceFileEditError.conflict
+        }
+
+        // 4) Atomic exchange; fail closed when the filesystem cannot swap.
+        guard renameatx_np(dirfd, tempName, dirfd, fileName, UInt32(RENAME_SWAP)) == 0 else {
+            if errno == ENOTSUP || errno == EOPNOTSUPP { throw MacWorkspaceFileEditError.unsupported }
+            throw CocoaError(.fileWriteNoPermission)
+        }
+
+        // 5) The target must now hold the staged inode and the temp name the
+        //    original; anything else means a concurrent writer displaced the
+        //    tracked revision, in which case the path is handed back.
+        var displaced = stat()
+        let foundDisplaced = fstatat(dirfd, tempName, &displaced, AT_SYMLINK_NOFOLLOW) == 0
+        guard matches(stagedInfo, named: fileName, in: dirfd),
+              matches(originalInfo, named: tempName, in: dirfd),
+              (try? readAll(originalFD, limit: limit)) == originalBytes else {
+            if foundDisplaced,
+               matches(stagedInfo, named: fileName, in: dirfd),
+               matches(displaced, named: tempName, in: dirfd),
+               renameatx_np(dirfd, tempName, dirfd, fileName, UInt32(RENAME_SWAP)) == 0 {
+                // The path again holds whatever displaced our revision; only
+                // our staged bytes remain at the temp name, and the defer
+                // above unlinks exactly those.
+                throw MacWorkspaceFileEditError.conflict
+            }
+            throw MacWorkspaceFileEditError.conflict
+        }
+
+        // 6) Durability, then remove the displaced original — only while it
+        //    is still the exact revision we opened — and report the new
+        //    identity.
+        guard fsync(dirfd) == 0,
+              (try? readAll(stagedFD, limit: limit)) == data,
+              matches(stagedInfo, named: fileName, in: dirfd) else {
+            throw MacWorkspaceFileEditError.conflict
+        }
+        if matches(originalInfo, named: tempName, in: dirfd) {
+            unlinkat(dirfd, tempName, 0)
+        }
+        var published = stat()
+        guard fstatat(dirfd, fileName, &published, AT_SYMLINK_NOFOLLOW) == 0 else {
+            throw MacWorkspaceFileEditError.vanished
+        }
+        return MacWorkspaceFileIdentity(published)
+    }
+
+    /// Reads exactly the bytes of a regular-file descriptor, refusing to
+    /// exceed `limit`. Offset-free (`pread`), so it stays correct when the
+    /// descriptor is shared with verification reads.
+    private static func readAll(_ descriptor: Int32, limit: Int) throws -> Data {
+        var bytes: [UInt8] = []
+        var offset: off_t = 0
+        var chunk = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            let count = chunk.withUnsafeMutableBytes { raw in
+                Darwin.pread(descriptor, raw.baseAddress!, raw.count, offset)
+            }
+            if count < 0 && errno == EINTR { continue }
+            guard count >= 0 else { throw CocoaError(.fileReadUnknown) }
+            if count == 0 { break }
+            bytes.append(contentsOf: chunk[0..<count])
+            offset += off_t(count)
+            guard bytes.count <= limit else { throw MacWorkspaceFileEditError.tooLarge }
+        }
+        return Data(bytes)
+    }
+
+    /// Writes every byte at the descriptor's start (offset-free `pwrite`).
+    private static func writeAll(_ descriptor: Int32, bytes: [UInt8]) throws {
+        var offset = 0
+        while offset < bytes.count {
+            let written = bytes[offset...].withUnsafeBytes { raw in
+                Darwin.pwrite(descriptor, raw.baseAddress!, raw.count, off_t(offset))
+            }
+            if written <= 0 { throw CocoaError(.fileWriteUnknown) }
+            offset += written
+        }
+    }
+
+    /// Identity-plus-shape check for a name inside the pinned directory:
+    /// same device/inode, exactly one link and still a regular file. The
+    /// single-link requirement makes multi-link files fail closed instead of
+    /// letting an exchange detach a shared inode.
+    private static func matches(_ expected: stat, named name: String, in parent: Int32) -> Bool {
+        var actual = stat()
+        return fstatat(parent, name, &actual, AT_SYMLINK_NOFOLLOW) == 0
+            && actual.st_dev == expected.st_dev && actual.st_ino == expected.st_ino
+            && actual.st_nlink == 1 && actual.st_mode & S_IFMT == S_IFREG
     }
 
     private static func publishTemporaryCopy(_ tempName: String, baseName: String, directory: Int32) throws -> String {
@@ -1273,6 +1540,206 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
         return Self(entries: entries, limited: limited)
     }
 }
+
+#if FLOE_MAC_HOST_SMOKE
+// MARK: - Synthetic edit checks
+
+/// Bounded, host-free checks for the workspace file editor. Every check
+/// creates a unique temporary root under the system temporary directory,
+/// exercises one save path through the same pinned-descriptor primitives the
+/// view uses, and removes the fixture on return. Nothing outside the fixture
+/// root is read or written, so the checks are safe to run from any smoke
+/// host, including `FLOE_MAC_HOST_SMOKE` builds.
+enum MacWorkspaceFileEditingSmoke {
+    /// Runs the save, conflict and save-a-copy checks and returns one
+    /// failure description per broken invariant; an empty array means every
+    /// check passed. Purely synchronous; no window, device or network.
+    static func runSyntheticChecks() -> [String] {
+        var failures: [String] = []
+        checkInPlaceSave(&failures)
+        checkConflictPreservesOriginal(&failures)
+        checkSaveCopy(&failures)
+        return failures
+    }
+
+    private static func makeFixtureRoot(_ label: String) throws -> URL {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-edit-smoke-\(label).XXXXXX", isDirectory: true)
+        var template = Array(base.path.utf8CString)
+        let root = template.withUnsafeMutableBufferPointer { buffer -> URL? in
+            mkdtemp(buffer.baseAddress).map { URL(fileURLWithPath: String(cString: $0), isDirectory: true) }
+        }
+        guard let root else { throw CocoaError(.fileWriteUnknown) }
+        return root
+    }
+
+    private static func permissions(of url: URL) -> Int {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)
+            .flatMap { $0?.intValue } ?? -1
+    }
+
+    /// Command-S path: content lands at the same path, declared UNIX
+    /// permissions survive, the new baseline matches a fresh read, and a
+    /// save attempted against the stale baseline is rejected as a conflict
+    /// without touching the file.
+    private static func checkInPlaceSave(_ failures: inout [String]) {
+        let label = "save"
+        do {
+            let root = try makeFixtureRoot(label)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let file = root.appendingPathComponent("note.txt")
+            try Data("hello\n".utf8).write(to: file, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: file.path)
+            let loaded = try MacWorkspaceFolderSnapshot.readEditableText(file, in: root)
+            guard loaded.text == "hello\n" else {
+                failures.append("\(label): initial read returned \(loaded.text.debugDescription)")
+                return
+            }
+            let identity = try MacWorkspaceFolderSnapshot.saveEditInPlace(
+                "world\n", fileName: "note.txt", in: root, root: root, expected: loaded.identity)
+            guard String(data: try Data(contentsOf: file), encoding: .utf8) == "world\n" else {
+                failures.append("\(label): in-place save did not update the file contents")
+                return
+            }
+            guard permissions(of: file) == 0o640 else {
+                failures.append("\(label): declared permissions not preserved (got \(String(permissions(of: file), radix: 8)))")
+                return
+            }
+            let reloaded = try MacWorkspaceFolderSnapshot.readEditableText(file, in: root)
+            guard reloaded.text == "world\n", reloaded.identity == identity else {
+                failures.append("\(label): post-save baseline does not match a fresh read")
+                return
+            }
+            let residue = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            guard residue == ["note.txt"] else {
+                failures.append("\(label): successful save left residue \(residue)")
+                return
+            }
+            do {
+                _ = try MacWorkspaceFolderSnapshot.saveEditInPlace(
+                    "again\n", fileName: "note.txt", in: root, root: root, expected: loaded.identity)
+                failures.append("\(label): stale baseline was accepted")
+            } catch MacWorkspaceFileEditError.conflict {
+                // Expected: the on-disk revision no longer matches.
+            }
+            guard String(data: try Data(contentsOf: file), encoding: .utf8) == "world\n" else {
+                failures.append("\(label): rejected stale save still modified the file")
+                return
+            }
+        } catch {
+            failures.append("\(label): \(error.localizedDescription)")
+        }
+    }
+
+    /// Both conflict shapes — an atomic replace (new inode) and an in-place
+    /// append (same inode) — are rejected, leave the external content on
+    /// disk, and the caller can still read the on-disk revision to reload.
+    private static func checkConflictPreservesOriginal(_ failures: inout [String]) {
+        // Path replacement: external writer swaps the file (new inode).
+        do {
+            let label = "conflict-replace"
+            let root = try makeFixtureRoot(label)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let file = root.appendingPathComponent("note.txt")
+            try Data("v1\n".utf8).write(to: file, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            let loaded = try MacWorkspaceFolderSnapshot.readEditableText(file, in: root)
+            try Data("v2\n".utf8).write(to: file, options: .atomic)
+            do {
+                _ = try MacWorkspaceFolderSnapshot.saveEditInPlace(
+                    "mine\n", fileName: "note.txt", in: root, root: root, expected: loaded.identity)
+                failures.append("\(label): save succeeded despite a replaced path")
+            } catch MacWorkspaceFileEditError.conflict {
+            } catch {
+                failures.append("\(label): unexpected error \(error.localizedDescription)")
+            }
+            guard String(data: try Data(contentsOf: file), encoding: .utf8) == "v2\n" else {
+                failures.append("\(label): external content was not preserved")
+                return
+            }
+            let onDisk = try MacWorkspaceFolderSnapshot.readEditableText(file, in: root)
+            guard onDisk.text == "v2\n" else {
+                failures.append("\(label): on-disk revision is not readable for a reload")
+                return
+            }
+        } catch {
+            failures.append("conflict-replace: \(error.localizedDescription)")
+        }
+        // In-place external append: same inode, new mtime/size/ctime.
+        do {
+            let label = "conflict-append"
+            let root = try makeFixtureRoot(label)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let file = root.appendingPathComponent("note.txt")
+            try Data("a\n".utf8).write(to: file, options: .withoutOverwriting)
+            let loaded = try MacWorkspaceFolderSnapshot.readEditableText(file, in: root)
+            let handle = try FileHandle(forWritingTo: file)
+            handle.seekToEndOfFile()
+            handle.write(Data("b\n".utf8))
+            try handle.close()
+            do {
+                _ = try MacWorkspaceFolderSnapshot.saveEditInPlace(
+                    "mine\n", fileName: "note.txt", in: root, root: root, expected: loaded.identity)
+                failures.append("\(label): save succeeded despite an in-place external write")
+            } catch MacWorkspaceFileEditError.conflict {
+            } catch {
+                failures.append("\(label): unexpected error \(error.localizedDescription)")
+            }
+            guard String(data: try Data(contentsOf: file), encoding: .utf8) == "a\nb\n" else {
+                failures.append("\(label): in-place external write was overwritten")
+                return
+            }
+        } catch {
+            failures.append("conflict-append: \(error.localizedDescription)")
+        }
+    }
+
+    /// Save a Copy keeps publishing under a fresh name without touching the
+    /// opened file; the published copy carries the existing 0o600 staging
+    /// mode (documented behavior of this action).
+    private static func checkSaveCopy(_ failures: inout [String]) {
+        let label = "copy"
+        do {
+            let root = try makeFixtureRoot(label)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let file = root.appendingPathComponent("note.txt")
+            try Data("original\n".utf8).write(to: file, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+            _ = try MacWorkspaceFolderSnapshot.readEditableText(file, in: root)
+            let first = try MacWorkspaceFolderSnapshot.saveEditCopy(
+                "edited\n", in: root, root: root, baseName: "note.txt")
+            guard first.name != "note.txt" else {
+                failures.append("\(label): copy was not published under a fresh name")
+                return
+            }
+            let firstURL = URL(fileURLWithPath: root.path).appendingPathComponent(first.name)
+            guard String(data: try Data(contentsOf: file), encoding: .utf8) == "original\n" else {
+                failures.append("\(label): save-a-copy modified the opened file")
+                return
+            }
+            guard String(data: try Data(contentsOf: firstURL), encoding: .utf8) == "edited\n",
+                  permissions(of: firstURL) == 0o600 else {
+                failures.append("\(label): published copy content or mode is wrong")
+                return
+            }
+            let second = try MacWorkspaceFolderSnapshot.saveEditCopy(
+                "edited again\n", in: root, root: root, baseName: "note.txt")
+            guard second.name != first.name else {
+                failures.append("\(label): second copy reused the first name")
+                return
+            }
+            let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            guard names.filter({ $0.hasPrefix("note") }).count == 3 else {
+                failures.append("\(label): expected original plus two copies, got \(names)")
+                return
+            }
+        } catch {
+            failures.append("\(label): \(error.localizedDescription)")
+        }
+    }
+}
+
+#endif
 
 private struct MacWorkspaceQuickLook: NSViewRepresentable {
     let url: URL

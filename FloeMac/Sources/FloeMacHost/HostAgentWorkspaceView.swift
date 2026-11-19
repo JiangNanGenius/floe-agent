@@ -15,15 +15,49 @@ struct HostAgentWorkspaceView: View {
     var workspaceDraft: Binding<String>? = nil
     var openModelSettings: (() -> Void)? = nil
     var openFiles: (() -> Void)? = nil
+    var openImageWorkbench: (() -> Void)? = nil
+    var findRequest: UUID? = nil
+    var findConversationID: UUID? = nil
     @State private var standaloneDraft = ""
     #if FLOE_UNIFIED_MAC
+    @StateObject private var search: MacConversationSearchModel
     @State private var choosingAttachments = false
     @State private var showAttachmentError = false
-    @State private var mode: HostAgentMode = .chat
     @State private var criterion = ""
+    @State private var goalForConfirmation: ConversationGoal?
+    private var mode: HostAgentMode { workspace.composerMode }
     #else
     @State private var showingSettings = false
     #endif
+
+    init(workspace: HostAgentWorkspace, workspaceDraft: Binding<String>? = nil,
+         openModelSettings: (() -> Void)? = nil, openFiles: (() -> Void)? = nil,
+         openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
+         findConversationID: UUID? = nil) {
+        self.workspace = workspace
+        self.workspaceDraft = workspaceDraft
+        self.openModelSettings = openModelSettings
+        self.openFiles = openFiles
+        self.openImageWorkbench = openImageWorkbench
+        self.findRequest = findRequest
+        self.findConversationID = findConversationID
+        #if FLOE_UNIFIED_MAC
+        _search = StateObject(wrappedValue: MacConversationSearchModel(
+            loadedWindow: { [weak workspace] in
+                guard let workspace, workspace.selectedID == findConversationID else { return ([], nil, false) }
+                return workspace.loadedMessageWindow
+            },
+            historyPage: { [weak workspace] cursor in
+                guard let workspace, let id = findConversationID else { throw CancellationError() }
+                return try await workspace.searchMessagePage(conversationID: id, before: cursor)
+            },
+            reveal: { [weak workspace] hit in
+                guard let workspace, let id = findConversationID else { return false }
+                return await workspace.revealMessage(hit.messageID, in: id)
+            }
+        ))
+        #endif
+    }
 
     private var draft: Binding<String> {
         workspaceDraft ?? $standaloneDraft
@@ -72,6 +106,14 @@ struct HostAgentWorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 #if FLOE_UNIFIED_MAC
+                if search.isActive {
+                    MacConversationSearchBar(model: search)
+                        .id(findRequest)
+                        #if FLOE_MAC_HOST_SMOKE
+                        .onAppear { workspace.smokeConversationSearchMounted = true }
+                        .onDisappear { workspace.smokeConversationSearchMounted = false }
+                        #endif
+                }
                 if let plan = workspace.plan { planCard(plan) }
                 if let goal = workspace.goal { goalCard(goal) }
                 conversation
@@ -117,15 +159,12 @@ struct HostAgentWorkspaceView: View {
         }
         #if FLOE_UNIFIED_MAC
         .background(FloeTheme.readingSurface)
-        .onChange(of: workspace.selectedID, initial: true) { _, id in
-            if id == nil {
-                mode = workspace.defaultMode
-                criterion = ""
-            }
+        .onChange(of: findRequest, initial: true) { _, request in
+            guard request != nil, let id = findConversationID, id == workspace.selectedID else { return }
+            search.bind(conversationID: id)
+            search.begin()
         }
-        .onChange(of: workspace.defaultMode) { _, mode in
-            if workspace.selectedID == nil { self.mode = mode }
-        }
+        .onDisappear { search.end() }
         .onChange(of: workspace.rejectedPrompt) { _, text in
             if let text, draft.wrappedValue.isEmpty { draft.wrappedValue = text }
         }
@@ -140,6 +179,11 @@ struct HostAgentWorkspaceView: View {
         }
         .alert("mac.workspace.attachFailed", isPresented: $showAttachmentError) {
             Button("OK", role: .cancel) {}
+        }
+        .sheet(item: $goalForConfirmation) { goal in
+            MacGoalConfirmationView(goal: goal) { steps, criteria in
+                await workspace.confirmGoal(goal, completedSteps: steps, confirmedCriteria: criteria)
+            }
         }
         #else
         .padding(20)
@@ -166,7 +210,7 @@ struct HostAgentWorkspaceView: View {
                     }
                 }
             }
-            .disabled(workspace.isSending || workspace.isLoadingEarlierMessages || workspace.isTerminating)
+            .disabled(workspace.isLoadingEarlierMessages || workspace.isTerminating)
             .accessibilityIdentifier("workspace.history.earlier")
             .frame(maxWidth: .infinity)
         }
@@ -185,15 +229,7 @@ struct HostAgentWorkspaceView: View {
                     .disabled(workspace.isSending || workspace.isTerminating)
             }
             HStack {
-                Button { choosingAttachments = true } label: {
-                    Label("mac.workspace.attachFiles", systemImage: "paperclip")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-                .help("mac.workspace.attachFiles")
-                .frame(width: 30)
-                .disabled(workspace.isSending || workspace.isTerminating)
+                composerAttachments
                 TextField("host.chat.prompt", text: draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(FloeTheme.Typography.body)
@@ -228,8 +264,16 @@ struct HostAgentWorkspaceView: View {
             if let openModelSettings {
                 HStack(spacing: 6) {
                     modelControl(openSettings: openModelSettings)
-                    if let openFiles, workspace.selectedID == nil {
-                        projectControl(openFiles: openFiles)
+                    if let openFiles {
+                        if let owner = workspace.selectedConversationWorkspace, owner.kind == .project {
+                            Button(action: openFiles) {
+                                Label(owner.name, systemImage: "folder").font(FloeTheme.Typography.metadata)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("mac.workspace.browseFiles")
+                        } else if workspace.selectedID == nil {
+                            projectControl(openFiles: openFiles)
+                        }
                     }
                     modeControl
                     Spacer()
@@ -240,10 +284,33 @@ struct HostAgentWorkspaceView: View {
         }
         .padding(12)
         .modifier(FloeThreadComposerChrome())
+        .dropDestination(for: URL.self) { urls, _ in
+            guard workspace.selectedID == findConversationID, !workspace.isSending,
+                  !workspace.isTerminating, !workspace.isLoadingHistory else { return false }
+            return !workspace.stageAttachments(urls.filter(\.isFileURL)).isEmpty
+        }
         .frame(maxWidth: 720)
         .padding(.horizontal, 14)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity)
+    }
+
+    private var composerAttachments: some View {
+        Menu {
+            Button("mac.workspace.attachFiles", systemImage: "paperclip") { choosingAttachments = true }
+            if let openImageWorkbench {
+                Button("mac.settings.images", systemImage: "photo.badge.plus", action: openImageWorkbench)
+            }
+        } label: {
+            Label("mac.workspace.attachFiles", systemImage: "paperclip")
+                .labelStyle(.iconOnly)
+                .foregroundStyle(Color.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("mac.workspace.attachFiles")
+        .frame(width: 30)
+        .disabled(workspace.isSending || workspace.isTerminating)
     }
 
     private func planCard(_ plan: PlanDraft) -> some View {
@@ -275,7 +342,7 @@ struct HostAgentWorkspaceView: View {
                         if plan.status == .ready {
                             Button("mac.agent.acceptPlan") {
                                 Task {
-                                    if await workspace.acceptPlan(plan) { mode = .agent }
+                                    _ = await workspace.acceptPlan(plan)
                                 }
                             }
                             .buttonStyle(.borderedProminent)
@@ -309,28 +376,43 @@ struct HostAgentWorkspaceView: View {
 
     private func goalCard(_ goal: ConversationGoal) -> some View {
         DisclosureGroup {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(verbatim: goal.objective)
-                    ForEach(goal.acceptanceCriteria) { criterion in
-                        Label {
-                            Text(verbatim: criterion.text)
-                        } icon: {
-                            Image(systemName: criterion.isSatisfied ? "checkmark.circle" : "circle")
+            VStack(alignment: .leading, spacing: 8) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(verbatim: goal.objective)
+                        ForEach(goal.acceptanceCriteria) { criterion in
+                            Label {
+                                Text(verbatim: criterion.text)
+                            } icon: {
+                                Image(systemName: criterion.isSatisfied ? "checkmark.circle" : "circle")
+                            }
+                        }
+                        if !goal.evidence.isEmpty {
+                            Text("mac.agent.goalEvidence").font(.headline)
+                            ForEach(Array(goal.evidence.suffix(8))) { evidence in
+                                Text(verbatim: evidence.summary).foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    if !goal.evidence.isEmpty {
-                        Text("mac.agent.goalEvidence").font(.headline)
-                        ForEach(Array(goal.evidence.suffix(8))) { evidence in
-                            Text(verbatim: evidence.summary).foregroundStyle(.secondary)
-                        }
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                }
+                .frame(maxHeight: 160)
+                HStack(spacing: 8) {
+                    if workspace.canConfirmGoal(goal) {
+                        Button("mac.agent.confirmGoal", systemImage: "checkmark") { goalForConfirmation = goal }
+                            .accessibilityIdentifier("mac.agent.goal.confirm")
+                    }
+                    if workspace.canContinueGoal(goal) {
+                        Button("mac.agent.continueGoal", systemImage: "play") { workspace.continueGoal(goal) }
+                            .accessibilityIdentifier("mac.agent.goal.continue")
+                    } else if workspace.canPauseGoal(goal) {
+                        Button("mac.agent.pauseGoal", systemImage: "pause") { Task { await workspace.pauseGoal(goal) } }
+                            .accessibilityIdentifier("mac.agent.goal.pause")
                     }
                 }
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
             }
-            .frame(maxHeight: 180)
         } label: {
             HStack {
                 Label("mac.agent.goalStatus", systemImage: "scope")
@@ -345,7 +427,7 @@ struct HostAgentWorkspaceView: View {
     private var modeControl: some View {
         Menu {
             ForEach(HostAgentMode.allCases, id: \.self) { choice in
-                Button { mode = choice } label: {
+                Button { workspace.composerMode = choice } label: {
                     if choice == mode {
                         Label(choice.title, systemImage: "checkmark")
                     } else {
@@ -615,6 +697,9 @@ struct HostAgentWorkspaceView: View {
                                                       userText: message.role == "user" ? message.content : nil)
                                 }
                                 .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                                .background(search.isActive && search.focusedMessageID == message.id
+                                            ? Color.accentColor.opacity(0.12) : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 8))
                                 .contextMenu {
                                     if let text = CredentialMessagePart.clipboardText(message.content) {
                                         Button("action.copy") {
@@ -649,6 +734,9 @@ struct HostAgentWorkspaceView: View {
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: workspace.pendingApproval?.callID) { _, callID in
                     if let callID { scroll.scrollTo(callID, anchor: .bottom) }
+                }
+                .onChange(of: search.focusedMessageID) { _, id in
+                    if let id { scroll.scrollTo(id, anchor: .center) }
                 }
             }
         }
@@ -699,6 +787,76 @@ struct HostAgentWorkspaceView: View {
 }
 
 #if FLOE_UNIFIED_MAC
+private struct MacGoalConfirmationView: View {
+    let goal: ConversationGoal
+    let complete: (Set<UUID>, Set<UUID>) async -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmedSteps = Set<UUID>()
+    @State private var confirmedCriteria = Set<UUID>()
+    @State private var saving = false
+
+    private var steps: [GoalStep] {
+        goal.steps.filter { $0.status != .completed && $0.status != .skipped }
+    }
+
+    private var criteria: [GoalCriterion] {
+        let evidence = Set(goal.evidence.map(\.id))
+        return goal.acceptanceCriteria.filter {
+            !$0.isSatisfied || $0.requiresUserConfirmation || $0.evidenceIDs.isEmpty
+                || !Set($0.evidenceIDs).isSubset(of: evidence)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("mac.agent.confirmGoal").font(.headline)
+            Text(verbatim: goal.objective).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !steps.isEmpty {
+                        Text("mac.agent.goalSteps").font(.subheadline.bold())
+                        ForEach(steps) { step in
+                            Toggle(isOn: checked(step.id, in: $confirmedSteps)) { Text(verbatim: step.title) }
+                        }
+                    }
+                    if !criteria.isEmpty {
+                        Text("mac.agent.goalCriteria").font(.subheadline.bold())
+                        ForEach(criteria) { criterion in
+                            Toggle(isOn: checked(criterion.id, in: $confirmedCriteria)) { Text(verbatim: criterion.text) }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 320)
+            HStack {
+                Spacer()
+                Button("host.chat.cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(saving)
+                Button("mac.agent.confirmGoal") {
+                    saving = true
+                    Task {
+                        await complete(confirmedSteps, confirmedCriteria)
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(saving || confirmedSteps.count != steps.count || confirmedCriteria.count != criteria.count)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 400, idealWidth: 460)
+    }
+
+    private func checked(_ id: UUID, in selection: Binding<Set<UUID>>) -> Binding<Bool> {
+        Binding(get: { selection.wrappedValue.contains(id) }, set: { isOn in
+            if isOn { selection.wrappedValue.insert(id) }
+            else { selection.wrappedValue.remove(id) }
+        })
+    }
+}
+
 private struct HostTaskCardChrome: ViewModifier {
     func body(content: Content) -> some View {
         content

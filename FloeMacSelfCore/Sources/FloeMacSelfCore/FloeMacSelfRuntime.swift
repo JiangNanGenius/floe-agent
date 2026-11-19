@@ -294,6 +294,15 @@ public actor FloeMacSelfRuntime {
         provider: FloeMacSelfProviderBinding,
         tools: FloeMacSelfToolBinding? = nil
     ) async throws -> FloeMacSelfSessionHandle {
+        try await startSession(request, provider: provider, tools: tools, replacingClaim: nil)
+    }
+
+    private func startSession(
+        _ request: FloeMacSelfSessionRequest,
+        provider: FloeMacSelfProviderBinding,
+        tools: FloeMacSelfToolBinding?,
+        replacingClaim: UUID?
+    ) async throws -> FloeMacSelfSessionHandle {
         guard !shuttingDown, !closed, !authorityCompromised else {
             throw FloeMacSelfCoreError.runtimeClosed
         }
@@ -370,6 +379,13 @@ public actor FloeMacSelfRuntime {
         activeAdmissions.insert(operationID)
         defer { activeAdmissions.remove(operationID) }
 
+        // Only the continuation path can replace its exact claim.
+        if let replacingClaim {
+            guard claims.owner(conversationID: resolvedConversationID) == replacingClaim else {
+                throw FloeMacSelfCoreError.conversationBusy(resolvedConversationID)
+            }
+            claims.release(conversationID: resolvedConversationID, runID: replacingClaim)
+        }
         guard claims.claim(conversationID: resolvedConversationID, runID: runID) else {
             throw FloeMacSelfCoreError.conversationBusy(resolvedConversationID)
         }
@@ -763,6 +779,309 @@ public actor FloeMacSelfRuntime {
                 )
             }
             throw error
+        }
+    }
+
+    // MARK: - Goal pause and continue (user controls)
+
+    /// Durable user Pause for one exact Goal revision. Persisting `.paused`
+    /// fences every future round: the launch transaction only admits an
+    /// expected Goal that is still `active` at the bound revision, so a
+    /// paused Goal fails closed before any run row exists. The admitted
+    /// round keeps its frozen objective, tools and lifecycle — pausing never
+    /// cancels a live run and never rewrites definition, criteria, steps,
+    /// evidence or counters.
+    @discardableResult
+    public func setGoalPaused(
+        conversationID: UUID,
+        goalID: UUID,
+        expectedRevision: Int
+    ) async throws -> ConversationGoal {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let operation = UUID()
+        activeAdmissions.insert(operation)
+        defer { activeAdmissions.remove(operation) }
+        let goal = try await controlledGoal(
+            stores: stores,
+            conversationID: conversationID,
+            goalID: goalID,
+            expectedRevision: expectedRevision
+        )
+        var paused = goal
+        if paused.status != .paused {
+            paused.status = .paused
+            paused.updatedAt = Date()
+            guard try await stores.intelligence.saveGoalIfRevisionMatches(
+                paused, expectedRevision: expectedRevision
+            ) else {
+                throw Self.goalControlConflict()
+            }
+        }
+        guard let saved = try await stores.intelligence.goal(id: goalID),
+              saved.status == .paused else {
+            throw Self.goalControlConflict()
+        }
+        return saved
+    }
+
+    public func confirmGoalCompletion(
+        conversationID: UUID,
+        goalID: UUID,
+        expectedRevision: Int,
+        completedStepIDs: Set<UUID>,
+        confirmedCriterionIDs: Set<UUID>
+    ) async throws -> ConversationGoal {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let operation = UUID()
+        guard claims.claim(conversationID: conversationID, runID: operation) else {
+            throw FloeMacSelfCoreError.conversationBusy(conversationID)
+        }
+        activeAdmissions.insert(operation)
+        defer {
+            activeAdmissions.remove(operation)
+            claims.release(conversationID: conversationID, runID: operation)
+        }
+        var goal = try await controlledGoal(stores: stores, conversationID: conversationID,
+                                            goalID: goalID, expectedRevision: expectedRevision)
+        guard goal.status == .verifying,
+              completedStepIDs.isSubset(of: Set(goal.steps.map(\.id))),
+              confirmedCriterionIDs.isSubset(of: Set(goal.acceptanceCriteria.map(\.id))) else {
+            throw Self.goalControlConflict()
+        }
+        let evidence = GoalEvidence(kind: .userConfirmation, reference: conversationID.uuidString,
+                                    summary: "User confirmed the goal result")
+        goal.evidence.append(evidence)
+        for index in goal.steps.indices where completedStepIDs.contains(goal.steps[index].id) {
+            goal.steps[index].status = .completed
+            goal.steps[index].evidenceIDs.append(evidence.id)
+        }
+        for index in goal.acceptanceCriteria.indices where confirmedCriterionIDs.contains(goal.acceptanceCriteria[index].id) {
+            goal.acceptanceCriteria[index].isSatisfied = true
+            goal.acceptanceCriteria[index].evidenceIDs.append(evidence.id)
+        }
+        let proposal = GoalCompletionProposal(
+            goalID: goal.id,
+            criterionEvidence: Dictionary(goal.acceptanceCriteria.map { ($0.id, $0.evidenceIDs) },
+                                          uniquingKeysWith: { current, _ in current }),
+            reviewModelApproved: true
+        )
+        guard GoalCompletionGate.evaluate(goal: goal, proposal: proposal,
+                                          userConfirmedCriterionIDs: confirmedCriterionIDs).mayComplete else {
+            throw FloeMacSelfCoreError.invalidRequest("Goal completion requirements are still outstanding")
+        }
+        goal.status = .completed
+        goal.updatedAt = Date()
+        guard try await stores.intelligence.saveGoalIfRevisionMatches(goal, expectedRevision: expectedRevision) else {
+            throw Self.goalControlConflict()
+        }
+        goal.revision = expectedRevision + 1
+        return goal
+    }
+
+    /// Starts another round of the same Goal, with its criteria, evidence and budget.
+    /// A live conversation claim or stale Goal revision blocks a new round.
+    public func resumeGoalSession(
+        _ request: FloeMacSelfSessionRequest,
+        provider: FloeMacSelfProviderBinding,
+        tools: FloeMacSelfToolBinding? = nil
+    ) async throws -> FloeMacSelfSessionHandle {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let admissions = try requireAdmissions()
+
+        // Exact request contract for Continue: the original conversation and
+        // Goal binding (prior exact revision), goal mode, and nothing else.
+        guard request.mode == .goal,
+              let conversationID = request.conversationID,
+              let expectedGoal = request.expectedGoal else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "continue requires the existing conversation and its exact Goal binding in goal mode"
+            )
+        }
+        guard request.newConversationID == nil, request.reusingUserMessageID == nil else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "continue never reuses a planned confirmation message or reserves a new conversation"
+            )
+        }
+        guard request.goalCriteria.isEmpty, request.goalBudgets == nil else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "continue cannot redefine the confirmed Goal criteria or budgets"
+            )
+        }
+        guard request.attachments.isEmpty else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "continue does not inject attachments into the Goal turn"
+            )
+        }
+
+        let operation = UUID()
+        activeAdmissions.insert(operation)
+        defer { activeAdmissions.remove(operation) }
+
+        let priorRevision = expectedGoal.revision
+        let goal = try await controlledGoal(
+            stores: stores,
+            conversationID: conversationID,
+            goalID: expectedGoal.id,
+            expectedRevision: priorRevision
+        )
+        // Never continue a different unfinished Goal.
+        let unfinished = try await stores.intelligence.goals(conversationID: conversationID)
+            .first(where: { !$0.status.isTerminal })
+        guard unfinished?.id == goal.id else {
+            throw Self.goalControlConflict()
+        }
+        guard [.paused, .interrupted, .blocked].contains(goal.status), !Self.goalBudgetExhausted(goal) else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                Self.goalBlockedReason(goal)
+                    ?? "review the Goal results or budget before continuing"
+            )
+        }
+
+        // Hold the conversation claim across activation and transfer it to the new run.
+        let reservation = UUID()
+        guard claims.claim(conversationID: conversationID, runID: reservation) else {
+            throw FloeMacSelfCoreError.conversationBusy(conversationID)
+        }
+        defer { claims.release(conversationID: conversationID, runID: reservation) }
+
+        let activated = try await reactivateGoalForContinue(
+            goal, expectedRevision: priorRevision, stores: stores
+        )
+        let retryRunID = request.runID ?? UUID()
+        let resumeRequest = FloeMacSelfSessionRequest(
+            conversationID: request.conversationID,
+            newConversationID: nil,
+            workspaceID: request.workspaceID,
+            conversationTitle: request.conversationTitle,
+            goal: request.goal,
+            mode: request.mode,
+            initialPolicy: request.initialPolicy,
+            runID: retryRunID,
+            context: request.context,
+            attachments: [],
+            chatFastMode: request.chatFastMode,
+            verifyFinalAnswer: request.verifyFinalAnswer,
+            goalCriteria: [],
+            goalBudgets: nil,
+            reusingUserMessageID: nil,
+            expectedGoal: FloeMacSelfExpectedGoal(
+                id: activated.id,
+                revision: (activated.revision ?? 1)
+            ),
+            startedAt: request.startedAt
+        )
+        do {
+            return try await startSession(resumeRequest, provider: provider, tools: tools, replacingClaim: reservation)
+        } catch {
+            let launchError = error
+            // Restore the prior state only while this conversation is idle
+            // and the attempted launch has no unresolved durable admission.
+            if claims.owner(conversationID: conversationID) == reservation
+                || claims.claim(conversationID: conversationID, runID: reservation) {
+                do {
+                    let record = try await admissions.record(conversationID: conversationID)
+                    if record?.runID != retryRunID || record?.phase.isUnresolved == false {
+                        var rollback = goal
+                        rollback.updatedAt = Date()
+                        _ = try await stores.intelligence.saveGoalIfRevisionMatches(
+                            rollback, expectedRevision: activated.revision ?? 1
+                        )
+                    }
+                } catch {
+                    // Keep the durable state when its ownership cannot be verified.
+                }
+            }
+            throw launchError
+        }
+    }
+
+    /// Revision-checked Goal lookup shared by the user controls. Terminal
+    /// or moved Goals fail closed exactly like the launch-time binding.
+    private func controlledGoal(
+        stores: FloeMacSelfStores,
+        conversationID: UUID,
+        goalID: UUID,
+        expectedRevision: Int
+    ) async throws -> ConversationGoal {
+        guard let conversation = try await stores.conversations.conversation(id: conversationID),
+              conversation.isVisibleInOrdinaryList,
+              let goal = try await stores.intelligence.goal(id: goalID),
+              goal.conversationID == conversationID,
+              (goal.revision ?? 1) == expectedRevision,
+              !goal.status.isTerminal else {
+            throw Self.goalControlConflict()
+        }
+        return goal
+    }
+
+    /// Reactivates the exact Goal for Continue: status becomes `.active`
+    /// and only the repeated-blocker audit clears. The compare-and-save
+    /// moves the stored revision forward exactly once and the read-back
+    /// proves the activation landed; anything else is a conflict.
+    private func reactivateGoalForContinue(
+        _ goal: ConversationGoal,
+        expectedRevision: Int,
+        stores: FloeMacSelfStores
+    ) async throws -> ConversationGoal {
+        var activated = goal
+        activated.status = .active
+        activated.progress.repeatedBlockerKey = nil
+        activated.progress.repeatedBlockerCount = 0
+        activated.updatedAt = Date()
+        guard try await stores.intelligence.saveGoalIfRevisionMatches(
+            activated, expectedRevision: expectedRevision
+        ) else {
+            throw Self.goalControlConflict()
+        }
+        guard let saved = try await stores.intelligence.goal(id: goal.id),
+              saved.status == .active,
+              (saved.revision ?? 1) == expectedRevision + 1 else {
+            throw Self.goalControlConflict()
+        }
+        return saved
+    }
+
+    private static func goalControlConflict() -> FloeMacSelfCoreError {
+        .invalidRequest("the Goal changed or stopped; refresh it before trying again")
+    }
+
+    private static func goalBudgetExhausted(_ goal: ConversationGoal) -> Bool {
+        if let maxCycles = goal.budgets.maxCycles, goal.progress.cycleCount >= maxCycles {
+            return true
+        }
+        if let maxModelCalls = goal.budgets.maxModelCalls,
+           goal.progress.modelCallCount >= maxModelCalls {
+            return true
+        }
+        if let seconds = goal.budgets.maxWallClockSeconds,
+           let started = goal.progress.startedAt,
+           Date().timeIntervalSince(started) >= seconds {
+            return true
+        }
+        return false
+    }
+
+    private static func goalBlockedReason(_ goal: ConversationGoal) -> String? {
+        if goalBudgetExhausted(goal) || goal.status == .budgetLimited {
+            return "the Goal reached its budget; review the budget first"
+        }
+        switch goal.status {
+        case .blocked:
+            return "the Goal is blocked; review the task results and address the issue, then continue"
+        case .waitingApproval:
+            return "the Goal is waiting for approval"
+        case .waitingUser:
+            return "the Goal is waiting for your input"
+        case .interrupted:
+            return "the last execution was interrupted; continue from the saved progress"
+        default:
+            return nil
         }
     }
 
@@ -1480,6 +1799,150 @@ public actor FloeMacSelfRuntime {
         case .delete:
             try await stores.conversations.deleteConversation(id: id)
         }
+    }
+
+    /// Durable ownership migration matching the iPad-visible "Move to
+    /// Workspace" flow. Passing a project workspace id reassigns the task;
+    /// passing `nil` detaches it into its own app-owned per-task private
+    /// workspace. Runs, messages, attachment records, plan drafts and Goals
+    /// never move and are never rewritten — only the
+    /// `conversation_workspace_ownership` row changes. A vacated private
+    /// workspace row is deliberately preserved with its on-disk files: it is
+    /// keyed by this task's id, and deleting it would queue cleanup of
+    /// directory a later detach legitimately reuses. The next launch of
+    /// this conversation still goes through the launch transaction's
+    /// fixed-workspace rule and the bookmark-bound lease check, so a move
+    /// can never carry a stale prepared confirmation or an old tool
+    /// boundary into a different scope.
+    ///
+    /// - Returns: the workspace record that now owns the conversation.
+    @discardableResult
+    public func moveConversation(
+        id: UUID,
+        toWorkspaceID destinationID: UUID?
+    ) async throws -> WorkspaceRecord {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let admissions = try requireAdmissions()
+        // The same process-local live-session fence as metadata edits: a
+        // task with a running session is busy and cannot change scope.
+        let operation = UUID()
+        guard claims.claim(conversationID: id, runID: operation) else {
+            throw FloeMacSelfCoreError.conversationBusy(id)
+        }
+        activeAdmissions.insert(operation)
+        defer {
+            activeAdmissions.remove(operation)
+            claims.release(conversationID: id, runID: operation)
+        }
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+
+        guard let conversation = try await stores.conversations.conversation(id: id) else {
+            throw FloeMacSelfCoreError.invalidRequest("Only saved tasks can be moved.")
+        }
+        guard conversation.purpose == .ordinary, conversation.visibility == .normal,
+              conversation.editorOwnership == nil else {
+            throw FloeMacSelfCoreError.invalidRequest("Only ordinary saved tasks can be moved.")
+        }
+        guard conversation.archivedAt == nil else {
+            throw FloeMacSelfCoreError.invalidRequest("Restore this task before moving it.")
+        }
+        // A move must never strand an execution dependency: a durable run
+        // that has not reached a strict terminal state could later resume
+        // against the new owner, so it pins the task to its current
+        // workspace until it settles.
+        let unfinishedRuns = try await stores.runs.nonTerminalRuns()
+        guard !unfinishedRuns.contains(where: { $0.conversationID == id }) else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "Wait for the running task to finish before moving it."
+            )
+        }
+        // The durable admission fence blocks automatic retry precisely
+        // because its workspace scope must not silently change underneath
+        // it; an unresolved row therefore refuses the move as well.
+        if let admission = try await admissions.record(conversationID: id),
+           admission.phase.isUnresolved {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "This task has an unresolved run and cannot be moved yet."
+            )
+        }
+
+        // Current owner before the migration; the launch transaction
+        // re-reads and re-validates this ownership row for every run.
+        let oldWorkspaceID = try await stores.workspaces.workspaceID(conversationID: id)
+
+        if let destinationID {
+            // iPad move targets are project workspaces; a per-task private
+            // workspace is owned by exactly one task and is never a target.
+            guard let workspace = try await stores.workspaces.workspace(id: destinationID) else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "The destination workspace does not exist."
+                )
+            }
+            guard workspace.kind == .project else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "Tasks can only move to a project workspace."
+                )
+            }
+            guard workspace.id != oldWorkspaceID else {
+                // The task already owns the destination; keep the call
+                // idempotent without rewriting any row.
+                return workspace
+            }
+            try ensureAdmissionStillAllowed()
+            try requireAuthority()
+            // One atomic upsert of the ownership row inside the existing
+            // store. The vacated private workspace row (if any) stays: its
+            // files belong to this task and a later detach reuses the row.
+            try await stores.workspaces.assignConversation(
+                workspaceID: workspace.id,
+                conversationID: id
+            )
+            return workspace
+        }
+
+        // Detach into a per-task private workspace. A private workspace is
+        // canonical for exactly this task — it is keyed by the task id —
+        // so an existing row with this relative path is reused (that is
+        // also the no-op case when it is already the owner).
+        let relativePath = "PrivateTasks/\(id.uuidString)"
+        if let existing = try await stores.workspaces.workspaces().first(where: {
+            $0.kind == .privateTask && $0.internalRelativePath == relativePath
+        }) {
+            if existing.id == oldWorkspaceID {
+                return existing
+            }
+            try ensureAdmissionStillAllowed()
+            try requireAuthority()
+            try await stores.workspaces.assignConversation(
+                workspaceID: existing.id,
+                conversationID: id
+            )
+            return existing
+        }
+        if let oldWorkspaceID {
+            // Project -> private: the existing atomic store re-home creates
+            // the per-task private workspace and rebinds ownership in one
+            // writer transaction.
+            try await stores.workspaces.unlinkConversation(
+                workspaceID: oldWorkspaceID,
+                conversationID: id
+            )
+        } else {
+            // No owner at all (legacy row): the canonical owner operation
+            // creates and binds the private workspace atomically.
+            _ = try await stores.workspaces.ensureWorkspace(
+                conversationID: id,
+                title: conversation.title
+            )
+        }
+        guard let ownerID = try await stores.workspaces.workspaceID(conversationID: id),
+              let owner = try await stores.workspaces.workspace(id: ownerID) else {
+            throw FloeMacSelfCoreError.persistenceUnavailable("ownerReadbackUnavailable")
+        }
+        return owner
     }
 
     public func conversationMessages(

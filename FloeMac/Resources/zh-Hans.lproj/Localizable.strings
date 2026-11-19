@@ -229,6 +229,19 @@
 "mac.provider.noProviders" = "还没有模型服务商";
 "mac.workspace.untitledTask" = "未命名任务";
 "mac.provider.add" = "添加服务商";
+"mac.provider.imageModel" = "生图模型";
+"mac.provider.testConnection" = "测试连接";
+"mac.provider.testingConnection" = "正在测试连接…";
+"mac.provider.connectionSucceeded" = "服务商已正常响应。";
+"mac.provider.connectionFailed" = "请核对服务地址、模型和 API 密钥后重试。";
+"mac.workspace.back" = "返回";
+"mac.workspace.find" = "查找…";
+"mac.workspace.findConversation" = "查找对话内容";
+"mac.workspace.backgroundTasks" = "后台任务";
+"mac.workspace.archiveTask" = "归档任务";
+"mac.workspace.moveTask" = "移到工作区…";
+"mac.workspace.moveToPersonal" = "个人任务";
+"mac.workspace.moveFailed" = "无法移动任务。请确认任务已停止且目标工作区可用。";
 "mac.run.activity" = "执行记录";
 "mac.run.tool.waiting" = "等待中";
 "mac.run.tool.running" = "运行中";
@@ -388,6 +401,14 @@
 "mac.agent.goal.failed" = "失败";
 "mac.agent.runPlan" = "执行计划";
 "mac.agent.goalEvidence" = "验收证据";
+"mac.agent.pauseGoal" = "暂停目标";
+"mac.agent.continueGoal" = "继续目标";
+"mac.agent.continueGoalPrompt" = "根据已保存的进度继续当前目标。";
+"mac.agent.goalControlFailed" = "无法更新目标。请查看当前状态后重试。";
+"mac.agent.confirmGoal" = "确认验收";
+"mac.agent.goalSteps" = "已完成步骤";
+"mac.agent.goalCriteria" = "验收标准";
+"mac.agent.goalConfirmationFailed" = "无法确认验收。请检查待完成步骤和验收证据后重试。";
 
 "mac.provider.preset" = "服务商类型";
 "mac.provider.models" = "模型";
@@ -400,5 +421,8 @@
 "mac.provider.discoveryUnavailable" = "此服务商不提供模型列表，请手动输入模型 ID。";
 "mac.provider.discoveryFailed %@" = "无法获取模型列表（%@）。仍可手动输入模型 ID。";
 "mac.provider.keyInvalid" = "API 密钥包含无效字符。";
+"mac.provider.allowLocalHTTP" = "允许通过 HTTP 连接本地网络";
+"mac.provider.allowLocalHTTPHelp" = "HTTP 请求未加密，请仅用于你信任的本地服务。";
 "mac.provider.images" = "图片输入";
 "mac.provider.tools" = "工具调用";
+"mac.images.attachToTask" = "附加到任务";

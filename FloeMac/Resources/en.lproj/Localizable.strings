@@ -229,6 +229,19 @@
 "mac.provider.noProviders" = "No Model Providers";
 "mac.workspace.untitledTask" = "Untitled Task";
 "mac.provider.add" = "Add Provider";
+"mac.provider.imageModel" = "Image Model";
+"mac.provider.testConnection" = "Test Connection";
+"mac.provider.testingConnection" = "Testing connection…";
+"mac.provider.connectionSucceeded" = "The provider responded successfully.";
+"mac.provider.connectionFailed" = "Check the endpoint, model, and API key and try again.";
+"mac.workspace.back" = "Back";
+"mac.workspace.find" = "Find…";
+"mac.workspace.findConversation" = "Find in Conversation";
+"mac.workspace.backgroundTasks" = "Running in Background";
+"mac.workspace.archiveTask" = "Archive Task";
+"mac.workspace.moveTask" = "Move to Workspace…";
+"mac.workspace.moveToPersonal" = "Personal Task";
+"mac.workspace.moveFailed" = "This task could not be moved. Check that it is idle and the destination is available.";
 "mac.run.activity" = "Tool Activity";
 "mac.run.tool.waiting" = "Waiting";
 "mac.run.tool.running" = "Running";
@@ -387,6 +400,14 @@
 "mac.agent.goal.failed" = "Failed";
 "mac.agent.runPlan" = "Run Plan";
 "mac.agent.goalEvidence" = "Verification Evidence";
+"mac.agent.pauseGoal" = "Pause Goal";
+"mac.agent.continueGoal" = "Continue Goal";
+"mac.agent.continueGoalPrompt" = "Continue the existing goal from its saved progress.";
+"mac.agent.goalControlFailed" = "The goal couldn’t be updated. Check its current status and try again.";
+"mac.agent.confirmGoal" = "Confirm Results";
+"mac.agent.goalSteps" = "Completed Steps";
+"mac.agent.goalCriteria" = "Acceptance Criteria";
+"mac.agent.goalConfirmationFailed" = "The results couldn’t be confirmed. Check the steps and evidence, then try again.";
 
 "mac.provider.preset" = "Provider Type";
 "mac.provider.models" = "Models";
@@ -399,5 +420,8 @@
 "mac.provider.discoveryUnavailable" = "This provider doesn't publish a model list. Enter the model ID manually.";
 "mac.provider.discoveryFailed %@" = "Couldn't fetch the model list (%@). You can still enter a model ID manually.";
 "mac.provider.keyInvalid" = "The API key contains invalid characters.";
+"mac.provider.allowLocalHTTP" = "Allow HTTP on the local network";
+"mac.provider.allowLocalHTTPHelp" = "HTTP sends requests without encryption. Use it with local servers you trust.";
 "mac.provider.images" = "Image input";
 "mac.provider.tools" = "Tool calling";
+"mac.images.attachToTask" = "Attach to Task";

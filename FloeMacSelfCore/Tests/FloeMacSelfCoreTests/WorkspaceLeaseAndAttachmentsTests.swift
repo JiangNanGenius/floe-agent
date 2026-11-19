@@ -366,4 +366,109 @@ struct WorkspaceLeaseAndAttachmentsTests {
             #expect(try await fixture.runtime.nonTerminalRuns().isEmpty)
         }
     }
+
+    // MARK: - Workspace move
+
+    @Test("Moving a task to a project workspace changes membership and preserves history")
+    func moveToProjectPreservesHistory() async throws {
+        try await withSelfCoreFixture { fixture in
+            let projectID = try await fixture.createWorkspace(named: "Move Target")
+            let attachment = try fixture.makeImageAttachment(named: "history.png")
+            let (provider, _) = fixture.makeProvider(scripts: [[
+                .textDelta(.init(text: "Answer with the image.")),
+                .completed(.init(stopReason: .endTurn)),
+            ]], capabilities: [.text, .vision])
+            let base = fixture.newConversationRequest(goal: "First turn", title: "Moving Task")
+            let request = FloeMacSelfSessionRequest(
+                conversationID: base.conversationID,
+                workspaceID: base.workspaceID,
+                conversationTitle: base.conversationTitle,
+                goal: base.goal,
+                mode: base.mode,
+                context: base.context,
+                attachments: [attachment]
+            )
+            let handle = try await fixture.runtime.startSession(request, provider: provider)
+            let terminal = try #require(await handle.waitForTerminal(timeout: 15))
+            #expect(terminal.confirmed)
+            let conversationID = handle.identity.conversationID
+            let privateWorkspaceID = handle.identity.workspaceID
+            _ = try await handle.close()
+
+            // History before the move: one run, user+assistant turns, and a
+            // durable image part on the user turn.
+            let runsBefore = try await fixture.runtime.recentRuns(conversationID: conversationID)
+            let messagesBefore = try await fixture.runtime.conversationMessages(conversationID: conversationID)
+            #expect(runsBefore.count == 1)
+            #expect(messagesBefore.contains { $0.role == "user" })
+
+            let owner = try await fixture.runtime.moveConversation(
+                id: conversationID, toWorkspaceID: projectID
+            )
+            #expect(owner.id == projectID)
+            #expect(owner.kind == .project)
+            #expect(try await fixture.runtime.workspaceForConversation(conversationID)?.id == projectID)
+
+            // Only membership changed: run and message identities, and the
+            // attachment record, are untouched by the move.
+            let runsAfter = try await fixture.runtime.recentRuns(conversationID: conversationID)
+            let messagesAfter = try await fixture.runtime.conversationMessages(conversationID: conversationID)
+            #expect(runsAfter.map(\.id) == runsBefore.map(\.id))
+            #expect(messagesAfter.map(\.id) == messagesBefore.map(\.id))
+            let userAfter = try #require(messagesAfter.first { $0.role == "user" })
+            #expect(userAfter.parts.contains {
+                $0.kind == .image && $0.attachmentID == attachment.id
+            })
+
+            // The vacated per-task private workspace row is preserved with
+            // its files; a later detach reuses it instead of re-creating it.
+            let preserved = try await fixture.runtime.workspace(id: privateWorkspaceID)
+            #expect(preserved?.kind == .privateTask)
+            #expect(preserved?.internalRelativePath == "PrivateTasks/\(conversationID.uuidString)")
+        }
+    }
+
+    @Test("Moving away to a project and detaching back reuses the original private workspace")
+    func moveAwayAndBackReusesPrivateWorkspace() async throws {
+        try await withSelfCoreFixture { fixture in
+            let projectID = try await fixture.createWorkspace(named: "Away Project")
+            let (provider, _) = fixture.makeProvider(scripts: [[
+                .textDelta(.init(text: "Turn one.")),
+                .completed(.init(stopReason: .endTurn)),
+            ]])
+            let handle = try await fixture.runtime.startSession(
+                fixture.newConversationRequest(goal: "Turn one", title: "Round Trip"),
+                provider: provider
+            )
+            let terminal = try #require(await handle.waitForTerminal(timeout: 15))
+            #expect(terminal.confirmed)
+            let conversationID = handle.identity.conversationID
+            let privateWorkspaceID = handle.identity.workspaceID
+            _ = try await handle.close()
+            let messagesBefore = try await fixture.runtime.conversationMessages(conversationID: conversationID)
+
+            // Away: the task joins the project; its private workspace row
+            // stays behind, keyed by this task's id.
+            let projectOwner = try await fixture.runtime.moveConversation(
+                id: conversationID, toWorkspaceID: projectID
+            )
+            #expect(projectOwner.id == projectID)
+            #expect(try await fixture.runtime.workspace(id: privateWorkspaceID) != nil)
+
+            // Back: detaching reuses the preserved private workspace row
+            // (same id, same task-keyed relative path) — no second row is
+            // created and the original private files stay attached to it.
+            let detached = try await fixture.runtime.moveConversation(
+                id: conversationID, toWorkspaceID: nil
+            )
+            #expect(detached.id == privateWorkspaceID)
+            #expect(detached.kind == .privateTask)
+            #expect(detached.internalRelativePath == "PrivateTasks/\(conversationID.uuidString)")
+            #expect(try await fixture.runtime.workspaceForConversation(conversationID)?.id == privateWorkspaceID)
+
+            // The round trip never touched history.
+            let messagesAfter = try await fixture.runtime.conversationMessages(conversationID: conversationID)
+            #expect(messagesAfter.map(\.id) == messagesBefore.map(\.id))
+        }
+    }
 }

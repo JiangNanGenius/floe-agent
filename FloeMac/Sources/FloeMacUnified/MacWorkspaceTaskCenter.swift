@@ -12,6 +12,7 @@ struct MacWorkspaceTaskCenter: View {
     let onOpen: (UUID) -> Void
     let onNew: () -> Void
     let onArchive: (UUID, Bool) -> Void
+    let onMove: (ConversationRecord) -> Void
     let onDelete: (ConversationRecord) -> Void
 
     @Environment(\.locale) private var locale
@@ -20,11 +21,13 @@ struct MacWorkspaceTaskCenter: View {
     private let relativeFormatter: RelativeDateTimeFormatter
 
     init(workspace: HostAgentWorkspace, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
-         onArchive: @escaping (UUID, Bool) -> Void, onDelete: @escaping (ConversationRecord) -> Void) {
+         onArchive: @escaping (UUID, Bool) -> Void, onMove: @escaping (ConversationRecord) -> Void,
+         onDelete: @escaping (ConversationRecord) -> Void) {
         self.workspace = workspace
         self.onOpen = onOpen
         self.onNew = onNew
         self.onArchive = onArchive
+        self.onMove = onMove
         self.onDelete = onDelete
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
@@ -61,8 +64,8 @@ struct MacWorkspaceTaskCenter: View {
         .onChange(of: workspace.conversations.map(\.id)) { _, _ in
             Task { await workspace.loadTaskRuns() }
         }
-        .onChange(of: workspace.isSending) { _, sending in
-            if !sending { Task { await workspace.loadTaskRuns() } }
+        .onChange(of: workspace.activeRunCount) { previous, count in
+            if count < previous { Task { await workspace.loadTaskRuns() } }
         }
     }
 
@@ -112,7 +115,7 @@ struct MacWorkspaceTaskCenter: View {
             } actions: {
                 Button(t("新建任务", "New Task"), action: onNew)
                     .buttonStyle(.borderedProminent)
-                    .disabled(workspace.isSending || workspace.isTerminating)
+                    .disabled(workspace.isTerminating)
                     .accessibilityIdentifier("workspace.task.empty.new")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -152,13 +155,15 @@ struct MacWorkspaceTaskCenter: View {
         let run = workspace.recentTaskRuns[record.id]
         // A persisted nonterminal row is the LAST RECORDED state, not proof of
         // live ownership: only the workspace's actual current send spins.
-        let sendingHere = workspace.isSending && workspace.selectedID == record.id
+        let sendingHere = workspace.isTaskRunning(record.id)
         return HStack {
             Button {
                 if !showsArchived { onOpen(record.id) }
             } label: {
                 HStack(alignment: .center, spacing: 10) {
-                    if sendingHere {
+                    if workspace.hasPendingApproval(in: record.id) {
+                        Image(systemName: "hand.raised.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                    } else if sendingHere {
                         ProgressView().controlSize(.mini)
                             .accessibilityHidden(true)
                     } else {
@@ -196,16 +201,21 @@ struct MacWorkspaceTaskCenter: View {
             .disabled(showsArchived)
             if showsArchived {
                 Button(t("恢复", "Restore")) { onArchive(record.id, false) }
-                    .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
+                    .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
             }
         }
         .contextMenu {
+            if sendingHere {
+                Button("host.chat.stop", systemImage: "stop.circle") { workspace.stopTask(record.id) }
+            }
             if !showsArchived {
+                Button("mac.workspace.moveTask", systemImage: "folder") { onMove(record) }
+                    .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
                 Button(t("归档", "Archive"), systemImage: "archivebox") { onArchive(record.id, true) }
-                    .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
+                    .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
             }
             Button(t("删除任务…", "Delete Task…"), systemImage: "trash", role: .destructive) { onDelete(record) }
-                .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
+                .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
         }
         .listRowBackground(workspace.selectedID == record.id
                            ? Color.accentColor.opacity(0.12) : Color.clear)
@@ -233,7 +243,7 @@ struct MacWorkspaceTaskCenter: View {
 
     private func displayedState(_ run: RunRecord) -> String {
         guard run.endedAt == nil,
-              !(workspace.isSending && workspace.selectedID == run.conversationID) else { return run.state }
+              !workspace.isTaskRunning(run.conversationID) else { return run.state }
         switch run.state {
         case "idle", "preparing", "running", "streamingModel", "preparingToolCall", "executingTool",
              "verifying", "committingResults", "reconnecting", "compacting", "reviewingApproval",

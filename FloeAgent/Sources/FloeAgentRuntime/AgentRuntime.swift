@@ -6364,9 +6364,13 @@ public actor FloeAgentRuntime {
         logger.info(
             "toolEvidenceGraduated run=\(runID.uuidString) batch=\(orderedResults.count) graduated=\(graduatedCount) compacted=\(compactedCount) historyPairs=\(replayableToolHistory.count) droppedOldest=\(historyCountBeforeTrim - replayableToolHistory.count) evidenceBytes=\(retainedEvidenceBytes)"
         )
+        // cancel() joins the stream consumer before writing its final recovery point.
+        // The cancelled consumer must leave that checkpoint and transition to the caller.
+        if case .cancelling = state { return }
         do {
             try await writeCheckpoint()
         } catch {
+            if case .cancelling = state { return }
             await failRun(
                 message: "Unable to save the tool-batch settlement checkpoint: \(error.localizedDescription)",
                 recoverable: true
@@ -6375,6 +6379,7 @@ public actor FloeAgentRuntime {
         }
 
         // Publication follows persistence and preserves provider order.
+        if case .cancelling = state { return }
         for item in orderedResults {
             await emit(.toolResult(item.result))
         }

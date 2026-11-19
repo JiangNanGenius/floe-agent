@@ -28,6 +28,7 @@ import FoundationNetworking
 import FloeCore
 
 public enum ProviderConnectionProbe {
+    private static let session = ASRTransportSecurity.makeHTTPSession()
 
     /// True when the adapter's default listing probe must be replaced by a
     /// minimal selected-model chat request.
@@ -57,7 +58,7 @@ public enum ProviderConnectionProbe {
             credentials: credentials,
             modelRemoteID: modelRemoteID,
             adapter: adapter,
-            session: .shared
+            session: session
         )
     }
 
