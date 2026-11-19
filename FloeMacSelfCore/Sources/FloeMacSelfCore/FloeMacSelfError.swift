@@ -45,6 +45,7 @@ public enum FloeMacSelfCoreError: Error, Sendable, Hashable {
     case adapterProtocolMismatch(expected: String, actual: String)
     case modelDoesNotSupportTools
     case toolCapabilityUnavailable(String)
+    case goalBindingUnavailable(String)
     case invalidTaskBoundary(String)
     case executionEnvironmentUnsupported
     case hostGateUnavailable(String)
@@ -82,6 +83,7 @@ public enum FloeMacSelfCoreError: Error, Sendable, Hashable {
         case .adapterProtocolMismatch: return "adapterProtocolMismatch"
         case .modelDoesNotSupportTools: return "modelDoesNotSupportTools"
         case .toolCapabilityUnavailable: return "toolCapabilityUnavailable"
+        case .goalBindingUnavailable: return "goalBindingUnavailable"
         case .invalidTaskBoundary: return "invalidTaskBoundary"
         case .executionEnvironmentUnsupported: return "executionEnvironmentUnsupported"
         case .hostGateUnavailable: return "hostGateUnavailable"
@@ -141,6 +143,8 @@ extension FloeMacSelfCoreError: LocalizedError {
             return "The selected model does not declare tool calling, so a tool-enabled session cannot start."
         case .toolCapabilityUnavailable(let detail):
             return "The host tool capability is unavailable: \(detail)"
+        case .goalBindingUnavailable(let detail):
+            return "The durable Goal could not be bound to this run: \(detail)"
         case .invalidTaskBoundary(let detail):
             return "The task workspace boundary is invalid: \(detail)"
         case .executionEnvironmentUnsupported:

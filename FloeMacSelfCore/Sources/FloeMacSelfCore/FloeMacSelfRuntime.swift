@@ -41,6 +41,9 @@ private struct FloeMacSelfStores: Sendable {
     let runs: SQLiteRunStore
     let checkpoints: SQLiteRunCheckpointStore
     let workspaces: SQLiteWorkspaceStore
+    /// The one existing durable store for plan drafts and Goals. The
+    /// composition never implements a second persistence model.
+    let intelligence: SQLiteIntelligenceStore
 }
 
 public actor FloeMacSelfRuntime {
@@ -271,7 +274,8 @@ public actor FloeMacSelfRuntime {
             conversations: SQLiteConversationStore(database: database),
             runs: SQLiteRunStore(database: database),
             checkpoints: SQLiteRunCheckpointStore(database: database, legacyDirectory: nil),
-            workspaces: SQLiteWorkspaceStore(database: database)
+            workspaces: SQLiteWorkspaceStore(database: database),
+            intelligence: SQLiteIntelligenceStore(database: database)
         )
         admissions = FloeMacSelfAdmissionStore(database: database, authorityLock: authorityLock)
         let receipt = FloeMacSelfBootstrapReceipt(
@@ -300,19 +304,32 @@ public actor FloeMacSelfRuntime {
         let canonicalGoal = request.goal.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let resolvedProvider = try FloeMacSelfCapabilityResolver.resolveProvider(provider)
-        // The shipping host supports project-scoped chat. Tool execution
-        // still requires a verified workspace lease and approval lifecycle.
-        guard tools == nil else {
+        // Ordinary chat runs tool-free. Plan discovery is read-only but needs
+        // the compiled read-only investigation ceiling plus `plan.submit`, so
+        // it requires an explicit tool binding like every other tool-enabled
+        // session. Goal and accepted-plan launches may run with or without
+        // tools; every tool-enabled session still requires the verified
+        // workspace lease (boundary + host gate) resolved below.
+        if request.mode == .plan, tools == nil {
             throw FloeMacSelfCoreError.toolCapabilityUnavailable(
-                "workspace ownership and task-root lease are not connected"
+                "plan discovery requires the read-only tool ceiling binding"
             )
         }
         let resolvedTools = try FloeMacSelfCapabilityResolver.resolveTools(tools, model: resolvedProvider.model)
+        if request.mode == .plan, resolvedTools.enabled {
+            try FloeMacSelfCapabilityResolver.validatePlanCeiling(
+                allowedToolNames: resolvedTools.allowedToolNames,
+                executor: resolvedTools.executor
+            )
+        }
         try FloeMacSelfRequestValidator.validate(
             toolsEnabled: resolvedTools.enabled,
             request: request,
             boundary: resolvedTools.boundary
         )
+        // Plan and Goal always use the full task envelope, never the brief
+        // chat-fast envelope; the flag alone never grants a tool.
+        let effectiveChatFastMode = request.mode == .chat ? request.chatFastMode : false
 
         let resolvedConversationID: UUID
         let newConversationID: UUID?
@@ -325,6 +342,29 @@ public actor FloeMacSelfRuntime {
             newConversationID = newID
         }
         let runID = request.runID ?? UUID()
+
+        // Resolve the exact durable Goal before any durable write: the launch
+        // transaction binds it with revision + definition fingerprint, and a
+        // changed/stopped Goal must fail before admission like every other
+        // capability mismatch. The validator guarantees an expected Goal only
+        // arrives with an existing conversation and a confirmation message.
+        let expectedGoalBinding: (id: UUID, revision: Int, fingerprint: String)?
+        if let expectedGoal = request.expectedGoal {
+            guard let goal = try await stores.intelligence.goal(id: expectedGoal.id),
+                  goal.conversationID == resolvedConversationID,
+                  goal.status == .active, (goal.revision ?? 1) == expectedGoal.revision else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "the expected Goal is unavailable, stopped or changed"
+                )
+            }
+            expectedGoalBinding = (
+                id: goal.id,
+                revision: expectedGoal.revision,
+                fingerprint: try GoalRunDefinitionFingerprint.make(goal)
+            )
+        } else {
+            expectedGoalBinding = nil
+        }
 
         let operationID = UUID()
         activeAdmissions.insert(operationID)
@@ -406,9 +446,13 @@ public actor FloeMacSelfRuntime {
                 initialState: "preparing",
                 workspaceID: request.workspaceID,
                 attachments: stagedAttachments,
-                conversationMode: ConversationMode.chat.rawValue,
+                conversationMode: request.mode.rawValue,
+                goalID: expectedGoalBinding?.id,
+                expectedGoalRevision: expectedGoalBinding?.revision,
+                goalDefinitionFingerprint: expectedGoalBinding?.fingerprint,
                 initialPolicy: request.initialPolicy,
                 messageRole: "user",
+                reusingUserMessageID: request.reusingUserMessageID,
                 providerName: providerName,
                 modelName: resolvedProvider.model.displayName,
                 providerProfile: resolvedProvider.provider,
@@ -432,10 +476,31 @@ public actor FloeMacSelfRuntime {
                     "conversation/run/user-message identities changed during launch"
                 )
             }
-            try FloeMacSelfPreparedInput.verify(
-                prepared.userMessage, messageID: prepared.userMessage.id,
-                conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal,
-                expectedAttachments: prepared.attachments)
+            // The launch transaction proves the exact user turn in-transaction;
+            // these reads re-check the committed identity only.
+            let verifyPreparedInput: @Sendable (PersistedMessage) throws -> Void
+            if request.reusingUserMessageID != nil {
+                verifyPreparedInput = { message in
+                    try FloeMacSelfPreparedConfirmationInput.verify(
+                        message, messageID: prepared.userMessage.id,
+                        conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal
+                    )
+                }
+                guard prepared.userMessage.id == request.reusingUserMessageID else {
+                    throw FloeMacSelfCoreError.preparedIdentityMismatch(
+                        "the launch did not consume the planned confirmation message"
+                    )
+                }
+            } else {
+                verifyPreparedInput = { message in
+                    try FloeMacSelfPreparedInput.verify(
+                        message, messageID: prepared.userMessage.id,
+                        conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal,
+                        expectedAttachments: prepared.attachments
+                    )
+                }
+            }
+            try verifyPreparedInput(prepared.userMessage)
             let normalizedStagedAttachments: [AttachmentRef] = stagedAttachments.map { attachment in
                 var normalized = attachment
                 normalized.conversationID = resolvedConversationID
@@ -448,10 +513,7 @@ public actor FloeMacSelfRuntime {
                     id: prepared.userMessage.id, conversationID: resolvedConversationID) else {
                 throw FloeMacSelfCoreError.preparedIdentityMismatch("durable user input is unavailable")
             }
-            try FloeMacSelfPreparedInput.verify(
-                savedInput, messageID: prepared.userMessage.id,
-                conversationID: resolvedConversationID, runID: runID, goal: canonicalGoal,
-                expectedAttachments: prepared.attachments)
+            try verifyPreparedInput(savedInput)
             guard prepared.run.providerID == resolvedProvider.provider.id,
                   prepared.run.modelID == resolvedProvider.model.id else {
                 throw FloeMacSelfCoreError.preparedIdentityMismatch(
@@ -463,6 +525,67 @@ public actor FloeMacSelfRuntime {
                     throw FloeMacSelfCoreError.preparedIdentityMismatch(
                         "the prepared workspace is not the tool boundary workspace"
                     )
+                }
+            }
+
+            // Bookmark-bound workspace ownership: the host boundary root must
+            // equal the exact root persisted with the workspace row the launch
+            // transaction just read. A matching UUID alone never grants a
+            // different directory.
+            let verifyWorkspaceLease: (@Sendable () async throws -> Void)?
+            if resolvedTools.enabled, let boundary = resolvedTools.boundary {
+                _ = try FloeMacSelfWorkspaceLease.verifiedRoot(
+                    workspace: prepared.workspace,
+                    boundaryRoot: boundary.workspaceRootURL,
+                    privateTaskRootBase: options.privateTaskRootBaseURL
+                )
+                let workspaceStore = stores.workspaces
+                let privateTaskRootBase = options.privateTaskRootBaseURL
+                verifyWorkspaceLease = {
+                    guard let durable = try await workspaceStore.workspace(id: boundary.workspaceID) else {
+                        throw FloeMacSelfCoreError.invalidTaskBoundary(
+                            "the leased workspace row is unavailable"
+                        )
+                    }
+                    _ = try FloeMacSelfWorkspaceLease.verifiedRoot(
+                        workspace: durable,
+                        boundaryRoot: boundary.workspaceRootURL,
+                        privateTaskRootBase: privateTaskRootBase
+                    )
+                }
+            } else {
+                verifyWorkspaceLease = nil
+            }
+
+            // A new durable Goal is bound to its preparing run before any
+            // dispatch intent exists. The existing store transaction writes
+            // the Goal, binds `runs.goal_id` and appends the goal-round
+            // admission marker; a concurrent or earlier unfinished Goal fails
+            // closed here, before the durable prepared CAS. A known-Goal
+            // round (expectedGoalBinding != nil) is already CAS-bound by the
+            // launch transaction and is never re-created or rebound here.
+            if request.mode == .goal, expectedGoalBinding == nil {
+                let goal = ConversationGoal(
+                    conversationID: resolvedConversationID,
+                    objective: canonicalGoal,
+                    acceptanceCriteria: request.goalCriteria.map {
+                        GoalCriterion(text: $0.trimmingCharacters(in: .whitespacesAndNewlines))
+                    },
+                    steps: [GoalStep(
+                        title: "Work toward the objective",
+                        status: .inProgress,
+                        order: 0
+                    )],
+                    status: .active,
+                    budgets: request.goalBudgets ?? GoalBudgets(),
+                    progress: .init(startedAt: prepared.run.startedAt)
+                )
+                do {
+                    _ = try await stores.intelligence.bindNewGoalToRun(goal, runID: runID)
+                } catch let error as TaskGoalError {
+                    throw FloeMacSelfCoreError.goalBindingUnavailable(error.rawValue)
+                } catch {
+                    throw Self.surface(error)
                 }
             }
 
@@ -501,12 +624,13 @@ public actor FloeMacSelfRuntime {
                 conversationID: prepared.conversation.id,
                 provider: resolvedProvider.provider,
                 model: resolvedProvider.model,
-                conversationMode: .chat,
+                conversationMode: request.mode,
                 allowedToolNames: availableToolNames,
                 workspaceRootURL: resolvedWorkspaceRoot,
                 allowedWorkspacePaths: resolvedTools.boundary?.allowedWorkspacePaths ?? [],
                 toolsEnabled: resolvedTools.enabled,
-                chatFastMode: request.chatFastMode,
+                goalBudgets: request.mode == .goal ? request.goalBudgets : nil,
+                chatFastMode: effectiveChatFastMode,
                 environmentID: nil,
                 executionBinding: nil,
                 remoteExecutionEnvironment: false,
@@ -515,12 +639,18 @@ public actor FloeMacSelfRuntime {
 
             let executor: any ToolExecutor
             if resolvedTools.enabled {
-                executor = FloeMacSelfFencedToolExecutor(
+                let fenced = FloeMacSelfFencedToolExecutor(
                     wrapping: resolvedTools.executor,
                     allowedToolNames: resolvedTools.allowedToolNames,
                     fence: fence,
                     epoch: taskEpoch
                 )
+                // Plan mode is read-only by construction: the admission check
+                // above confined the ceiling to the plan-investigation set, and
+                // the existing upstream executor guard re-checks every call.
+                executor = request.mode == .plan
+                    ? PlanEnforcingToolExecutor(underlying: fenced)
+                    : fenced
             } else {
                 executor = resolvedTools.executor
             }
@@ -545,6 +675,7 @@ public actor FloeMacSelfRuntime {
                 gate: resolvedTools.gate,
                 auditSink: resolvedTools.auditSink,
                 checkpointStore: stores.checkpoints,
+                intelligenceStore: stores.intelligence,
                 conversationStore: stores.conversations,
                 runStore: stores.runs,
                 runID: prepared.run.id,
@@ -571,7 +702,7 @@ public actor FloeMacSelfRuntime {
                 workspaceID: prepared.workspace.id,
                 runID: prepared.run.id,
                 userMessageID: prepared.userMessage.id,
-                conversationMode: .chat,
+                conversationMode: request.mode,
                 toolsEnabled: resolvedTools.enabled,
                 admissionEpoch: UInt64(admitted.epoch),
                 startedAt: prepared.run.startedAt
@@ -590,6 +721,8 @@ public actor FloeMacSelfRuntime {
                 toolsEnabled: resolvedTools.enabled,
                 boundary: resolvedTools.boundary,
                 preparedAttachments: prepared.attachments,
+                verifyPreparedInput: verifyPreparedInput,
+                verifyWorkspaceLease: verifyWorkspaceLease,
                 eventBufferLimit: options.eventBufferLimit,
                 beforeInputRecheck: preparedInputTestHook,
                 beforeServiceStart: dispatchTestHook,
@@ -857,6 +990,121 @@ public actor FloeMacSelfRuntime {
         } catch {
             throw Self.surface(error)
         }
+    }
+
+    /// The durable workspace that owns this conversation, if any. This is the
+    /// project binding the host presents; it grants no execution authority by
+    /// itself (tool sessions still require the verified lease above).
+    public func workspaceForConversation(
+        _ conversationID: UUID
+    ) async throws -> WorkspaceRecord? {
+        let stores = try requireStores()
+        do {
+            guard let workspaceID = try await stores.workspaces.workspaceID(
+                conversationID: conversationID
+            ) else {
+                return nil
+            }
+            return try await stores.workspaces.workspace(id: workspaceID)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    // MARK: - Plan and Goal read-back
+
+    /// Newest durable plan draft for the conversation, if any. Revisions are
+    /// never rewritten: read the revision list for the full history.
+    public func latestPlan(conversationID: UUID) async throws -> PlanDraft? {
+        let stores = try requireStores()
+        do {
+            return try await stores.intelligence.latestPlan(conversationID: conversationID)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    /// Every durable plan revision, oldest first.
+    public func planRevisions(conversationID: UUID) async throws -> [PlanDraft] {
+        let stores = try requireStores()
+        do {
+            return try await stores.intelligence.planRevisions(conversationID: conversationID)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    /// Every durable Goal recorded for the conversation, oldest first.
+    public func goals(conversationID: UUID) async throws -> [ConversationGoal] {
+        let stores = try requireStores()
+        do {
+            return try await stores.intelligence.goals(conversationID: conversationID)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    /// One user decision: the accepted plan revision, the optional durable
+    /// Goal and the exact execution-run identity commit together in the
+    /// existing store. The returned receipt carries the single execution
+    /// prompt derived by the existing `GoalFromPlanFactory`; the host must
+    /// launch it through `prepareAcceptedPlanExecution` + `startSession` so
+    /// the exact confirmation message is consumed, never re-authored.
+    @discardableResult
+    public func acceptPlan(
+        _ plan: PlanDraft,
+        conversationID: UUID,
+        execution: PlanExecutionRecommendation,
+        captureSecrets: (@Sendable ([CapturedSecret]) async throws -> Void)? = nil
+    ) async throws -> PlanConfirmationReceipt {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        do {
+            return try await stores.intelligence.confirmPlan(
+                plan,
+                conversationID: conversationID,
+                execution: execution,
+                captureSecrets: captureSecrets
+            )
+        } catch let error as FloeMacSelfCoreError {
+            throw error
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    /// Verifies one confirmed snapshot is still the current plan, unused and
+    /// un-started, and returns the exact launch inputs for `startSession`.
+    /// The host feeds every field back verbatim; the composition never
+    /// accepts an arbitrary execution prompt or run identity for a plan.
+    public func prepareAcceptedPlanExecution(
+        _ snapshot: PlanConfirmationSnapshot,
+        conversationID: UUID
+    ) async throws -> FloeMacSelfAcceptedPlanExecution {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let receipt: PlanConfirmationReceipt
+        do {
+            receipt = try await stores.intelligence.planConfirmationForLaunch(
+                snapshot,
+                conversationID: conversationID
+            )
+        } catch let error as FloeMacSelfCoreError {
+            throw error
+        } catch {
+            throw Self.surface(error)
+        }
+        return FloeMacSelfAcceptedPlanExecution(
+            conversationID: conversationID,
+            runID: receipt.snapshot.executionRunID,
+            userMessageID: receipt.snapshot.messageID,
+            goal: receipt.snapshot.executionPrompt,
+            conversationMode: receipt.snapshot.goalID == nil ? .chat : .goal,
+            goalID: receipt.snapshot.goalID,
+            goalRevision: receipt.goal.map { $0.revision ?? 1 }
+        )
     }
 
     /// Registers a project workspace from a host-verified, already resolved

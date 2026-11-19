@@ -180,21 +180,21 @@ struct RuntimeLifecycleTests {
         }
     }
 
-    @Test("Goal and Plan modes and malformed launch requests fail before any durable write")
-    func unsupportedModesAndRequestsFailClosed() async throws {
+    @Test("Missing Goal criteria, missing Plan tools and malformed requests fail before a durable write")
+    func incompleteModeInputsAndRequestsFailClosed() async throws {
         try await withSelfCoreFixture { fixture in
             let (binding, _) = fixture.makeProvider(scripts: [])
             let goalRequest = FloeMacSelfSessionRequest(goal: "Goal work", mode: .goal)
             let goalError = await selfCoreError {
                 _ = try await fixture.runtime.startSession(goalRequest, provider: binding)
             }
-            #expect(goalError?.code == "unsupportedConversationMode")
+            #expect(goalError?.code == "invalidRequest")
 
             let planRequest = FloeMacSelfSessionRequest(goal: "Plan work", mode: .plan)
             let planError = await selfCoreError {
                 _ = try await fixture.runtime.startSession(planRequest, provider: binding)
             }
-            #expect(planError?.code == "unsupportedConversationMode")
+            #expect(planError?.code == "toolCapabilityUnavailable")
 
             let emptyRequest = FloeMacSelfSessionRequest(goal: "   ")
             let emptyError = await selfCoreError {

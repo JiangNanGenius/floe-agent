@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import FloeCore
+import FloeAgentRuntime
 import FloePersistence
 import SwiftUI
 #if FLOE_UNIFIED_MAC
@@ -17,6 +18,8 @@ struct HostAgentWorkspaceView: View {
     #if FLOE_UNIFIED_MAC
     @State private var choosingAttachments = false
     @State private var showAttachmentError = false
+    @State private var mode: HostAgentMode = .chat
+    @State private var criterion = ""
     #else
     @State private var showingSettings = false
     #endif
@@ -51,6 +54,9 @@ struct HostAgentWorkspaceView: View {
             } else {
                 conversation
                 #if FLOE_UNIFIED_MAC
+                if let plan = workspace.plan { planCard(plan) }
+                if let goal = workspace.goal { goalCard(goal) }
+                if let approval = workspace.pendingApproval { approvalCard(approval) }
                 composer
                 #else
                 HStack(alignment: .bottom) {
@@ -84,6 +90,9 @@ struct HostAgentWorkspaceView: View {
         }
         #if FLOE_UNIFIED_MAC
         .background(FloeTheme.readingSurface)
+        .onChange(of: workspace.rejectedPrompt) { _, text in
+            if let text, draft.wrappedValue.isEmpty { draft.wrappedValue = text }
+        }
         .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
@@ -113,6 +122,12 @@ struct HostAgentWorkspaceView: View {
             if !workspace.stagedAttachments.isEmpty {
                 attachmentStrip
             }
+            if mode == .goal, workspace.goal?.status.isTerminal != false {
+                TextField("mac.agent.goalCriterion", text: $criterion)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("mac.agent.goalCriterion")
+                    .disabled(workspace.isSending || workspace.isTerminating)
+            }
             HStack {
                 Button { choosingAttachments = true } label: {
                     Label("mac.workspace.attachFiles", systemImage: "paperclip")
@@ -128,6 +143,7 @@ struct HostAgentWorkspaceView: View {
                     .font(FloeTheme.Typography.body)
                     .lineLimit(2...7)
                     .accessibilityIdentifier("thread.composer.input")
+                    .disabled(workspace.isSending || workspace.isTerminating)
                 if workspace.isSending {
                     Button(action: workspace.stop) {
                         FloeComposerActionGlyph(systemImage: "stop.fill", enabled: workspace.canStop, destructive: true)
@@ -136,10 +152,16 @@ struct HostAgentWorkspaceView: View {
                     .accessibilityLabel("host.chat.stop")
                     .disabled(!workspace.canStop)
                 } else {
-                    let canSend = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !workspace.isTerminating
+                    let needsCriterion = mode == .goal && workspace.goal?.status.isTerminal != false
+                    let canSend = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && !workspace.isTerminating && !workspace.isAcceptingPlan
+                        && (!needsCriterion || !criterion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button {
                         let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
-                        if workspace.send(draft.wrappedValue, workspaceID: project) { draft.wrappedValue = "" }
+                        if workspace.send(draft.wrappedValue, workspaceID: project, mode: mode,
+                                          criterion: needsCriterion ? criterion : "") {
+                            draft.wrappedValue = ""
+                        }
                     } label: {
                         FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSend)
                     }
@@ -152,6 +174,7 @@ struct HostAgentWorkspaceView: View {
             }
             if let openModelSettings {
                 HStack(spacing: 6) {
+                    modeControl
                     modelControl(openSettings: openModelSettings)
                     if let openFiles, workspace.selectedID == nil {
                         projectControl(openFiles: openFiles)
@@ -159,7 +182,7 @@ struct HostAgentWorkspaceView: View {
                     Spacer()
                 }
                 .padding(.leading, 4)
-                .disabled(workspace.isSending || workspace.isTerminating)
+                .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
             }
         }
         .padding(12)
@@ -168,6 +191,164 @@ struct HostAgentWorkspaceView: View {
         .padding(.horizontal, 14)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity)
+    }
+
+    private func planCard(_ plan: PlanDraft) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(verbatim: plan.summary)
+                        ForEach(plan.sections.sorted { $0.order < $1.order }) { section in
+                            Text(verbatim: section.title).font(.headline)
+                            Text(verbatim: section.body)
+                        }
+                        if !plan.assumptions.isEmpty {
+                            Text("mac.agent.planAssumptions").font(.headline)
+                            ForEach(plan.assumptions) { Text(verbatim: $0.text) }
+                        }
+                        if !plan.risks.isEmpty {
+                            Text("mac.agent.planRisks").font(.headline)
+                            ForEach(plan.risks) { risk in
+                                Text(verbatim: risk.text)
+                                if let mitigation = risk.mitigation { Text(verbatim: mitigation).foregroundStyle(.secondary) }
+                            }
+                        }
+                        Text("mac.agent.acceptanceCriteria").font(.headline)
+                        ForEach(plan.acceptanceCriteria) { criterion in
+                            Text(verbatim: criterion.text)
+                            Text(verbatim: criterion.verification).foregroundStyle(.secondary)
+                        }
+                        if plan.status == .ready {
+                            Button("mac.agent.acceptPlan") {
+                                Task {
+                                    if await workspace.acceptPlan(plan) { mode = .agent }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(workspace.isSending || workspace.isAcceptingPlan || workspace.isTerminating)
+                            .accessibilityIdentifier("mac.agent.acceptPlan")
+                        } else if let accepted = workspace.pendingAcceptedPlan {
+                            Button("mac.agent.runPlan") { workspace.runAcceptedPlan(accepted) }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(workspace.isSending || workspace.isTerminating || !workspace.stagedAttachments.isEmpty)
+                                .accessibilityIdentifier("mac.agent.runPlan")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6)
+                    .textSelection(.enabled)
+                }
+                .frame(maxHeight: 230)
+            } label: {
+                Label {
+                    Text(verbatim: plan.title).lineLimit(1)
+                } icon: {
+                    Image(systemName: plan.status == .accepted ? "checkmark.circle" : "list.bullet.clipboard")
+                }
+                .accessibilityLabel(plan.status == .accepted ? Text("mac.agent.planAccepted") : Text("mac.agent.planReview"))
+            }
+            .id(plan.id)
+            .accessibilityIdentifier("mac.agent.planCard")
+        }
+        .modifier(HostTaskCardChrome())
+    }
+
+    private func goalCard(_ goal: ConversationGoal) -> some View {
+        DisclosureGroup {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(verbatim: goal.objective)
+                    ForEach(goal.acceptanceCriteria) { criterion in
+                        Label {
+                            Text(verbatim: criterion.text)
+                        } icon: {
+                            Image(systemName: criterion.isSatisfied ? "checkmark.circle" : "circle")
+                        }
+                    }
+                    if !goal.evidence.isEmpty {
+                        Text("mac.agent.goalEvidence").font(.headline)
+                        ForEach(Array(goal.evidence.suffix(8))) { evidence in
+                            Text(verbatim: evidence.summary).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            }
+            .frame(maxHeight: 180)
+        } label: {
+            HStack {
+                Label("mac.agent.goalStatus", systemImage: "scope")
+                Spacer()
+                Text(LocalizedStringKey("mac.agent.goal.\(goal.status.rawValue)")).foregroundStyle(.secondary)
+            }
+        }
+        .modifier(HostTaskCardChrome())
+        .accessibilityIdentifier("mac.agent.goalCard")
+    }
+
+    private var modeControl: some View {
+        Menu {
+            ForEach(HostAgentMode.allCases, id: \.self) { choice in
+                Button { mode = choice } label: {
+                    if choice == mode {
+                        Label(choice.title, systemImage: "checkmark")
+                    } else {
+                        Label(choice.title, systemImage: choice.symbol)
+                    }
+                }
+            }
+        } label: {
+            Label(mode.title, systemImage: mode.symbol)
+                .font(FloeTheme.Typography.metadata)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityIdentifier("mac.composer.mode")
+    }
+
+    private func approvalCard(_ approval: HostAgentApproval) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(LocalizedStringKey(approval.path == nil ? "mac.agent.approvalRequired" : "mac.agent.createFileApproval"),
+                  systemImage: "hand.raised")
+                .font(.headline)
+            Text(verbatim: approval.path ?? approval.toolName)
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+            if let project = workspace.workspaces.first(where: { $0.id == approval.workspaceID }) {
+                Label {
+                    Text(verbatim: project.name)
+                } icon: {
+                    Image(systemName: "folder")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            if let text = approval.text, !text.isEmpty {
+                DisclosureGroup("mac.agent.reviewFileContents") {
+                    ScrollView {
+                        Text(verbatim: text).font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 120)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("mac.agent.deny") { Task { await workspace.resolveApproval(approval, allow: false) } }
+                    .accessibilityIdentifier("mac.agent.deny")
+                Button("mac.agent.allowOnce") { Task { await workspace.resolveApproval(approval, allow: true) } }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("mac.agent.allowOnce")
+                    .disabled(approval.path == nil)
+            }
+            .disabled(workspace.isStopping || workspace.isResolvingApproval || workspace.isTerminating)
+        }
+        .modifier(HostTaskCardChrome())
+        .accessibilityIdentifier("mac.agent.approvalCard")
     }
 
     private var attachmentStrip: some View {
@@ -272,7 +453,10 @@ struct HostAgentWorkspaceView: View {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(workspace.messages) { message in
                             VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
-                                if message.role == "user" {
+                                if PlanConfirmationSnapshot.from(message: message) != nil {
+                                    Label("mac.agent.planAccepted", systemImage: "checkmark.circle")
+                                        .foregroundStyle(.secondary)
+                                } else if message.role == "user" {
                                     UserMessageBubble(text: message.content, attachments: AttachmentChipItem.items(in: message.parts))
                                 } else if message.role == "assistant" {
                                     MarkdownRendererView(source: message.content)
@@ -347,6 +531,39 @@ struct HostAgentWorkspaceView: View {
     }
     #endif
 }
+
+#if FLOE_UNIFIED_MAC
+private struct HostTaskCardChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(12)
+            .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: 720)
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+private extension HostAgentMode {
+    var title: LocalizedStringKey {
+        switch self {
+        case .chat: "mac.agent.mode.chat"
+        case .agent: "mac.agent.mode.agent"
+        case .plan: "mac.agent.mode.plan"
+        case .goal: "mac.agent.mode.goal"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .chat: "bubble.left"
+        case .agent: "bolt"
+        case .plan: "list.bullet.clipboard"
+        case .goal: "scope"
+        }
+    }
+}
+#endif
 
 struct HostAgentProviderForm: View {
     @ObservedObject var workspace: HostAgentWorkspace

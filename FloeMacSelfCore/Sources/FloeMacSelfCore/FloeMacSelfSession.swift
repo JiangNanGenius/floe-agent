@@ -34,6 +34,13 @@ actor FloeMacSelfSession {
     /// Exact durable attachments the prepared user turn must still carry when
     /// the run is re-checked immediately before dispatch.
     private let preparedAttachments: [AttachmentRef]
+    /// Point-in-time re-check of the committed user turn immediately before
+    /// dispatch. The runtime constructs the exact verifier for the launch
+    /// kind (ordinary prepared input vs. accepted-plan confirmation message).
+    private let verifyPreparedInput: @Sendable (PersistedMessage) throws -> Void
+    /// Re-reads the durable workspace row and re-proves the persisted root
+    /// still equals the admitted boundary root. Nil for tool-free sessions.
+    private let verifyWorkspaceLease: (@Sendable () async throws -> Void)?
     private let beforeInputRecheck: (@Sendable () async -> Void)?
     private let beforeServiceStart: (@Sendable () async -> Void)?
     private let afterCancellationAttempt: (@Sendable () async -> Void)?
@@ -65,6 +72,8 @@ actor FloeMacSelfSession {
         toolsEnabled: Bool,
         boundary: FloeMacSelfTaskBoundary?,
         preparedAttachments: [AttachmentRef],
+        verifyPreparedInput: @escaping @Sendable (PersistedMessage) throws -> Void,
+        verifyWorkspaceLease: (@Sendable () async throws -> Void)? = nil,
         eventBufferLimit: Int,
         beforeInputRecheck: (@Sendable () async -> Void)? = nil,
         beforeServiceStart: (@Sendable () async -> Void)? = nil,
@@ -83,6 +92,8 @@ actor FloeMacSelfSession {
         self.toolsEnabled = toolsEnabled
         self.boundary = boundary
         self.preparedAttachments = preparedAttachments
+        self.verifyPreparedInput = verifyPreparedInput
+        self.verifyWorkspaceLease = verifyWorkspaceLease
         self.beforeInputRecheck = beforeInputRecheck
         self.beforeServiceStart = beforeServiceStart
         self.afterCancellationAttempt = afterCancellationAttempt
@@ -165,12 +176,22 @@ actor FloeMacSelfSession {
                 id: identity.userMessageID, conversationID: identity.conversationID) else {
                 throw FloeMacSelfCoreError.preparedIdentityMismatch("durable user input is unavailable")
             }
-            try FloeMacSelfPreparedInput.verify(saved, messageID: identity.userMessageID,
-                conversationID: identity.conversationID, runID: identity.runID, goal: goal,
-                expectedAttachments: preparedAttachments)
+            try verifyPreparedInput(saved)
         } catch {
             await settleBeforeDispatch(reason: "preparedInputMismatch")
             return
+        }
+
+        // The exact workspace lease must still hold against durable storage
+        // immediately before dispatch: a bookmark swapped after admission
+        // fails closed here, while the no-dispatch proof is still available.
+        if let verifyWorkspaceLease {
+            do {
+                try await verifyWorkspaceLease()
+            } catch {
+                await settleBeforeDispatch(reason: "workspaceLeaseMismatch")
+                return
+            }
         }
 
         // A stop can arrive while the durable write is awaited. Do not call

@@ -139,7 +139,7 @@ struct TaskClosureGate: Sendable {
 
     static func acknowledgesUnfinished(_ answer:String) -> Bool {
         let text = answer.lowercased()
-        return ["未完成","尚未完成","没有完成","未执行","没有执行","失败","无法","受阻","阻碍","需要你","等待你","等待授权","需要授权","没有权限","权限不足","被拒绝","尚未验证","尚未核验","请先","请提供","请配置",
-            "not completed","not complete","unfinished","not executed","failed","blocked","unable to","could not","couldn't","need your","need you","awaiting your","permission denied","authorization required","not verified","unverified"].contains(where:text.contains)
+        return ["未完成","尚未完成","没有完成","未执行","没有执行","失败","无法","受阻","阻碍","需要你","等待你","等待授权","需要授权","没有权限","权限不足","被拒绝","已拒绝","尚未验证","尚未核验","请先","请提供","请配置",
+            "not completed","not complete","unfinished","not executed","failed","blocked","unable to","could not","couldn't","need your","need you","awaiting your","permission denied","was denied","was declined","authorization required","not verified","unverified"].contains(where:text.contains)
     }
 }

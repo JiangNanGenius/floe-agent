@@ -46,6 +46,7 @@ struct MacWorkspaceRootView: View {
                         insertInDraft: insertFileText,
                         canInsertInDraft: canSelectTask,
                         remembersRoot: remembersFileRoot,
+                        workspaceRevision: workspace.workspaceRevision,
                         taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
                         onRootChanged: { grantedFolder = $0 },
                         onAttachmentsChanged: updateFileAttachments
@@ -212,7 +213,9 @@ struct MacWorkspaceRootView: View {
         }
     }
 
-    private var canSelectTask: Bool { workspace.isReady && !workspace.isSending && !workspace.isTerminating }
+    private var canSelectTask: Bool {
+        workspace.isReady && !workspace.isSending && !workspace.isTerminating && !workspace.isAcceptingPlan
+    }
 
     private var filesVisible: Bool { destination == .files || showInspector }
 
@@ -283,6 +286,7 @@ struct MacWorkspaceRootView: View {
         if workspace.isStopping || workspace.runPhase == .cancelling {
             return "mac.workspace.runStopping"
         }
+        if workspace.pendingApproval != nil { return "mac.agent.waitingForApproval" }
         if workspace.runPhase == nil { return "mac.workspace.runPreparing" }
         return "mac.workspace.inspector.running"
     }

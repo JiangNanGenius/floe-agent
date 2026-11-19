@@ -100,6 +100,7 @@
 		D38C5CCFD803477C3D3886CD /* BridgeConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A583838B33A00947EEDB8092 /* BridgeConfiguration.swift */; };
 		DB86E17BA42F9C476BE68734 /* BridgeStoreLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1D86F60F44E86D9CAC37E1 /* BridgeStoreLock.swift */; };
 		DE0C77116986CCB1E65F824A /* BridgePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8DE76D3EBE56F86A1BA84A6 /* BridgePaths.swift */; };
+		DE6E7D1A724A70D4D25C06A8 /* MacAgentWorkspaceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71ED0F3A41EB9A170FE0BBE0 /* MacAgentWorkspaceTools.swift */; };
 		DEEC36C9DB8D70C1A143C28F /* BridgePairingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBCD9E257130E12BDF9B21D6 /* BridgePairingSession.swift */; };
 		E3FF6AEE411BBE26B318A915 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 5CCDAFD7A9B69CEABFF9566C /* Localizable.strings */; };
 		E560FA006B3EA7C43B9448AF /* MacProviderSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B1A4DA18772278C94BD170A /* MacProviderSettingsView.swift */; };
@@ -169,6 +170,7 @@
 		6479E99AB7FA109B72D85E8D /* ModePreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModePreferenceStore.swift; sourceTree = "<group>"; };
 		6502E6BD209EFE21D6681A50 /* BridgeServiceRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeServiceRuntime.swift; sourceTree = "<group>"; };
 		6621E9DBD38380F5564CD1C7 /* BridgeComponentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeComponentController.swift; sourceTree = "<group>"; };
+		71ED0F3A41EB9A170FE0BBE0 /* MacAgentWorkspaceTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacAgentWorkspaceTools.swift; sourceTree = "<group>"; };
 		74AFD277E0611BE7C61FA36A /* BridgeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeService.swift; sourceTree = "<group>"; };
 		80BABD3A785DA08BD4D1834C /* pty.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = pty.c; sourceTree = "<group>"; };
 		851A2E35C2422E9A980BE1C0 /* MacWorkspaceRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWorkspaceRootView.swift; sourceTree = "<group>"; };
@@ -402,6 +404,7 @@
 		90FB3C2D53C54C2333D5BD5D /* FloeMacUnified */ = {
 			isa = PBXGroup;
 			children = (
+				71ED0F3A41EB9A170FE0BBE0 /* MacAgentWorkspaceTools.swift */,
 				2B1A4DA18772278C94BD170A /* MacProviderSettingsView.swift */,
 				AC0E41AA8C8D64377647B155 /* MacWorkspaceFilesView.swift */,
 				851A2E35C2422E9A980BE1C0 /* MacWorkspaceRootView.swift */,
@@ -756,6 +759,7 @@
 				992B001DD3898503FA5FDC42 /* HostAgentDatabase.swift in Sources */,
 				7C4BE8FA0C448D5374FD53ED /* HostAgentWorkspace.swift in Sources */,
 				F224AD6F19923D09F0BF940C /* HostAgentWorkspaceView.swift in Sources */,
+				DE6E7D1A724A70D4D25C06A8 /* MacAgentWorkspaceTools.swift in Sources */,
 				E560FA006B3EA7C43B9448AF /* MacProviderSettingsView.swift in Sources */,
 				96F3D0EB05B1ED039E5CEE87 /* MacWorkspaceFilesView.swift in Sources */,
 				502263C01A33C781EDA1038B /* MacWorkspaceRootView.swift in Sources */,

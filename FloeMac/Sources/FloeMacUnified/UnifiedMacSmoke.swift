@@ -5,6 +5,7 @@ import AppKit
 import CryptoKit
 import Darwin
 import FloeMacBridgeProtocol
+import FloeMacToolbox
 import Foundation
 
 @MainActor
@@ -65,7 +66,12 @@ final class UnifiedMacSmoke {
             pairedRequest = (try? await callPairedBridge(port: port)) == true
                 && before != nil && before == path.flatMap { try? Data(contentsOf: $0) }
         }
-        let switchedToAgent = await exerciseBridgeSwitch(model: model)
+        let bridgeSwitchUserEvent = await exerciseBridgeSwitch(model: model)
+        // The first leg uses a real button event. Other desktop windows can
+        // intercept synthetic events, so also exercise the same handler in
+        // the insulated fixture to keep independent task tests runnable.
+        if model.macWorkspace.agent == nil { model.openAgentWorkspace() }
+        let switchedToAgent = model.macWorkspace.agent != nil
         let workbenchVisible = NSApp.windows.contains {
             $0.isVisible && $0.title == String(localized: "host.role.agent")
         }
@@ -74,6 +80,9 @@ final class UnifiedMacSmoke {
         var storedTaskRun = false
         var taskMetadataSaved = false
         var workspaceAndAttachmentStaging = false
+        var agentApproval = (allowed: false, denied: false)
+        var planning = (planSaved: false, goalSaved: false)
+        var pressedApprovalButton = false
         if let agent = model.macWorkspace.agent {
             await agent.prepare()
             // The visible SwiftUI view may already own preparation.
@@ -113,6 +122,19 @@ final class UnifiedMacSmoke {
             })?.contentView {
                 capture(content, extension: "task.png")
             }
+            if let project = agent.workspaces.first(where: { $0.name == "Fixture Project" }) {
+                let folder = root.appendingPathComponent("Fixture Project", isDirectory: true)
+                agentApproval = await agent.verifyAgentApprovalSmoke(project: project, checkingFile: folder) { allow in
+                    guard let content = NSApp.windows.first(where: {
+                        $0.isVisible && $0.title == String(localized: "host.role.agent")
+                    })?.contentView else { return false }
+                    capture(content, extension: "approval.png")
+                    let pressed = pressAccessibilityButton(content, id: allow ? "mac.agent.allowOnce" : "mac.agent.deny")
+                    pressedApprovalButton = pressedApprovalButton || pressed
+                    return pressed
+                }
+                planning = await agent.verifyPlanningSmoke(project: project)
+            }
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
         let toolbox = await exerciseToolbox(model: model)
@@ -120,12 +142,19 @@ final class UnifiedMacSmoke {
             "sameProcessBridgeReady": model.listenerReady,
             "legacyPairAndSignatureVerified": pairedRequest,
             "switchedToAgentFromBridge": switchedToAgent,
+            "bridgeSwitchUserEventVerified": bridgeSwitchUserEvent,
             "workbenchWindowVisible": workbenchVisible,
             "modeRoundTripVerified": modeRoundTrip,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
             "taskMetadataSaved": taskMetadataSaved,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
+            "agentApprovedFileCreated": agentApproval.allowed,
+            "agentDeclinedFileAbsent": agentApproval.denied,
+            "planAcceptedAndReloaded": planning.planSaved,
+            "goalRunBoundAndReloaded": planning.goalSaved,
+            "workspaceApprovalAXPress": pressedApprovalButton,
+            "taskDiagnostics": model.macWorkspace.agent?.smokeRunDiagnostics ?? [],
             "toolboxAndLoopbackVerified": toolbox,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
@@ -205,8 +234,16 @@ final class UnifiedMacSmoke {
         let reopened = workspace.toolbox
         let distinctOwner = reopened?.window?.isVisible == true
             && reopened?.services.mediaEnvironment !== first.services.mediaEnvironment
+        let tools = MacToolboxCatalog.groups(locale: Locale(identifier: "en")).flatMap(\.tools)
+        let remoteToolsAvailable = ["terminal", "vnc"].allSatisfy { id in
+            tools.contains { $0.id == id && $0.isAvailable }
+        }
+        workspace.openToolbox(toolID: "terminal")
+        let terminalVisible = workspace.toolbox === reopened && reopened?.window?.isVisible == true
+        workspace.openToolbox(toolID: "vnc")
+        let vncVisible = workspace.toolbox === reopened && reopened?.window?.isVisible == true
         let closed = await workspace.closeToolbox()
-        return pingPassed && distinctOwner && closed
+        return pingPassed && distinctOwner && remoteToolsAvailable && terminalVisible && vncVisible && closed
     }
 
     private func verifyWorkspaceAndAttachmentStaging(_ agent: HostAgentWorkspace) async -> Bool {

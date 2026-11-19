@@ -14,6 +14,8 @@ let package = Package(
         .package(name: "FloeMacToolboxMedia", path: "../FloeMacToolboxMedia"),
         .package(name: "FloeMacInstruments", path: "../FloeMacInstruments"),
         .package(name: "FloeMacNetwork", path: "../FloeMacNetwork"),
+        .package(name: "FloeMacTerminal", path: "../FloeMacTerminal"),
+        .package(name: "FloeMacVNC", path: "../FloeMacVNC"),
     ],
     targets: [
         .target(
@@ -28,6 +30,8 @@ let package = Package(
                 .product(name: "FloeMacMediaUI", package: "FloeMacToolboxMedia"),
                 .product(name: "FloeMacInstruments", package: "FloeMacInstruments"),
                 .product(name: "FloeMacNetwork", package: "FloeMacNetwork"),
+                .product(name: "FloeMacTerminal", package: "FloeMacTerminal"),
+                .product(name: "FloeMacVNC", package: "FloeMacVNC"),
             ]
         ),
         .testTarget(

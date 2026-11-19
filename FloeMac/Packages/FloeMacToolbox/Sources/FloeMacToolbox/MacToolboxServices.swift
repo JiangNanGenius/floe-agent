@@ -6,6 +6,8 @@ import FloeToolboxWorkbenches
 import FloeMacMediaSystem
 import FloeMacInstruments
 import FloeMacNetwork
+import FloeMacTerminal
+import FloeMacVNC
 
 public enum MacScannerTerminationStatus: Equatable { case ready, pending, draft }
 
@@ -24,6 +26,9 @@ public final class MacToolboxServices: ObservableObject {
     public let instrumentActivity: MacInstrumentActivityCoordinator
     public let networkOwner: MacManualNetworkOwner
     public let communicationOwner: MacCommunicationOwner
+    public let terminalSession = MacTerminalSession()
+    public let vncOwner = MacVNCSessionOwner()
+    @Published private(set) var isClosing = false
     let instrumentModels: MacInstrumentModels
     private var ownedSilentTimekeeping: MacSilentTimekeeping?
     private enum TerminationState { case active, preparing, terminal }
@@ -88,6 +93,8 @@ public final class MacToolboxServices: ObservableObject {
     /// Shutdown is terminal even when no start task has run yet.
     public func shutdown() {
         terminationState = .terminal
+        isClosing = true
+        vncOwner.close()
         ownedSilentTimekeeping?.closeAdmissions()
         networkOwner.closeAdmissions()
         communicationOwner.closeAdmissions()
@@ -103,6 +110,8 @@ public final class MacToolboxServices: ObservableObject {
     public func closeAdmissionsForTermination() {
         guard terminationState == .active else { return }
         terminationState = .preparing
+        isClosing = true
+        vncOwner.close()
         ownedSilentTimekeeping?.closeAdmissions()
         networkOwner.closeAdmissions()
         communicationOwner.closeAdmissions()
@@ -121,6 +130,8 @@ public final class MacToolboxServices: ObservableObject {
     /// Kept separate so an unsaved scan can receive a specific user choice
     /// without treating another toolbox failure as permission to discard it.
     public func drainNonScannerForTermination() async -> Bool {
+        guard await vncOwner.drain() else { return false }
+        guard await terminalSession.stop() else { return false }
         guard await calculatorHistoryCoordinator.drain() else { return false }
         guard await instrumentActivity.drain() else { return false }
         guard await networkOwner.drain() else { return false }
@@ -148,6 +159,8 @@ public final class MacToolboxServices: ObservableObject {
     public func resumeAfterCancelledTermination() {
         guard terminationState == .preparing else { return }
         terminationState = .active
+        vncOwner.resume()
+        isClosing = false
         ownedSilentTimekeeping?.resumeAfterCancelledTermination()
         networkOwner.resumeAfterCancelledTermination()
         communicationOwner.resumeAfterCancelledTermination()

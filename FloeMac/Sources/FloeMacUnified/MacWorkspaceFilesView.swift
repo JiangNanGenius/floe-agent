@@ -82,6 +82,7 @@ struct MacWorkspaceFilesView: View {
     let insertInDraft: (String) -> Void
     var canInsertInDraft: Bool
     var remembersRoot: Bool = true
+    var workspaceRevision: UUID? = nil
     /// When the host composer tracks staged file URLs for the active task it
     /// injects them here; while non-nil the UI reads this set verbatim and
     /// mutations only propose candidates through `onAttachmentsChanged`.
@@ -136,6 +137,7 @@ struct MacWorkspaceFilesView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear(perform: restoreSavedRoot)
         .task(id: reloadID) { await loadDirectory() }
+        .onChange(of: workspaceRevision) { reloadID = UUID() }
         .onChange(of: selection) { _, newSelection in
             guard newSelection.count == 1, let url = newSelection.first,
                   let entry = entries.first(where: { $0.url == url }), entry.openable else { return }

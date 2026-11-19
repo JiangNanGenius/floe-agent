@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Bounded launch request for one Mac chat session. This is a native host
-// request, not model-authored data. It intentionally supports only ordinary
-// chat in this stage: Goal and Plan composition remain later integration work
-// and fail closed instead of being silently half-wired.
+// Bounded launch request for one Mac session. This is a native host request,
+// not model-authored data. It supports the existing Floe conversation modes:
+// ordinary chat, Plan (read-only discovery that persists only Floe-owned plan
+// drafts), Goal (a durable, budgeted run), and the execution launch of an
+// accepted plan. Modes this build cannot compose fail closed instead of being
+// silently half-wired.
 
 import Foundation
 import FloeModels
@@ -78,6 +80,76 @@ public struct FloeMacSelfSessionAttachment: Sendable, Hashable, Identifiable {
     }
 }
 
+/// Exact durable Goal binding for a launch that executes an already-confirmed
+/// plan (or continues a known Goal round). Persistence validates the live
+/// Goal revision in the same transaction as the run; the composition only
+/// carries the host-observed identity.
+public struct FloeMacSelfExpectedGoal: Sendable, Hashable {
+    public let id: UUID
+    public let revision: Int
+
+    public init(id: UUID, revision: Int) {
+        self.id = id
+        self.revision = revision
+    }
+}
+
+/// Exact launch inputs for the execution run of an accepted plan, produced
+/// only by `FloeMacSelfRuntime.prepareAcceptedPlanExecution`. Every field
+/// mirrors the committed confirmation record; the host feeds them verbatim
+/// into `startSession` and must not re-author the prompt or identities.
+public struct FloeMacSelfAcceptedPlanExecution: Sendable, Hashable {
+    public let conversationID: UUID
+    /// The confirmation's planned run identity (`executionRunID`).
+    public let runID: UUID
+    /// The confirmation message consumed exactly once by the launch.
+    public let userMessageID: UUID
+    /// The single execution prompt committed at confirmation time.
+    public let goal: String
+    /// `.goal` when the confirmation created a durable Goal; otherwise chat.
+    public let conversationMode: ConversationMode
+    public let goalID: UUID?
+    public let goalRevision: Int?
+
+    public init(
+        conversationID: UUID,
+        runID: UUID,
+        userMessageID: UUID,
+        goal: String,
+        conversationMode: ConversationMode,
+        goalID: UUID?,
+        goalRevision: Int?
+    ) {
+        self.conversationID = conversationID
+        self.runID = runID
+        self.userMessageID = userMessageID
+        self.goal = goal
+        self.conversationMode = conversationMode
+        self.goalID = goalID
+        self.goalRevision = goalRevision
+    }
+
+    /// The bounded session request for the execution run. Tool-enabled
+    /// executions pass the host's verified tool binding as usual.
+    public func sessionRequest(
+        workspaceID: UUID? = nil,
+        chatFastMode: Bool = false
+    ) -> FloeMacSelfSessionRequest {
+        FloeMacSelfSessionRequest(
+            conversationID: conversationID,
+            workspaceID: workspaceID,
+            goal: goal,
+            mode: conversationMode,
+            runID: runID,
+            chatFastMode: chatFastMode,
+            reusingUserMessageID: userMessageID,
+            expectedGoal: goalID.map {
+                FloeMacSelfExpectedGoal(id: $0, revision: goalRevision ?? 1)
+            }
+        )
+    }
+}
+
 /// Native launch request. `conversationID` resumes an existing durable task;
 /// `newConversationID` reserves a known identity for a new one. Passing both
 /// is rejected by the composition layer.
@@ -93,11 +165,29 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
     public let context: FloeMacSelfRunContext
     /// Durable file attachments staged for this run. Attachments never grant
     /// tools or permissions; they are reference data bound to the user turn.
+    /// An accepted-plan execution launch cannot add attachments: its user
+    /// turn is the exact committed confirmation message.
     public let attachments: [FloeMacSelfSessionAttachment]
     /// True selects the existing Floe chat envelope (brief conversational
     /// instructions). Set false for task-style tool work. This flag never
     /// grants a tool; the tool binding still requires the explicit ceiling.
+    /// Plan and Goal launches always use the full task envelope.
     public let chatFastMode: Bool
+    /// Host-authored acceptance criteria for a new durable Goal (mode
+    /// `.goal`). 1...12 items, each non-empty and bounded; these become the
+    /// Goal's `acceptanceCriteria` verbatim. Empty for every other mode.
+    public let goalCriteria: [String]
+    /// Optional host budgets for the new durable Goal. Nil keeps the existing
+    /// `GoalBudgets()` defaults; budgets are stored on the Goal and mirrored
+    /// into the runtime's harness budget ledger for this run.
+    public let goalBudgets: GoalBudgets?
+    /// Accepted-plan execution launch only: the exact confirmation user
+    /// message written by `confirmPlan`. The launch transaction consumes it
+    /// once after validating its embedded plan-confirmation proof.
+    public let reusingUserMessageID: UUID?
+    /// Accepted-plan execution launch (or known-Goal round) only: the durable
+    /// Goal to bind in the same transaction as the run.
+    public let expectedGoal: FloeMacSelfExpectedGoal?
     public let startedAt: Date
 
     public init(
@@ -112,6 +202,10 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         context: FloeMacSelfRunContext = FloeMacSelfRunContext(),
         attachments: [FloeMacSelfSessionAttachment] = [],
         chatFastMode: Bool = true,
+        goalCriteria: [String] = [],
+        goalBudgets: GoalBudgets? = nil,
+        reusingUserMessageID: UUID? = nil,
+        expectedGoal: FloeMacSelfExpectedGoal? = nil,
         startedAt: Date = Date()
     ) {
         self.conversationID = conversationID
@@ -125,6 +219,10 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         self.context = context
         self.attachments = attachments
         self.chatFastMode = chatFastMode
+        self.goalCriteria = goalCriteria
+        self.goalBudgets = goalBudgets
+        self.reusingUserMessageID = reusingUserMessageID
+        self.expectedGoal = expectedGoal
         self.startedAt = startedAt
     }
 }
@@ -143,6 +241,8 @@ enum FloeMacSelfRequestValidator {
     static let maximumAttachmentNameBytes = 200
     static let maximumAttachmentBytes = 32 * 1_024 * 1_024
     static let maximumAttachmentBookmarkBytes = 16 * 1_024
+    static let maximumGoalCriteria = 12
+    static let maximumGoalCriterionBytes = 1_000
 
     static func validate(_ request: FloeMacSelfSessionRequest) throws {
         guard request.conversationID == nil || request.newConversationID == nil else {
@@ -163,15 +263,83 @@ enum FloeMacSelfRequestValidator {
         guard request.conversationTitle.utf8.count <= maximumTitleBytes else {
             throw FloeMacSelfCoreError.invalidRequest("the conversation title is too long")
         }
-        guard request.mode == .chat else {
-            throw FloeMacSelfCoreError.unsupportedConversationMode(
-                request.mode == .goal
-                    ? "durable Goal composition is not part of this stage"
-                    : "Plan composition is not part of this stage"
-            )
+        switch request.mode {
+        case .chat:
+            guard request.goalCriteria.isEmpty, request.goalBudgets == nil,
+                  request.expectedGoal == nil else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "ordinary chat cannot carry Goal criteria, budgets or a Goal binding"
+                )
+            }
+        case .plan:
+            guard request.goalCriteria.isEmpty, request.goalBudgets == nil,
+                  request.expectedGoal == nil, request.reusingUserMessageID == nil else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "plan discovery cannot carry Goal inputs or reuse a confirmation message"
+                )
+            }
+        case .goal:
+            if let expectedGoal = request.expectedGoal {
+                // A known-Goal round: either the execution of an accepted
+                // plan (which consumes its confirmation message) or an
+                // ordinary next round of an active durable Goal. The exact
+                // id/revision is CAS-validated by the launch transaction;
+                // the host never sends criteria or budgets for a bound Goal.
+                _ = expectedGoal
+                guard request.goalCriteria.isEmpty, request.goalBudgets == nil else {
+                    throw FloeMacSelfCoreError.invalidRequest(
+                        "a bound-Goal round cannot redefine the confirmed Goal criteria or budgets"
+                    )
+                }
+            } else if request.reusingUserMessageID == nil {
+                // A new durable Goal must be authored from the named host
+                // criteria field; a prompt-only Goal is never simulated.
+                try validateGoalCriteria(request.goalCriteria)
+            } else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "an accepted-plan Goal execution requires the exact Goal binding"
+                )
+            }
+        }
+        if request.reusingUserMessageID != nil {
+            guard request.conversationID != nil, request.runID != nil else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "an accepted-plan execution launch requires the existing conversation and the planned run identity"
+                )
+            }
+            guard request.attachments.isEmpty else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "an accepted-plan execution cannot add attachments to the confirmed turn"
+                )
+            }
+        } else if request.expectedGoal != nil {
+            // A known-Goal continuation round addresses an existing
+            // conversation; the Goal row itself proves the task identity.
+            guard request.conversationID != nil else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "a known-Goal round requires the existing conversation"
+                )
+            }
         }
         try validate(request.attachments)
         try validate(request.context)
+    }
+
+    static func validateGoalCriteria(_ criteria: [String]) throws {
+        guard !criteria.isEmpty, criteria.count <= maximumGoalCriteria else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "a durable Goal requires 1...\(maximumGoalCriteria) acceptance criteria"
+            )
+        }
+        for criterion in criteria {
+            let trimmed = criterion.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.utf8.count <= maximumGoalCriterionBytes,
+                  !criterion.utf8.contains(0) else {
+                throw FloeMacSelfCoreError.invalidRequest(
+                    "a Goal criterion is empty, unbounded or contains NUL"
+                )
+            }
+        }
     }
 
     static func validate(_ attachments: [FloeMacSelfSessionAttachment]) throws {
@@ -258,6 +426,38 @@ enum FloeMacSelfRequestValidator {
         guard boundary.workspaceID == requestedWorkspaceID else {
             throw FloeMacSelfCoreError.invalidTaskBoundary(
                 "the tool boundary workspace does not match the requested task workspace"
+            )
+        }
+    }
+}
+
+/// Accepted-plan execution proof for the prepared user turn. The launch
+/// transaction already validated the embedded plan-confirmation proof
+/// (`floe.plan.confirmation.v1`: exact plan id/revision/digest, accepted
+/// status, executionRunID == run, executionPrompt == goal) and consumed the
+/// message exactly once. This read-back only re-checks the plain identity
+/// facts; it never re-validates arbitrary historical messages.
+enum FloeMacSelfPreparedConfirmationInput {
+    static func verify(
+        _ message: PersistedMessage,
+        messageID: UUID,
+        conversationID: UUID,
+        runID: UUID,
+        goal: String
+    ) throws {
+        guard message.id == messageID, message.conversationID == conversationID,
+              message.runID == runID, message.role == "user",
+              message.content.utf8.elementsEqual(goal.utf8) else {
+            throw FloeMacSelfCoreError.preparedIdentityMismatch(
+                "the consumed confirmation message does not match the planned execution"
+            )
+        }
+        guard let textPart = message.parts.first(where: {
+            $0.kind == .text && $0.messageID == message.id && $0.partIndex == 0
+        }), textPart.text?.utf8.elementsEqual(goal.utf8) == true,
+        textPart.metadata[PlanConfirmationSnapshot.metadataKey] != nil else {
+            throw FloeMacSelfCoreError.preparedIdentityMismatch(
+                "the consumed message is not the committed plan confirmation"
             )
         }
     }

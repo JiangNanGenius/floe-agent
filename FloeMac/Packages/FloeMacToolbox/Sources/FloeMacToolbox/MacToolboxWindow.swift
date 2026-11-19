@@ -6,11 +6,13 @@ import FloeToolboxCore
 import FloeToolboxUI
 import FloeMacInstruments
 import FloeMacNetwork
+import FloeMacTerminal
+import FloeMacVNC
 
 enum MacToolboxAvailability {
     static let available: Set<ToolboxTool> = Set([.hash, .json, .encoding, .calculator, .qr,
         .ruler, .photoMeasure, .location, .timer, .magnifier, .browser, .sound, .scanner,
-        .http, .webSocket, .mqtt, .serialAssistant]).union(MacToolboxNetworkScope.tools)
+        .http, .webSocket, .mqtt, .serialAssistant, .terminal, .vnc]).union(MacToolboxNetworkScope.tools)
 
     static func groupTitle(_ group: ToolboxGroup, locale: Locale) -> String {
         switch group {
@@ -112,6 +114,7 @@ public struct MacToolboxWindow: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
         } detail: {
             detail
+                .disabled(services.isClosing)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .navigationTitle((selection.wrappedValue ?? .hash).title(in: locale))
                 .navigationSubtitle(MacToolboxText.windowTitle(locale))
@@ -123,6 +126,10 @@ public struct MacToolboxWindow: View {
 
     @ViewBuilder private var detail: some View {
         switch selection.wrappedValue ?? .hash {
+        case .terminal:
+            MacTerminalToolView(session: services.terminalSession)
+        case .vnc:
+            MacVNCToolView(owner: services.vncOwner)
         case .browser:
             MacBrowserToolView()
         case .hash:
@@ -159,12 +166,6 @@ public struct MacToolboxWindow: View {
             }
         case .timer:
             MacSilentTimerView(service: services.silentTimekeeping())
-        case .lan:
-            ContentUnavailableView(
-                MacToolboxText.t("暂不可用", "Not available yet", locale),
-                systemImage: "network.slash",
-                description: Text(MacToolboxText.t("此工具的停止与退出处理尚未完成。", "Stopping this tool safely is not yet available.", locale))
-            )
         default:
             if let instrument = MacInstrument.allCases.first(where: { $0.toolboxTool == selection.wrappedValue }),
                case .unsupported(let notice) = MacInstrumentCatalog().availability(for: instrument) {

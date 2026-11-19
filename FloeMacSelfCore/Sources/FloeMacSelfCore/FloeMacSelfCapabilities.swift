@@ -245,6 +245,35 @@ enum FloeMacSelfCapabilityResolver {
         )
     }
 
+    /// Plan-mode admission ceiling: every admitted tool must be offered by
+    /// the existing plan tool access and pass the existing `PlanToolPolicy`.
+    /// This fails closed at composition time so a host-declared mutating tool
+    /// can never enter a plan run, independent of the runtime's own filter.
+    static func validatePlanCeiling(
+        allowedToolNames: Set<String>,
+        executor: any ToolExecutor
+    ) throws {
+        let access = ConversationToolAccess.plan
+        let policy = PlanToolPolicy()
+        for name in allowedToolNames {
+            guard let descriptor = executor.descriptor(named: name) else {
+                throw FloeMacSelfCoreError.toolCapabilityUnavailable(
+                    "the executor has no descriptor for \(name)"
+                )
+            }
+            guard access.allows(descriptor) else {
+                throw FloeMacSelfCoreError.toolCapabilityUnavailable(
+                    "\(name) is outside the read-only plan-investigation ceiling"
+                )
+            }
+            if case .failure = policy.decision(for: descriptor) {
+                throw FloeMacSelfCoreError.toolCapabilityUnavailable(
+                    "\(name) is rejected by the existing plan tool policy"
+                )
+            }
+        }
+    }
+
     /// Verifies only internal consistency of the host's declaration. Passing
     /// this check does not prove that the workspace authorization or approval
     /// source is genuine.

@@ -131,6 +131,7 @@ struct MacProviderSettingsView: View {
                 }
                 TextField(MacProviderText.t("模型 ID", "Model ID"), text: $draft.modelID)
                 Toggle(MacProviderText.t("支持图片输入", "Supports Image Input"), isOn: $draft.supportsImages)
+                Toggle("mac.agent.modelSupportsTools", isOn: $draft.supportsTools)
                 SecureField(MacProviderText.t("API 密钥", "API key"), text: $draft.key)
                 Text(MacProviderText.t(
                     "密钥只保存在本机钥匙串，不会同步到其他设备。",
@@ -214,11 +215,13 @@ struct MacProviderSettingsView: View {
         if let editingID {
             saved = workspace.updateProvider(id: editingID, name: displayName,
                                              endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                             modelID: draft.modelID, key: draft.key, supportsImages: draft.supportsImages)
+                                             modelID: draft.modelID, key: draft.key,
+                                             supportsImages: draft.supportsImages, supportsTools: draft.supportsTools)
         } else {
             saved = workspace.addProvider(name: displayName,
                                           endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                          modelID: draft.modelID, key: draft.key, supportsImages: draft.supportsImages)
+                                          modelID: draft.modelID, key: draft.key,
+                                          supportsImages: draft.supportsImages, supportsTools: draft.supportsTools)
         }
         if saved { isPresented = false }
     }
@@ -233,16 +236,18 @@ private struct MacProviderDraft {
     var modelID: String
     var key: String
     var supportsImages: Bool
+    var supportsTools: Bool
 
     init(name: String = "", endpoint: String = "",
          protocolKind: ModelProtocol = .openAIChatCompletions,
-         modelID: String = "", key: String = "", supportsImages: Bool = false) {
+         modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool = false) {
         self.name = name
         self.endpoint = endpoint
         self.protocolKind = protocolKind
         self.modelID = modelID
         self.key = key
         self.supportsImages = supportsImages
+        self.supportsTools = supportsTools
     }
 
     init(record: HostAgentProvider) {
@@ -250,7 +255,8 @@ private struct MacProviderDraft {
                   endpoint: record.profile.baseURL.absoluteString,
                   protocolKind: record.profile.wireProtocol,
                   modelID: record.model.remoteModelID,
-                  key: record.apiKey, supportsImages: record.model.capabilities.contains(.vision))
+                  key: record.apiKey, supportsImages: record.model.capabilities.contains(.vision),
+                  supportsTools: record.model.capabilities.contains(.tools))
     }
 }
 

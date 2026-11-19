@@ -288,9 +288,10 @@ final class SelfCoreFixture: @unchecked Sendable {
         )
     }
 
-    /// Inserts a real workspace row for tool-enabled sessions. The workspace
-    /// record and the host boundary deliberately share the same identifier;
-    /// the fixture does not pretend an empty bookmark proves ownership.
+    /// Inserts a real project workspace row bound to the fixture root via a
+    /// genuine security-scoped bookmark. The workspace record and the host
+    /// boundary deliberately share the same identifier, and the persisted
+    /// bookmark is what the lease verifies the boundary root against.
     func createWorkspace(named name: String) async throws -> UUID {
         let database = try DatabaseManager(path: databaseURL)
         try await database.migrate()
@@ -299,7 +300,7 @@ final class SelfCoreFixture: @unchecked Sendable {
         try await store.saveWorkspace(WorkspaceRecord(
             id: id,
             name: name,
-            rootBookmark: Data(),
+            rootBookmark: try workspaceRoot.bookmarkData(),
             kind: .project
         ))
         try await database.close()
