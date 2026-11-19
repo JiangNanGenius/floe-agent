@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.10.5</title>
+      <pubDate>Thu, 19 Nov 2026 17:19:46 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.5</link>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>1.10.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;支持对话内查找、后台任务、目标验收和项目文件编辑。可从工具或输入框附件菜单打开生图。&lt;/p&gt;&lt;p&gt;Find in conversations, run tasks in the background, review goals, and edit project files. Open image generation from Tools or the composer.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.10.5/Floe-Agent-1.10.5.dmg" length="30184803" type="application/octet-stream" sparkle:edSignature="X4e8i0rC0pHCgDVu6Yb+orp4hzfMpBP/2mqzVTLGc79O5mc1+dJRlikNhabswUyhCXOKHc+qsy2SXTH0j58tDw==" />
+    </item>
+    <item>
       <title>Floe Agent 1.10.4</title>
       <pubDate>Thu, 19 Nov 2026 16:11:16 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.4</link>
