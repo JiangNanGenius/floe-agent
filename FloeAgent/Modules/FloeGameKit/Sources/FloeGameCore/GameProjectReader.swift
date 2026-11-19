@@ -216,7 +216,7 @@ public final class GameProjectReader {
         }
         var after = stat()
         let result = GameFileFingerprint(bytes: total,
-            sha256: hash.finalize().map { String(format: "%02x", $0) }.joined(), info: before)
+            sha256: GameDigest.hex(hash.finalize()), info: before)
         guard fstat(descriptor, &after) == 0, total == before.st_size,
               result.matches(after) else { throw GameProjectError.corruptStorage }
         try verifyFingerprintPath(path, expected: result)

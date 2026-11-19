@@ -5,7 +5,19 @@ import Darwin
 
 public enum GameDigest {
     public static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        hex(SHA256.hash(data: data))
+    }
+
+    private static let digits = Array("0123456789abcdef".utf8)
+
+    static func hex(_ digest: SHA256.Digest) -> String {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(SHA256.Digest.byteCount * 2)
+        for byte in digest {
+            bytes.append(digits[Int(byte >> 4)])
+            bytes.append(digits[Int(byte & 0x0f)])
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
 
