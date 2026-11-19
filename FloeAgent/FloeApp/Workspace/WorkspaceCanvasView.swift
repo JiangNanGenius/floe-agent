@@ -12976,20 +12976,37 @@ private struct CanvasAgentFloatingPanel: View {
             }
         }
 
+        // Defaults belong to a newly prepared canvas conversation. Reopening
+        // an existing document — or restarting into its replacement — must
+        // retain the user's saved approval/recovery/notification choices
+        // (same contract as the file assistants); only the capability
+        // ceilings are refreshed every prepare because the canvas tool
+        // catalog can change. A policy read failure fails closed (the error
+        // propagates and nothing is written), never treating a DB error as
+        // first use and overwriting a stored policy with defaults.
         let names = mcpCenter.canvasAllowedToolNames()
         let hasMCP = !names.subtracting(CanvasAgentToolPolicy.nativeToolNames).isEmpty
+        var savedPolicy: TaskPolicy?
+        if let previous {
+            let previousPolicy = try await workspaceStore.taskPolicy(conversationID: previous)
+            if previousPolicy.approvalMode != nil { savedPolicy = previousPolicy }
+        }
+        if savedPolicy == nil {
+            let currentPolicy = try await workspaceStore.taskPolicy(conversationID: conversationID)
+            if currentPolicy.approvalMode != nil { savedPolicy = currentPolicy }
+        }
         try await workspaceStore.saveTaskPolicy(TaskPolicy(
             conversationID: conversationID,
-            approvalMode: TaskApprovalMode.automatic.rawValue,
+            approvalMode: savedPolicy?.approvalMode ?? TaskApprovalMode.automatic.rawValue,
             allowedToolNames: names,
-            filePaths: [],
+            filePaths: savedPolicy?.filePaths ?? [],
             networkAllowed: true,
             browserControlAllowed: false,
             uploadAllowed: false,
             credentialsAllowed: false,
             remoteExecutionAllowed: hasMCP,
-            recoveryPolicy: .safePoint,
-            notificationPolicy: .stages
+            recoveryPolicy: savedPolicy?.recoveryPolicy ?? .safePoint,
+            notificationPolicy: savedPolicy?.notificationPolicy ?? .stages
         ))
         if let previous, store.agentConversationID(for: documentID) != previous {
             throw FloeError.validationFailed("Canvas conversation changed")
@@ -13018,6 +13035,7 @@ private struct CanvasAgentFloatingPanel: View {
 /// canvas-specific; run ownership and recovery remain in ConversationCenter.
 private struct SharedCanvasAgentConversation: View {
     @EnvironmentObject private var voiceInput: VoiceInputController
+    @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var viewModel: ThreadDetailViewModel
     @ObservedObject var store: CanvasDocumentStore
@@ -13032,6 +13050,7 @@ private struct SharedCanvasAgentConversation: View {
 
     @State private var prompt = ""
     @State private var isNotesPickerPresented = false
+    @State private var showingPermissions = false
     @State private var dictationPrefix = ""
     @State private var visibleTimelineCount = 30
     @State private var earlierActivityViewport: CGRect = .zero
@@ -13075,6 +13094,25 @@ private struct SharedCanvasAgentConversation: View {
                 }
                 prompt += (prompt.isEmpty ? "" : "\n\n") + NotesKnowledgeAttachment.reference(document)
             }
+        }
+        // The canvas agent runs real agent tools, so the composer exposes the
+        // same saved task policy as every other editor assistant. The generic
+        // inspector edits only approval/recovery/notification; the canvas
+        // capability ceilings are owned by `ensureConversationAndPolicy` and
+        // can never be widened from this surface.
+        .sheet(isPresented: $showingPermissions) {
+            NavigationStack {
+                TaskPermissionsInspectorView(
+                    conversationID: viewModel.conversationID,
+                    isLocalModel: viewModel.usesLocalModel
+                )
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("action.done") { showingPermissions = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .task {
             viewModel.agentMode = .agent
@@ -13226,6 +13264,17 @@ private struct SharedCanvasAgentConversation: View {
                                 .frame(minHeight: 44)
                             }
                         }
+                        Button { showingPermissions = true } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "lock.shield")
+                                Text(canvasApprovalTitle)
+                                    .lineLimit(1).truncationMode(.middle)
+                                Image(systemName: "chevron.down").font(.caption2)
+                            }
+                            .font(.caption)
+                            .frame(minHeight: 44)
+                        }
+                        .accessibilityIdentifier("canvas.agent.permissions")
                         Spacer(minLength: 0)
                         Button {
                             dictationPrefix = prompt
@@ -13318,6 +13367,17 @@ private struct SharedCanvasAgentConversation: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    /// Current saved approval mode for the canvas task, mirroring the shared
+    /// composer's chip vocabulary. The value comes from the same durable
+    /// task policy the run executes under.
+    private var canvasApprovalTitle: String {
+        switch viewModel.taskPolicy.resolvedApprovalMode {
+        case .ask: FloeL10n.l("settings.agent_permissions_view.ask")
+        case .automatic: FloeL10n.l("settings.agent_permissions_view.auto_approve")
+        case .fullAccess: FloeL10n.l("settings.agent_permissions_view.full_access")
+        }
     }
 
     private var canvasVoiceError: String? {

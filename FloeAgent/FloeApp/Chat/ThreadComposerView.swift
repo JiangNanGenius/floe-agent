@@ -1251,7 +1251,13 @@ struct ThreadComposerView: View {
                     }
                     .accessibilityLabel("chat.thread_composer_view.send_method_while_running")
                 }
-                if !documentAssistant, !temporary, agentMode != .chat {
+                // Approval control stays visible for editor-assistant
+                // composers too: those tasks run real agent tools under the
+                // same saved task policy, and hiding the chip made the user's
+                // saved choice unreviewable from the editor. Only a temporary
+                // session (fixed read-only ceiling, no user policy) and the
+                // read-only chat mode hide it.
+                if !temporary, agentMode != .chat {
                     Button { onPermissions() } label: {
                         composerChip(title: approvalModeTitle, systemImage: "lock.shield")
                     }

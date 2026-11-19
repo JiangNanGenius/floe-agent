@@ -196,6 +196,8 @@ import FloeHeavyEditorsHostAdapter
         let project = try await library.project(designID), authority = try await authority()
         let workspace = SQLiteWorkspaceStore(database: environment.database)
         let id: UUID
+        // Defaults belong to a newly created assistant. Reopening an existing
+        // typeface assistant must retain its user's saved permissions.
         if let bound = try await authority.assistant(projectID: designID),
            let existing = try await environment.conversationStore.conversation(id: bound), existing.purpose == .ordinary {
             id = bound
@@ -206,15 +208,15 @@ import FloeHeavyEditorsHostAdapter
                     title: FontDesignText.t("字体助手 · ", "Typeface assistant · ") + project.title,
                     createdAt: now, updatedAt: now, titleOrigin: .manual))
                 _ = try await workspace.ensureWorkspace(conversationID: id, title: project.title)
+                try await workspace.saveTaskPolicy(.init(conversationID: id, approvalMode: TaskApprovalMode.automatic.rawValue,
+                    networkAllowed: true, browserControlAllowed: false, uploadAllowed: false, credentialsAllowed: false, remoteExecutionAllowed: false))
                 try await authority.bindAssistant(conversationID: id, projectID: designID)
+                environment.conversationCenter.taskPolicyDidChange(conversationID: id)
             } catch { try? await environment.conversationStore.deleteConversation(id: id); throw error }
         }
         _ = try await workspace.ensureWorkspace(conversationID: id, title: project.title)
         try await environment.conversationStore.setArchived(id: id, archived: true)
         await environment.conversationCenter.authoringConversationBecameVisible(id)
-        try await workspace.saveTaskPolicy(.init(conversationID: id, approvalMode: TaskApprovalMode.automatic.rawValue,
-            networkAllowed: true, browserControlAllowed: false, uploadAllowed: false, credentialsAllowed: false, remoteExecutionAllowed: false))
-        environment.conversationCenter.taskPolicyDidChange(conversationID: id)
         return id
     }
 }
