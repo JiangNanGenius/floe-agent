@@ -208,6 +208,13 @@
 "Remove Pairing" = "Remove Pairing";
 "Screen Recording" = "Screen Recording";
 "Settings…" = "Settings…";
+"mac.settings.title" = "Floe Agent Settings";
+"mac.settings.models" = "Models";
+"providers.payg.volcengine" = "Volcengine";
+"providers.payg.alibaba" = "Alibaba Cloud";
+"providers.plan.volcengine" = "Volcengine Agent Plan";
+"providers.plan.alibaba" = "Alibaba Cloud Token Plan";
+"providers.provider_adapter_factory.custom_compatible_endpoint" = "Custom compatible endpoint";
 "Show in Finder" = "Show in Finder";
 "Skills" = "Skills";
 "Starting…" = "Starting…";

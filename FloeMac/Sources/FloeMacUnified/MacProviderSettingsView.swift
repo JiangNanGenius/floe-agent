@@ -18,9 +18,10 @@ import SwiftUI
 /// available as the fallback.
 struct MacProviderSettingsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    @Binding var isPresented: Bool
+    let close: () -> Void
 
     @State private var editingID: UUID?
+    @State private var startedEditing = false
     @State private var draft = MacProviderDraft()
     @State private var removalCandidate: UUID?
     @State private var showingICloud = false
@@ -333,7 +334,7 @@ struct MacProviderSettingsView: View {
                 }
             }
             Button(MacProviderText.t("取消", "Cancel"), role: .cancel) {
-                isPresented = false
+                close()
             }
             .keyboardShortcut(.cancelAction)
             Button(MacProviderText.t("保存", "Save")) { save() }
@@ -445,6 +446,8 @@ struct MacProviderSettingsView: View {
     // MARK: - Actions
 
     private func beginInitialEditing() {
+        guard !startedEditing else { return }
+        startedEditing = true
         editingID = workspace.providers.first?.profile.id
     }
 
@@ -474,7 +477,7 @@ struct MacProviderSettingsView: View {
                                           supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
                                           presetID: presetID)
         }
-        if saved { isPresented = false }
+        if saved { close() }
     }
 }
 

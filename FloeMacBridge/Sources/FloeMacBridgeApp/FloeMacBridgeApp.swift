@@ -14,7 +14,11 @@ struct FloeMacBridgeApp: App {
             BridgeStatusLabel(model: model)
         }
         Settings {
+            #if FLOE_UNIFIED_MAC
+            UnifiedMacSettingsView(model: model)
+            #else
             BridgeSettingsView(model: model).frame(width: 520, height: 560)
+            #endif
         }
         .commands {
             #if FLOE_UNIFIED_MAC
@@ -63,7 +67,7 @@ private struct BridgeMenuView: View {
         Button("host.menu.openAgent") { model.openAgentWorkspace() }
         Button("host.menu.tools") { model.macWorkspace.openToolbox() }
         #endif
-        Button("Settings…") { model.openSettings() }
+        Button("Settings…") { model.openSettings(.bridge) }
         Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
         Divider()
         #if FLOE_UNIFIED_MAC
@@ -76,6 +80,8 @@ private struct BridgeMenuView: View {
 
 @MainActor
 final class BridgeAppModel: ObservableObject {
+    enum SettingsPane: Hashable { case models, bridge }
+
     @Published var error: String?
     @Published var clients: [(String, String)] = []
     @Published var storage: [String: Int64] = [:]
@@ -84,35 +90,35 @@ final class BridgeAppModel: ObservableObject {
     @Published private(set) var listenerReady = false
     @Published private(set) var listenerError: String?
     private var settingsWindow: NSWindow?
+    private var pendingSettingsPresentation: Task<Void, Never>?
     let updates: BridgeUpdaterModel
     #if FLOE_UNIFIED_MAC
     let macWorkspace: UnifiedMacWorkspace
+    @Published var settingsPane: SettingsPane = .models
     private enum LaunchMode: String {
         case bridge, agent
         static let preferenceKey = "floe.mac.launchMode"
     }
 
-    private var launchMode: LaunchMode? {
-        #if FLOE_MAC_HOST_SMOKE
-        if smoke != nil { return smokeLaunchMode }
-        #endif
-        return UserDefaults.standard.string(forKey: LaunchMode.preferenceKey).flatMap(LaunchMode.init(rawValue:))
-    }
+    @Published private var launchMode: LaunchMode = .bridge
+    var isAgentMode: Bool { launchMode == .agent }
 
     private func rememberMode(_ mode: LaunchMode) {
-        #if FLOE_MAC_HOST_SMOKE
-        if smoke != nil {
-            smokeLaunchMode = mode
-            return
-        }
-        #endif
-        UserDefaults.standard.set(mode.rawValue, forKey: LaunchMode.preferenceKey)
+        guard launchMode != mode else { return }
+        preferences.set(mode.rawValue, forKey: LaunchMode.preferenceKey)
+        launchMode = mode
     }
     #endif
+    private var preferences: UserDefaults {
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        if let smoke { return smoke.preferences }
+        #endif
+        return .standard
+    }
     #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
     private let smoke = UnifiedMacSmoke.configured()
-    private var smokeLaunchMode: LaunchMode?
     var smokePort: UInt16? { server?.boundPort }
+    var smokeSettingsWindow: NSWindow? { settingsWindow }
     private(set) var smokeSwitchFrame: CGRect?
 
     func recordSmokeSwitchFrame(_ frame: CGRect) {
@@ -141,6 +147,9 @@ final class BridgeAppModel: ObservableObject {
         macWorkspace = UnifiedMacWorkspace(activity: activity, testSupport: smoke?.root)
         #elseif FLOE_UNIFIED_MAC
         macWorkspace = UnifiedMacWorkspace(activity: activity)
+        #endif
+        #if FLOE_UNIFIED_MAC
+        launchMode = preferences.string(forKey: LaunchMode.preferenceKey).flatMap(LaunchMode.init(rawValue:)) ?? .bridge
         #endif
         BridgeApplicationDelegate.model = self
         do {
@@ -182,31 +191,44 @@ final class BridgeAppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
     func applicationDidFinishLaunching() {
+        // Present after SwiftUI has installed the menu-bar scene and menus.
+        RunLoop.main.perform { [weak self] in
+            MainActor.assumeIsolated { self?.finishLaunching() }
+        }
+    }
+
+    private func finishLaunching() {
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         if let smoke {
+            presentStartupMode()
             Task { await smoke.exercise(model: self) }
             return
         }
         #endif
         applicationLaunched = true
         startUpdaterWhenReady()
+        presentStartupMode()
+    }
+
+    private func presentStartupMode() {
         #if FLOE_UNIFIED_MAC
-        if launchMode == .agent {
-            reopenPreferredWindow()
+        if isAgentMode {
+            showAgentWindow()
             return
         }
+        NSApp.setActivationPolicy(.accessory)
         #endif
-        if !UserDefaults.standard.bool(forKey: "bridge.setupWindowShown") { openSettings() }
+        if !preferences.bool(forKey: "bridge.setupWindowShown") { openSettings(.bridge) }
     }
 
     func reopenPreferredWindow() {
         #if FLOE_UNIFIED_MAC
-        if launchMode == .agent {
-            openAgentWorkspace()
+        if isAgentMode {
+            showAgentWindow()
             return
         }
         #endif
-        openSettings()
+        openSettings(.bridge)
     }
     private func startUpdaterWhenReady() {
         // Only the process that owns the loopback listener may update this
@@ -270,51 +292,82 @@ final class BridgeAppModel: ObservableObject {
         if let error, service == nil { return error }
         return listenerReady ? String(localized: "Ready to connect") : String(localized: "Starting…")
     }
-    func openSettings() {
+    func openSettings(_ pane: SettingsPane? = nil) {
         // A MenuBarExtra label is not a persistent settings presentation
         // host. Own the window explicitly and present after menu tracking
         // returns, so opening from Finder or the connection URL is reliable.
-        Task { @MainActor [weak self] in
+        pendingSettingsPresentation?.cancel()
+        pendingSettingsPresentation = Task { @MainActor [weak self] in
             await Task.yield()
-            self?.presentSettingsWindow()
+            guard !Task.isCancelled, let self else { return }
+            pendingSettingsPresentation = nil
+            presentSettingsWindow(pane)
         }
     }
     #if FLOE_UNIFIED_MAC
     func openAgentWorkspace() {
+        if !isAgentMode {
+            closeSettingsWindow()
+            settingsPane = .models
+        }
         rememberMode(.agent)
+        showAgentWindow()
+    }
+
+    private func showAgentWindow() {
         NSApp.setActivationPolicy(.regular)
-        settingsWindow?.orderOut(nil)
-        macWorkspace.openAgent { [weak self] in self?.switchToBridge() }
+        macWorkspace.openAgent(openBridgeSettings: { [weak self] in self?.openSettings(.bridge) },
+                               openModelSettings: { [weak self] in self?.openSettings(.models) })
     }
 
     func switchToBridge() {
         rememberMode(.bridge)
+        closeSettingsWindow()
         macWorkspace.hideAgentWindow()
         NSApp.setActivationPolicy(.accessory)
-        openSettings()
+        openSettings(.bridge)
+    }
+
+    func closeSettingsWindow() {
+        pendingSettingsPresentation?.cancel()
+        pendingSettingsPresentation = nil
+        settingsWindow?.close()
     }
     #endif
-    private func presentSettingsWindow() {
+    private func presentSettingsWindow(_ pane: SettingsPane?) {
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         let persistsPresentation = smoke == nil
         #else
         let persistsPresentation = true
         #endif
-        let window: NSWindow
-        if let existing = settingsWindow { window = existing }
-        else {
-            window = NSWindow(contentViewController: NSHostingController(
-                rootView: BridgeSettingsView(model: self).frame(width: 520, height: 560)))
-            window.title = "Floe Bridge"
+        #if FLOE_UNIFIED_MAC
+        if let pane { settingsPane = pane }
+        let title = isAgentMode ? String(localized: "mac.settings.title") : "Floe Bridge"
+        #else
+        let title = "Floe Bridge"
+        #endif
+        let window = settingsWindow ?? NSWindow()
+        if settingsWindow == nil {
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
             if persistsPresentation { window.setFrameAutosaveName("FloeBridgeSettings") }
-            window.center()
-            settingsWindow = window
         }
+        if (!window.isVisible && !window.isMiniaturized) || window.contentViewController == nil {
+            #if FLOE_UNIFIED_MAC
+            window.contentViewController = NSHostingController(rootView: UnifiedMacSettingsView(model: self))
+            window.setContentSize(isAgentMode ? NSSize(width: 800, height: 630) : NSSize(width: 520, height: 560))
+            #else
+            window.contentViewController = NSHostingController(
+                rootView: BridgeSettingsView(model: self).frame(width: 520, height: 560))
+            #endif
+        }
+        window.title = title
+        if settingsWindow == nil { window.center() }
+        settingsWindow = window
+        if window.isMiniaturized { window.deminiaturize(nil) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        if persistsPresentation && window.isVisible { UserDefaults.standard.set(true, forKey: "bridge.setupWindowShown") }
+        if window.isVisible { preferences.set(true, forKey: "bridge.setupWindowShown") }
     }
     func stopListenerForTermination() {
         server?.stop()
@@ -363,6 +416,29 @@ private struct BridgeBrandMark: View {
     }
 }
 
+#if FLOE_UNIFIED_MAC
+private struct UnifiedMacSettingsView: View {
+    @ObservedObject var model: BridgeAppModel
+
+    var body: some View {
+        if model.isAgentMode, let workspace = model.macWorkspace.agent {
+            TabView(selection: $model.settingsPane) {
+                MacProviderSettingsView(workspace: workspace, close: model.closeSettingsWindow)
+                    .tabItem { Label("mac.settings.models", systemImage: "slider.horizontal.3") }
+                    .tag(BridgeAppModel.SettingsPane.models)
+                BridgeSettingsView(model: model)
+                    .tabItem { Label("host.role.bridge", systemImage: "link") }
+                    .tag(BridgeAppModel.SettingsPane.bridge)
+            }
+            .padding(12)
+            .frame(width: 800, height: 630)
+        } else {
+            BridgeSettingsView(model: model).frame(width: 520, height: 560)
+        }
+    }
+}
+#endif
+
 private struct BridgeSettingsView: View {
     @ObservedObject var model: BridgeAppModel
     @State private var managesStorage = false
@@ -378,7 +454,7 @@ private struct BridgeSettingsView: View {
                 }
                 Spacer()
                 #if FLOE_UNIFIED_MAC
-                switchToAgentButton
+                if !model.isAgentMode { switchToAgentButton }
                 #endif
             }.padding(.horizontal, 20).padding(.top, 14)
             TabView {

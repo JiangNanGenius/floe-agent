@@ -12,7 +12,7 @@ final class BridgeApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func application(_ application: NSApplication, open urls: [URL]) {
         if urls.contains(where: { $0.scheme == "floe-bridge" && $0.host == "connect" }) {
-            Self.model?.openSettings()
+            Self.model?.openSettings(.bridge)
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

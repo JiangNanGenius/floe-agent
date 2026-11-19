@@ -12,7 +12,8 @@ private enum MacWorkspaceDestination: Hashable {
 
 struct MacWorkspaceRootView: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    let openBridge: () -> Void
+    let openBridgeSettings: () -> Void
+    let openModelSettings: () -> Void
     let openToolbox: (String) -> Void
     var remembersFileRoot = true
     @ObservedObject var draftStore: MacWorkspaceDraftStore
@@ -21,7 +22,6 @@ struct MacWorkspaceRootView: View {
     @State private var destination: MacWorkspaceDestination? = .newTask
     @State private var restoredInitialDestination = false
     @State private var showInspector = false
-    @State private var showModelSettings = false
     @State private var showHistorySearch = false
     @FocusState private var historySearchFocused: Bool
     @State private var historySearch = ""
@@ -92,9 +92,6 @@ struct MacWorkspaceRootView: View {
             guard remembersFileRoot else { return }
             if case .conversation(let id) = newDestination { lastConversation = id.uuidString }
             if case .newTask = newDestination { lastConversation = "" }
-        }
-        .sheet(isPresented: $showModelSettings) {
-            MacProviderSettingsView(workspace: workspace, isPresented: $showModelSettings)
         }
         .alert("mac.workspace.rename", isPresented: $showRename) {
             TextField("mac.workspace.taskName", text: $taskTitle)
@@ -360,7 +357,7 @@ struct MacWorkspaceRootView: View {
                             .padding(.horizontal)
                     }
                     HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
-                                           openModelSettings: { showModelSettings = true },
+                                           openModelSettings: openModelSettings,
                                            openFiles: { showInspector = true })
                 }
             } else {
@@ -372,8 +369,8 @@ struct MacWorkspaceRootView: View {
         case .services:
             Form {
                 Section("mac.workspace.connections") {
-                    Button("host.role.bridge", action: openBridge)
-                    Button("host.chat.provider") { showModelSettings = true }
+                    Button("host.role.bridge", action: openBridgeSettings)
+                    Button("host.chat.provider", action: openModelSettings)
                         .disabled(!canSelectTask)
                 }
             }

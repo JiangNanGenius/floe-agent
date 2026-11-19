@@ -208,6 +208,13 @@
 "Remove Pairing" = "取消配对";
 "Screen Recording" = "屏幕录制";
 "Settings…" = "设置…";
+"mac.settings.title" = "Floe Agent 设置";
+"mac.settings.models" = "模型";
+"providers.payg.volcengine" = "火山引擎";
+"providers.payg.alibaba" = "阿里云";
+"providers.plan.volcengine" = "火山引擎 Agent Plan";
+"providers.plan.alibaba" = "阿里云 Token Plan";
+"providers.provider_adapter_factory.custom_compatible_endpoint" = "自定义兼容端点";
 "Show in Finder" = "在 Finder 中显示";
 "Skills" = "技能";
 "Starting…" = "正在启动…";

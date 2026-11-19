@@ -15,8 +15,11 @@ final class UnifiedMacSmoke {
     static let flag = "--unified-smoke-report"
     let root: URL
     let report: URL
+    let preferences: UserDefaults
+    private let preferenceSuite: String
     let serverKey = Curve25519.Signing.PrivateKey()
     private let clientKey = Curve25519.Signing.PrivateKey()
+    private var settingsDiagnostics: [String] = []
 
     static func configured() -> UnifiedMacSmoke? {
         let args = CommandLine.arguments
@@ -30,6 +33,10 @@ final class UnifiedMacSmoke {
 
     private init(report: URL) throws {
         self.report = report
+        preferenceSuite = "org.floeagent.macbridge.smoke."
+            + FloeDigest.sha256Hex(Data(report.deletingLastPathComponent().path.utf8))
+        guard let preferences = UserDefaults(suiteName: preferenceSuite) else { throw BridgeFailure.unsafePath }
+        self.preferences = preferences
         guard let physicalTemp = realpath(FileManager.default.temporaryDirectory.path, nil) else {
             throw BridgeFailure.unsafePath
         }
@@ -57,6 +64,24 @@ final class UnifiedMacSmoke {
     }
 
     func exercise(model: BridgeAppModel) async {
+        if CommandLine.arguments.contains("--verify-saved-launch-mode") {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while (!model.listenerReady || model.macWorkspace.agent == nil) && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            let startedInAgent = model.isAgentMode && model.listenerReady && NSApp.activationPolicy() == .regular
+                && NSApp.windows.contains { $0.isVisible && $0.title == String(localized: "host.role.agent") }
+                && model.smokeSettingsWindow?.isVisible != true
+            if let agent = model.macWorkspace.agent {
+                await agent.prepare()
+                while model.updates.installation.activity.activityCount != 0 && ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+                if agent.beginTermination() { try? await agent.finishTermination() }
+            }
+            finish(["agentModeRestoredOnRelaunch": startedInAgent, "pid": getpid()])
+            return
+        }
         if CommandLine.arguments.contains("--icloud-model-sync-smoke") {
             await verifyCloudKitModelSync()
             return
@@ -82,6 +107,7 @@ final class UnifiedMacSmoke {
             $0.isVisible && $0.title == String(localized: "host.role.agent")
         }
         let modeRoundTrip = await exerciseModeRoundTrip(model: model)
+        let unifiedSettings = await exerciseUnifiedSettings(model: model)
         var nativeChat = false
         var storedTaskRun = false
         var taskMetadataSaved = false
@@ -177,6 +203,8 @@ final class UnifiedMacSmoke {
             "bridgeSwitchUserEventVerified": bridgeSwitchUserEvent,
             "workbenchWindowVisible": workbenchVisible,
             "modeRoundTripVerified": modeRoundTrip,
+            "unifiedSettingsVerified": unifiedSettings,
+            "settingsDiagnostics": settingsDiagnostics,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
             "taskMetadataSaved": taskMetadataSaved,
@@ -197,6 +225,10 @@ final class UnifiedMacSmoke {
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
         ]
+        finish(output)
+    }
+
+    private func finish(_ output: [String: Any]) {
         if let bytes = try? JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted, .sortedKeys]) {
             try? bytes.write(to: report, options: .atomic)
         }
@@ -204,6 +236,9 @@ final class UnifiedMacSmoke {
     }
 
     func cleanup() {
+        if !CommandLine.arguments.contains("--keep-launch-preference-for-relaunch") {
+            preferences.removePersistentDomain(forName: preferenceSuite)
+        }
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -443,6 +478,39 @@ final class UnifiedMacSmoke {
         model.openAgentWorkspace()
         return NSApp.activationPolicy() == .regular && model.macWorkspace.agent === initialAgent
             && NSApp.windows.contains { $0.isVisible && $0.title == String(localized: "host.role.agent") }
+    }
+
+    private func exerciseUnifiedSettings(model: BridgeAppModel) async -> Bool {
+        guard model.isAgentMode else { return false }
+        let appMenu = NSApp.mainMenu?.items.first?.submenu
+        appMenu?.update()
+        guard let appMenu, let index = appMenu.items.firstIndex(where: { $0.keyEquivalent == "," }) else {
+            settingsDiagnostics.append("Settings menu missing: \(appMenu?.items.map(\.title) ?? [])")
+            return false
+        }
+        appMenu.performActionForItem(at: index)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while model.smokeSettingsWindow?.isVisible != true && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard let window = model.smokeSettingsWindow, window.isVisible, model.settingsPane == .models,
+              window.title == String(localized: "mac.settings.title") else {
+            settingsDiagnostics.append("Settings after menu: \(model.settingsPane), \(model.smokeSettingsWindow?.title ?? "missing"), visible=\(model.smokeSettingsWindow?.isVisible == true)")
+            return false
+        }
+        defer { model.closeSettingsWindow() }
+        if let content = window.contentView { capture(content, extension: "settings-models.png") }
+
+        model.openSettings(.bridge)
+        while model.settingsPane != .bridge && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard model.settingsPane == .bridge, model.isAgentMode, model.smokeSettingsWindow === window,
+              window.isVisible, NSApp.activationPolicy() == .regular else { return false }
+        // Allow the selected SwiftUI tab to render before capturing it.
+        try? await Task.sleep(for: .milliseconds(200))
+        if let content = window.contentView { capture(content, extension: "settings-bridge.png") }
+        return true
     }
 
     private func callPairedBridge(port: UInt16) async throws -> Bool {

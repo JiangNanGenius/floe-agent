@@ -23,7 +23,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
         self.testSupport = testSupport
     }
 
-    func openAgent(openBridge: @escaping () -> Void = {}) {
+    func openAgent(openBridgeSettings: @escaping () -> Void, openModelSettings: @escaping () -> Void) {
         if agentWindow == nil {
             guard let root = testSupport ?? FileManager.default.urls(for: .applicationSupportDirectory,
                                                                       in: .userDomainMask).first,
@@ -40,7 +40,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
             let drafts = MacWorkspaceDraftStore(directory: directory)
             draftStore = drafts
             let host = NSHostingController(rootView: MacWorkspaceRootView(
-                workspace: workspace, openBridge: openBridge,
+                workspace: workspace, openBridgeSettings: openBridgeSettings,
+                openModelSettings: openModelSettings,
                 openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) },
                 remembersFileRoot: testSupport == nil, draftStore: drafts
             ))
