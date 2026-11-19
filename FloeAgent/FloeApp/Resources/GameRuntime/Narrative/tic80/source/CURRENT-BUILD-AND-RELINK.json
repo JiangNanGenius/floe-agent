@@ -1,0 +1,18 @@
+{
+  "assetPolicy": "25 embedded demos without cleared redistribution terms omitted; exact original source retained in companion",
+  "correspondingSourceSHA256": "5717a89efbb1604e0bbc903154827efe973e306cec7b9ed7882e0b3e3548d08e",
+  "engine": "TIC-80",
+  "jsSHA256": "71c7afcb770410bb01806f268203839e91578fb81d6ca4b86ca8972de532c02d",
+  "notClaimed": [
+    "Apple approval",
+    "Main App integration",
+    "physical iPad acceptance"
+  ],
+  "originalRecords": "SOURCE-OFFER.md and selected-source notices predate this rebuild and are retained unchanged as provenance",
+  "resourceRevision": "1.4.1-floe-cleared-assets-1",
+  "sourceSHA": "145d0d5b51ff03465905fb530b3bda44afc2b19c",
+  "upstreamRevision": "b3dbd59",
+  "verification": "Baseline and modified blip_buf recompiled and actually run in AppKit WebKit; 20 relink checks passed",
+  "wasmSHA256": "9fc28f31dd953eb5350cab5823f4e2dd063516895a0d356d3b5312d6673b8f0c",
+  "workflowRun": 43212724063
+}

@@ -702,8 +702,10 @@ final class GameWorkspaceRegistry {
             conversation = nil
         }
         guard let conversation,
-              let binding = try await bindingStore.binding(conversationID: conversation),
-              let record = await environment.environmentRegistry.record(id: binding.target.environmentID),
+              let binding = try await bindingStore.binding(conversationID: conversation) else { return nil }
+        // The persisted binding can be read before the in-memory container index is loaded.
+        try await environment.environmentRegistry.prepare()
+        guard let record = await environment.environmentRegistry.record(id: binding.target.environmentID),
               (record.kind == .session && record.ownerID == conversation.uuidString)
                 || (!requireSession && record.kind == .project) else { return nil }
         guard let root = try await environment.environmentRegistry
@@ -733,6 +735,7 @@ final class GameWorkspaceRegistry {
                             backend: EnvironmentExecutionBackend) async throws -> String {
         let conversationID = try await executionConversationID(for: session)
         if let existing = try await bindingStore.binding(conversationID: conversationID) {
+            try await environment.environmentRegistry.prepare()
             let requireSession = session.record != nil
             guard let container = await environment.environmentRegistry.record(id: existing.target.environmentID),
                   (container.kind == .session && container.ownerID == conversationID.uuidString)
