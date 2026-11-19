@@ -124,7 +124,9 @@ public actor SQLiteRunCheckpointStore: CheckpointStore {
     /// pin is a late callback from an old environment and is rejected too.
     /// Only the legacy read-through import may adopt a nil legacy pin.
     public func save(_ checkpoint: AgentCheckpoint) async throws {
+        let encodeStart = DispatchTime.now().uptimeNanoseconds
         let encoded = String(decoding: try checkpoint.encoded(), as: UTF8.self)
+        let writeStart = DispatchTime.now().uptimeNanoseconds
         try await database.writer { db in
             guard let row = try Row.fetchOne(
                 db,
@@ -163,7 +165,7 @@ public actor SQLiteRunCheckpointStore: CheckpointStore {
             )
         }
         logger.info(
-            "checkpointSaved run=\(checkpoint.runID.uuidString) bytes=\(encoded.count) replayPairs=\(checkpoint.replayedToolPairs?.count ?? 0) state=\(checkpoint.state.name) store=sqlite"
+            "checkpointSaved run=\(checkpoint.runID.uuidString) bytes=\(encoded.utf8.count) replayPairs=\(checkpoint.replayedToolPairs?.count ?? 0) state=\(checkpoint.state.name) store=sqlite encodeMs=\((writeStart - encodeStart) / 1_000_000) writeMs=\((DispatchTime.now().uptimeNanoseconds - writeStart) / 1_000_000)"
         )
     }
 

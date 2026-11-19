@@ -117,7 +117,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// The conversation's runs, newest first.
     @Published private(set) var runs: [RunRecord] = [] { didSet { timelineRevision &+= 1 } }
     /// The run currently displayed (the one the user expanded / latest).
-    @Published var selectedRunID: UUID? { didSet { timelineRevision &+= 1 } }
+    @Published var selectedRunID: UUID? { didSet { if oldValue != selectedRunID { timelineRevision &+= 1 } } }
     /// Explicit Stop wins over queued deltas and presentation animation.
     /// A deliberate Continue/Retry reopens this same run's display boundary.
     private var locallyStoppedRunIDs = Set<UUID>()
@@ -144,7 +144,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var messages: [PersistedMessage] = [] { didSet { timelineRevision &+= 1 } }
     @Published private(set) var hasLoaded = false
     @Published private(set) var hasLoadedSpeechHistory = false
-    @Published private(set) var earlierEventRunIDs = Set<UUID>() { didSet { timelineRevision &+= 1 } }
+    @Published private(set) var earlierEventRunIDs = Set<UUID>() { didSet { if oldValue != earlierEventRunIDs { timelineRevision &+= 1 } } }
     @Published private(set) var loadingEventRunIDs = Set<UUID>()
     /// Runs whose latest earlier-events page fetch failed. The paged row stays
     /// actionable through an explicit retry; auto-paging pauses until either
@@ -1136,18 +1136,16 @@ final class ThreadDetailViewModel: ObservableObject {
             before: before, hasEarlier: page.count > 50
         )
         let existing = eventsByRun[runID, default: []]
-        let known = eventIDsByRun[runID, default: []]
         var added: [RunEventRecord] = []
-        var knownUpdated = known
-        for event in tail where knownUpdated.insert(event.id).inserted {
+        for event in tail where eventIDsByRun[runID, default: []].insert(event.id).inserted {
             added.append(event)
         }
-        guard !added.isEmpty else {
-            if eventCoverage[runID]?.earlierCursor != nil { earlierEventRunIDs.insert(runID) }
+        let hasEarlier = eventCoverage[runID]?.earlierCursor != nil
+        if hasEarlier != earlierEventRunIDs.contains(runID) {
+            if hasEarlier { earlierEventRunIDs.insert(runID) }
             else { earlierEventRunIDs.remove(runID) }
-            return
         }
-        eventIDsByRun[runID] = knownUpdated
+        guard !added.isEmpty else { return }
         let merged: [RunEventRecord]
         if existing.isEmpty {
             merged = added
@@ -1163,8 +1161,6 @@ final class ThreadDetailViewModel: ObservableObject {
             merged = (existing + added).sorted { $0.sequence < $1.sequence }
         }
         eventsByRun[runID] = merged
-        if eventCoverage[runID]?.earlierCursor != nil { earlierEventRunIDs.insert(runID) }
-        else { earlierEventRunIDs.remove(runID) }
     }
 
     private func mergeMessagePage(_ page: ConversationMessagePage, before: ConversationMessageCursor? = nil) {
@@ -2594,11 +2590,16 @@ final class ThreadDetailViewModel: ObservableObject {
                 for (runID, incoming) in snapshot.eventsByRun {
                     self.mergeEventPage(incoming, runID: runID)
                 }
-                self.earlierEventRunIDs.formUnion(self.messages.compactMap(\.runID).filter { self.eventsByRun[$0] == nil })
+                let unloaded = Set(self.messages.compactMap(\.runID).filter { self.eventsByRun[$0] == nil })
+                if !unloaded.isSubset(of: self.earlierEventRunIDs) {
+                    self.earlierEventRunIDs.formUnion(unloaded)
+                }
                 if wasFollowingLatest || self.selectedRunID.flatMap({ id in
                     self.runs.first(where: { $0.id == id })
                 }) == nil {
-                    self.selectedRunID = snapshot.runs.first?.id
+                    if self.selectedRunID != snapshot.runs.first?.id {
+                        self.selectedRunID = snapshot.runs.first?.id
+                    }
                 }
                 let selectedEvents = self.selectedRunID.flatMap { self.eventsByRun[$0] } ?? []
                 if self.events != selectedEvents {
@@ -2771,9 +2772,15 @@ final class ThreadDetailViewModel: ObservableObject {
                         self.reasoningAnimator.reset()
                     }
                     self.hasProviderActivity = true
-                case .toolLifecycle(.executionFinished(let callID, let status)):
+                case .toolLifecycle(.executionFinished(let callID, let status, let emittedAt)):
                     guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     self.liveFinishedTools[callID] = status.rawValue
+                    if let emittedAt {
+                        let now = DispatchTime.now().uptimeNanoseconds
+                        if now >= emittedAt, (now - emittedAt) / 1_000_000 >= 250 {
+                            self.logger.info("toolFinishUIQueue run=\(run.id.uuidString) delayMs=\((now - emittedAt) / 1_000_000)")
+                        }
+                    }
                 case .userInputConsumed:
                     guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     answerTarget = ""

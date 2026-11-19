@@ -1438,7 +1438,8 @@ public actor ConversationRunService {
     private func handleToolFinish(callID: String, status: ToolResult.Status, at stamp: ToolTimingStamp) {
         toolCompletedAt[callID] = stamp.monotonic
         finishedToolExecutions[callID] = status
-        eventChannel.yield(.toolLifecycle(.executionFinished(callID: callID, status: status)))
+        eventChannel.yield(.toolLifecycle(.executionFinished(callID: callID, status: status,
+            emittedUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds)))
     }
 
     private func handleNativeDiagnostic(_ observation: TaskDiagnosticProgress, callID: String) {

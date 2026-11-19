@@ -169,7 +169,8 @@ struct ConversationContextFeedbackTests {
         var settledIndex: Int?
         var index = 0
         for await event in liveEvents {
-            if case .toolLifecycle(.executionFinished(let callID, let status)) = event,
+            if case .toolLifecycle(.executionFinished(let callID, let status, let emittedAt)) = event,
+               emittedAt != nil,
                callID == call.id {
                 executionFinishIndex = index
                 #expect(status == .failed)

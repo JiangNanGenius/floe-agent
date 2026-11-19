@@ -148,6 +148,8 @@ struct StepGroupView: View {
     }
 
     var body: some View {
+        let rows = visibleEvents
+        let title = summary
         VStack(alignment: .leading, spacing: 10) {
             Button {
                 withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded.toggle() }
@@ -155,7 +157,7 @@ struct StepGroupView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "square.stack.3d.up").foregroundStyle(stateColor)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(summary.isEmpty ? "chat.step_group_view.run_records" : summary).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        Text(title.isEmpty ? "chat.step_group_view.run_records" : title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         Text(stateTitle).font(.caption).foregroundStyle(stateColor)
                     }
                     Spacer(minLength: 8)
@@ -169,9 +171,9 @@ struct StepGroupView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("thread.steps.toggle")
             .accessibilityValue(isExpanded ? FloeL10n.l("chat.step_group_view.expanded") : FloeL10n.l("chat.step_group_view.collapsed"))
-            if !visibleEvents.isEmpty {
+            if !rows.isEmpty {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(visibleEvents) { event in
+                    ForEach(rows) { event in
                         ThreadEventView(
                             event: event, isLive: isLive, hasError: hasError, onRetry: nil,
                             approvalSummary: approvalSummary(for: event),
@@ -191,7 +193,7 @@ struct StepGroupView: View {
                         }
                     }
                 }
-                .animation(isLive && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: visibleEvents.map(\.id))
+                .animation(isLive && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: rows.map(\.id))
             }
         }
         .padding(.vertical, 6)
@@ -209,20 +211,6 @@ struct StepGroupView: View {
         }
     }
 
-    private var approvalSummariesByCallID: [String: String] {
-        var result: [String: String] = [:]
-        for event in events where event.kind == .approval || event.kind == .autoApproved {
-            let payload = (payloads[event.id] ?? [:])
-            let callID = payload["callID"] ?? payload["id"] ?? ""
-            let summary = payload["outcome"] ?? payload["reason"]
-                ?? (event.kind == .autoApproved ? FloeL10n.l("chat.step_group_view.auto_approved") : "")
-            if !callID.isEmpty, !summary.isEmpty {
-                result[callID] = summary
-            }
-        }
-        return result
-    }
-
     private func callID(for event: RunEventRecord) -> String? {
         let payload = (payloads[event.id] ?? [:])
         guard event.kind == .toolRequest || event.kind == .toolResult else { return nil }
@@ -232,7 +220,8 @@ struct StepGroupView: View {
 
     private func approvalSummary(for event: RunEventRecord) -> String? {
         guard let callID = callID(for: event) else { return nil }
-        return approvalSummariesByCallID[callID]
+        guard let summary = projection.read(events).approvals[callID] else { return nil }
+        return summary.isEmpty ? FloeL10n.l("chat.step_group_view.auto_approved") : summary
     }
 
     /// The projected decision line for this call, matched by the same callID
@@ -283,8 +272,9 @@ struct StepGroupView: View {
         guard event.kind == .approval || event.kind == .autoApproved else { return false }
         let payload = (payloads[event.id] ?? [:])
         let approvalCallID = payload["callID"] ?? payload["id"] ?? ""
-        let hasMatchingTool = events.contains { callID(for: $0) == approvalCallID }
-        return !approvalCallID.isEmpty && hasMatchingTool && approvalSummariesByCallID[approvalCallID] != nil
+        let metadata = projection.read(events)
+        return metadata.approvals[approvalCallID] != nil
+            && (metadata.requests.contains(approvalCallID) || metadata.results[approvalCallID] != nil)
     }
 }
 /// Run events are append-only. Decode only the small header fields needed by
@@ -295,6 +285,8 @@ private final class StepGroupMetadata: ObservableObject {
         var payloads: [UUID: [String: String]] = [:]
         var results: [String: RunEventRecord] = [:]
         var requests = Set<String>()
+        // Empty marks an implicit automatic approval, localized when rendered.
+        var approvals: [String: String] = [:]
     }
     private struct Header: Decodable {
         let values: [String: String]
@@ -308,11 +300,15 @@ private final class StepGroupMetadata: ObservableObject {
             self.values = values
         }
     }
-    private var ids: [UUID] = []
+    private var previousEvents: [RunEventRecord] = []
     private var snapshot = Snapshot()
     func read(_ events: [RunEventRecord]) -> Snapshot {
-        let nextIDs = events.map(\.id)
-        guard nextIDs != ids else { return snapshot }
+        // Repeated row lookups share the same Array storage. Array equality
+        // checks that storage first and also handles an independently rebuilt group.
+        if events == previousEvents {
+            previousEvents = events
+            return snapshot
+        }
         var next = Snapshot()
         for event in events {
             let payload = (try? JSONDecoder().decode(Header.self, from: Data(event.payloadJSON.utf8)))?.values ?? [:]
@@ -320,9 +316,17 @@ private final class StepGroupMetadata: ObservableObject {
             if let call = payload["callID"] ?? payload["id"], !call.isEmpty {
                 if event.kind == .toolRequest { next.requests.insert(call) }
                 if event.kind == .toolResult { next.results[call] = event }
+                if event.kind == .approval || event.kind == .autoApproved {
+                    if let summary = payload["outcome"] ?? payload["reason"] {
+                        if !summary.isEmpty { next.approvals[call] = summary }
+                    } else if event.kind == .autoApproved {
+                        next.approvals[call] = ""
+                    }
+                }
             }
         }
-        ids = nextIDs; snapshot = next
+        previousEvents = events
+        snapshot = next
         return next
     }
 }
