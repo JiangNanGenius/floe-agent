@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请在新工程中导入 RPG Maker MV，确认识别的是 www 后直接试玩，检查标题画面和地图。也可导入 Phaser 或已发布的 Twine 网页，检查首次启动、触控和返回。已同意过协议的设备升级后应直接进入应用。",
+  "en-US": "Import an RPG Maker MV game into a new project, check that www was recognized, and play through the title screen to a map. Try a Phaser game or a published Twine story and check first launch, touch input, and returning to the workbench. An upgrade on a device that already accepted the agreement should open the app directly."
+}
