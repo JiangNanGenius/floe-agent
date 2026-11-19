@@ -13,7 +13,7 @@ import Glibc
 public struct GameFileFingerprint: Equatable, Sendable {
     public let bytes: Int
     public let sha256: String
-    fileprivate let device: UInt64
+    let device: UInt64
     fileprivate let inode: UInt64
     fileprivate let mode: UInt32
     fileprivate let modifiedSeconds: Int64
@@ -99,6 +99,23 @@ public final class GameProjectReader {
     }
 
     deinit { close(rootFD) }
+
+    /// Only regular files on this same local APFS device qualify for import
+    /// revalidation by identity and nanosecond change time.
+    var localAPFSDevice: UInt64? {
+        #if canImport(Darwin)
+        var volume = statfs()
+        var root = stat()
+        guard fstatfs(rootFD, &volume) == 0, volume.f_flags & UInt32(MNT_LOCAL) != 0,
+              fstat(rootFD, &root) == 0 else { return nil }
+        let isAPFS = withUnsafeBytes(of: &volume.f_fstypename) {
+            $0.prefix(while: { $0 != 0 }).elementsEqual("apfs".utf8)
+        }
+        return isAPFS ? UInt64(truncatingIfNeeded: root.st_dev) : nil
+        #else
+        return nil
+        #endif
+    }
 
     /// Includes empty directories. No symlink, device, socket or FIFO is imported.
     public func tree(maximumEntries: Int, maximumDepth: Int = 32, excludingNames: Set<String> = []) throws -> [(path: GameRelativePath, directory: Bool)] {
@@ -200,8 +217,31 @@ public final class GameProjectReader {
             try verifyFingerprintPath(path, expected: cached)
             return cached
         }
+        var result = try hashFile(descriptor, info: before, path: path,
+                                  honorCancellation: honorCancellation, writeChunk: writeChunk)
+        var after = stat()
+        guard fstat(descriptor, &after) == 0 else { throw GameProjectError.corruptStorage }
+        if !result.matches(after) {
+            // A provider can finish setting timestamps while the bytes are in
+            // transit. Re-read the same descriptor once, without writing a
+            // second copy, and require a stable byte-for-byte matching digest.
+            guard before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+                  before.st_mode == after.st_mode, before.st_size == after.st_size,
+                  lseek(descriptor, 0, SEEK_SET) == 0 else { throw GameProjectError.corruptStorage }
+            let checked = try hashFile(descriptor, info: after, path: path,
+                                       honorCancellation: honorCancellation, writeChunk: nil)
+            guard result.sha256 == checked.sha256, fstat(descriptor, &after) == 0,
+                  checked.matches(after) else { throw GameProjectError.corruptStorage }
+            result = checked
+        }
+        try verifyFingerprintPath(path, expected: result)
+        return result
+    }
+
+    private func hashFile(_ descriptor: Int32, info: stat, path: GameRelativePath,
+                          honorCancellation: Bool, writeChunk: ((Data) throws -> Void)?) throws -> GameFileFingerprint {
         var hash = SHA256(), total = 0
-        var buffer = [UInt8](repeating: 0, count: max(1, min(1_048_576, Int(before.st_size))))
+        var buffer = [UInt8](repeating: 0, count: max(1, min(1_048_576, Int(info.st_size))))
         while true {
             if honorCancellation { try Task.checkCancellation() }
             let count = buffer.withUnsafeMutableBytes { systemRead(descriptor, $0.baseAddress!, $0.count) }
@@ -214,13 +254,8 @@ public final class GameProjectReader {
             try writeChunk?(chunk)
             total += count
         }
-        var after = stat()
-        let result = GameFileFingerprint(bytes: total,
-            sha256: GameDigest.hex(hash.finalize()), info: before)
-        guard fstat(descriptor, &after) == 0, total == before.st_size,
-              result.matches(after) else { throw GameProjectError.corruptStorage }
-        try verifyFingerprintPath(path, expected: result)
-        return result
+        guard total == info.st_size else { throw GameProjectError.corruptStorage }
+        return GameFileFingerprint(bytes: total, sha256: GameDigest.hex(hash.finalize()), info: info)
     }
 
     private func verifyFingerprintPath(_ path: GameRelativePath, expected: GameFileFingerprint) throws {

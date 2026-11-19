@@ -44,6 +44,50 @@ private func phaser() throws -> ProjectFixture {
     try .init(["package.json": #"{"dependencies":{"phaser":"^3.90.0"}}"#])
 }
 
+@Test func streamedFingerprintAcceptsMetadataOnlyChangesWithoutDuplicatingOutput() throws {
+    let fixture = try ProjectFixture()
+    let path = try GameRelativePath("Map001.json")
+    let url = fixture.root.appendingPathComponent(path.value)
+    let source = Data(repeating: 97, count: 1_340_000)
+    try source.write(to: url)
+    let reader = try GameProjectReader(rootURL: fixture.root, maximumFileBytes: source.count)
+    var copied = Data()
+    let result = try reader.fingerprintWithIdentity(path) { chunk in
+        if copied.isEmpty {
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000_000)],
+                                                  ofItemAtPath: url.path)
+        }
+        copied.append(chunk)
+    }
+    #expect(copied == source)
+    #expect(result?.sha256 == GameDigest.sha256(source))
+    #expect(try reader.fingerprintWithIdentity(path, cached: result) == result)
+}
+
+@Test func streamedFingerprintRejectsChangedBytesOfTheSameSize() throws {
+    let fixture = try ProjectFixture(["Map001.json": "original"])
+    let reader = try GameProjectReader(rootURL: fixture.root, maximumFileBytes: 1024)
+    let path = try GameRelativePath("Map001.json")
+    #expect(throws: GameProjectError.corruptStorage) {
+        _ = try reader.fingerprintWithIdentity(path) { _ in
+            let writer = try FileHandle(forWritingTo: fixture.root.appendingPathComponent(path.value))
+            defer { try? writer.close() }
+            try writer.write(contentsOf: Data("modified".utf8))
+        }
+    }
+}
+
+@Test func streamedFingerprintRejectsReplacingTheSourceWithIdenticalBytes() throws {
+    let fixture = try ProjectFixture(["Map001.json": "original"])
+    let reader = try GameProjectReader(rootURL: fixture.root, maximumFileBytes: 1024)
+    let path = try GameRelativePath("Map001.json")
+    #expect(throws: GameProjectError.corruptStorage) {
+        _ = try reader.fingerprintWithIdentity(path) { chunk in
+            try chunk.write(to: fixture.root.appendingPathComponent(path.value), options: .atomic)
+        }
+    }
+}
+
 @Test func cachedFingerprintRechecksChangedAndReplacedFiles() throws {
     let fixture = try ProjectFixture(["assets/game.bin": "original"])
     let reader = try GameProjectReader(rootURL: fixture.root, maximumFileBytes: 1_024)
