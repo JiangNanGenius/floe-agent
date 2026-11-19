@@ -489,6 +489,7 @@ final class GameWorkspaceRegistry {
         let history = chatGameHistory(conversationID: conversationID, workspaceID: workspace.id)
         let support = history.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        let transfer = try GameProjectTransferService(projectSupportDirectory: support)
         let repository = try FileGameProjectRepository(directory: history)
         let revision: String
         do {
@@ -506,8 +507,6 @@ final class GameWorkspaceRegistry {
             history: history, support: support, title: title,
             starterResources: starterResources())
         try await session.refresh(reloadFiles: false, allowRecognitionFailure: true)
-        let transfer = try GameProjectTransferService(
-            stagingDirectory: support.appendingPathComponent("TransferJobs", isDirectory: true))
         let value = GameWorkspaceSession(key: key, record: nil, center: center, project: session,
             paths: nil, support: support, history: history, transfer: transfer)
         value.setEnvironmentID(environmentID)
@@ -539,11 +538,16 @@ final class GameWorkspaceRegistry {
         return FileManager.default.fileExists(atPath: head.path)
     }
 
-    func restoreChatGame(conversationID: UUID, workspaceID: UUID, leasedRoot: URL?) async throws -> GameWorkspaceSession? {
+    func restoreChatGame(conversationID: UUID, workspaceID: UUID, leasedRoot: URL?,
+                         openedCenter: WorkspaceCenter? = nil) async throws -> GameWorkspaceSession? {
+        guard let leasedRoot else { return nil }
         let owner = GameProjectOwner.conversation(conversationID: conversationID, workspaceID: workspaceID)
-        if let existing = session(projectID: workspaceID, owner: owner) { return existing }
-        guard let leasedRoot, hasSavedChatGame(conversationID: conversationID, workspaceID: workspaceID) else { return nil }
-        let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
+        if let existing = session(projectID: workspaceID, owner: owner) {
+            guard existing.key.rootPath == Self.canonical(leasedRoot) else { throw GameIDEBridgeError.workspaceChanged }
+            return existing
+        }
+        guard hasSavedChatGame(conversationID: conversationID, workspaceID: workspaceID) else { return nil }
+        let center = openedCenter ?? WorkspaceCenter(environment: environment, publishesSharedState: false)
         try await center.openTaskWorkspace(conversationID: conversationID)
         guard let workspace = center.currentWorkspace, workspace.id == workspaceID,
               let current = center.currentRootURL, Self.canonical(current) == Self.canonical(leasedRoot) else {

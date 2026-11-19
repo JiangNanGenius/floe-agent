@@ -27,6 +27,23 @@ final class GameWorkspaceIdentityContractTests: XCTestCase {
         XCTAssertNotEqual(base, chatOwner)
     }
 
+    func testChatPlayLinkRequiresASuccessfulCreationInTheMatchingWorkspace() throws {
+        let project = UUID()
+        func receipt(tool: String = "game.create", status: String = "ok",
+                     files: Bool = true, workspace: UUID? = nil) throws -> UUID? {
+            let summary = try JSONSerialization.data(withJSONObject: ["projectID": project.uuidString, "hasFiles": files])
+            var payload = ["tool": tool, "status": status, "summary": String(decoding: summary, as: UTF8.self)]
+            payload["workspaceID"] = workspace?.uuidString
+            return ChatGamePlayLink.receipt(from: String(decoding: try JSONEncoder().encode(payload), as: UTF8.self))
+        }
+        XCTAssertEqual(try receipt(workspace: project), project)
+        XCTAssertEqual(try receipt(), project)
+        XCTAssertNil(try receipt(workspace: UUID()))
+        XCTAssertNil(try receipt(status: "failed"))
+        XCTAssertNil(try receipt(tool: "exec.shell"))
+        XCTAssertNil(try receipt(files: false))
+    }
+
     func testNativeServiceMetadataUsesADistinctTargetTool() throws {
         let runID = UUID()
         let conversationID = UUID()

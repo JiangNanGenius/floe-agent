@@ -5,6 +5,80 @@ import FloeGameCore
 import FloeGameIDEBridge
 import FloeGameProjectSelectionUI
 
+struct ChatGamePlayLink: Identifiable {
+    let conversationID: UUID
+    let projectID: UUID
+    var id: String { "\(conversationID)/\(projectID)" }
+
+    static func receipt(from payload: String) -> UUID? {
+        struct Result: Decodable {
+            let tool: String
+            let status: String
+            let summary: String
+            let workspaceID: UUID?
+        }
+        struct Game: Decodable {
+            let projectID: UUID
+            let hasFiles: Bool
+        }
+        let decoder = JSONDecoder()
+        guard let result = try? decoder.decode(Result.self, from: Data(payload.utf8)),
+              result.tool == "game.create", result.status == "ok",
+              let game = try? decoder.decode(Game.self, from: Data(result.summary.utf8)),
+              game.hasFiles, result.workspaceID == nil || result.workspaceID == game.projectID else { return nil }
+        return game.projectID
+    }
+}
+
+struct ChatGamePlayScreen: View {
+    let link: ChatGamePlayLink
+    let environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
+    @State private var request: GameIDEGameRunRequest?
+    @State private var error: String?
+    @State private var attempt = 0
+
+    var body: some View {
+        Group {
+            if let request {
+                GameIDEGameRunScreen(request: request, registry: environment.gameWorkspaces)
+            } else {
+                NavigationStack {
+                    Group {
+                        if let error {
+                            ContentUnavailableView {
+                                Label(IDELanguageRunText.t("无法打开游戏", "Couldn’t open game"), systemImage: "gamecontroller")
+                            } description: { Text(error) } actions: {
+                                Button("action.retry") { attempt += 1 }
+                            }
+                        } else { ProgressView() }
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("action.close") { dismiss() } }
+                    }
+                }
+            }
+        }
+        .task(id: attempt) {
+            error = nil
+            do {
+                let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
+                try await center.openTaskWorkspace(conversationID: link.conversationID)
+                guard center.currentWorkspace?.id == link.projectID, let root = center.currentRootURL,
+                      let session = try await environment.gameWorkspaces.restoreChatGame(
+                        conversationID: link.conversationID, workspaceID: link.projectID, leasedRoot: root, openedCenter: center) else {
+                    throw GameWorkspaceRegistryError.ownerNotAvailable
+                }
+                try await session.project.refresh()
+                try Task.checkCancellation()
+                request = GameIDEGameRunRequest(session: session, extensionOverride: nil, saveAllSurfaces: { true })
+            } catch is CancellationError {
+                return
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
 @MainActor
 struct GameIDEGameRunRequest: Identifiable {
     let id = UUID()
@@ -98,6 +172,10 @@ struct GameIDEGameRunScreen: View {
         .interactiveDismissDisabled(true)
         .task {
             guard !started, launchTask == nil else { return }
+            if request.session.visualPresentation != nil {
+                started = true
+                return
+            }
             guard let snapshot = request.session.project.selectionSnapshot else { return }
             if !snapshot.requiresExplicitChoice, snapshot.runSelection != nil { begin() }
         }

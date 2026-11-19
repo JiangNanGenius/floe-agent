@@ -37,6 +37,7 @@ struct StepGroupView: View {
     /// match a child whose parent run is the run that rendered the call.
     private let childRunRecords: [ChildRunRecord]
     private let onOpenChild: ((ChildRunRecord?) -> Void)?
+    private let onPlayGame: ((UUID) -> Void)?
     private let conversationID: UUID?
     private let toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)?
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
@@ -58,6 +59,7 @@ struct StepGroupView: View {
         childRunRecords: [ChildRunRecord] = [],
         onOpenChild: ((ChildRunRecord?) -> Void)? = nil,
         conversationID: UUID? = nil,
+        onPlayGame: ((UUID) -> Void)? = nil,
         toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)? = nil,
         onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
     ) {
@@ -70,6 +72,7 @@ struct StepGroupView: View {
         self.decisions = decisions
         self.childRunRecords = childRunRecords
         self.onOpenChild = onOpenChild
+        self.onPlayGame = onPlayGame
         self.conversationID = conversationID
         self.toolDetailExpansion = toolDetailExpansion
         self.onResolveApproval = onResolveApproval
@@ -171,6 +174,15 @@ struct StepGroupView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("thread.steps.toggle")
             .accessibilityValue(isExpanded ? FloeL10n.l("chat.step_group_view.expanded") : FloeL10n.l("chat.step_group_view.collapsed"))
+            if let onPlayGame, let projectID = projection.read(events).createdGameID {
+                Button {
+                    onPlayGame(projectID)
+                } label: {
+                    Label(IDELanguageRunText.t("试玩游戏", "Play game"), systemImage: "gamecontroller")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("thread.game.play")
+            }
             if !rows.isEmpty {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(rows) { event in
@@ -285,12 +297,13 @@ private final class StepGroupMetadata: ObservableObject {
         var payloads: [UUID: [String: String]] = [:]
         var results: [String: RunEventRecord] = [:]
         var requests = Set<String>()
+        var createdGameID: UUID?
         // Empty marks an implicit automatic approval, localized when rendered.
         var approvals: [String: String] = [:]
     }
     private struct Header: Decodable {
         let values: [String: String]
-        enum CodingKeys: String, CodingKey, CaseIterable { case id, callID, status, outcome, reason }
+        enum CodingKeys: String, CodingKey, CaseIterable { case id, callID, status, outcome, reason, tool }
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             var values: [String: String] = [:]
@@ -312,6 +325,10 @@ private final class StepGroupMetadata: ObservableObject {
         var next = Snapshot()
         for event in events {
             let payload = (try? JSONDecoder().decode(Header.self, from: Data(event.payloadJSON.utf8)))?.values ?? [:]
+            if event.kind == .toolResult, payload["tool"] == "game.create", payload["status"] == "ok",
+               let receipt = ChatGamePlayLink.receipt(from: event.payloadJSON) {
+                next.createdGameID = receipt
+            }
             next.payloads[event.id] = payload
             if let call = payload["callID"] ?? payload["id"], !call.isEmpty {
                 if event.kind == .toolRequest { next.requests.insert(call) }

@@ -448,6 +448,7 @@ final class GameProjectToolService {
                     inputDeclarationPath: nil, sourceLicense: nil, enginePrerequisites: [],
                     status: "empty project; starter not seeded: " + error.localizedDescription)
             }
+            throw error
         }
         return try await summary(session)
     }

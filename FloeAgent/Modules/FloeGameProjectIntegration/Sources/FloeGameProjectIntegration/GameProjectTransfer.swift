@@ -81,6 +81,19 @@ public actor GameProjectTransferService {
     private var receiptOrder: [UUID] = []
     private var cleanupJobs: [UUID: URL] = [:]
 
+    /// Chat projects get their private support tree on first use, including
+    /// older projects whose history exists but whose transfer folder is missing.
+    public init(projectSupportDirectory: URL) throws {
+        guard projectSupportDirectory.isFileURL else { throw GameProjectTransferError.invalidStagingDirectory }
+        let jobs = projectSupportDirectory.appendingPathComponent("TransferJobs", isDirectory: true)
+        try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        guard try jobs.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+            throw GameProjectTransferError.invalidStagingDirectory
+        }
+        try self.init(stagingDirectory: jobs)
+    }
+
     public init(stagingDirectory: URL,
                 removeOwnedDirectory: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) throws {
         guard stagingDirectory.isFileURL else { throw GameProjectTransferError.invalidStagingDirectory }

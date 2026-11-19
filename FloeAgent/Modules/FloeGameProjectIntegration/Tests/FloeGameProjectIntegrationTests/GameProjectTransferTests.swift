@@ -6,6 +6,22 @@ import FloeGameAuthoring
 @testable import FloeGameProjectIntegration
 
 @MainActor final class GameProjectTransferTests: XCTestCase {
+    func testChatProjectCreatesAndReopensItsOwnTransferDirectory() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: support) }
+        try FileManager.default.createDirectory(at: support.appendingPathComponent("History"), withIntermediateDirectories: true)
+        let jobs = support.appendingPathComponent("TransferJobs")
+        _ = try GameProjectTransferService(projectSupportDirectory: support)
+        let pending = jobs.appendingPathComponent("pending")
+        try Data([42]).write(to: pending)
+        _ = try GameProjectTransferService(projectSupportDirectory: support)
+        XCTAssertEqual(try Data(contentsOf: pending), Data([42]))
+        try FileManager.default.removeItem(at: jobs)
+        try Data([21]).write(to: jobs)
+        XCTAssertThrowsError(try GameProjectTransferService(projectSupportDirectory: support))
+        XCTAssertEqual(try Data(contentsOf: jobs), Data([21]))
+    }
+
     func testAllTwentyEnginesCopyExactFilesWithoutSharingOwnership() async throws {
         XCTAssertEqual(GameEngineID.allCases.count, 20)
         for engine in GameEngineID.allCases {
