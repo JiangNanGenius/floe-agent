@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.2</title>
+      <pubDate>Fri, 20 Nov 2026 17:45:30 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.2</link>
+      <sparkle:version>32</sparkle:version>
+      <sparkle:shortVersionString>1.11.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>改进设置导航、任务搜索和权限设置。 Improved settings navigation, task search and permission settings.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.2/Floe-Agent-1.11.2.dmg" length="33662829" type="application/octet-stream" sparkle:edSignature="vgosX5aYV4ws9br1YPaPDa19zIUdcMWAwVLOubqB4OByFJ+/XkI3QkUNlS++AfRsiiKO5KEfH4i7wpXUcjtTBw==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.1</title>
       <pubDate>Fri, 20 Nov 2026 16:55:33 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.1</link>
