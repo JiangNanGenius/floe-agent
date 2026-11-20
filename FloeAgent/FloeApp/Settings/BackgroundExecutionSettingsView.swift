@@ -51,9 +51,7 @@ struct BackgroundExecutionSettingsView: View {
         guard !blocking.isEmpty else { return nil }
         let names = blocking.map(capabilityName).joined(
             separator: FloeL10n.isChinese ? "、" : ", ")
-        return FloeL10n.isChinese
-            ? "需先关闭\(names)。"
-            : "Turn off \(names) first."
+        return FloeL10n.l("app.background_execution_settings_view.turn_off_first", names)
     }
 
     /// Enable-pull copy: what turning this capability on also enables
@@ -64,9 +62,7 @@ struct BackgroundExecutionSettingsView: View {
         guard !missing.isEmpty else { return nil }
         let names = missing.map(capabilityName).joined(
             separator: FloeL10n.isChinese ? "、" : ", ")
-        return FloeL10n.isChinese
-            ? "开启后将同时开启\(names)。"
-            : "Turning this on also turns on \(names)."
+        return FloeL10n.l("app.background_execution_settings_view.turning_this_on_also_turns", names)
     }
 
     private func isBlocked(_ capability: BackgroundExecutionCapability) -> Bool {

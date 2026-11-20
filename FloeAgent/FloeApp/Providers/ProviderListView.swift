@@ -310,14 +310,10 @@ struct ProviderListView: View {
     private var catalogUpdatePromptMessage: String {
         var parts: [String] = []
         if !capabilityProposals.isEmpty {
-            parts.append(IDELanguageRunText.t(
-                "\(capabilityProposals.count) 个已保存模型有可审阅的资料更新",
-                "\(capabilityProposals.count) saved models have metadata updates to review"))
+            parts.append(FloeL10n.l("app.provider_list_view.saved_models_have_metadata_updates", capabilityProposals.count))
         }
         if !updatedCatalogProviders.isEmpty {
-            parts.append(IDELanguageRunText.t(
-                "\(updatedCatalogProviders.count) 个供应商目录自上次保存审阅后有变化",
-                "\(updatedCatalogProviders.count) provider catalogs changed since your last saved review"))
+            parts.append(FloeL10n.l("app.provider_list_view.provider_catalogs_changed_since_your", updatedCatalogProviders.count))
         }
         parts.append(IDELanguageRunText.t(
             "是否查看并更新已添加模型的信息",

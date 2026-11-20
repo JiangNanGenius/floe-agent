@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeCore
 import SwiftUI
 import FloeWorkbench
 
@@ -51,7 +52,7 @@ extension MediaV2Session {
                     }
                     return "\(label)：\(use.name)"
                 }.joined(separator: "；")
-                diagnostic = WorkbenchText.t("此素材仍用于\(names)。请先移除使用对象。", "This asset is still used by \(names). Remove its uses first.")
+                diagnostic = FloeL10n.l("app.media_v2_asset_removal.this_asset_is_still_used", names)
             } catch { diagnostic = error.localizedDescription }
         }
     }

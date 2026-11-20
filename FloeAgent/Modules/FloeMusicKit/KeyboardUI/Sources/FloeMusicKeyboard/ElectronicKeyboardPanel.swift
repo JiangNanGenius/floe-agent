@@ -50,6 +50,9 @@ public struct KeyboardPanelConfiguration: Hashable, Sendable {
 /// controller's sink. It owns no audio engine, no audio session and no
 /// storage; expanding/collapsing and preset wiring are host-driven.
 public struct ElectronicKeyboardPanel: View {
+    @Environment(\.locale) private var locale
+    private func localized(_ key: String) -> String { kbLocalized(key, locale: locale) }
+
     @Bindable private var controller: KeyboardPerformanceController
     private var configuration: KeyboardPanelConfiguration
     private var toneSurface: KeyboardToneControlSurface
@@ -113,7 +116,7 @@ public struct ElectronicKeyboardPanel: View {
                 }
             }
             if configuration.showsSustainControl {
-                Toggle(kbLocalized("keyboard.sustain"), isOn: $controller.sustain)
+                Toggle(localized("keyboard.sustain"), isOn: $controller.sustain)
                     .toggleStyle(.button)
                     .fixedSize()
                     .accessibilityIdentifier("floe.music.keyboard.sustain")
@@ -122,13 +125,13 @@ public struct ElectronicKeyboardPanel: View {
                 Button(action: collapse) {
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
                 }
-                .accessibilityLabel(kbLocalized("keyboard.collapse"))
+                .accessibilityLabel(localized("keyboard.collapse"))
                 .accessibilityIdentifier("floe.music.keyboard.expand")
             } else if configuration.showsExpandControl, let expand = onExpand {
                 Button(action: expand) {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
-                .accessibilityLabel(kbLocalized("keyboard.expand"))
+                .accessibilityLabel(localized("keyboard.expand"))
                 .accessibilityIdentifier("floe.music.keyboard.expand")
             }
         }
@@ -138,7 +141,7 @@ public struct ElectronicKeyboardPanel: View {
     private var presetMenu: some View {
         Menu {
             if toneSurface.presets.isEmpty {
-                Text(kbLocalized("keyboard.noPresets"))
+                Text(localized("keyboard.noPresets"))
             } else {
                 ForEach(toneSurface.presets) { preset in
                     Button {
@@ -164,26 +167,26 @@ public struct ElectronicKeyboardPanel: View {
     private var selectedPresetName: String {
         guard let id = toneSurface.selectedPresetID.wrappedValue,
               let preset = toneSurface.presets.first(where: { $0.id == id })
-        else { return kbLocalized("keyboard.tone") }
+        else { return localized("keyboard.tone") }
         return preset.displayName
     }
 
     private var parameterRow: some View {
         HStack(spacing: 16) {
             if let volume = toneSurface.volume {
-                parameterSlider(title: kbLocalized("keyboard.volume"), value: volume.value)
+                parameterSlider(title: localized("keyboard.volume"), value: volume.value)
             }
             if let filter = toneSurface.filterCutoff {
-                parameterSlider(title: kbLocalized("keyboard.filter"), value: filter.value)
+                parameterSlider(title: localized("keyboard.filter"), value: filter.value)
             }
             if let attack = toneSurface.attack {
-                parameterSlider(title: kbLocalized("keyboard.attack"), value: attack.value)
+                parameterSlider(title: localized("keyboard.attack"), value: attack.value)
             }
             if let release = toneSurface.release {
-                parameterSlider(title: kbLocalized("keyboard.release"), value: release.value)
+                parameterSlider(title: localized("keyboard.release"), value: release.value)
             }
             if let effect = toneSurface.effectMix {
-                parameterSlider(title: kbLocalized("keyboard.effect"), value: effect.value)
+                parameterSlider(title: localized("keyboard.effect"), value: effect.value)
             }
         }
     }
@@ -205,13 +208,13 @@ public struct ElectronicKeyboardPanel: View {
             if configuration.showsPitchBendWheel {
                 PerformanceWheel(value: $controller.pitchBend, range: -1 ... 1, behavior: .springToCenter)
                     .frame(width: 44)
-                    .accessibilityLabel(kbLocalized("keyboard.pitchbend"))
+                    .accessibilityLabel(localized("keyboard.pitchbend"))
                     .accessibilityIdentifier("floe.music.keyboard.pitchBend")
             }
             if configuration.showsModulationWheel {
                 PerformanceWheel(value: $controller.modulation, range: 0 ... 1, behavior: .latch)
                     .frame(width: 44)
-                    .accessibilityLabel(kbLocalized("keyboard.modulation"))
+                    .accessibilityLabel(localized("keyboard.modulation"))
                     .accessibilityIdentifier("floe.music.keyboard.modulation")
             }
         }

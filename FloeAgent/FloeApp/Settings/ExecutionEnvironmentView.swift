@@ -518,7 +518,7 @@ struct ExecutionEnvironmentView: View {
                     let count = terminalIDs.count
                     let jobs = (try? await BackgroundJobStore(database: center.environment.database).jobs(environmentID: environmentID, targetTool: "exec.localService")) ?? []
                     let services = jobs.filter { !$0.state.isTerminal }.count
-                    stopImpact = IDELanguageRunText.t("将关闭 \(count) 个终端、\(services) 个网页服务及此环境的端口监听。磁盘和转发规则保留。", "This stops \(count) terminals, \(services) web services and this environment's listeners. Disk and forwarding rules are retained.")
+                    stopImpact = FloeL10n.l("app.execution_environment_view.this_stops_terminals_web_services", count, services)
                     let serviceNames = jobs.filter { !$0.state.isTerminal }.map { job in
                         (try? JSONDecoder().decode(LocalServiceTool.Arguments.self, from: job.payloadJSON))?.entry ?? String(job.id.uuidString.prefix(8))
                     }

@@ -82,7 +82,7 @@ struct ProviderCapabilityMigrationView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             if let before = proposal.currentContextTokens, let after = proposal.proposedContextTokens {
-                Text(IDELanguageRunText.t("上下文：\(before.formatted()) → \(after.formatted())", "Context: \(before.formatted()) → \(after.formatted())"))
+                Text(FloeL10n.l("app.provider_capability_migration_view.context", before.formatted(), after.formatted()))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.primary)
             }

@@ -204,6 +204,13 @@ struct GeneralSettingsView: View {
         case .system: "settings.general.language.system"
         case .en: "settings.general.language.en"
         case .zhHans: "settings.general.language.zh_hans"
+        case .zhHant: "settings.general.language.zh_hant"
+        case .ja: "settings.general.language.ja"
+        case .ko: "settings.general.language.ko"
+        case .fr: "settings.general.language.fr"
+        case .de: "settings.general.language.de"
+        case .es: "settings.general.language.es"
+        case .ptBR: "settings.general.language.pt_br"
         }
     }
 

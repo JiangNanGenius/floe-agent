@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
 
 enum PersonalLibraryDeleteSelection {
     case work(PersonalContentRecord), folder(PersonalLibraryFolder)
@@ -9,12 +10,11 @@ enum PersonalLibraryDeleteSelection {
     }
     func message(usingTrash: Bool) -> String {
         guard usingTrash else {
-            return IDELanguageRunText.t("“\(item.title)”及其中所有内容都将被永久删除。此操作无法撤销。",
-                "“\(item.title)” and all its contents will be permanently deleted. This cannot be undone.")
+            return FloeL10n.l("app.personal_recently_deleted_view.and_all_its_contents_will", item.title)
         }
         switch self {
-        case .work(let value): return IDELanguageRunText.t("“\(value.title)”可以在回收站中恢复。", "You can restore “\(value.title)” from Trash.")
-        case .folder(let value): return IDELanguageRunText.t("“\(value.name)”及其中的文件可以在回收站中恢复。", "You can restore “\(value.name)” and its contents from Trash.")
+        case .work(let value): return FloeL10n.l("app.personal_recently_deleted_view.you_can_restore_from_trash", value.title)
+        case .folder(let value): return FloeL10n.l("app.personal_recently_deleted_view.you_can_restore_and_its", value.name)
         }
     }
 }
@@ -99,7 +99,7 @@ struct PersonalRecentlyDeletedView: View {
                         }.disabled(busy || selected.isEmpty)
                             .accessibilityIdentifier("space.files.trash.restoreSelected")
                         Spacer()
-                        Text(IDELanguageRunText.t("已选 \(selected.count) 项", "\(selected.count) selected"))
+                        Text(FloeL10n.l("app.data_management_view.selected", selected.count))
                             .font(.footnote).foregroundStyle(.secondary)
                             .accessibilityIdentifier("space.files.trash.selectionCount")
                         Spacer()
@@ -121,8 +121,8 @@ struct PersonalRecentlyDeletedView: View {
                     Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { confirmation = [] }
                 } message: {
                     Text(confirmation.count == 1
-                        ? IDELanguageRunText.t("“\(confirmation.first?.entry.title ?? "")”及其中所有内容都将被永久删除。此操作无法撤销。", "“\(confirmation.first?.entry.title ?? "")” and all its contents will be permanently deleted. This cannot be undone.")
-                        : IDELanguageRunText.t("所选 \(confirmation.count) 项及其中所有内容都将被永久删除。此操作无法撤销。", "The selected \(confirmation.count) items and all their contents will be permanently deleted. This cannot be undone."))
+                        ? FloeL10n.l("app.personal_recently_deleted_view.and_all_its_contents_will", confirmation.first?.entry.title ?? "")
+                        : FloeL10n.l("app.personal_recently_deleted_view.the_selected_items_and_all", confirmation.count))
                 }
             .alert(IDELanguageRunText.t("未能完成", "Unable to finish"), isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
                 Button(IDELanguageRunText.t("好", "OK"), role: .cancel) { notice = nil }
@@ -155,7 +155,7 @@ struct PersonalRecentlyDeletedView: View {
         let result = await PersonalLibraryFileActions.permanentlyDeleteBatch(frozen, environment: environment)
         guard generation == expected else { return }
         if !result.failed.isEmpty {
-            notice = IDELanguageRunText.t("已清理 \(result.deleted.count) 项，\(result.failed.count) 项未能完成。", "Removed \(result.deleted.count); \(result.failed.count) could not be completed.")
+            notice = FloeL10n.l("app.personal_recently_deleted_view.removed_could_not_be_completed", result.deleted.count, result.failed.count)
                 + "\n" + result.failed.prefix(3).map(\.message).joined(separator: "\n")
         }
         let failedIDs = Set(result.failed.map(\.entryID))
@@ -170,8 +170,7 @@ struct PersonalRecentlyDeletedView: View {
         guard generation == expected else { return }
         selected = Set(result.failed.map { $0.entry.id }); selecting = !selected.isEmpty
         if !result.failed.isEmpty {
-            notice = IDELanguageRunText.t("已恢复 \(result.restored.count) 项，\(result.failed.count) 项未能完成。",
-                "Restored \(result.restored.count); \(result.failed.count) could not be completed.")
+            notice = FloeL10n.l("app.personal_recently_deleted_view.restored_could_not_be_completed", result.restored.count, result.failed.count)
                 + "\n" + result.failed.prefix(3).map { $0.message }.joined(separator: "\n")
         }
         await refresh()

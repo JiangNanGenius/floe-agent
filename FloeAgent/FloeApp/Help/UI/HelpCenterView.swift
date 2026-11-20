@@ -103,8 +103,9 @@ struct HelpCenterView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Picker(copy.languageLabel, selection: $selectedLanguage) {
-                        Text("English").tag(HelpLanguage.english)
-                        Text("简体中文").tag(HelpLanguage.simplifiedChinese)
+                        ForEach(center.availableLanguages, id: \.self) { language in
+                            Text(language.displayName).tag(language)
+                        }
                     }
                 } label: {
                     Label(copy.languageLabel, systemImage: "character.bubble")

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeWorkbench
 
 struct MediaV2CompoundInspector:View {
@@ -17,7 +18,7 @@ struct MediaV2CompoundInspector:View {
                 }.aspectRatio(16/9,contentMode:.fit).clipShape(RoundedRectangle(cornerRadius:10))
                 VStack(alignment:.leading,spacing:5) {
                     Label(compound.name,systemImage:"square.stack.3d.up.fill").font(.headline)
-                    Text(WorkbenchText.t("\(compound.source.trackGraph.tracks.count) 条轨道 · \(compound.source.trackGraph.tracks.flatMap(\.clips).count) 个片段","\(compound.source.trackGraph.tracks.count) tracks · \(compound.source.trackGraph.tracks.flatMap(\.clips).count) clips")).font(.caption).foregroundStyle(.secondary)
+                    Text(FloeL10n.l("app.media_v2_compound_inspector.tracks_clips", compound.source.trackGraph.tracks.count, compound.source.trackGraph.tracks.flatMap(\.clips).count)).font(.caption).foregroundStyle(.secondary)
                     if compound.needsRender { Label(WorkbenchText.t("内部编辑已保存，预览待更新","Edits saved; preview needs updating"),systemImage:"arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.orange) }
                 }
                 Button { Task { do { try await session.openCompound(clip.id) } catch { session.diagnostic=error.localizedDescription } } } label: {
@@ -32,7 +33,7 @@ struct MediaV2CompoundInspector:View {
                 Label(WorkbenchText.t("创建复合片段","Create compound clip"),systemImage:"square.stack.3d.up").font(.headline)
                 TextField(WorkbenchText.t("复合片段名称","Compound name"),text:$name).textFieldStyle(.roundedBorder).frame(minHeight:44)
                 Toggle(WorkbenchText.t("在时间轴多选片段","Select multiple timeline clips"),isOn:$session.multipleClipSelection).toggleStyle(.switch)
-                Text(WorkbenchText.t("已选 \(session.compoundSelectedIDs.count) 个；关联原声会一并保留。","\(session.compoundSelectedIDs.count) selected; linked source audio is included.")).font(.caption).foregroundStyle(.secondary)
+                Text(FloeL10n.l("app.media_v2_compound_inspector.selected_linked_source_audio_is", session.compoundSelectedIDs.count)).font(.caption).foregroundStyle(.secondary)
                 Button { run("create") } label: { Label(WorkbenchText.t("创建并保存","Create and save"),systemImage:"square.stack.3d.up.fill").frame(maxWidth:.infinity,minHeight:44) }.buttonStyle(.borderedProminent).disabled(busy || session.compoundSelectedIDs.isEmpty)
             }
             if session.processingTool {

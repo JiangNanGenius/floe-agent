@@ -20,25 +20,27 @@ struct HelpSettingsTarget: Hashable, Sendable, Identifiable, Encodable {
 
 enum HelpSettingsCatalog {
     static func target(id: String, language: HelpLanguage) -> HelpSettingsTarget? {
-        let chinese = language == .simplifiedChinese
-        let settings = chinese ? "设置" : "Settings"
-        let general = chinese ? "通用" : "General"
+        func text(_ key: String) -> String {
+            FloeL10n.localized(key: "help.settings." + key, languageCode: language.rawValue)
+        }
+        let settings = text("settings")
+        let general = text("general")
         switch id {
         case "general.hardwareReturn":
-            let title = chinese ? "回车键" : "Return Key"
+            let title = text("return_key")
             return HelpSettingsTarget(id: id, category: "general",
                 controlID: "settings.general.hardwareReturn", title: title,
-                path: [settings, general, chinese ? "实体键盘" : "Hardware Keyboard", title])
+                path: [settings, general, text("hardware_keyboard"), title])
         case "general.voiceOutput":
-            let title = chinese ? "语音输出" : "Voice Output"
+            let title = text("voice_output")
             return HelpSettingsTarget(id: id, category: "general", nestedPage: "voiceOutput",
                 title: title, path: [settings, general, title])
         case "execution.memory":
-            let title = chinese ? "内存" : "Memory"
+            let title = text("memory")
             return HelpSettingsTarget(id: id, category: "execution",
                 controlID: "execution.shared.memory", title: title,
-                path: [settings, chinese ? "执行环境" : "Execution Environment",
-                       chinese ? "共享运行环境" : "Shared runtime", title])
+                path: [settings, text("execution_environment"),
+                       text("shared_runtime"), title])
         default:
             return nil
         }
@@ -47,8 +49,6 @@ enum HelpSettingsCatalog {
     /// Public, static availability only. Never reads the user's environment or values.
     static func availabilityNote(id: String, language: HelpLanguage) -> String? {
         guard id == "execution.memory" else { return nil }
-        return language == .simplifiedChinese
-            ? "共享运行环境准备好后才显示内存选项；调低内存会等待当前项目关闭。"
-            : "Memory options appear after the shared runtime is ready. Lower limits wait for current projects to close."
+        return FloeL10n.localized(key: "help.settings.memory_availability", languageCode: language.rawValue)
     }
 }

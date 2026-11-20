@@ -79,57 +79,55 @@ enum TaskManagementCopy {
 
     static func archivedRow(_ count: Int) -> String {
         parameterized("chat.task_management.manage_archived", count) {
-            FloeL10n.isChinese ? "管理已归档任务（\(count)）" : "Manage archived tasks (\(count))"
+            FloeL10n.l("chat.task_management.manage_archived", count)
         }
     }
 
     static func runningImpact(_ count: Int) -> String {
         parameterized("chat.task_management.running_impact", count) {
-            FloeL10n.isChinese
-                ? "其中 \(count) 个正在运行，会先停止其自身工作。"
-                : "\(count) of them are running; their own work is stopped first."
+            FloeL10n.l("chat.task_management.running_impact", count)
         }
     }
 
     static func resultArchived(_ count: Int) -> String {
         parameterized("chat.task_management.result_archived", count) {
-            FloeL10n.isChinese ? "已归档 \(count)" : "Archived \(count)"
+            FloeL10n.l("chat.task_management.result_archived", count)
         }
     }
 
     static func resultRestored(_ count: Int) -> String {
         parameterized("chat.task_management.result_restored", count) {
-            FloeL10n.isChinese ? "已恢复 \(count)" : "Restored \(count)"
+            FloeL10n.l("chat.task_management.result_restored", count)
         }
     }
 
     static func resultDeleted(_ count: Int) -> String {
         parameterized("chat.task_management.result_deleted", count) {
-            FloeL10n.isChinese ? "已删除 \(count)" : "Deleted \(count)"
+            FloeL10n.l("chat.task_management.result_deleted", count)
         }
     }
 
     static func resultSkipped(_ count: Int) -> String {
         parameterized("chat.task_management.result_skipped", count) {
-            FloeL10n.isChinese ? "已跳过 \(count)" : "Skipped \(count)"
+            FloeL10n.l("chat.task_management.result_skipped", count)
         }
     }
 
     static func resultFailed(_ count: Int) -> String {
         parameterized("chat.task_management.result_failed", count) {
-            FloeL10n.isChinese ? "失败 \(count)" : "Failed \(count)"
+            FloeL10n.l("chat.task_management.result_failed", count)
         }
     }
 
     static func resultUnverified(_ count: Int) -> String {
         parameterized("chat.task_management.result_unverified", count) {
-            FloeL10n.isChinese ? "未确认 \(count)" : "Unverified \(count)"
+            FloeL10n.l("chat.task_management.result_unverified", count)
         }
     }
 
     static func resultNotAttempted(_ count: Int) -> String {
         parameterized("chat.task_management.result_not_attempted", count) {
-            FloeL10n.isChinese ? "未处理 \(count)" : "Not processed \(count)"
+            FloeL10n.l("chat.task_management.result_not_attempted", count)
         }
     }
 

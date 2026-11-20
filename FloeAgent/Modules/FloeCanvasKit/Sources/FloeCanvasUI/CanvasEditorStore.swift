@@ -207,7 +207,8 @@ public final class CanvasEditorStore: ObservableObject {
         self.services = services
         self.configuration = configuration
         self.strings = CanvasStrings(
-            language: CanvasStrings.resolve(preferred: configuration.preferredLanguage))
+            language: CanvasStrings.resolve(preferred: configuration.preferredLanguage),
+            useHostLocalization: configuration.preferredLanguage == nil)
         self.previews = CanvasPreviewPipeline(provider: services.previewProvider)
         let placeholderPage = CanvasPageSnapshot()
         let placeholder = CanvasSnapshot(

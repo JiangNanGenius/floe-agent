@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeGameCore
 import FloeRPGDeployment
 
@@ -66,7 +67,7 @@ struct RPGDeploymentAssetsScreen: View {
                                            value: ByteCountFormatter.string(fromByteCount: Int64(clamping: file.bytes), countStyle: .file))
                         }
                     } header: {
-                        Text(IDELanguageRunText.t("文件（\(listing.files.count)）", "Files (\(listing.files.count))"))
+                        Text(FloeL10n.l("app.rpgdeployment_assets_screen.files", listing.files.count))
                     }
                 }
             }

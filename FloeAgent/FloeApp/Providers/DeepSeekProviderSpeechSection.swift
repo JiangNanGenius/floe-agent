@@ -11,13 +11,13 @@ struct DeepSeekProviderSpeechSection: View {
     var body: some View {
         Section {
             Button { direction = .input } label: {
-                Label(FloeL10n.isChinese ? "语音识别" : "Speech recognition", systemImage: "waveform")
+                Label(FloeL10n.l("voice.whisper_settings_view.speech_recognition"), systemImage: "waveform")
             }.accessibilityIdentifier("providers.deepseek.speech.input")
             Button { direction = .output } label: {
-                Label(FloeL10n.isChinese ? "语音朗读" : "Read aloud", systemImage: "speaker.wave.2")
+                Label(FloeL10n.l("app.deep_seek_provider_speech_section.read_aloud"), systemImage: "speaker.wave.2")
             }.accessibilityIdentifier("providers.deepseek.speech.output")
         } header: {
-            Text(FloeL10n.isChinese ? "DeepSeek 语音" : "DeepSeek speech")
+            Text(FloeL10n.l("app.deep_seek_provider_speech_section.deepseek_speech"))
         }
         .sheet(item: $direction) { direction in
             switch direction {

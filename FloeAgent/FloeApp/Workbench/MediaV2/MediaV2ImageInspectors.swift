@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeWorkbench
 
 struct MediaV2NumberField: View {
@@ -65,10 +66,10 @@ struct MediaV2SelectionInspector: View {
         var parts: [String] = []
         if let canvas = session.document.canvas {
             let px = selection.feather * Double(min(canvas.width, canvas.height))
-            parts.append(WorkbenchText.t("羽化 \(Int(px.rounded())) px", "Feather \(Int(px.rounded())) px"))
+            parts.append(FloeL10n.l("app.media_v2_image_inspectors.feather_px", Int(px.rounded())))
         }
         if !selection.shapes.isEmpty {
-            parts.append(WorkbenchText.t("\(selection.shapes.count) 个形状", "\(selection.shapes.count) shapes"))
+            parts.append(FloeL10n.l("app.media_v2_image_inspectors.shapes", selection.shapes.count))
         }
         if selection.bitmap != nil { parts.append(WorkbenchText.t("像素选区", "Pixel selection")) }
         if selection.inverted { parts.append(WorkbenchText.t("已反选", "Inverted")) }

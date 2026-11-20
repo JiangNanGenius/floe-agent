@@ -420,11 +420,11 @@ enum SkillBatchCopy {
     }
 
     static func selectedCount(_ count: Int) -> String {
-        FloeL10n.isChinese ? "已选 \(count)" : "\(count) selected"
+        FloeL10n.l("chat.conversation_batch_management_view.selected", count)
     }
 
     static func deleteButton(_ count: Int) -> String {
-        FloeL10n.isChinese ? "删除 \(count)" : "Delete \(count)"
+        FloeL10n.l("app.skill_batch_selection.delete", count)
     }
 
     static func deleteConfirmTitle(_ count: Int) -> String {
@@ -444,7 +444,7 @@ enum SkillBatchCopy {
         if summary.unverifiedCount > 0 { parts.append(segment("未确认", "Unverified", summary.unverifiedCount)) }
         if summary.notAttemptedCount > 0 { parts.append(segment("未处理", "Not processed", summary.notAttemptedCount)) }
         if parts.isEmpty {
-            return FloeL10n.isChinese ? "没有可处理的选择" : "Nothing to process"
+            return FloeL10n.l("app.skill_batch_selection.nothing_to_process")
         }
         return parts.joined(separator: " · ")
     }

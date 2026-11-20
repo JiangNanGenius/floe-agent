@@ -104,7 +104,7 @@ public struct TileMapEditorView: View {
                height: map.map { contentSize($0).height + 48 } ?? 300)
         .contentShape(Rectangle())
         .accessibilityElement()
-        .accessibilityLabel(locale == .chinese ? "地图画布" : "Map canvas")
+        .accessibilityLabel(GameEditCopy("Map canvas", "地图画布").text(locale))
         .accessibilityValue(tileSummary)
         .accessibilityIdentifier("game.edit.map.canvas")
         .gesture(canvasDrag)

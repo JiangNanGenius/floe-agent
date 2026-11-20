@@ -13,6 +13,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import UIKit
 import FloeWorkspace
 
@@ -430,18 +431,12 @@ private struct IDENativeEditorTabView: View {
     private func fallbackExplanation(_ reason: IDENativeTextFallbackReason) -> String {
         switch reason {
         case .nonTextKind(let kind):
-            return IDELanguageRunText.t(
-                "该文件类型由\(kind.rawValue)原生界面处理。",
-                "This file type is handled by its native \(kind.rawValue) surface."
-            )
+            return FloeL10n.l("app.idenative_text_pane.this_file_type_is_handled", kind.rawValue)
         case .binaryContent:
             return IDELanguageRunText.t("文件不是 UTF-8 文本。", "The file is not UTF-8 text.")
         case .exceedsNativeLimit(let limit):
             let mebibytes = Double(limit) / (1024 * 1024)
-            return IDELanguageRunText.t(
-                "文件超过 \(String(format: "%.0f", mebibytes)) MiB 文本策略上限。",
-                "The file exceeds the \(String(format: "%.0f", mebibytes)) MiB text policy."
-            )
+            return FloeL10n.l("app.idenative_text_pane.the_file_exceeds_the_mib", String(format: "%.0f", mebibytes))
         }
     }
 
@@ -608,10 +603,7 @@ private struct IDENativeEditorTabView: View {
 
     private var cursorDescription: String {
         let position = IDENativeTextEditing.lineAndColumn(in: buffer.text, at: state.selection.location)
-        return IDELanguageRunText.t(
-            "行 \(position.line)，列 \(position.column)",
-            "Line \(position.line), Col \(position.column)"
-        )
+        return FloeL10n.l("app.idenative_text_pane.line_col", position.line, position.column)
     }
 
     private func find(backwards: Bool) {

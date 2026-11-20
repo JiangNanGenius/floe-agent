@@ -66,7 +66,7 @@ extension MeetingProjectSession {
             let recording = recordings.first { $0.id == original }
             let number = recordings.firstIndex { $0.id == original }.map { $0 + 1 } ?? 1
             let name = recording?.sourceFile.map { URL(fileURLWithPath: $0).lastPathComponent }
-                ?? IDELanguageRunText.t("现场录音 \(number)", "Recording \(number)")
+                ?? FloeL10n.l("app.meeting_document_export.recording", number)
             return "\(name) · \(meetingTime(range.start))–\(meetingTime(range.end))"
         case .segment(let id):
             guard let segment = sourceSegment(id) else { return nil }

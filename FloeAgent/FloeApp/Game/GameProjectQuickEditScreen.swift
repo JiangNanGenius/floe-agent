@@ -48,7 +48,7 @@ struct GameProjectQuickEditScreen: View {
                         Label {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(entry.path.value).lineLimit(1)
-                                Text(GameQuickEditCopy.title(for: entry.kind, zh: FloeL10n.isChinese))
+                                Text(FloeL10n.l("game.quick_edit.kind.\(entry.kind.rawValue)"))
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         } icon: {
@@ -111,7 +111,7 @@ struct GameProjectQuickEditScreen: View {
                 }
             }
         }
-        .environment(\.gameEditLocale, FloeL10n.isChinese ? .chinese : .english)
+        .environment(\.gameEditLocale, GameEditLocale(languageCode: FloeL10n.currentLanguageCode))
         .task { await prepare() }
         .overlay(alignment: .bottom) {
             if let error { Text(error).font(.callout).foregroundStyle(.red).padding(10) }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeWorkbench
 
 struct MediaV2ProviderInspector: View {
@@ -96,7 +97,7 @@ struct MediaV2ProviderInspector: View {
                     ForEach(captionTracks) { track in Text(track.name).tag(Optional(track.id)) }
                 }
                 if let track=session.selectedTrack,track.kind == .caption {
-                    Label(WorkbenchText.t("\(track.clips.count) 段字幕", "\(track.clips.count) captions"),systemImage:"text.bubble").font(.caption).foregroundStyle(.secondary)
+                    Label(FloeL10n.l("app.media_v2_provider_inspector.captions", track.clips.count),systemImage:"text.bubble").font(.caption).foregroundStyle(.secondary)
                     if let first=track.clips.first?.captionText { Text(first).font(.caption).lineLimit(3).textSelection(.enabled) }
                     if track.isLocked { Button(WorkbenchText.t("解锁轨道", "Unlock track"),systemImage:"lock.open") { session.submit([.updateTrackFlags(id:track.id,expectedRevision:track.revision,name:nil,isMuted:nil,isLocked:false,volume:nil)]) }.frame(minHeight:44) }
                 }

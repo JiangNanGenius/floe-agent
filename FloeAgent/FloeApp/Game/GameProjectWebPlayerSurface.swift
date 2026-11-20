@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeGameWebKit
 import FloeGameTouch
 import FloeGameTouchUI
@@ -14,14 +15,12 @@ struct GameProjectWebPlayerSurface: View {
     let title: String
     let onClosed: @MainActor (GameProjectWebRunPresentation.StopReceipt) -> Void
     @ObservedObject private var player: GameWebPlayer
-    @Environment(\.locale) private var locale
     @Environment(\.scenePhase) private var scenePhase
     @State private var panel: Panel?
     @State private var closeIntent: CloseIntent?
 
     private enum Panel: Equatable { case controls, saves, developer }
     private enum CloseIntent { case panel(Panel?), playback(GameProjectWebRunPresentation.StopReceipt) }
-    private var zh: Bool { locale.language.languageCode?.identifier == "zh" }
     private var wantsInput: Bool { scenePhase == .active && panel == nil && !presentation.editingLayout }
 
     init(presentation: GameProjectWebRunPresentation, title: String,
@@ -155,7 +154,7 @@ struct GameProjectWebPlayerSurface: View {
                         .navigationTitle(copy("存档", "Saves"))
                 case .developer:
                     GameDeveloperMenuPanel(session: presentation.developer,
-                        locale: zh ? .simplifiedChinese : .english)
+                        locale: .automatic)
                         .navigationTitle(copy("调试／作弊", "Debug / cheats"))
                 case nil: EmptyView()
                 }
@@ -205,16 +204,14 @@ struct GameProjectWebPlayerSurface: View {
         }
     }
     private func refreshInput() { presentation.requestInputEnabled(wantsInput) }
-    private func copy(_ zh: String, _ en: String) -> String { self.zh ? zh : en }
+    private func copy(_ zh: String, _ en: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 }
 
 private struct GameWebInputStatus: View {
     @ObservedObject var service: GameTouchInputService
-    @Environment(\.locale) private var locale
     var body: some View {
         if service.lastError != nil {
-            Text(locale.language.languageCode?.identifier == "zh"
-                 ? "键位连接已中断，请停止后重新运行。" : "The controls disconnected. Stop and run again.")
+            Text(FloeL10n.l("game.play.controls_disconnected"))
                 .font(.callout).foregroundStyle(.red)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(10)
                 .accessibilityIdentifier("game.play.input.error")

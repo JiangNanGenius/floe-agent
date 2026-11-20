@@ -38,7 +38,7 @@ import FloeCore
 
 @available(iOS 27.0, *)
 struct CoreAIModelInspectionView: View {
-    static var title: String { copy("Core AI 模型函数", "Core AI Model Functions") }
+    static var title: String { FloeL10n.l("app.core_aimodel_inspection.core_ai_model_functions") }
 
     private enum Phase {
         case idle, reading(String, cancelling: Bool), functions(String, [String]), failed(String, detail: String?)
@@ -54,13 +54,12 @@ struct CoreAIModelInspectionView: View {
                 Button {
                     choosing = true
                 } label: {
-                    Label(Self.copy("选择模型", "Choose Model"), systemImage: "doc.badge.gearshape")
+                    Label(FloeL10n.l("app.core_aimodel_inspection.choose_model"), systemImage: "doc.badge.gearshape")
                 }
                 .disabled(worker != nil)
                 .accessibilityIdentifier("diagnostics.coreai.choose")
             } footer: {
-                Text(Self.copy("选择设备上的 .aimodel 或 .aimodelc 文件以查看函数列表。",
-                               "Choose a .aimodel or .aimodelc file on this device to see its functions."))
+                Text(FloeL10n.l("app.core_aimodel_inspection.choose_a_aimodel_or_aimodelc"))
             }
             switch phase {
             case .idle:
@@ -69,9 +68,9 @@ struct CoreAIModelInspectionView: View {
                 Section {
                     HStack {
                         ProgressView()
-                        Text(cancelling ? Self.copy("正在取消…", "Cancelling…") : Self.copy("正在读取模型…", "Reading model…"))
+                        Text(cancelling ? FloeL10n.l("app.core_aimodel_inspection.cancelling") : FloeL10n.l("app.core_aimodel_inspection.reading_model"))
                     }
-                    Button(Self.copy("取消", "Cancel")) {
+                    Button(FloeL10n.l("cad.scene.cancel")) {
                         worker?.cancel()
                         phase = .reading(file, cancelling: true)
                     }
@@ -80,7 +79,7 @@ struct CoreAIModelInspectionView: View {
             case .functions(let file, let names):
                 Section {
                     if names.isEmpty {
-                        Text(Self.copy("模型未列出函数。", "The model lists no functions."))
+                        Text(FloeL10n.l("app.core_aimodel_inspection.the_model_lists_no_functions"))
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(names, id: \.self) { name in
@@ -92,7 +91,7 @@ struct CoreAIModelInspectionView: View {
                 Section {
                     Text(message)
                     if let detail {
-                        DisclosureGroup(Self.copy("错误详情", "Error Details")) {
+                        DisclosureGroup(FloeL10n.l("app.core_aimodel_inspection.error_details")) {
                             Text(verbatim: detail).textSelection(.enabled)
                         }
                     }
@@ -105,7 +104,7 @@ struct CoreAIModelInspectionView: View {
             case .success(let url): inspect(url)
             case .failure(let error):
                 if (error as? CocoaError)?.code != .userCancelled {
-                    phase = .failed(Self.copy("无法打开所选文件。", "The selected file could not be opened."), detail: error.localizedDescription)
+                    phase = .failed(FloeL10n.l("app.core_aimodel_inspection.the_selected_file_could_not"), detail: error.localizedDescription)
                 }
             }
         }
@@ -129,11 +128,11 @@ struct CoreAIModelInspectionView: View {
                 }
                 switch error {
                 case CoreAIModelInspection.InspectionError.unsupportedFile:
-                    phase = .failed(Self.copy("请选择 .aimodel 或 .aimodelc 文件。", "Choose a .aimodel or .aimodelc file."), detail: nil)
+                    phase = .failed(FloeL10n.l("app.core_aimodel_inspection.choose_a_aimodel_or_aimodelc_2"), detail: nil)
                 case CoreAIModelInspection.InspectionError.notDownloaded:
-                    phase = .failed(Self.copy("请先在“文件”中下载模型，再重新选择。", "Download the model in Files, then choose it again."), detail: nil)
+                    phase = .failed(FloeL10n.l("app.core_aimodel_inspection.download_the_model_in_files"), detail: nil)
                 default:
-                    phase = .failed(Self.copy("无法读取此模型。请检查文件及其设备兼容性。", "Check the model file and its compatibility with this device."), detail: error.localizedDescription)
+                    phase = .failed(FloeL10n.l("app.core_aimodel_inspection.check_the_model_file_and"), detail: error.localizedDescription)
                 }
             }
         }

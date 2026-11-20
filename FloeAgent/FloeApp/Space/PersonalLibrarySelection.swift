@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeCore
 
 /// One visible row in the Files page: either a durable work or a plain folder.
 /// Identity is the record id (works) or the library-relative path plus folder
@@ -124,10 +125,9 @@ struct PersonalLibraryBatchDeleteResult: Sendable {
 
     var summary: String {
         if failed.isEmpty {
-            return deleted.isEmpty ? "" : IDELanguageRunText.t("已删除 \(deleted.count) 项。", "Deleted \(deleted.count) item(s).")
+            return deleted.isEmpty ? "" : FloeL10n.l("app.personal_library_selection.deleted_item_s", deleted.count)
         }
-        return IDELanguageRunText.t("已删除 \(deleted.count) 项，\(failed.count) 项未能删除。",
-            "Deleted \(deleted.count) item(s); \(failed.count) could not be deleted.")
+        return FloeL10n.l("app.personal_library_selection.deleted_item_s_could_not", deleted.count, failed.count)
     }
     /// Bounded per-item reasons for the partial-failure notice.
     var failureDetail: String {

@@ -211,9 +211,9 @@ struct CloudASRProfileEditor: View {
                 }
                 if original.provider == .deepSeek {
                     LabeledContent("voice.cloud.profile.file_endpoint", value: DeepSeekSpeechAPI.asrURL.absoluteString)
-                    Text(FloeL10n.isChinese ? "录音结束后转写，自动识别语种。" : "Transcribes after recording and detects the language automatically.")
+                    Text(FloeL10n.l("app.cloud_asrprofiles_view.transcribes_after_recording_and_detects"))
                         .font(.footnote).foregroundStyle(.secondary)
-                    Toggle(FloeL10n.isChinese ? "保存后用于语音输入" : "Use for voice input after saving", isOn: $useForInput)
+                    Toggle(FloeL10n.l("app.cloud_asrprofiles_view.use_for_voice_input_after"), isOn: $useForInput)
                 } else {
                     TextField("voice.cloud.profile.file_endpoint", text: $fileEndpoint)
                         .textInputAutocapitalization(.never)

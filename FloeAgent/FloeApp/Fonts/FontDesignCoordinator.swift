@@ -3,11 +3,12 @@
 import Foundation
 import SwiftUI
 import Observation
+import FloeCore
 import FloeFontKit
 import FloeHeavyEditorSupport
 
 enum FontDesignText {
-    static func t(_ chinese: String, _ english: String) -> String { EditorText.t(chinese, english) }
+    static func t(_ chinese: String, _ english: String) -> String { FloeL10n.bilingual(chinese: chinese, english: english) }
 }
 
 struct FontManagementRemovalResult: Sendable {

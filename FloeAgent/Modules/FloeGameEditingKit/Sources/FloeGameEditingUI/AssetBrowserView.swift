@@ -42,7 +42,7 @@ public struct AssetBrowserView: View {
                     }
                 }
         }
-        .searchable(text: $search, prompt: locale == .chinese ? "搜索文件" : "Search files")
+        .searchable(text: $search, prompt: GameEditCopy("Search files", "搜索文件").text(locale))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 EditButton { importRequest = true } label: {
@@ -58,7 +58,7 @@ public struct AssetBrowserView: View {
             guard let target = replaceTarget else { return }
             Task { await replace(target, with: result) }
         }
-        .alert(Text(locale == .chinese ? "重命名文件" : "Rename file"), isPresented: renameAlertBinding) {
+        .alert(Text(GameEditCopy("Rename file", "重命名文件").text(locale)), isPresented: renameAlertBinding) {
             TextField("", text: $renameText)
             Button {
                 guard let target = renameTarget else { return }
@@ -211,16 +211,16 @@ struct AssetRowView: View {
     private var kindName: String {
         let kind = session.adapter.assetKind(for: path, in: session.baseProject) ?? .unknown
         switch kind {
-        case .image: return locale == .chinese ? "图像" : "Image"
-        case .audio: return locale == .chinese ? "音频" : "Audio"
-        case .video: return locale == .chinese ? "视频" : "Video"
-        case .tileset: return locale == .chinese ? "图块集" : "Tileset"
-        case .map: return locale == .chinese ? "地图" : "Map"
-        case .script: return locale == .chinese ? "脚本" : "Script"
-        case .data: return locale == .chinese ? "数据" : "Data"
-        case .manifest: return locale == .chinese ? "清单" : "Manifest"
-        case .save: return locale == .chinese ? "存档" : "Save"
-        case .unknown: return locale == .chinese ? "未知" : "Unknown"
+        case .image: return GameEditCopy("Image", "图像").text(locale)
+        case .audio: return GameEditCopy("Audio", "音频").text(locale)
+        case .video: return GameEditCopy("Video", "视频").text(locale)
+        case .tileset: return GameEditCopy("Tileset", "图块集").text(locale)
+        case .map: return GameEditCopy("Map", "地图").text(locale)
+        case .script: return GameEditCopy("Script", "脚本").text(locale)
+        case .data: return GameEditCopy("Data", "数据").text(locale)
+        case .manifest: return GameEditCopy("Manifest", "清单").text(locale)
+        case .save: return GameEditCopy("Save", "存档").text(locale)
+        case .unknown: return GameEditCopy("Unknown", "未知").text(locale)
         }
     }
 }

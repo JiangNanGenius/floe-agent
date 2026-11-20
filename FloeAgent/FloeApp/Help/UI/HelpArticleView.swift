@@ -256,7 +256,7 @@ private struct HelpDocumentInformationView: View {
         Form {
             if let document {
                 LabeledContent(copy.version, value: document.reference.version)
-                LabeledContent(copy.languageLabel, value: document.reference.language == .english ? "English" : "简体中文")
+                LabeledContent(copy.languageLabel, value: document.reference.language.displayName)
                 Section(copy.source) {
                     Text(document.snapshot.manifest.sourceRevision).textSelection(.enabled)
                 }

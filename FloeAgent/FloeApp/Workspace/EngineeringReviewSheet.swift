@@ -93,7 +93,7 @@ struct EngineeringReviewSheet: View {
                     }
                     Text("engineering.review.scope").font(.footnote).foregroundStyle(.secondary)
                 }
-                Section(engineeringReviewText("分析范围", "Scope")) {
+                Section(FloeL10n.l("app.engineering_review_sheet.scope")) {
                     Picker("engineering.review.scope", selection: $scope) {
                         ForEach(EngineeringReviewScope.allCases) { value in
                             Text(value.label(FloeL10n.isChinese)).tag(value)
@@ -103,7 +103,7 @@ struct EngineeringReviewSheet: View {
                     .accessibilityIdentifier("engineering.review.scope.picker")
                 }
                 if capture.documentID != nil, !proposals.isEmpty {
-                    Section(engineeringReviewText("待确认的修改", "Pending changes")) {
+                    Section(FloeL10n.l("app.engineering_review_sheet.pending_changes")) {
                         ForEach(proposals, id: \.id) { proposal in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(proposal.summary).font(.callout)
@@ -111,19 +111,19 @@ struct EngineeringReviewSheet: View {
                                     .font(.caption).foregroundStyle(.secondary)
                                 proposalHandles(proposal)
                                 HStack {
-                                    Button(engineeringReviewText("应用", "Apply")) {
+                                    Button(FloeL10n.l("cad.scene.apply")) {
                                         Task { await apply(proposal) }
                                     }
                                     .buttonStyle(.borderedProminent)
                                     .disabled(applyingProposalID != nil)
                                     .accessibilityIdentifier("engineering.review.proposal.apply")
-                                    Button(engineeringReviewText("图中预览", "Preview in viewer")) {
+                                    Button(FloeL10n.l("app.engineering_review_sheet.preview_in_viewer")) {
                                         previewInViewer(proposal)
                                     }
                                     .disabled(webSession == nil)
                                     .accessibilityIdentifier("engineering.review.proposal.preview")
                                     .frame(minHeight: 44)
-                                    Button(engineeringReviewText("放弃", "Discard"), role: .destructive) {
+                                    Button(FloeL10n.l("app.engineering_review_sheet.discard"), role: .destructive) {
                                         Task { await discard(proposal) }
                                     }
                                     .disabled(applyingProposalID != nil)
@@ -212,9 +212,9 @@ struct EngineeringReviewSheet: View {
     /// highlight and center that exact engine handle (no image guessing).
     @ViewBuilder private func proposalHandles(_ proposal: CadProposal) -> some View {
         let groups: [(String, [CadEntityPreview], Color)] = [
-            (engineeringReviewText("新增", "Added"), Array(proposal.preview.added.prefix(12)), .green),
-            (engineeringReviewText("修改", "Changed"), Array(proposal.preview.changed.prefix(12)), .orange),
-            (engineeringReviewText("删除", "Deleted"), Array(proposal.preview.deleted.prefix(12)), .red)
+            (FloeL10n.l("app.engineering_review_sheet.added"), Array(proposal.preview.added.prefix(12)), .green),
+            (FloeL10n.l("workbench.task_changes_inspector_view.changed"), Array(proposal.preview.changed.prefix(12)), .orange),
+            (FloeL10n.l("app.engineering_review_sheet.deleted"), Array(proposal.preview.deleted.prefix(12)), .red)
         ]
         VStack(alignment: .leading, spacing: 4) {
             ForEach(groups, id: \.0) { group in
@@ -225,9 +225,7 @@ struct EngineeringReviewSheet: View {
                             ForEach(group.1, id: \.handle) { item in
                                 Button {
                                     webSession?.locateCADHandle(item.handle)
-                                    proposalMessage = engineeringReviewText(
-                                        "已在图纸中定位 \(item.handle)。",
-                                        "Located \(item.handle) in the drawing.")
+                                    proposalMessage = FloeL10n.l("app.engineering_review_sheet.located_in_the_drawing", item.handle)
                                 } label: {
                                     Text(item.handle)
                                         .font(.caption.monospaced())
@@ -262,14 +260,11 @@ struct EngineeringReviewSheet: View {
         append("changed", proposal.preview.changed)
         append("deleted", proposal.preview.deleted)
         guard !entries.isEmpty else {
-            proposalMessage = engineeringReviewText("该提案没有可预览的几何变化。",
-                                                    "This proposal has no previewable geometry changes.")
+            proposalMessage = FloeL10n.l("app.engineering_review_sheet.this_proposal_has_no_previewable")
             return
         }
         webSession?.showCADOverlay(entries: entries)
-        proposalMessage = engineeringReviewText(
-            "已在图纸中显示彩色变更预览（绿=新增，橙=修改，红=删除）。",
-            "Showing the colored change preview (green=added, orange=changed, red=deleted).")
+        proposalMessage = FloeL10n.l("app.engineering_review_sheet.showing_the_colored_change_preview")
     }
 
     @MainActor private func send() async {
@@ -471,9 +466,7 @@ struct EngineeringReviewSheet: View {
         // calls. After the user saves, the existing revision/SHA CAS in
         // the center refuses the stale proposal anyway.
         if let webSession, webSession.isCADDirty {
-            proposalMessage = engineeringReviewText(
-                "当前图纸窗口有未保存的手工修改，已暂缓应用该提案。请先保存或放弃这些修改；保存后若提示图纸已变化，请让助手重新生成提案。",
-                "The open drawing has unsaved manual edits, so this proposal was NOT applied. Save or discard them first; if the drawing changed, ask the assistant to propose again.")
+            proposalMessage = FloeL10n.l("app.engineering_review_sheet.the_open_drawing_has_unsaved")
             return
         }
         applyingProposalID = proposal.id
@@ -488,9 +481,7 @@ struct EngineeringReviewSheet: View {
                     conversationID: target, proposalID: proposal.id, decision: "applied",
                     revision: nil, sha256: nil, phase: .intent)
             } catch {
-                proposalMessage = engineeringReviewText(
-                    "无法持久化本次应用记录，已取消应用（磁盘未改动）：\(error.localizedDescription)",
-                    "The decision record could not be persisted, so the apply was cancelled (disk unchanged): \(error.localizedDescription)")
+                proposalMessage = FloeL10n.l("app.engineering_review_sheet.the_decision_record_could_not", error.localizedDescription)
                 return
             }
         }
@@ -524,30 +515,24 @@ struct EngineeringReviewSheet: View {
     /// resolves it by saving or discarding in the editor first.
     @MainActor private func reconcileLiveViewerAfterApply() {
         guard let webSession else {
-            proposalMessage = engineeringReviewText(
-                "已应用并保存。",
-                "Applied and saved.")
+            proposalMessage = FloeL10n.l("app.engineering_review_sheet.applied_and_saved")
             return
         }
         if webSession.isCADDirty {
-            proposalMessage = engineeringReviewText(
-                "已应用并保存；当前图纸窗口还有未保存的手工修改，未强行刷新。请先保存或放弃这些修改，再重新打开图纸查看最新结果。",
-                "Applied and saved; the open drawing has unsaved manual edits and was not force-reloaded. Save or discard them, then reopen the drawing to see the result.")
+            proposalMessage = FloeL10n.l("app.engineering_review_sheet.applied_and_saved_the_open")
             return
         }
         guard let root = capture.workspaceRoot, let documentID = capture.documentID,
               let bytes = try? Data(contentsOf: root.appendingPathComponent(documentID)) else {
-            proposalMessage = engineeringReviewText(
-                "已应用并保存；无法自动刷新图纸窗口，请重新打开图纸。",
-                "Applied and saved; the open viewer could not be refreshed automatically. Reopen the drawing.")
+            proposalMessage = FloeL10n.l("app.engineering_review_sheet.applied_and_saved_the_open_2")
             return
         }
         Task {
             let ok = await webSession.reloadCAD(bytes: bytes)
             await MainActor.run {
                 proposalMessage = ok
-                    ? engineeringReviewText("已应用并保存，图纸窗口已同步最新结果。", "Applied and saved; the open drawing now shows the latest revision.")
-                    : engineeringReviewText("已应用并保存；图纸窗口刷新失败，请重新打开图纸。", "Applied and saved; refreshing the open drawing failed. Reopen it to see the latest revision.")
+                    ? FloeL10n.l("app.engineering_review_sheet.applied_and_saved_the_open_3")
+                    : FloeL10n.l("app.engineering_review_sheet.applied_and_saved_refreshing_the")
             }
         }
     }
@@ -556,7 +541,7 @@ struct EngineeringReviewSheet: View {
         await center.environment.cadDocumentCenter.discardProposal(id: proposal.id)
         webSession?.clearCADOverlay()
         proposals.removeAll { $0.id == proposal.id }
-        proposalMessage = engineeringReviewText("已放弃该提案。", "Proposal discarded.")
+        proposalMessage = FloeL10n.l("app.engineering_review_sheet.proposal_discarded")
         notifyOriginalTask(proposal: proposal, decision: "rejected", revision: nil, sha256: nil)
     }
 }

@@ -57,22 +57,20 @@ struct HelpLibraryTests {
 
     // MARK: Package
 
-    @Test("Real built-in package validates for both locales")
+    @Test("Real built-in package validates for all supported locales")
     func realPackageValidates() throws {
         let files = try Self.loadFiles()
-        try HelpLibrarySnapshot.validatePackage(files: files, digest: digest)
-        let english = try makeSnapshot(language: .english, files: files)
-        let chinese = try makeSnapshot(language: .simplifiedChinese, files: files)
-        #expect(english.manifest.id == HelpBundleMetadata.packageID)
-        #expect(english.manifest.version == HelpBundleMetadata.bundledVersion)
-        #expect(english.manifest.indexPaths["en"] != nil)
-        #expect(chinese.index.locale == .simplifiedChinese)
+        let snapshots = try HelpLibrarySnapshot.localizedSnapshots(files: files, digest: digest)
+        #expect(Set(snapshots.keys) == Set(HelpLanguage.allCases))
         let expectedArticleIDs: Set<String> = ["quickstart", "shared-basics", "user-manual", "workspaces",
                                                "input.keyboard", "voice.output", "environment.memory"]
-        #expect(Set(english.index.articles.map(\.id)) == expectedArticleIDs)
-        #expect(Set(chinese.index.articles.map(\.id)) == expectedArticleIDs)
-        #expect(english.index.categories.count == 7)
-        #expect(Set(english.index.articles.map(\.id)) == Set(chinese.index.articles.map(\.id)))
+        for (language, snapshot) in snapshots {
+            #expect(snapshot.manifest.id == HelpBundleMetadata.packageID)
+            #expect(snapshot.manifest.version == HelpBundleMetadata.bundledVersion)
+            #expect(snapshot.index.locale == language)
+            #expect(Set(snapshot.index.articles.map(\.id)) == expectedArticleIDs)
+            #expect(snapshot.index.categories.count == 7)
+        }
     }
 
     @Test("Article and section identifiers stay within the frozen grammar")

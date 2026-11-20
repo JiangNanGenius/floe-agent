@@ -38,7 +38,7 @@ struct WorkbenchAIDrawer: View {
         VStack(spacing: 0) {
             Picker("", selection: $tab) {
                 Text(WorkbenchText.t("助手", "Assistant")).tag(Tab.assistant)
-                Text(WorkbenchText.t("提案 \(center.pendingProposals.count)", "Proposals \(center.pendingProposals.count)"))
+                Text(FloeL10n.l("app.workbench_aidrawer.proposals", center.pendingProposals.count))
                     .tag(Tab.proposals)
                 Text(WorkbenchText.t("任务", "Jobs")).tag(Tab.jobs)
             }
@@ -76,8 +76,7 @@ struct WorkbenchAIDrawer: View {
                     Text(WorkbenchText.t("未选择具体对象", "Nothing specific selected"))
                         .foregroundStyle(.secondary)
                 }
-                Text(WorkbenchText.t("画布 \(project.canvas?.width ?? 0)×\(project.canvas?.height ?? 0)",
-                                     "Canvas \(project.canvas?.width ?? 0)×\(project.canvas?.height ?? 0)"))
+                Text(FloeL10n.l("app.workbench_aidrawer.canvas", project.canvas?.width ?? 0, project.canvas?.height ?? 0))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -119,7 +118,7 @@ struct WorkbenchAIDrawer: View {
                                 Text("2K").tag("2K")
                                 Text("4K").tag("4K")
                             }
-                            Stepper(WorkbenchText.t("数量 \(imageCount)", "Count \(imageCount)"),
+                            Stepper(FloeL10n.l("app.workbench_aidrawer.count", imageCount),
                                     value: $imageCount, in: 1...4)
                         }
                         Button(WorkbenchText.t("检查并生成", "Review & generate")) {
@@ -227,7 +226,7 @@ struct WorkbenchAIDrawer: View {
             } else {
                 let short = String(key.prefix(8))
                 let prompt = items.first?.parametersSummary ?? ""
-                title = WorkbenchText.t("请求 \(short)：", "Request \(short): ")
+                title = FloeL10n.l("app.workbench_aidrawer.request", short)
                     + String(prompt.prefix(40))
             }
             return (key, title, items)
@@ -322,8 +321,7 @@ struct WorkbenchAIDrawer: View {
                 ForEach(center.pendingProposals) { proposal in
                     SectionCard(title: WorkbenchText.t("提案", "Proposal")) {
                         Text(proposal.summary).font(.subheadline)
-                        Text(WorkbenchText.t("基于修订 \(proposal.baseRevision) · \(proposal.commands.count) 条命令",
-                                             "Based on revision \(proposal.baseRevision) · \(proposal.commands.count) command(s)"))
+                        Text(FloeL10n.l("app.workbench_aidrawer.based_on_revision_command_s", proposal.baseRevision, proposal.commands.count))
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button(WorkbenchText.t("接受", "Accept")) {

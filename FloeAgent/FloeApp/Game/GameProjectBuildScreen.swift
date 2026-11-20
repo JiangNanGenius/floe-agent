@@ -289,8 +289,7 @@ struct GameProjectBuildScreen: View {
                             }.disabled(hookBusy)
                         }
                         if let hookReceipt {
-                            Label(IDELanguageRunText.t("已安装到修订 \(hookReceipt.revision.prefix(12))",
-                                                      "Installed at revision \(hookReceipt.revision.prefix(12))"),
+                            Label(FloeL10n.l("app.game_project_build_screen.installed_at_revision", hookReceipt.revision.prefix(12)),
                                   systemImage: "checkmark.seal")
                                 .font(.caption).foregroundStyle(.green)
                         }

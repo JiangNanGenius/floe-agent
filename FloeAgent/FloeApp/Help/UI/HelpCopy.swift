@@ -5,37 +5,34 @@ import FloeCore
 struct HelpCopy {
     let language: HelpLanguage
     static var current: Self { .init(language: HelpLanguage(preference: FloeL10n.currentLanguageCode)) }
-    func text(_ chinese: String, _ english: String) -> String {
-        language == .simplifiedChinese ? chinese : english
-    }
-    var title: String { text("帮助与指南", "Help & Guides") }
-    var search: String { text("搜索指南与设置", "Search guides and settings") }
-    var searchResults: String { text("搜索结果", "Search Results") }
-    var noResults: String { text("没有找到相关指南", "No matching guides") }
-    var trySearch: String { text("试试其他关键词。", "Try another search term.") }
-    var offline: String { text("可离线阅读", "Available offline") }
-    var unavailable: String { text("暂时无法打开指南", "Guide unavailable") }
-    var unavailableDetail: String { text("请返回帮助首页，选择可用的指南。", "Return to Help & Guides and choose an available guide.") }
-    var retry: String { text("重试", "Try Again") }
-    var close: String { text("关闭", "Close") }
-    var done: String { text("完成", "Done") }
-    var contents: String { text("章节目录", "Contents") }
-    var find: String { text("在本页查找", "Find on Page") }
-    var reading: String { text("阅读外观", "Reading Appearance") }
-    var appearance: String { text("外观", "Appearance") }
-    var system: String { text("跟随系统", "System") }
-    var light: String { text("浅色", "Light") }
-    var dark: String { text("深色", "Dark") }
-    var textSize: String { text("文字大小", "Text Size") }
-    var copy: String { text("复制文章", "Copy Article") }
-    var copied: String { text("已复制", "Copied") }
-    var info: String { text("文档信息", "Document Information") }
-    var version: String { text("文档版本", "Guide Version") }
-    var source: String { text("来源版本", "Source Revision") }
-    var languageLabel: String { text("语言", "Language") }
-    var openSetting: String { text("打开此设置", "Open This Setting") }
-    var enlargeImage: String { text("放大图片", "Enlarge Image") }
-    var relatedHelp: String { text("相关帮助", "Related Help") }
-    var readGuide: String { text("查看指南", "Read Guide") }
-    var readFullChapter: String { text("阅读完整章节", "Read Full Chapter") }
+    var title: String { FloeL10n.localized(key: "help.ui.title", languageCode: language.rawValue) }
+    var search: String { FloeL10n.localized(key: "help.ui.search", languageCode: language.rawValue) }
+    var searchResults: String { FloeL10n.localized(key: "help.ui.search_results", languageCode: language.rawValue) }
+    var noResults: String { FloeL10n.localized(key: "help.ui.no_results", languageCode: language.rawValue) }
+    var trySearch: String { FloeL10n.localized(key: "help.ui.try_search", languageCode: language.rawValue) }
+    var offline: String { FloeL10n.localized(key: "help.ui.offline", languageCode: language.rawValue) }
+    var unavailable: String { FloeL10n.localized(key: "help.ui.unavailable", languageCode: language.rawValue) }
+    var unavailableDetail: String { FloeL10n.localized(key: "help.ui.unavailable_detail", languageCode: language.rawValue) }
+    var retry: String { FloeL10n.localized(key: "help.ui.retry", languageCode: language.rawValue) }
+    var close: String { FloeL10n.localized(key: "help.ui.close", languageCode: language.rawValue) }
+    var done: String { FloeL10n.localized(key: "help.ui.done", languageCode: language.rawValue) }
+    var contents: String { FloeL10n.localized(key: "help.ui.contents", languageCode: language.rawValue) }
+    var find: String { FloeL10n.localized(key: "help.ui.find", languageCode: language.rawValue) }
+    var reading: String { FloeL10n.localized(key: "help.ui.reading", languageCode: language.rawValue) }
+    var appearance: String { FloeL10n.localized(key: "help.ui.appearance", languageCode: language.rawValue) }
+    var system: String { FloeL10n.localized(key: "help.ui.system", languageCode: language.rawValue) }
+    var light: String { FloeL10n.localized(key: "help.ui.light", languageCode: language.rawValue) }
+    var dark: String { FloeL10n.localized(key: "help.ui.dark", languageCode: language.rawValue) }
+    var textSize: String { FloeL10n.localized(key: "help.ui.text_size", languageCode: language.rawValue) }
+    var copy: String { FloeL10n.localized(key: "help.ui.copy", languageCode: language.rawValue) }
+    var copied: String { FloeL10n.localized(key: "help.ui.copied", languageCode: language.rawValue) }
+    var info: String { FloeL10n.localized(key: "help.ui.info", languageCode: language.rawValue) }
+    var version: String { FloeL10n.localized(key: "help.ui.version", languageCode: language.rawValue) }
+    var source: String { FloeL10n.localized(key: "help.ui.source", languageCode: language.rawValue) }
+    var languageLabel: String { FloeL10n.localized(key: "help.ui.language_label", languageCode: language.rawValue) }
+    var openSetting: String { FloeL10n.localized(key: "help.ui.open_setting", languageCode: language.rawValue) }
+    var enlargeImage: String { FloeL10n.localized(key: "help.ui.enlarge_image", languageCode: language.rawValue) }
+    var relatedHelp: String { FloeL10n.localized(key: "help.ui.related_help", languageCode: language.rawValue) }
+    var readGuide: String { FloeL10n.localized(key: "help.ui.read_guide", languageCode: language.rawValue) }
+    var readFullChapter: String { FloeL10n.localized(key: "help.ui.read_full_chapter", languageCode: language.rawValue) }
 }

@@ -13,6 +13,7 @@
 
 #if canImport(UIKit) && canImport(WebKit)
 import UIKit
+import FloeCore
 import WebKit
 import FloeDocuments
 
@@ -36,8 +37,7 @@ enum OfficeCommandBridgeError: LocalizedError {
         case .readOnly:
             OfficeInkText.t("文档当前为只读，无法应用编辑。", "The document is read-only; the edit cannot be applied.")
         case .dispatchFailed(let reason):
-            OfficeInkText.t("文档引擎未能执行命令（\(reason)）。",
-                            "The document engine could not execute the command (\(reason)).")
+            FloeL10n.l("app.office_command_bridge.the_document_engine_could_not", reason)
         case .invalidResponse:
             OfficeInkText.t("Office 命令桥接返回了无效响应。", "The Office command bridge returned an invalid response.")
         }

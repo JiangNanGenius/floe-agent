@@ -28,7 +28,7 @@ enum WorkbenchText {
     }
 
     static func t(_ zh: String, _ en: String) -> String {
-        isChinese ? zh : en
+        FloeL10n.bilingual(chinese: zh, english: en)
     }
 }
 
@@ -380,9 +380,7 @@ final class WorkbenchCenter: ObservableObject {
     private func recoverPreview(after message: String) {
         guard project?.kind == .video else { return }
         if previewRecoveryAttempts >= 3 {
-            previewError = WorkbenchText.t(
-                "视频预览无法播放：\(message)",
-                "Video preview cannot play: \(message)")
+            previewError = FloeL10n.l("app.workbench_center.video_preview_cannot_play", message)
             return
         }
         previewRecoveryAttempts += 1
@@ -488,9 +486,7 @@ final class WorkbenchCenter: ObservableObject {
                 let scale = Double(maxEdge) / Double(max(probe.pixelWidth, probe.pixelHeight))
                 canvas = MediaCanvas(width: MediaResourceGuard.even(Int(Double(probe.pixelWidth) * scale)),
                                      height: MediaResourceGuard.even(Int(Double(probe.pixelHeight) * scale)))
-                guardWarning = WorkbenchText.t(
-                    "图片尺寸 \(probe.pixelWidth)×\(probe.pixelHeight) 超过编辑上限，已创建最长边 \(maxEdge) 像素的缩放工作副本；导出将按该尺寸输出。",
-                    "The source is \(probe.pixelWidth)×\(probe.pixelHeight), above the editing budget; a scaled working copy with a \(maxEdge)px longest edge was created and export follows that size.")
+                guardWarning = FloeL10n.l("app.workbench_center.the_source_is_above_the", probe.pixelWidth, probe.pixelHeight, maxEdge)
             default:
                 canvas = MediaCanvas(width: probe.pixelWidth, height: probe.pixelHeight)
             }
@@ -567,9 +563,7 @@ final class WorkbenchCenter: ObservableObject {
                 let duration = metadata.durationSeconds ?? 0
                 let clip = VideoClip(assetID: asset.id, trimStart: 0, trimEnd: duration)
                 if duration <= 0 {
-                    throw FloeError.validationFailed(WorkbenchText.t(
-                        "\(url.lastPathComponent) 缺少可用的视频轨道时长。",
-                        "\(url.lastPathComponent) has no readable duration."))
+                    throw FloeError.validationFailed(FloeL10n.l("app.workbench_center.has_no_readable_duration", url.lastPathComponent))
                 }
                 try MediaTransactions.apply(.appendClip(clip), to: &project)
                 if firstSize == nil {
@@ -589,9 +583,7 @@ final class WorkbenchCenter: ObservableObject {
                 try MediaTransactions.apply(.addAsset(asset), to: &project)
                 let duration = await self.audioDuration(url: musicURL)
                 guard duration > 0.05 else {
-                    throw FloeError.validationFailed(WorkbenchText.t(
-                        "\(musicURL.lastPathComponent) 缺少可读的音频时长。",
-                        "\(musicURL.lastPathComponent) has no readable audio duration."))
+                    throw FloeError.validationFailed(FloeL10n.l("app.workbench_center.has_no_readable_audio_duration", musicURL.lastPathComponent))
                 }
                 try MediaTransactions.apply(.addMusic(MusicClip(assetID: asset.id, offsetSeconds: 0,
                                                                 trimStart: 0,
@@ -972,9 +964,7 @@ final class WorkbenchCenter: ObservableObject {
                 } catch {
                     guard !Task.isCancelled, self.project?.id == project.id else { return }
                     self.previewImage = nil
-                    self.previewError = WorkbenchText.t(
-                        "图片预览渲染失败：\(error.localizedDescription)",
-                        "Image preview failed: \(error.localizedDescription)")
+                    self.previewError = FloeL10n.l("app.workbench_center.image_preview_failed", error.localizedDescription)
                 }
                 // Compare reference: the untouched first source layer.
                 if let baseLayer = project.imageLayers.first(where: { $0.kind == .image && $0.assetID != nil }) {
@@ -1026,9 +1016,7 @@ final class WorkbenchCenter: ObservableObject {
                     if token.isCancelled || Task.isCancelled { return }
                     self.isRenderingPreview = false
                     self.playerItem = nil
-                    self.previewError = WorkbenchText.t(
-                        "视频预览渲染失败：\(error.localizedDescription)",
-                        "Video preview failed: \(error.localizedDescription)")
+                    self.previewError = FloeL10n.l("app.workbench_center.video_preview_failed", error.localizedDescription)
                 }
             }
         }
@@ -1252,9 +1240,7 @@ final class WorkbenchCenter: ObservableObject {
                              speed: speed, volume: volume, isMuted: muted)
         project.videoTimeline = VideoTimeline(clips: [clip])
         project.unknownOperations = preserved
-        project.recoveryWarnings.append(WorkbenchText.t(
-            "已从旧版单素材编辑工程迁移（保留 \(preserved.count) 个未识别操作）。",
-            "Migrated from the legacy single-asset editor (\(preserved.count) unrecognized operation(s) preserved)."))
+        project.recoveryWarnings.append(FloeL10n.l("app.workbench_center.migrated_from_the_legacy_single", preserved.count))
         return project
     }
 
@@ -1459,9 +1445,7 @@ final class WorkbenchCenter: ObservableObject {
                     "\(receipt.width)×\(receipt.height) \(receipt.format)")
                 self.recordVerifiedExport(attemptID: attemptID, url: receipt.url, kind: .image,
                                           detail: detail,
-                                  message: WorkbenchText.t(
-                                      "已导出 \(receipt.width)×\(receipt.height) \(receipt.format) 到 Workbench/Exports/\(destination.lastPathComponent)。",
-                                      "Exported \(receipt.width)×\(receipt.height) \(receipt.format) to Workbench/Exports/\(destination.lastPathComponent)."))
+                                  message: FloeL10n.l("app.workbench_center.exported_to_workbench_exports", receipt.width, receipt.height, receipt.format, destination.lastPathComponent))
                 await self.saveNow()
             } catch {
                 self.handleExportFailure(error, attemptID: attemptID)
@@ -1522,9 +1506,7 @@ final class WorkbenchCenter: ObservableObject {
                 "\(receipt.width)×\(receipt.height) \(receipt.codec.uppercased()) · \(String(format: "%.2f", receipt.durationSeconds))s")
             recordVerifiedExport(attemptID: attemptID, url: receipt.url, kind: .video,
                                  detail: detail,
-                                 message: WorkbenchText.t(
-                                     "已导出 \(receipt.width)x\(receipt.height) \(receipt.codec) \(String(format: "%.2f", receipt.durationSeconds))s。",
-                                     "Exported \(receipt.width)x\(receipt.height) \(receipt.codec) \(String(format: "%.2f", receipt.durationSeconds))s."))
+                                 message: FloeL10n.l("app.workbench_center.exported_x_s", receipt.width, receipt.height, receipt.codec, String(format: "%.2f", receipt.durationSeconds)))
             await saveNow()
         } catch {
             handleExportFailure(error, attemptID: attemptID)

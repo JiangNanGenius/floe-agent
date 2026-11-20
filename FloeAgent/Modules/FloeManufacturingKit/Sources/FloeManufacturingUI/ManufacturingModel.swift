@@ -6,7 +6,20 @@ import FloeManufacturingCore
 import FloeManufacturingNC
 import FloeNCProgram
 
-func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en }
+public enum FloeManufacturingUIStrings {
+    private static let localizerLock = NSLock()
+    nonisolated(unsafe) private static var installedLocalizer: (@Sendable (String, String) -> String)?
+
+    public static var localizer: (@Sendable (String, String) -> String)? {
+        get { localizerLock.withLock { installedLocalizer } }
+        set { localizerLock.withLock { installedLocalizer = newValue } }
+    }
+}
+
+func L(_ zh: String, _ en: String) -> String {
+    if let localizer = FloeManufacturingUIStrings.localizer { return localizer(zh, en) }
+    return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
+}
 
 @MainActor @Observable public final class ManufacturingModel {
     public enum State: Equatable { case prepared, running, cancelling, completed, cancelled, failed }

@@ -21,7 +21,7 @@ struct FloeTaskLiveActivityWidget: Widget {
     init() {
         // The extension renders in its own process; resolve the App-mirrored
         // language here too (idempotent), matching the other widgets.
-        FloeL10n.bootstrap()
+        FloeL10n.bootstrap(isExtension: true)
     }
 
     var body: some WidgetConfiguration {
@@ -39,13 +39,6 @@ private enum FloeTaskLiveActivityPresentation {
     static func displayTitle(_ row: FloeTaskActivitySnapshot.Row) -> String {
         let title = row.title.trimmingCharacters(in: .whitespacesAndNewlines)
         return title.isEmpty ? FloeL10n.l("widget.untitled_task") : title
-    }
-
-    /// Inline bilingual fallback for the planned-wait vocabulary. The widget
-    /// extension resolves the App language itself, so this stays aligned with
-    /// the App's English/Simplified Chinese copy without a second catalog.
-    static func localized(zh: String, en: String) -> String {
-        FloeL10n.isChinese ? zh : en
     }
 
     static func stateLabel(_ state: WidgetTaskState) -> String {
@@ -76,15 +69,15 @@ private enum FloeTaskLiveActivityPresentation {
     /// row list: at most one wait row is shown, so other plans never become
     /// extra activities.
     static func scheduledLabel(_ count: Int) -> String {
-        localized(zh: "\(count) 个计划", en: "\(count) scheduled")
+        FloeL10n.l("liveactivity.scheduled_count", count)
     }
 
     static func startingInLabel() -> String {
-        localized(zh: "即将开始", en: "Starts in")
+        FloeL10n.l("liveactivity.starts_in")
     }
 
     static func dueLabel() -> String {
-        localized(zh: "即将开始", en: "Starting soon")
+        FloeL10n.l("liveactivity.starting_soon")
     }
 
     /// The displayed rows. The header still reports the full active count,

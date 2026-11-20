@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import UIKit
 
 /// Native selectable, numbered diff evidence. Never applies file changes.
@@ -199,7 +200,7 @@ private struct NativeDiffCodeView: UIViewRepresentable {
             let operation = line.kind == .addition ? NativeFileDiffCopy.t("新增", "Added")
                 : line.kind == .removal ? NativeFileDiffCopy.t("删除", "Removed") : NativeFileDiffCopy.t("原有", "Context")
             let number = line.newNumber ?? line.oldNumber ?? 0
-            code.accessibilityLabel = operation + " " + NativeFileDiffCopy.t("第\(number)行", "line \(number)")
+            code.accessibilityLabel = operation + " " + FloeL10n.l("app.diff_view.line", number)
         }
         code.accessibilityValue = content
         setNeedsLayout()

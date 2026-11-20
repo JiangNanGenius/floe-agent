@@ -721,9 +721,7 @@ struct GameProjectSpaceScreen: View {
             defer { pending = nil }
             try await session.project.selectManual(
                 root: root, engine: engine, acknowledgingUnverified: true)
-            notice = IDELanguageRunText.t(
-                "已保存手动选择 \(engine.rawValue)；运行和构建保持关闭。",
-                "Saved the manual \(engine.rawValue) choice; run and build stay closed.")
+            notice = FloeL10n.l("app.game_project_space_screen.saved_the_manual_choice_run", engine.rawValue)
         } catch {
             self.error = error.localizedDescription
         }
@@ -740,8 +738,7 @@ struct GameProjectSpaceScreen: View {
                                               "Saved the manual choice; run and build stay closed.")
             } else {
                 let name = snapshot.selectedEngine?.rawValue ?? ""
-                notice = IDELanguageRunText.t("已采用并保存 \(name) 选择。",
-                                              "Confirmed and saved the \(name) choice.")
+                notice = FloeL10n.l("app.game_project_space_screen.confirmed_and_saved_the_choice", name)
             }
         } catch {
             self.error = error.localizedDescription
@@ -1317,14 +1314,11 @@ struct GameProjectSetupPanel: View {
     private func ambiguityText(_ ambiguity: GameProjectSelectionAmbiguity) -> String {
         switch ambiguity {
         case .multipleRoots(let roots):
-            return IDELanguageRunText.t("发现 \(roots.count) 个游戏目录，需要明确选择。",
-                                        "\(roots.count) game folders need an explicit choice.")
+            return FloeL10n.l("app.game_project_space_screen.game_folders_need_an_explicit", roots.count)
         case .multipleEngines(let root, let engines):
-            return IDELanguageRunText.t("\(rootLabel(root)) 识别到 \(engines.count) 个引擎，需要明确选择。",
-                                        "\(engines.count) engines in \(rootLabel(root)); choose one.")
+            return FloeL10n.l("app.game_project_space_screen.engines_in_choose_one", engines.count, rootLabel(root))
         case .noEngineRecognized(let root):
-            return IDELanguageRunText.t("\(rootLabel(root)) 未识别到支持的引擎。",
-                                        "No supported engine in \(rootLabel(root)).")
+            return FloeL10n.l("app.game_project_space_screen.no_supported_engine_in", rootLabel(root))
         case .noEngineRecognizedAnywhere:
             return IDELanguageRunText.t("所有目录都未识别到支持的引擎。",
                                         "No supported engine was recognized in any folder.")
@@ -1332,8 +1326,7 @@ struct GameProjectSetupPanel: View {
             return IDELanguageRunText.t("上次选择已因内容变化失效。",
                                         "The previous choice no longer matches the project.")
         case .manualSelectionUnverified(let root, let engine):
-            return IDELanguageRunText.t("\(rootLabel(root)) 的 \(engine.rawValue) 是手动选择，没有识别依据。",
-                                        "\(engine.rawValue) in \(rootLabel(root)) is a manual choice without recognized evidence.")
+            return FloeL10n.l("app.game_project_space_screen.in_is_a_manual_choice", engine.rawValue, rootLabel(root))
         }
     }
 }

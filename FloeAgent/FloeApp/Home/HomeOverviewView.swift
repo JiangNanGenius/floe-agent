@@ -695,22 +695,22 @@ struct HomeOverviewView: View {
         var parts: [String] = []
         let counts = snapshot.counts
         if counts.liveRuns > 0 {
-            parts.append(FloeL10n.isChinese ? "运行 \(counts.liveRuns)" : "runs \(counts.liveRuns)")
+            parts.append(FloeL10n.l("app.home_overview_view.runs", counts.liveRuns))
         }
         if counts.runningJobs > 0 {
-            parts.append(FloeL10n.isChinese ? "任务 \(counts.runningJobs)" : "jobs \(counts.runningJobs)")
+            parts.append(FloeL10n.l("app.home_overview_view.jobs", counts.runningJobs))
         }
         if counts.queuedJobs > 0 {
-            parts.append(FloeL10n.isChinese ? "排队 \(counts.queuedJobs)" : "queued \(counts.queuedJobs)")
+            parts.append(FloeL10n.l("app.home_overview_view.queued", counts.queuedJobs))
         }
         if counts.activeServices > 0 {
-            parts.append(FloeL10n.isChinese ? "服务 \(counts.activeServices)" : "services \(counts.activeServices)")
+            parts.append(FloeL10n.l("app.home_overview_view.services", counts.activeServices))
         }
         if counts.claimedScheduleOccurrences > 0 {
-            parts.append(FloeL10n.isChinese ? "排程 \(counts.claimedScheduleOccurrences)" : "schedules \(counts.claimedScheduleOccurrences)")
+            parts.append(FloeL10n.l("app.home_overview_view.schedules", counts.claimedScheduleOccurrences))
         }
         if counts.pendingApprovals > 0 {
-            parts.append(FloeL10n.isChinese ? "待批准 \(counts.pendingApprovals)" : "approvals \(counts.pendingApprovals)")
+            parts.append(FloeL10n.l("app.home_overview_view.approvals", counts.pendingApprovals))
         }
         if !snapshot.showsServiceOnlyActivity, snapshot.state == .waiting, let reason = snapshot.waitReason {
             parts.append(waitReasonText(reason))

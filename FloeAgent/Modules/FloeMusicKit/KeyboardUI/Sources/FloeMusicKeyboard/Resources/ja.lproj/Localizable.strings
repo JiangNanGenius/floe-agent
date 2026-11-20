@@ -1,0 +1,13 @@
+"keyboard.tone" = "トーン";
+"keyboard.volume" = "ボリューム";
+"keyboard.expand" = "キーボードを展開";
+"keyboard.collapse" = "キーボードを折りたたむ";
+"keyboard.sustain" = "維持する";
+"keyboard.pitchbend" = "ピッチベンド";
+"keyboard.modulation" = "変調";
+"keyboard.attack" = "攻撃";
+"keyboard.noPresets" = "利用可能なトーンはありません";
+"keyboard.release" = "リリース";
+"keyboard.effect" = "効果";
+"keyboard.octave" = "オクターブ";
+"keyboard.filter" = "フィルタ";

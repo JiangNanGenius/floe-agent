@@ -14,7 +14,7 @@ struct CADOfflineRenderEntry: ViewModifier {
     func body(content: Content) -> some View {
         content.toolbar {
             Button { presented = true } label: {
-                Label(CADOfflineRenderText.t("离线渲染", "Offline render"), systemImage: "camera.aperture")
+                Label(FloeL10n.l("app.cadoffline_render_view.offline_render"), systemImage: "camera.aperture")
             }.accessibilityIdentifier("cad.offlineRender.open")
         }.sheet(isPresented: $presented) {
             CADOfflineRenderView(document: document, root: root, workspaceID: workspaceID, conversationID: conversationID)
@@ -23,7 +23,7 @@ struct CADOfflineRenderEntry: ViewModifier {
 }
 
 nonisolated enum CADOfflineRenderText {
-    static func t(_ zh: String, _ en: String) -> String { FloeL10n.isChinese ? zh : en }
+    static func t(_ zh: String, _ en: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 }
 
 /// Closing this sheet does not cancel or resubmit a service-owned render.
@@ -49,50 +49,50 @@ struct CADOfflineRenderView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text(t("在本机计算反射、间接光与阴影。请保持 Floe 在前台；关闭此窗口后渲染会继续。", "Compute reflections, indirect light and shadows on this device. Keep Floe in the foreground; rendering continues when you close this window."))
+                    Text(FloeL10n.l("app.cadoffline_render_view.compute_reflections_indirect_light_and"))
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                Section(t("图像", "Image")) {
-                    Picker(t("质量", "Quality"), selection: $settings.quality) {
-                        Text(t("预览 · 16 采样", "Preview · 16 samples")).tag(CADOfflineRenderSettings.Quality.preview)
-                        Text(t("工作室 · 64 采样", "Studio · 64 samples")).tag(CADOfflineRenderSettings.Quality.studio)
-                        Text(t("精细 · 256 采样", "Final · 256 samples")).tag(CADOfflineRenderSettings.Quality.final)
+                Section(FloeL10n.l("design.panel.type.image")) {
+                    Picker(FloeL10n.l("workspace.workspace_canvas_view.quality"), selection: $settings.quality) {
+                        Text(FloeL10n.l("app.cadoffline_render_view.preview_16_samples")).tag(CADOfflineRenderSettings.Quality.preview)
+                        Text(FloeL10n.l("app.cadoffline_render_view.studio_64_samples")).tag(CADOfflineRenderSettings.Quality.studio)
+                        Text(FloeL10n.l("app.cadoffline_render_view.final_256_samples")).tag(CADOfflineRenderSettings.Quality.final)
                     }.accessibilityIdentifier("cad.offlineRender.quality")
-                    Picker(t("尺寸", "Size"), selection: $settings.width) {
+                    Picker(FloeL10n.l("workspace.workspace_canvas_view.size"), selection: $settings.width) {
                         ForEach([640, 1280, 1920, 2560], id: \.self) { width in Text("\(width) × \(width * 3 / 4)").tag(width) }
                     }.onChange(of: settings.width) { _, width in settings.height = width * 3 / 4 }
                     Stepper(value: $settings.maximumBounces, in: 2...16) {
-                        LabeledContent(t("光线反弹", "Light bounces"), value: "\(settings.maximumBounces)")
+                        LabeledContent(FloeL10n.l("app.cadoffline_render_view.light_bounces"), value: "\(settings.maximumBounces)")
                     }
-                    LabeledContent(t("曝光", "Exposure"), value: settings.exposureEV.formatted(.number.precision(.fractionLength(1))))
-                    Slider(value: $settings.exposureEV, in: -6...6, step: 0.25).accessibilityLabel(t("曝光", "Exposure"))
+                    LabeledContent(FloeL10n.l("cad.render.exposure"), value: settings.exposureEV.formatted(.number.precision(.fractionLength(1))))
+                    Slider(value: $settings.exposureEV, in: -6...6, step: 0.25).accessibilityLabel(FloeL10n.l("cad.render.exposure"))
                 }.disabled(starting || operation?.isRunning == true)
                 Section {
                     if starting || operation?.isRunning == true {
                         HStack {
                             ProgressView()
-                            Text(operation?.state == .cancelling ? t("正在取消…", "Cancelling…") : t("正在准备并渲染…", "Preparing and rendering…"))
+                            Text(operation?.state == .cancelling ? FloeL10n.l("app.core_aimodel_inspection.cancelling") : FloeL10n.l("app.cadoffline_render_view.preparing_and_rendering"))
                             Spacer()
                             if let operation {
-                                Button(t("取消", "Cancel"), role: .destructive) { cancel(operation.id) }.disabled(cancelling)
+                                Button(FloeL10n.l("cad.scene.cancel"), role: .destructive) { cancel(operation.id) }.disabled(cancelling)
                             }
                         }.accessibilityIdentifier("cad.offlineRender.progress")
                     } else {
-                        Button(t("本机渲染", "Render on device"), systemImage: "sparkles") { start() }
+                        Button(FloeL10n.l("app.cadoffline_render_view.render_on_device"), systemImage: "sparkles") { start() }
                             .disabled(!canStart).accessibilityIdentifier("cad.offlineRender.start")
                     }
                     if let operation {
-                        LabeledContent(t("状态", "Status"), value: stateTitle(operation.state))
+                        LabeledContent(FloeL10n.l("envdetail.status"), value: stateTitle(operation.state))
                         if operation.isRunning, let samples = operation.completedSamples {
-                            LabeledContent(t("采样", "Samples"), value: "\(samples) / \(operation.settings.quality.samples)")
+                            LabeledContent(FloeL10n.l("app.cadoffline_render_view.samples"), value: "\(samples) / \(operation.settings.quality.samples)")
                         }
                         if operation.state == .ready {
-                            LabeledContent(t("图像尺寸", "Image size"), value: "\(operation.settings.width) × \(operation.settings.height)")
-                            Text(t("图像来自启动渲染时的模型快照。", "The image uses the model snapshot taken when this render started."))
+                            LabeledContent(FloeL10n.l("app.cadoffline_render_view.image_size"), value: "\(operation.settings.width) × \(operation.settings.height)")
+                            Text(FloeL10n.l("app.cadoffline_render_view.the_image_uses_the_model"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         if !operation.warnings.isEmpty {
-                            DisclosureGroup(t("场景转换详情", "Scene conversion details")) {
+                            DisclosureGroup(FloeL10n.l("app.cadoffline_render_view.scene_conversion_details")) {
                                 ForEach(operation.warnings, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
                             }
                         }
@@ -103,15 +103,15 @@ struct CADOfflineRenderView: View {
                     Section {
                         Image(uiImage: image).resizable().scaledToFit().accessibilityIdentifier("cad.offlineRender.preview")
                         if let imageURL {
-                            ShareLink(item: imageURL) { Label(t("保存图像", "Save image"), systemImage: "square.and.arrow.up") }
+                            ShareLink(item: imageURL) { Label(FloeL10n.l("app.cadoffline_render_view.save_image"), systemImage: "square.and.arrow.up") }
                                 .accessibilityIdentifier("cad.offlineRender.save")
                         }
                     }
                 }
             }
-            .navigationTitle(t("离线渲染", "Offline render"))
+            .navigationTitle(FloeL10n.l("app.cadoffline_render_view.offline_render"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(t("完成", "Done")) { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(FloeL10n.l("help.done")) { dismiss() } } }
             .task(id: operation?.id) {
                 if operation == nil {
                     operation = center.latest(documentURL: document.url, conversationID: conversationID, workspaceRoot: root)
@@ -127,13 +127,13 @@ struct CADOfflineRenderView: View {
     }
     private func stateTitle(_ state: CADOfflineRenderOperation.State) -> String {
         switch state {
-        case .preparing: t("准备中", "Preparing")
-        case .rendering: t("渲染中", "Rendering")
-        case .ready: t("已完成", "Ready")
-        case .cancelling: t("正在取消", "Cancelling")
-        case .cancelled: t("已取消", "Cancelled")
-        case .failed: t("失败", "Failed")
-        case .interrupted: t("已中断", "Interrupted")
+        case .preparing: FloeL10n.l("canvas.generation.state.preparing")
+        case .rendering: FloeL10n.l("app.cadoffline_render_view.rendering")
+        case .ready: FloeL10n.l("app.cadbuilding_professional_view.ready")
+        case .cancelling: FloeL10n.l("skills.authoring.phase.cancelling")
+        case .cancelled: FloeL10n.l("background.event.cancelled")
+        case .failed: FloeL10n.l("canvas.generation.state.failed")
+        case .interrupted: FloeL10n.l("core.linux_background_surface.interrupted")
         }
     }
     private func start() {

@@ -201,10 +201,9 @@ func registerAppleImagePlaygroundTool(service: AppleImagePlaygroundService,
 }
 
 enum AppleImagePlaygroundCopy {
-    static var title: String { FloeL10n.isChinese ? "图乐园" : "Image Playground" }
+    static var title: String { FloeL10n.l("app.apple_image_playground_tool.image_playground") }
     static var detail: String {
-        FloeL10n.isChinese ? "使用 Apple 图乐园生成或修改图片。需要在系统面板中完成选择。"
-            : "Create or edit images with Apple Image Playground. Finish your selection in the system sheet."
+        FloeL10n.l("app.apple_image_playground_tool.create_or_edit_images_with")
     }
 
     static func message(for failure: AppleImagePlaygroundFailure) -> String {

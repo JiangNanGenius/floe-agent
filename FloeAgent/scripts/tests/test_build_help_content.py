@@ -67,7 +67,7 @@ class GeneratorFixtureTests(unittest.TestCase):
     # -- Package shape -------------------------------------------------
 
     def test_package_shape_and_bounds(self):
-        self.assertEqual(len(self.files), 25)
+        self.assertEqual(len(self.files), 88)
         for relative, data in self.files.items():
             if relative in ("content.json", "help/manifest.json"):
                 self.assertLessEqual(len(data), 262_144, relative)
@@ -157,7 +157,7 @@ class GeneratorFixtureTests(unittest.TestCase):
 
     def test_links_resolve_in_package_or_public_https(self):
         blob = "https://github.com/JiangNanGenius/floe-agent/blob/main/"
-        for locale in ("en", "zh-Hans"):
+        for locale in bhc.LOCALES:
             for name in ("quickstart", "user-manual", "workspaces",
                          "input.keyboard", "voice.output", "environment.memory"):
                 body = self.files[f"help/articles/{locale}/{name}.html"].decode("utf-8")
@@ -238,14 +238,16 @@ class GeneratorFixtureTests(unittest.TestCase):
         manifest = self.load_json("help/manifest.json")
         self.assertEqual(content["schemaVersion"], 1)
         self.assertEqual(content["id"], "floe.help.quickstart")
-        self.assertEqual(content["version"], "1.2.0")
+        self.assertEqual(content["version"], "1.3.0")
         self.assertEqual(content["kind"], "help")
         self.assertEqual(content["helpManifest"], "help/manifest.json")
         self.assertEqual(content["sourceRevision"], "")
         self.assertEqual(manifest["sourceRevision"], content["sourceRevision"])
         self.assertEqual(manifest["id"], content["id"])
         self.assertEqual(manifest["version"], content["version"])
-        self.assertEqual(set(manifest["indexPaths"]), {"en", "zh-Hans"})
+        locales = {"en", "zh-Hans", "zh-Hant", "ja", "ko", "fr", "de", "es", "pt-BR"}
+        self.assertEqual(set(manifest["indexPaths"]), locales)
+        self.assertEqual(set(content["documents"]), locales)
         listed = {resource["path"] for resource in manifest["resources"]}
         expected = set(self.files) - {"content.json", "help/manifest.json"}
         self.assertEqual(listed, expected)
@@ -277,8 +279,11 @@ class GeneratorFixtureTests(unittest.TestCase):
 
     def test_legacy_projection_documents(self):
         content = self.load_json("content.json")
-        self.assertEqual(content["documents"],
-                         {"en": "index.md", "zh-Hans": "index.zh-Hans.md"})
+        expected = {locale: "index.md" if locale == "en" else f"index.{locale}.md"
+                    for locale in bhc.LOCALES}
+        self.assertEqual(content["documents"], expected)
+        for path in expected.values():
+            self.assertTrue(self.files[path].startswith(b"# "))
         en = self.files["index.md"].decode("utf-8")
         zh = self.files["index.zh-Hans.md"].decode("utf-8")
         for name in ("From installation to your first result",

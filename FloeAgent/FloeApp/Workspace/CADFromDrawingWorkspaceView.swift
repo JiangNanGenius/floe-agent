@@ -55,15 +55,15 @@ import FloeCore
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(t("返回二维图", "Return to drawing")) { save(close: true) }
+                    Button(FloeL10n.l("app.cadfrom_drawing_workspace_view.return_to_drawing")) { save(close: true) }
                         .disabled(saving).accessibilityIdentifier("cad.transfer.return")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if !isBuilding {
-                        Button { building = true } label: { Label(t("建筑设计", "Building Design"), systemImage: "building.2") }
+                        Button { building = true } label: { Label(FloeL10n.l("cad.building.title"), systemImage: "building.2") }
                             .disabled(saving)
                     }
-                    Button { save(close: false) } label: { Label(t("保存", "Save"), systemImage: "tray.and.arrow.down") }
+                    Button { save(close: false) } label: { Label(FloeL10n.l("voice.cloud.profile.save"), systemImage: "tray.and.arrow.down") }
                         .disabled(saving || document.isReadOnly).accessibilityIdentifier("cad.transfer.save")
                 }
             }
@@ -84,9 +84,9 @@ import FloeCore
             CADBuildingProfessionalView(document: document, action: action, root: destination.sourceRoot,
                 workspaceID: destination.workspaceID, conversationID: destination.conversationID)
         }
-        .alert(t("模型操作未完成", "The model operation could not finish"),
+        .alert(FloeL10n.l("app.cadfrom_drawing_workspace_view.the_model_operation_could_not"),
             isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-            Button(t("好", "OK")) { error = nil }
+            Button(FloeL10n.l("cad.ui.common.ok")) { error = nil }
         } message: { Text(error ?? "") }
         // Closing is an explicit save/release. A failed save keeps this owner
         // and its editable draft visible for retry.
@@ -112,12 +112,12 @@ import FloeCore
             if close {
                 if document.isClosed || FloeCAD3DBridge.shared.releaseReadOnlyDocument(document) { dismiss(); return }
                 guard let outcome = await FloeCAD3DBridge.shared.releaseDocumentOutcome(at: document.url, expected: document) else {
-                    error = t("此模型的会话已发生变化，请重新打开。", "The model session changed. Open it again."); return
+                    error = FloeL10n.l("app.cadfrom_drawing_workspace_view.the_model_session_changed_open"); return
                 }
                 guard !Task.isCancelled, saveGeneration == generation else { return }
                 if let failure = outcome.error { error = failure }
                 else if document.isClosed { dismiss() }
-                else { error = t("模型仍有更新，请再次保存。", "The model has newer edits. Save it again.") }
+                else { error = FloeL10n.l("app.cadfrom_drawing_workspace_view.the_model_has_newer_edits") }
             } else {
                 let outcome = await document.save()
                 guard !Task.isCancelled, saveGeneration == generation else { return }

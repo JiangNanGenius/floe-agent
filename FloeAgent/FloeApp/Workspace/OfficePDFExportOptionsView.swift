@@ -811,8 +811,8 @@ struct OfficePDFExportOptionsView: View {
                             Text(t("文档设置", "Document settings")).tag(OfficePDFExportChoices.Paper.document)
                             Text("A4").tag(OfficePDFExportChoices.Paper.a4)
                             Text("A3").tag(OfficePDFExportChoices.Paper.a3)
-                            Text("Letter").tag(OfficePDFExportChoices.Paper.letter)
-                            Text("Legal").tag(OfficePDFExportChoices.Paper.legal)
+                            Text("office.pdf.paper.letter").tag(OfficePDFExportChoices.Paper.letter)
+                            Text("office.pdf.paper.legal").tag(OfficePDFExportChoices.Paper.legal)
                         }
                         Picker(t("方向", "Orientation"), selection: $choices.orientation) {
                             Text(t("文档设置", "Document settings")).tag(OfficePDFExportChoices.Orientation.document)
@@ -890,8 +890,8 @@ struct OfficePDFExportOptionsView: View {
                             Text(t("文档设置", "Document settings")).tag(OfficePDFExportChoices.Paper.document)
                             Text("A4").tag(OfficePDFExportChoices.Paper.a4)
                             Text("A3").tag(OfficePDFExportChoices.Paper.a3)
-                            Text("Letter").tag(OfficePDFExportChoices.Paper.letter)
-                            Text("Legal").tag(OfficePDFExportChoices.Paper.legal)
+                            Text("office.pdf.paper.letter").tag(OfficePDFExportChoices.Paper.letter)
+                            Text("office.pdf.paper.legal").tag(OfficePDFExportChoices.Paper.legal)
                         }
                         .accessibilityIdentifier("office.pdf.physicalPaper")
                         Picker(t("方向", "Orientation"), selection: $choices.physicalOrientation) {

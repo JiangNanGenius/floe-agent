@@ -30,34 +30,34 @@ struct GitHubSourceDetails: View {
                     }
                     if let openCollaboration {
                         Button(action: openCollaboration) {
-                            Label(text("打开问题与拉取请求", "Open issues and pull requests"), systemImage: "bubble.left.and.bubble.right")
+                            Label(FloeL10n.l("app.git_hub_source_details.open_issues_and_pull_requests"), systemImage: "bubble.left.and.bubble.right")
                         }.buttonStyle(.borderedProminent).disabled(isBusy).accessibilityIdentifier("github.source.collaborate")
                     }
                     if let workInNewTask {
                         Button(action: workInNewTask) {
-                            Label(text("在新任务中处理", "Work in a new task"), systemImage: "square.and.pencil")
+                            Label(FloeL10n.l("app.git_hub_source_details.work_in_a_new_task"), systemImage: "square.and.pencil")
                         }.buttonStyle(.bordered).disabled(isBusy).accessibilityIdentifier("github.source.newTask")
                     }
                 }
                 if let location = snapshot.location {
                     VStack(alignment: .leading, spacing: 8) {
                         if let selected = location.selectedComment {
-                            Label(text("链接中的讨论", "Linked discussion"), systemImage: "text.bubble").font(.headline)
+                            Label(FloeL10n.l("app.git_hub_source_details.linked_discussion"), systemImage: "text.bubble").font(.headline)
                             comment(selected)
                         }
                         if let selected = location.selectedText {
-                            Label(location.path ?? text("链接中的内容", "Linked content"), systemImage: "text.alignleft").font(.headline)
+                            Label(location.path ?? FloeL10n.l("app.git_hub_source_details.linked_content"), systemImage: "text.alignleft").font(.headline)
                             if let start = location.startLine { Text(start == location.endLine ? "L\(start)" : "L\(start)–L\(location.endLine ?? start)").font(.caption).foregroundStyle(.secondary) }
                             GitHubSourceText(text: selected, code: true)
                         }
                         if location.state != .resolved {
-                            Text(text("此处保留这次读取的定位结果；尚未读取的讨论或历史行不会自动补齐。", "This is the saved location. Discussions or historical lines outside the read are not automatically fetched."))
+                            Text(FloeL10n.l("app.git_hub_source_details.this_is_the_saved_location"))
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                     }.padding(12).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
                 }
                 if let sha = snapshot.link.pullRequestCommit {
-                    Label(text("此链接引用历史提交；协作页显示当前拉取请求。", "This link references a historical commit; collaboration opens the current pull request."), systemImage: "clock.arrow.circlepath")
+                    Label(FloeL10n.l("app.git_hub_source_details.this_link_references_a_historical"), systemImage: "clock.arrow.circlepath")
                         .font(.callout).foregroundStyle(.secondary)
                     Text(String(sha.prefix(12))).font(.caption.monospaced()).textSelection(.enabled)
                 }
@@ -73,11 +73,11 @@ struct GitHubSourceDetails: View {
                 }
                 if let file = snapshot.file {
                     if let contents = file.text { GitHubSourceText(text: contents, code: true) }
-                    else { Label(text("本次读取未包含可显示的文件正文", "No displayable file content was included in this read"), systemImage: "doc") }
+                    else { Label(FloeL10n.l("app.git_hub_source_details.no_displayable_file_content_was"), systemImage: "doc") }
                 }
                 if let directory = snapshot.directory {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(text("目录", "Directory")).font(.headline)
+                        Text(FloeL10n.l("app.git_hub_source_details.directory")).font(.headline)
                         ForEach(Array(directory.items.enumerated()), id: \.offset) { _, entry in
                             Label(entry.path, systemImage: entry.type == "tree" ? "folder" : "doc").font(.body.monospaced()).textSelection(.enabled)
                         }
@@ -87,9 +87,9 @@ struct GitHubSourceDetails: View {
                 if let readme = snapshot.readme?.text {
                     VStack(alignment: .leading, spacing: 8) { Text("README").font(.headline); GitHubSourceText(text: readme, code: false) }
                 }
-                DisclosureGroup(text("来源详情", "Source details")) {
+                DisclosureGroup(FloeL10n.l("app.git_hub_source_details.source_details")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Link(text("打开原链接", "Open original link"), destination: snapshot.source.originalURL)
+                        Link(FloeL10n.l("app.git_hub_source_details.open_original_link"), destination: snapshot.source.originalURL)
                         Text(snapshot.source.resolvedURL.absoluteString).font(.caption).textSelection(.enabled)
                         if let revision = snapshot.source.revision {
                             Text(revision.name).font(.caption)
@@ -102,12 +102,12 @@ struct GitHubSourceDetails: View {
         }.accessibilityIdentifier("github.source.details")
     }
     @ViewBuilder private func continuation(_ next: Int?) -> some View {
-        if next != nil { Text(text("还有未读取的内容，可让助手继续读取。", "More content remains. Ask the assistant to continue reading.")).font(.caption).foregroundStyle(.secondary) }
+        if next != nil { Text(FloeL10n.l("app.git_hub_source_details.more_content_remains_ask_the")).font(.caption).foregroundStyle(.secondary) }
     }
     @ViewBuilder private func comments(_ page: GitHubLinkPage<GitHubLinkComment>?) -> some View {
         if let page {
             VStack(alignment: .leading, spacing: 14) {
-                Text(text("讨论", "Discussion")).font(.headline)
+                Text(FloeL10n.l("app.git_hub_source_details.discussion")).font(.headline)
                 ForEach(Array(page.items.enumerated()), id: \.offset) { _, value in comment(value) }
                 continuation(page.nextPage)
             }
@@ -124,11 +124,11 @@ struct GitHubSourceDetails: View {
     @ViewBuilder private func changes(_ page: GitHubLinkPage<GitHubLinkChangedFile>?) -> some View {
         if let page {
             VStack(alignment: .leading, spacing: 12) {
-                Text(text("文件变更", "File changes")).font(.headline)
+                Text(FloeL10n.l("app.git_hub_source_details.file_changes")).font(.headline)
                 ForEach(Array(page.items.enumerated()), id: \.offset) { _, file in
                     DisclosureGroup {
                         if let patch = file.patch { GitHubSourceText(text: patch, code: true) }
-                        else { Text(text("本次读取没有包含此文件的差异正文。", "This read did not include the file's patch.")) }
+                        else { Text(FloeL10n.l("app.git_hub_source_details.this_read_did_not_include")) }
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(file.filename).font(.callout.monospaced()).textSelection(.enabled)
@@ -150,7 +150,7 @@ private struct GitHubSourceText: View {
             Text(String(text.prefix(limit))).font(code ? .system(.callout, design: .monospaced) : .body)
                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             if text.count > limit {
-                Button(FloeL10n.isChinese ? "显示更多内容" : "Show more") { limit += 32_768 }
+                Button(FloeL10n.l("app.git_hub_source_details.show_more")) { limit += 32_768 }
             }
         }
     }

@@ -7,8 +7,19 @@ import FloeBiologyCore
 import FloeBiologyEngine
 import FloeBiologySamples
 
+public enum FloeBiologyUIStrings {
+    private static let localizerLock = NSLock()
+    nonisolated(unsafe) private static var installedLocalizer: (@Sendable (String, String) -> String)?
+
+    public static var localizer: (@Sendable (String, String) -> String)? {
+        get { localizerLock.withLock { installedLocalizer } }
+        set { localizerLock.withLock { installedLocalizer = newValue } }
+    }
+}
+
 public func biologyText(_ english:String,_ chinese:String) -> String {
-    Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese:english
+    if let localizer = FloeBiologyUIStrings.localizer { return localizer(chinese, english) }
+    return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese : english
 }
 public struct BiologyAIContext: Sendable, Identifiable {
     public let id=UUID()

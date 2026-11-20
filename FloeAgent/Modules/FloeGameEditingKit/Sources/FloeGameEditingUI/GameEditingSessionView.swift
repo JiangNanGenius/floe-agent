@@ -371,9 +371,9 @@ public struct GameEditingSessionView: View {
 
     private func operationName(_ operation: GameEditRecord.Operation) -> String {
         switch operation {
-        case .apply: return locale == .chinese ? "编辑" : "edit"
-        case .undo: return locale == .chinese ? "撤销" : "undo"
-        case .redo: return locale == .chinese ? "重做" : "redo"
+        case .apply: return GameEditCopy("edit", "编辑").text(locale)
+        case .undo: return GameEditCopy("undo", "撤销").text(locale)
+        case .redo: return GameEditCopy("redo", "重做").text(locale)
         }
     }
 

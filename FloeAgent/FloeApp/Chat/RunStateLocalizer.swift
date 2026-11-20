@@ -44,12 +44,12 @@ enum RunStateLocalizer {
         case "reviewingApproval": "chat.run_state_localizer.the_approval_model_is_reviewing"
         case "verifying": "state.verifying"
         case "executingTool": "state.executing_tool"
-        case "waitingTool": LocalizedStringKey(FloeL10n.isChinese ? "等待中" : "Waiting")
-        case "waitingNativeInput": LocalizedStringKey(FloeL10n.isChinese ? "准备就绪" : "Ready")
+        case "waitingTool": LocalizedStringKey(FloeL10n.l("chat.delegate_card.waiting"))
+        case "waitingNativeInput": LocalizedStringKey(FloeL10n.l("app.run_state_localizer.ready"))
         case "waitingApproval": "state.waiting_approval"
         case "compacting": "chat.run_state_localizer.compacting_context"
         case "checkpointed", "paused": "state.paused"
-        case "interrupted": LocalizedStringKey(FloeL10n.isChinese ? "已中断" : "Interrupted")
+        case "interrupted": LocalizedStringKey(FloeL10n.l("core.linux_background_surface.interrupted"))
         case "noProgress", "blocked": "chat.run_state_localizer.task_blocked_action_needed"
         case "budgetLimited": "chat.run_state_localizer.the_set_budget_was_reached_you"
         case "truncated": "chat.run_state_localizer.output_unfinished_you_can_continue"
@@ -237,7 +237,7 @@ struct ConversationActivityBadge: View {
         "\(conversationID):\(listedAsOrdinary):\(scenePhase == .active):\(liveRun?.id.uuidString ?? ""):\(liveRun?.state ?? ""):\(center.goalPresentationRevision)"
     }
     private var openHint: String {
-        FloeL10n.isChinese ? "打开对话查看原因、回复或继续" : "Open the conversation for details, to reply or continue"
+        FloeL10n.l("app.run_state_localizer.open_the_conversation_for_details")
     }
 
     var body: some View {

@@ -54,7 +54,7 @@ public struct ParameterFormView: View {
             ToolbarItemGroup(placement: .keyboard) {
                 if focusedField != nil {
                     Spacer()
-                    Button(locale == .chinese ? "完成输入" : "Done") { focusedField = nil }
+                    Button(GameEditCopy("Done", "完成输入").text(locale)) { focusedField = nil }
                         .frame(minWidth: 44, minHeight: 44)
                         .accessibilityIdentifier("game.edit.parameter.finishInput")
                 }
@@ -173,11 +173,11 @@ public struct ParameterFormView: View {
         }
         return VStack(spacing: 0) {
             HStack {
-                Text(locale == .chinese ? "条目" : "Records").font(.subheadline.bold())
+                Text(GameEditCopy("Records", "条目").text(locale)).font(.subheadline.bold())
                 Spacer()
                 Text("\(schemas.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }.padding(.horizontal, 12).frame(height: 36)
-            TextField(locale == .chinese ? "搜索条目" : "Search records", text: $recordSearch)
+            TextField(GameEditCopy("Search records", "搜索条目").text(locale), text: $recordSearch)
                 .textFieldStyle(.roundedBorder)
                 .frame(minHeight: 44)
                 .padding(.horizontal, 10)
@@ -203,7 +203,7 @@ public struct ParameterFormView: View {
                     .accessibilityIdentifier("game.edit.parameter.record." + schema.id)
                 }
                 if filtered.isEmpty {
-                    Text(locale == .chinese ? "没有匹配的条目" : "No matching records")
+                    Text(GameEditCopy("No matching records", "没有匹配的条目").text(locale))
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
@@ -225,8 +225,8 @@ public struct ParameterFormView: View {
         }
         .buttonStyle(.borderless)
         .accessibilityLabel(offset < 0
-            ? (locale == .chinese ? "上一条" : "Previous record")
-            : (locale == .chinese ? "下一条" : "Next record"))
+            ? (GameEditCopy("Previous record", "上一条").text(locale))
+            : (GameEditCopy("Next record", "下一条").text(locale)))
         .accessibilityIdentifier(offset < 0 ? "game.edit.parameter.previous" : "game.edit.parameter.next")
         .disabled(selectedIndex.map { !schemas.indices.contains($0 + offset) } ?? true)
     }
@@ -349,7 +349,7 @@ public struct ParameterFormView: View {
     }
 
     private func valuePlaceholder(_ field: GameParameterField) -> String {
-        field.placeholder ?? (locale == .chinese ? "未设置" : "Not set")
+        field.placeholder ?? (GameEditCopy("Not set", "未设置").text(locale))
     }
 
     /// Text edits enter the session immediately, including multiline text;

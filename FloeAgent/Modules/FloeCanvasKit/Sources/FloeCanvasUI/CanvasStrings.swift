@@ -4,10 +4,17 @@ import Foundation
 ///
 /// The qualification host and the kit UI share one vocabulary. Labels stay
 /// concise (per UI_BRIEF); internal identities never appear in labels and
-/// belong in opened details instead. The UI module never reaches for
-/// host-localization bundles: it carries its own English + Simplified
-/// Chinese table so the qualification App renders correctly standalone.
+/// belong in opened details instead. Standalone hosts use the built-in tables.
+/// The main App supplies its catalog when the session follows the host language.
 public struct CanvasStrings: Sendable {
+    private static let localizerLock = NSLock()
+    nonisolated(unsafe) private static var installedLocalizer: (@Sendable (String) -> String?)?
+
+    public static var localizer: (@Sendable (String) -> String?)? {
+        get { localizerLock.withLock { installedLocalizer } }
+        set { localizerLock.withLock { installedLocalizer = newValue } }
+    }
+
     public enum Language: String, Codable, Hashable, Sendable, CaseIterable {
         case english = "en"
         case simplifiedChinese = "zh-Hans"
@@ -25,8 +32,10 @@ public struct CanvasStrings: Sendable {
     }
 
     private let table: KeyTable
+    private let useHostLocalization: Bool
 
-    public init(language: Language) {
+    public init(language: Language, useHostLocalization: Bool = false) {
+        self.useHostLocalization = useHostLocalization
         switch language {
         case .english: self.table = KeyTable.english
         case .simplifiedChinese: self.table = KeyTable.simplifiedChinese
@@ -34,7 +43,10 @@ public struct CanvasStrings: Sendable {
     }
 
     public subscript(key: Key) -> String {
-        table.values[key] ?? key.rawValue
+        if useHostLocalization, let value = Self.localizer?("canvas.native." + key.rawValue) {
+            return value
+        }
+        return table.values[key] ?? key.rawValue
     }
 
     public enum Key: String, Codable, Hashable, Sendable, CaseIterable {

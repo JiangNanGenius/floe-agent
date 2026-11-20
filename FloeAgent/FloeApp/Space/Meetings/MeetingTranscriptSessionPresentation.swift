@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeCore
 import FloeMeetings
 
 /// Minimal, view-independent transcription state for the meeting workbench.
@@ -108,7 +109,7 @@ extension MeetingProjectSession {
               let ordinal = speaker.label.dropFirst("Speaker ".count).split(separator: " ").first else {
             return speaker.label
         }
-        return IDELanguageRunText.t("说话人 \(ordinal)", "Speaker \(ordinal)")
+        return FloeL10n.l("app.meeting_transcript_session_presentation.speaker", ordinal)
     }
 }
 #endif

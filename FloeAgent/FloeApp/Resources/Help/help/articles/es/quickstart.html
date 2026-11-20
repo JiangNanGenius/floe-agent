@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desde la instalación hasta su primer resultado</title>
+<link rel="stylesheet" href="../../styles/help.css">
+</head>
+<body>
+<main>
+<h1>Desde la instalación hasta su primer resultado</h1>
+<nav class="toc" aria-label="Índice"><h2>Índice</h2><ul>
+<li class="lv2"><a href="#overview">Descripción general</a></li>
+<li class="lv2"><a href="#section-1">Elija un canal de instalación</a></li>
+<li class="lv2"><a href="#section-2">Completar una tarea de IA</a></li>
+<li class="lv2"><a href="#section-3">Ejecutar código en su dispositivo</a></li>
+<li class="lv2"><a href="#section-4">Crea y guarda un modelo 3D</a></li>
+<li class="lv2"><a href="#section-5">Prueba un trabajo en el espacio (construcciones más nuevas)</a></li>
+<li class="lv2"><a href="#section-6">Elige el puente correcto</a></li>
+<li class="lv2"><a href="#section-7">Ahorre, recupere y obtenga ayuda</a></li>
+</ul></nav>
+<h2 id="overview">Descripción general</h2>
+<p>Esta guía cubre iOS / iPadOS. Compruebe la versión seleccionada para sus capacidades reales. Ver el <a href="shared-basics.html">Guía compartida</a> Para modelos, tareas y archivos.</p>
+<h2 id="section-1">Elija un canal de instalación</h2>
+<p>Abre el <a href="https://www.floe-agent.com/en/releases" class="external">Centro de liberación</a> Y elija Floe Agent, Mac Bridge o iOS Bridge. El agente Floe está disponible en el App Store para iOS/iPadOS 26+; actualización a través de la tienda. GitHub iOS IPAs requieren su propia firma y pueden tener características más nuevas. Cheque <a href="https://github.com/JiangNanGenius/floe-agent/blob/main/docs/CURRENT_STATUS.md" class="external">Versiones del canal y fechas de verificación</a> Antes de elegir un instalador. <a href="https://www.floe-agent.com/en#beta" class="external">Aplicar en el sitio web</a> Para el acceso a TestFlight; la solicitud no garantiza la elegibilidad inmediata.</p>
+<h2 id="section-2">Completar una tarea de IA</h2>
+<p>Agregue un modelo de nube que funcione en la configuración del modelo, luego cree una tarea y seleccione su espacio de trabajo. Seguir <a href="shared-basics.html">Modelos, tareas y archivos</a> Para configuración, instrucciones claras, ahorro y errores comunes. Ver el <a href="user-manual.html#section-2">Manual de la plataforma</a> Para modelos locales y capacidades de dispositivos.</p>
+<h2 id="section-3">Ejecutar código en su dispositivo</h2>
+<p><strong>Preparar:</strong> Suficiente almacenamiento y memoria. El iOS actual utiliza un tiempo de ejecución compartido ARM64 Linux mientras conserva la propiedad de la tarea y el proyecto. Los paquetes deben coincidir con la arquitectura del invitado.</p>
+<ol><li>Descargue y verifique los recursos en la configuración del entorno de ejecución, luego abra el terminal del espacio de trabajo actual.</li><li>Carrera <code>pwd</code> Y <code>uname -m</code> Para comprobar el directorio y la arquitectura real. Instale Python, Node.js u otros paquetes necesarios para ese entorno.</li><li>Ejecute un programa pequeño y abra su salida. Para un servicio HTTP, elija <strong>Ejecutar como servicio web</strong>, Espera una respuesta real, luego previsualíla.</li><li>Detenga el trabajo o servicio propio cuando haya terminado. Ocltar el terminal o cerrar la vista previa no detiene el trabajo en segundo plano.</li></ol>
+<p><strong>Si falla:</strong> Inspeccione primero la instalación, el inicio y la salida del trabajo. Conservar los archivos del proyecto antes de la reparación; no restablezca ni elimine los datos como primer paso. Ver <a href="user-manual.html#section-9">Terminales y entornos</a>.</p>
+<h2 id="section-4">Crea y guarda un modelo 3D</h2>
+<p><strong>Preparar:</strong> Una versión iOS/iPadOS con el banco de trabajo 3D nativo. Las mallas importadas no obtienen un historial paramétrico nativo, y las operaciones admitidas varían según el formato.</p>
+<ol><li>Cree un modelo 3D nativo a través del flujo de trabajo creativo, comenzando con la geometría simple.</li><li>Refina las dimensiones, agujeros o filetes en el mismo modelo. Al usar el asistente, identifique el modelo actual y el cambio previsto.</li><li>Comprueba la geometría, los materiales y las vistas; guarda el <code>.floecad</code> Archivo y volver a abrirlo.</li><li>Exporte una imagen o un formato 3D compatible para el uso previsto, luego compruébalo en la herramienta de recepción.</li></ol>
+<p><strong>Si falla:</strong> Preservar las importaciones de solo lectura en lugar de tratar las importaciones exitosas como soporte editable. Deshacer un cambio de geometría fallido a un estado recuperable. Ver el <a href="user-manual.html#section-15-3">Manual 3D nativo</a>.</p>
+<h2 id="section-5">Prueba un trabajo en el espacio (construcciones más nuevas)</h2>
+<p><strong>Preparar:</strong> Un instalador que incluye Space; ver el <a href="workspaces.html">Guía del espacio de trabajo</a> Para la construcción requerida y <a href="https://github.com/JiangNanGenius/floe-agent/blob/main/docs/CURRENT_STATUS.md" class="external">Estado del canal</a> Para disponibilidad. Las IPA de GitHub necesitan su propia firma.</p>
+<ol><li>Abrir <strong>Espacio</strong> Desde la barra lateral y cambie a Archivos. Grifo <strong>Nuevo</strong> Y crear un dibujo o un documento; nombrarlo.</li><li>Edite el trabajo, luego ciérrelo y vuelva a abrirlo desde Continuar trabajando para confirmar que se ha guardado.</li><li>Abra el asistente del trabajo y pídale que resuma o continúe el trabajo; revise cualquier propuesta antes de aceptarla.</li><li>Elimine el trabajo de prueba y restaurelo desde Eliminado recientemente para aprender la recuperación.</li></ol>
+<p><strong>Si falla:</strong> Confirme que la compilación admite el espacio (Configuración → Diagnóstico y Acerca de). Ver <a href="workspaces.html">Espacio y bancos de trabajo especializados</a> Para reuniones, música, impresión y la caja de herramientas.</p>
+<h2 id="section-6">Elige el puente correcto</h2>
+<div class="table-wrap"><table><tr><th>Producto</th><th>Propósito</th><th>Antes de conectar</th></tr><tr><td>Puente Floe · Mac</td><td>Terminal, archivos y MCP para Floe en el mismo Mac</td><td>Ambas aplicaciones se ejecutan en un Mac y confirman el mismo código de emparejamiento; este no es un puente remoto iPad-a-Mac</td></tr><tr><td>Puente Floe iOS</td><td>Un puente de automatización local independiente para iPhone y iPad</td><td>Capacidades de firma requeridas, preparación del dispositivo y emparejamiento; la versión 1.0 no se integra con la aplicación principal Floe</td></tr></table></div>
+<p>Mac Bridge: instala un <a href="https://www.floe-agent.com/en/releases?platform=bridge" class="external">Lanzamiento seleccionado</a>, Abre la aplicación de la barra de menús y conéctate desde Floe en el mismo Mac. Compare el código y apruebe ambas indicaciones. Revise el directorio y lea un archivo de prueba antes de comenzar a trabajar. Los comandos no se repiten después de la desconexión. Si falta el icono de la barra de menús, reinicie la aplicación; si el emparejamiento falla, compruebe ambas versiones y confirmaciones.</p>
+<p>Puente iOS: comienza con el <a href="https://github.com/JiangNanGenius/floe-agent/blob/floe-ios-bridge-v1.0.0/FloeIOSBridge/INSTALL.md" class="external">Instrucciones de instalación versionadas</a>. La versión 1.0 requiere la firma con capacidades de extensión de red; no se garantizan configuraciones arbitrarias de re-firma. Completa la preparación en la aplicación y aprueba el emparejamiento del cliente en el dispositivo. El acceso es local por defecto; habilite el acceso LAN solo cuando sea necesario. Lea la pantalla después de una acción; no repita automáticamente un toque cuando su resultado no esté confirmado.</p>
+<h2 id="section-7">Ahorre, recupere y obtenga ayuda</h2>
+<p>Confirme el guardado en cada editor de Office, medios o 3D. Guardar como y exportar no reemplazan automáticamente el original. Conserve las copias de recuperación cuando queden conflictos. Mantenga copias de seguridad independientes de los archivos importantes.</p>
+<p>Para obtener asistencia, describa la versión, el dispositivo, los pasos, el resultado esperado y el resultado real en el <a href="https://github.com/JiangNanGenius/floe-agent/blob/main/SUPPORT.md" class="external">Canal de apoyo</a>. Envíe solo los diagnósticos o capturas de pantalla necesarios de forma voluntaria; nunca incluya contraseñas, claves o archivos privados. Continúa con el <a href="user-manual.html">Manual completo</a> Y el <a href="workspaces.html">Guía del espacio de trabajo</a>.</p>
+</main>
+<footer><p>Guías Floe</p></footer>
+</body>
+</html>

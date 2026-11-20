@@ -344,7 +344,7 @@ final class GameRuntimeResourceRegistry {
         }
         let task = Task { try await self.install(pack) }
         installing[pack.id] = task
-        states[pack.id] = .installing(phase: FloeL10n.isChinese ? "正在准备运行资源…" : "Preparing runtime resource…")
+        states[pack.id] = .installing(phase: FloeL10n.l("app.game_runtime_resource_registry.preparing_runtime_resource"))
         do {
             try await task.value
             installing[pack.id] = nil
@@ -393,16 +393,14 @@ final class GameRuntimeResourceRegistry {
             return root
         case .downloadable:
             throw GameRuntimeResourceError.configurationRequired(
-                FloeL10n.isChinese
-                    ? "\(value.displayName) 尚未安装。请先在游戏概览中下载。"
-                    : "\(value.displayName) is not installed. Download it from the game overview first.")
+                FloeL10n.l("app.game_runtime_resource_registry.is_not_installed_download_it", value.displayName))
         case .installing(let phase):
             throw GameRuntimeResourceError.configurationRequired(phase)
         case .missing(let detail), .failed(let detail), .userAction(let detail):
             throw GameRuntimeResourceError.configurationRequired(detail)
         case .unknown:
             throw GameRuntimeResourceError.configurationRequired(
-                FloeL10n.isChinese ? "正在检查运行资源，请稍后重试。" : "Runtime resources are still being checked. Try again shortly.")
+                FloeL10n.l("app.game_runtime_resource_registry.runtime_resources_are_still_being"))
         }
     }
 
@@ -417,14 +415,10 @@ final class GameRuntimeResourceRegistry {
     func sourceAccompanimentStatus(for engine: GameEngineID) -> GameRuntimeSourceAccompanimentStatus {
         guard let pack = primaryPack(for: engine),
               let id = pack.sourceAccompanimentID else {
-            return .unavailable(FloeL10n.isChinese
-                ? "该引擎没有已审阅的对应源码/声明记录。"
-                : "No reviewed corresponding-source/notice record exists for this engine.")
+            return .unavailable(FloeL10n.l("app.game_runtime_resource_registry.no_reviewed_corresponding_source_notice"))
         }
         guard let catalog = sourceCatalog, let item = catalog.packs[id] else {
-            return .unavailable(FloeL10n.isChinese
-                ? "对应源码目录未随 App 打包，无法验证当前发布状态。"
-                : "The source-accompaniment catalog is not bundled, so its publication state cannot be verified.")
+            return .unavailable(FloeL10n.l("app.game_runtime_resource_registry.the_source_accompaniment_catalog_is"))
         }
         if item.publication.state == "published" {
             return .published(item.publication.detail)
@@ -491,9 +485,7 @@ final class GameRuntimeResourceRegistry {
     func validateUserRuntimeReplacement(for engine: GameEngineID, root: URL,
                                         metadata: Data) throws -> GamePortablePreparedResources {
         guard let base = portableResources()[engine] else {
-            throw GameRuntimeResourceError.configurationRequired(FloeL10n.isChinese
-                ? "需要先安装并验证该引擎的基础运行资源，才能导入用户重建组件。"
-                : "Install and verify the base runtime resources before importing a user-rebuilt component.")
+            throw GameRuntimeResourceError.configurationRequired(FloeL10n.l("app.game_runtime_resource_registry.install_and_verify_the_base"))
         }
         let value = try GamePortableRuntimeReplacementMetadata(from: metadata)
         return try GamePortableUserRuntimeReplacement.validate(
@@ -512,9 +504,7 @@ final class GameRuntimeResourceRegistry {
             throw GameRuntimeResourceError.unsupportedEngine(engine)
         }
         guard let catalog = sourceCatalog else {
-            throw GameRuntimeResourceError.configurationRequired(FloeL10n.isChinese
-                ? "对应源码目录未随 App 打包。"
-                : "The source-accompaniment catalog is not bundled.")
+            throw GameRuntimeResourceError.configurationRequired(FloeL10n.l("app.game_runtime_resource_registry.the_source_accompaniment_catalog_is_2"))
         }
         return try GamePortableSourceOfferMaterializer.materialize(
             catalog: catalog, packID: id, roots: roots, to: destination, mode: mode)
@@ -594,9 +584,7 @@ final class GameRuntimeResourceRegistry {
         switch pack.kind {
         case .enginePackStore:
             guard let packStore, let engine = pack.engineIDs.first else {
-                return .missing(FloeL10n.isChinese
-                    ? "内置引擎包存储不可用。"
-                    : "The signed engine pack store is unavailable.")
+                return .missing(FloeL10n.l("app.game_runtime_resource_registry.the_signed_engine_pack_store"))
             }
             if let prepared = try? await packStore.prepared(engine) {
                 verifiedRoots[pack.id] = prepared.directory
@@ -604,9 +592,7 @@ final class GameRuntimeResourceRegistry {
             }
             if let root = enginePackRoot?.appendingPathComponent(pack.id),
                FileManager.default.fileExists(atPath: root.path) {
-                return .failed(FloeL10n.isChinese
-                    ? "已安装引擎包校验失败。点按重试会先移除该未验证目录。"
-                    : "The installed engine pack failed verification. Retry removes the unverified directory first.")
+                return .failed(FloeL10n.l("app.game_runtime_resource_registry.the_installed_engine_pack_failed"))
             }
             return .downloadable(bytes: nil)
         case .reviewedPackArchive:
@@ -629,22 +615,16 @@ final class GameRuntimeResourceRegistry {
                     packRoots[pack.id] = installationRoot.appendingPathComponent(pack.id, isDirectory: true)
                     return .ready(version: pack.version, root: root)
                 } catch {
-                    return .failed(FloeL10n.isChinese
-                        ? "已安装资源校验失败：\(error.localizedDescription)。点按重试会先移除该未验证安装。"
-                        : "The installed resource failed verification: \(error.localizedDescription). Retry removes the unverified installation first.")
+                    return .failed(FloeL10n.l("app.game_runtime_resource_registry.the_installed_resource_failed_verification", error.localizedDescription))
                 }
             }
             if resolvedArchiveURL(pack) != nil, hasPinnedArchiveSHA(pack) {
                 return .downloadable(bytes: nil)
             }
-            return .userAction(pack.requirement ?? (FloeL10n.isChinese
-                ? "当前版本暂未提供此运行资源的下载。"
-                : "This version does not offer a download for this runtime resource yet."))
+            return .userAction(pack.requirement ?? (FloeL10n.l("app.game_runtime_resource_registry.this_version_does_not_offer")))
         case .remoteFiles, .remoteArchive:
             guard resolvedArchiveURL(pack) != nil, hasPinnedArchiveSHA(pack) else {
-                return .userAction(pack.requirement ?? (FloeL10n.isChinese
-                    ? "该运行资源缺少已发布的归档 URL 或固定 SHA-256。"
-                    : "This runtime resource has no published archive URL or pinned SHA-256."))
+                return .userAction(pack.requirement ?? (FloeL10n.l("app.game_runtime_resource_registry.this_runtime_resource_has_no")))
             }
             let root = installationRoot.appendingPathComponent(pack.id, isDirectory: true)
             guard FileManager.default.fileExists(atPath: root.path) else {
@@ -656,16 +636,12 @@ final class GameRuntimeResourceRegistry {
                 verifiedRoots[pack.id] = root
                 return .ready(version: pack.version, root: root)
             } catch {
-                return .failed(FloeL10n.isChinese
-                    ? "已安装资源校验失败：\(error.localizedDescription)。点按重试会先移除该未验证安装。"
-                    : "The installed resource failed verification: \(error.localizedDescription). Retry removes the unverified installation first.")
+                return .failed(FloeL10n.l("app.game_runtime_resource_registry.the_installed_resource_failed_verification", error.localizedDescription))
             }
         case .hostRuntime:
             return .ready(version: pack.version, root: nil)
         case .userProvided, .ciProvided:
-            return .userAction(pack.requirement ?? (FloeL10n.isChinese
-                ? "需要配置引擎工具或连接 CI 仓库。"
-                : "Configure the engine tool or connect a CI repository."))
+            return .userAction(pack.requirement ?? (FloeL10n.l("app.game_runtime_resource_registry.configure_the_engine_tool_or")))
         }
     }
 
@@ -674,7 +650,7 @@ final class GameRuntimeResourceRegistry {
         case .enginePackStore:
             guard let packStore, let engine = pack.engineIDs.first else {
                 throw GameRuntimeResourceError.configurationRequired(
-                    FloeL10n.isChinese ? "内置引擎包存储不可用。" : "The signed engine pack store is unavailable.")
+                    FloeL10n.l("app.game_runtime_resource_registry.the_signed_engine_pack_store"))
             }
             let prepared: GameEngineResourcePack
             do {
@@ -726,9 +702,7 @@ final class GameRuntimeResourceRegistry {
             guard let url = resolvedArchiveURL(pack),
                   let sha = pack.archive?.sha256, !sha.isEmpty else {
                 throw GameRuntimeResourceError.configurationRequired(
-                    pack.requirement ?? (FloeL10n.isChinese
-                        ? "当前版本暂未提供此运行资源的下载。"
-                        : "This version does not offer a download for this runtime resource yet."))
+                    pack.requirement ?? (FloeL10n.l("app.game_runtime_resource_registry.this_version_does_not_offer")))
             }
             let destination = installationRoot.appendingPathComponent(pack.id, isDirectory: true)
             let root = try await installer.installArchive(pack, archiveURL: url,
@@ -789,9 +763,7 @@ final class GameRuntimeResourceRegistry {
                                    contentRoot: URL, copy: Bool) async throws {
         guard let attribution = pack.attribution else { return }
         guard let sourceRoot = Self.bundledAttributionRoot(attribution) else {
-            throw GameRuntimeResourceError.configurationRequired(FloeL10n.isChinese
-                ? "运行资源声明随 App 打包，但 App 中没有该声明文件。"
-                : "The runtime declares a bundled attribution profile, but the App bundle does not contain it.")
+            throw GameRuntimeResourceError.configurationRequired(FloeL10n.l("app.game_runtime_resource_registry.the_runtime_declares_a_bundled"))
         }
         let targetRoot = contentRoot.appendingPathComponent("FloeAttribution", isDirectory: true)
         if copy {

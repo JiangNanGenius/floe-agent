@@ -28,7 +28,7 @@ struct FloeSystemAlarmLiveActivityWidget: Widget {
     init() {
         // Live Activity rendering does not pass through the home-widget
         // provider; resolve the App-mirrored language here too. Idempotent.
-        FloeL10n.bootstrap()
+        FloeL10n.bootstrap(isExtension: true)
     }
 
     var body: some WidgetConfiguration {

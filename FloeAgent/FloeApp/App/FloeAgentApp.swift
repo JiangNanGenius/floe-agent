@@ -17,6 +17,13 @@ import FloeModels
 import FloePersistence
 import FloeLocalModelCatalog
 import FloeCAD
+import FloeCanvasUI
+import FloeDiagramUI
+import FloeBiologyUI
+import FloeElectronicsUI
+import FloeManufacturingUI
+import FloeGameDeveloperUI
+import FloeGameWebKit
 import FloeExecution
 #if canImport(AppIntents)
 import AppIntents
@@ -107,10 +114,19 @@ struct FloeAgentApp: App {
         FloeL10n.bootstrap()
         // Route Floe-owned CAD workbench chrome to the same catalog. A missing
         // key falls back to the panel's English text.
-        FloeCADStrings.localizer = { key in
+        let catalog: @Sendable (String) -> String? = { key in
             let value = FloeL10n.localized(key: key)
             return value == key ? nil : value
         }
+        let bilingual: @Sendable (String, String) -> String = FloeL10n.bilingual
+        FloeCADStrings.localizer = catalog
+        CanvasStrings.localizer = catalog
+        FloeDiagramUIStrings.localizer = bilingual
+        FloeBiologyUIStrings.localizer = bilingual
+        FloeElectronicsUIStrings.localizer = bilingual
+        FloeManufacturingUIStrings.localizer = bilingual
+        GameDeveloperStrings.localizer = bilingual
+        GameSaveManagerLocale.localizer = bilingual
         // Most UI runs disable animations to avoid continuous spinners
         // delaying XCUITest's idle checks. Gesture/rendering qualification
         // must explicitly preserve the normal UIKit animation behavior.

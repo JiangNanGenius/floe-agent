@@ -817,7 +817,7 @@ struct MemoryView: View {
 private func memoryStatusLabel(_ status: MemoryEntryStatus) -> String {
     switch status {
     case .pending: FloeL10n.l("memory.memory_view.pending_confirmation")
-    case .active: FloeL10n.isChinese ? "已保留" : "Retained"
+    case .active: FloeL10n.l("app.memory_view.retained")
     case .rejected: FloeL10n.l("memory.memory_view.ignored")
     case .superseded: FloeL10n.l("settings.all_workspaces_files_view.archived")
     }

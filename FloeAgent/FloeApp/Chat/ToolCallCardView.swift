@@ -312,7 +312,7 @@ private enum ArtifactImageCopy {
         let key = "chat.tool_call_card_view.image_number"
         let resolved = FloeL10n.l(key, index + 1)
         if resolved != key { return resolved }
-        return FloeL10n.isChinese ? "第 \(index + 1) 张图片" : "Image \(index + 1)"
+        return FloeL10n.l("chat.tool_call_card_view.image_number", index + 1)
     }
 }
 

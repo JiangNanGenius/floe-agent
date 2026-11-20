@@ -2,6 +2,7 @@
 // commit. Autosaves remain private recovery writes.
 #if canImport(UIKit) && canImport(WebKit)
 import UIKit
+import FloeCore
 import WebKit
 
 @MainActor
@@ -113,8 +114,7 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             case .invalidArguments:
                 OfficeInkText.t("笔迹参数无效。", "The ink settings are invalid.")
             case .dispatchFailed(let reason):
-                OfficeInkText.t("文档引擎未能应用笔迹参数（\(reason)）。",
-                                "The document engine could not apply the ink settings (\(reason)).")
+                FloeL10n.l("app.office_explicit_save_bridge.the_document_engine_could_not", reason)
             }
         }
     }

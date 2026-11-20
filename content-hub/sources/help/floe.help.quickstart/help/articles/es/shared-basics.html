@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modelos, tareas y archivos</title>
+<link rel="stylesheet" href="../../styles/help.css">
+</head>
+<body>
+<main>
+<h1>Modelos, tareas y archivos</h1>
+<nav class="toc" aria-label="Índice"><h2>Índice</h2><ul>
+<li class="lv2"><a href="#overview">Descripción general</a></li>
+<li class="lv2"><a href="#section-1">1. Conectar un modelo de nube</a></li>
+<li class="lv2"><a href="#section-2">2. Pide un resultado útil</a></li>
+<li class="lv2"><a href="#section-3">3. Mantenga los archivos y los cambios seguros</a></li>
+<li class="lv2"><a href="#section-4">4. Usar herramientas con contexto</a></li>
+<li class="lv2"><a href="#section-5">5. Informar de un problema</a></li>
+</ul></nav>
+<h2 id="overview">Descripción general</h2>
+<p>Estos flujos de trabajo se aplican a ambas ediciones de Floe. La instalación, las ubicaciones de los menús, el acceso al dispositivo, los modelos locales y los editores están cubiertos por la propia guía de cada plataforma. Un flujo de trabajo compartido no significa que todas las plataformas tengan las mismas herramientas.</p>
+<h2 id="section-1">1. Conectar un modelo de nube</h2>
+<p>Traiga su propia cuenta de proveedor de modelos y la clave API. Floe es un cliente; el proveedor seleccionado maneja las solicitudes en la nube, los precios y sus propias políticas de datos. No introduzca la contraseña de un sitio web en el campo de clave API.</p>
+<ol><li>Agregue un proveedor en la configuración del modelo. Seleccione el servicio y el protocolo, luego ingrese su URL base documentada y la clave API.</li><li>Agregue o actualice la lista de modelos y seleccione un modelo para la tarea. Cuando la tarea necesite leer imágenes, elija un modelo que acepte la entrada de imágenes. La generación de imágenes y la generación de vídeo requieren un servicio que admita ese propósito.</li><li>Pruebe una conversación de texto corta antes de adjuntar archivos o comenzar una tarea larga.</li></ol>
+<p>Para errores de autenticación, compruebe el punto final, la clave, el acceso a la cuenta y el error real del proveedor. Para un modelo o tipo de entrada no compatible, seleccione un modelo apropiado. Una prueba de conexión exitosa no verifica todas las herramientas o capacidades de medios.</p>
+<h2 id="section-2">2. Pide un resultado útil</h2>
+<ol><li>Cree una tarea y seleccione su espacio de trabajo. Agregue un archivo de prueba no sensible a través del selector de archivos.</li><li>Indique el resultado previsto, la entrada y dónde guardarlo. Por ejemplo: &quot;Lee este documento, conviértelo en una lista de verificación y guárdalo en el espacio de trabajo actual&quot;.</li><li>Revisar las solicitudes de acceso a archivos o herramientas. Dar acceso al material necesario para esta tarea.</li><li>Abra la salida, compruebe su contenido y ubicación, luego ciérrela y vuelva a abrirla para confirmar que se guardó.</li></ol>
+<p>Al corregir un resultado, describa el cambio específico y consulte el archivo existente. Mantenga la tarea y el espacio de trabajo consistentes para que el asistente pueda continuar con el mismo trabajo. El mensaje de éxito de una herramienta es una señal para comprobar el resultado, no un sustituto para abrirlo.</p>
+<h2 id="section-3">3. Mantenga los archivos y los cambios seguros</h2>
+<p>Importe solo los archivos que desea que use la tarea. Si una ubicación externa ya no está disponible, seleccione y autorice la ubicación original nuevamente en lugar de mover silenciosamente el trabajo a otra carpeta.</p>
+<p>Confirme el guardado en el editor que utilizó. Exportar y guardar como crean un resultado separado y no reemplazan automáticamente el original. Si otro editor ha cambiado un archivo, conserve los borradores no guardados y revise el conflicto antes de sobrescribir cualquiera de las copias. Mantenga copias de seguridad independientes del trabajo importante.</p>
+<p>Los comandos y la instalación de software utilizan el entorno de ejecución seleccionado de la tarea. Compruebe el directorio actual y la salida antes de asumir que un comando cambió el archivo previsto. Los entornos disponibles, los pasos de instalación y el comportamiento en segundo plano dependen de la plataforma y la versión instalada.</p>
+<h2 id="section-4">4. Usar herramientas con contexto</h2>
+<p>Los documentos, las páginas web y los resultados de las herramientas son material de entrada; su texto no otorga permiso para ejecutar comandos, acceder a otros archivos o enviar información. Revise la acción real y el destino antes de aprobar una operación externa.</p>
+<p>Lea el progreso y los fallos en el registro de ejecución de la tarea. Osidir un panel no necesariamente detiene el trabajo o el servicio que muestra. Utilice el control de parada de la tarea o servicio cuando el trabajo deba terminar; el sistema operativo aún controla la ejecución en segundo plano.</p>
+<h2 id="section-5">5. Informar de un problema</h2>
+<p>Uso <a href="https://github.com/JiangNanGenius/floe-agent/issues" class="external">Problemas de GitHub</a> Para informes de errores y solicitudes de funciones. Incluya la versión instalada, el dispositivo y el sistema operativo, los pasos, el resultado esperado y el resultado real. Indique qué archivo o tarea se vio afectado sin publicar contenido privado.</p>
+<p>Los diagnósticos y las capturas de pantalla son opcionales. Envíe solo el material necesario y elimine claves, contraseñas, datos personales y archivos privados. Las cargas de diagnóstico en la aplicación proporcionan material de solución de problemas y no garantizan una respuesta individual. Para errores de servicio en la nube, incluya un error de proveedor redactado en lugar de su clave API.</p>
+</main>
+<footer><p>Guías Floe</p></footer>
+</body>
+</html>

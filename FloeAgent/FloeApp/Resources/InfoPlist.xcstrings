@@ -15,6 +15,48 @@
           "state": "translated",
           "value": "Floe 在你拍摄图片，或使用测量、放大镜与扫描工具时打开相机。"
         }
+      },
+      "zh-Hant": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 在你拍攝圖片，或使用測量、放大鏡與掃描工具時開啟相機。"
+        }
+      },
+      "ja": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floeは、画像を撮影したり、測定・拡大鏡・スキャンツールを使用したりしたときにカメラを開きます。"
+        }
+      },
+      "ko": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe는 이미지를 촬영하거나 측정, 확대경, 스캔 도구를 사용할 때 카메라를 엽니다."
+        }
+      },
+      "fr": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe ouvre l'appareil photo lorsque vous capturez une image ou utilisez des outils de mesure, de loupe ou de numérisation."
+        }
+      },
+      "de": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe öffnet die Kamera, wenn Sie ein Bild aufnehmen oder Mess-, Lupen- oder Scan-Tools verwenden."
+        }
+      },
+      "es": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe abre la cámara cuando captura una imagen o utiliza herramientas de medición, lupa o escaneo."
+        }
+      },
+      "pt-BR": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe abre a câmera quando você captura uma imagem ou usa ferramentas de medição, lupa ou varredura."
+        }
       }
     }
   },
@@ -31,6 +73,48 @@
         "stringUnit": {
           "state": "translated",
           "value": "Floe 在你打开工具箱中对应的仪表时使用运动与气压传感器。"
+        }
+      },
+      "zh-Hant": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 在你開啟工具箱中對應的儀表時使用運動與氣壓感測器。"
+        }
+      },
+      "ja": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floeは、ツールボックス内の対応する機器を開く際に、モーションセンサーと圧力センサーを使用します。"
+        }
+      },
+      "ko": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe는 툴박스에서 해당 기기를 열 때 동작 및 압력 센서를 사용합니다."
+        }
+      },
+      "fr": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe utilise des capteurs de mouvement et de pression lorsque vous ouvrez les instruments correspondants dans la boîte à outils."
+        }
+      },
+      "de": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe verwendet Bewegungs- und Drucksensoren, wenn Sie die entsprechenden Instrumente im Werkzeugkasten öffnen."
+        }
+      },
+      "es": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe utiliza sensores de movimiento y presión cuando abres los instrumentos correspondientes en la caja de herramientas."
+        }
+      },
+      "pt-BR": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "O Floe usa sensores de movimento e pressão quando você abre os instrumentos correspondentes na caixa de ferramentas."
         }
       }
     }
@@ -49,6 +133,48 @@
           "state": "translated",
           "value": "Floe 在你打开定位工具或请求天气与附近地点时使用位置。Wi-Fi 诊断需要精确位置授权，才能显示当前网络与接入点。运行中的任务可能在后台继续使用大致位置。"
         }
+      },
+      "zh-Hant": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 在你開啟定位工具或請求天氣與附近地點時使用位置。Wi-Fi 診斷需要精確位置授權，才能顯示當前網路與接入點。執行中的任務可能在後臺繼續使用大致位置。"
+        }
+      },
+      "ja": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe は、位置情報ツールボックスを開くか、天気や近隣の場所をリクエストする際に、あなたの位置情報を使用します。 Wi‐Fi 診断では、接続されたネットワークとアクセスポイントを表示するために、正確な位置情報の許可が必要です。 実行中のタスクは、バックグラウンドで概算の位置情報を使用して継続できる場合があります。"
+        }
+      },
+      "ko": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe는 위치 도구함을 열거나 날씨 및 인근 장소를 요청할 때 귀하의 위치를 사용합니다. Wi‐Fi 진단은 연결된 네트워크와 액세스 포인트를 표시하기 위해 정밀 위치 권한이 필요합니다. 작업을 실행하는 동안 백그라운드에서 대략적인 위치를 사용하여 계속 진행할 수 있습니다."
+        }
+      },
+      "fr": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe utilise votre position lorsque vous ouvrez la boîte à outils de localisation ou demandez la météo et les lieux à proximité. Les diagnostics Wi-Fi nécessitent une autorisation de localisation précise pour afficher le réseau connecté et le point d'accès. Les tâches en cours d'exécution peuvent continuer à utiliser l'emplacement approximatif en arrière-plan."
+        }
+      },
+      "de": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe verwendet Ihren Standort, wenn Sie die Standort-Symbolbox öffnen oder das Wetter und Orte in der Nähe anfordern. Wi-Fi-Diagnose benötigen eine genaue Standortberechtigung, um das verbundene Netzwerk und den Zugangspunkt anzuzeigen. Laufende Aufgaben können mit dem ungefähren Standort im Hintergrund fortgesetzt werden."
+        }
+      },
+      "es": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe utiliza su ubicación cuando abre la caja de herramientas de ubicación o solicita el clima y lugares cercanos. Los diagnósticos de Wi-Fi necesitan un permiso de ubicación preciso para mostrar la red conectada y el punto de acceso. Las tareas de ejecución pueden continuar usando la ubicación aproximada en segundo plano."
+        }
+      },
+      "pt-BR": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe usa sua localização quando você abre a caixa de ferramentas de localização ou solicita o clima e lugares próximos. O diagnóstico de Wi-Fi precisa de permissão de localização precisa para mostrar a rede conectada e o ponto de acesso. As tarefas em execução podem continuar usando a localização aproximada em segundo plano."
+        }
       }
     }
   },
@@ -65,6 +191,48 @@
         "stringUnit": {
           "state": "translated",
           "value": "Floe 为你创建系统闹钟和计时器。"
+        }
+      },
+      "zh-Hant": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 為你建立系統鬧鐘和計時器。"
+        }
+      },
+      "ja": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe は、アプリで作成したアラームとタイマーをスケジュールします。"
+        }
+      },
+      "ko": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe는 앱에서 생성한 알람과 타이머를 예약합니다."
+        }
+      },
+      "fr": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe programme les alarmes et les minuteries que vous créez dans l'application."
+        }
+      },
+      "de": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe plant die Alarme und Timer, die Sie in der App erstellen."
+        }
+      },
+      "es": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe programa las alarmas y temporizadores que creas en la aplicación."
+        }
+      },
+      "pt-BR": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe agenda os alarmes e temporizadores que você cria no aplicativo."
         }
       }
     }
@@ -83,6 +251,48 @@
             "state": "translated",
             "value": "Floe 会在你授权后读取你请求的健康数据。"
           }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 會在你授權後讀取你請求的健康資料。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe は、アクセスを許可した後に要求されたヘルスデータを読み取ります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 귀하가 접근을 승인한 후 요청하는 건강 데이터를 읽어드립니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lit les données de santé que vous demandez après avoir autorisé l'accès."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe liest die von Ihnen angeforderten Gesundheitsdaten, nachdem Sie den Zugriff autorisiert haben."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lee los datos de salud que solicita después de autorizar el acceso."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O Floe lê os dados de saúde que você solicita depois de autorizar o acesso."
+          }
         }
       }
     },
@@ -99,6 +309,48 @@
           "stringUnit": {
             "state": "translated",
             "value": "Floe 仅会读取你授权的健康数据，不会写入或修改健康数据。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 僅會讀取你授權的健康資料，不會寫入或修改健康資料。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floeは、許可されたヘルスデータのみを読み取り、ヘルスデータの保存や変更は行いません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 귀하가 승인한 Health 데이터만 읽으며, Health 데이터를 저장하거나 수정하지 않습니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe ne lit que les données de santé que vous autorisez ; il n'enregistre ni ne modifie les données de santé."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe liest nur die von Ihnen autorisierten Gesundheitsdaten. Es werden keine Gesundheitsdaten gespeichert oder geändert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe solo lee los datos de salud que usted autoriza; no guarda ni modifica los datos de salud."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lê apenas os dados de Saúde que você autoriza; ele não salva ou modifica dados de Saúde."
           }
         }
       }
@@ -117,6 +369,48 @@
             "state": "translated",
             "value": "Floe 会在你请求扫描时读取附近的 NFC 标签。"
           }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 會在你請求掃描時讀取附近的 NFC 標籤。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe は、スキャンを要求した際に近くの NFC タグを読み取ります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 스캔을 요청할 때 근처 NFC 태그를 읽습니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lit une étiquette NFC à proximité lorsque vous demandez un scan."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe liest ein NFC-Tag in der Nähe, wenn Sie einen Scan anfordern."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lee una etiqueta NFC cercana cuando solicitas un escaneo."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lê uma etiqueta NFC próxima quando você solicita uma varredura."
+          }
         }
       }
     },
@@ -132,6 +426,48 @@
           "stringUnit": {
             "state": "translated",
             "value": "Floe 会读取你请求查找的联系人。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 會讀取你請求查詢的聯絡人。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floeは、あなたが検索を依頼した連絡先を読み取ります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 귀하가 요청한 연락처를 읽습니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lit les contacts que vous lui demandez de trouver."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe liest die Kontakte, die Sie auffordern zu finden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lee los contactos que le pides que encuentre."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe lê os contatos que você pede para encontrar."
           }
         }
       }
@@ -149,25 +485,193 @@
             "state": "translated",
             "value": "Floe 会按你的要求查找和播放媒体库中的内容。"
           }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 會按你的要求查詢和播放媒體庫中的內容。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe は、リクエスト時にメディアライブラリからアイテムを検索し、再生します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 요청하시면 미디어 라이브러리에서 항목을 찾아 재생합니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe trouve et lit des éléments de votre médiathèque lorsque vous les demandez."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe findet und spielt Elemente aus Ihrer Medienbibliothek ab, wenn Sie sie anfordern."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe encuentra y reproduce elementos de su biblioteca multimedia cuando los solicita."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe encontra e reproduz itens da sua biblioteca de mídia quando você os solicita."
+          }
         }
       }
     },
     "NSMicrophoneUsageDescription" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses the microphone when you dictate, record music or meetings, or start sound analysis." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 在你进行语音输入、音乐或会议录音，以及启动声音分析时使用麦克风。" } }
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 在你进行语音输入、音乐或会议录音，以及启动声音分析时使用麦克风。" } },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 在你進行語音輸入、音樂或會議錄音，以及啟動聲音分析時使用麥克風。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floeは、音声入力や音楽・会議の録音、または音声解析を開始する際にマイクを使用します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 사용자가 받아쓰기, 음악이나 회의를 녹음하거나, 사운드 분석을 시작할 때 마이크를 사용합니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe utilise le microphone lorsque vous dictez, enregistrez de la musique ou des réunions, ou démarrez l'analyse sonore."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe verwendet das Mikrofon, wenn Sie diktieren, Musik oder Besprechungen aufnehmen oder die Tonanalyse starten."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe utiliza el micrófono cuando dictas, grabas música o reuniones, o inicias el análisis de sonido."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe usa o microfone quando você dita, grava música ou reuniões ou inicia a análise de som."
+          }
+        }
       }
     },
     "NSSpeechRecognitionUsageDescription" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe converts your speech into text for the message composer." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 将你的语音转换为消息输入框中的文字。" } }
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 将你的语音转换为消息输入框中的文字。" } },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 將你的語音轉換為訊息輸入框中的文字。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floeは、メッセージ作成のために音声をテキストに変換します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 메시지 작성자를 위해 귀하의 음성을 텍스트로 변환합니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe convertit votre discours en texte pour le compositeur de messages."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe wandelt Ihre Sprache in Text für den Nachrichtenkomponisten um."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe convierte su discurso en texto para el compositor de mensajes."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe converte seu discurso em texto para o compositor de mensagens."
+          }
+        }
       }
     },
     "NSBluetoothAlwaysUsageDescription" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 仅在你请求连接附近的 BLE 串口设备时使用蓝牙。" } }
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 仅在你请求连接附近的 BLE 串口设备时使用蓝牙。" } },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 僅在你請求連線附近的 BLE 串列埠裝置時使用藍芽。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe は、近くの BLE シリアルデバイスへの接続を指示した場合にのみ Bluetooth を使用します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 인근 BLE 직렬 장치에 연결하도록 요청할 때만 Bluetooth를 사용합니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe utilise Bluetooth uniquement lorsque vous lui demandez de se connecter à un périphérique série BLE à proximité."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe verwendet Bluetooth nur, wenn Sie es auffordern, eine Verbindung zu einem seriellen BLE-Gerät in der Nähe herzustellen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe usa Bluetooth solo cuando le pides que se conecte a un dispositivo serie BLE cercano."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe usa Bluetooth somente quando você pede para ele se conectar a um dispositivo serial BLE próximo."
+          }
+        }
       }
     }
   },

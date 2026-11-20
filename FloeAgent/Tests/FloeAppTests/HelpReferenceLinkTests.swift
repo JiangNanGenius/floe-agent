@@ -30,7 +30,7 @@ struct HelpReferenceLinkTests {
         "floe-help://settings/general",
         "floe-help://bundle/help/manifest.json",
         "floe-help://guide/input.keyboard?package=other.package&version=1.1.0&locale=en",
-        "floe-help://guide/input.keyboard?package=floe.help.quickstart&version=1.1.0&locale=fr",
+        "floe-help://guide/input.keyboard?package=floe.help.quickstart&version=1.1.0&locale=it",
         "floe-help://guide/input.keyboard?package=floe.help.quickstart&version=latest&locale=en",
         "floe-help://guide/input.keyboard?package=floe.help.quickstart&version=1.1.0&locale=en&setting=general.hardwareReturn",
         "floe-help://guide/input.keyboard?package=floe.help.quickstart&version=1.1.0&locale=en&locale=zh-Hans",

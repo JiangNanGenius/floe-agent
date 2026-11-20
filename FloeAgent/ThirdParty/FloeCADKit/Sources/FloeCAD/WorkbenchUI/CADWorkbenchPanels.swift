@@ -34,7 +34,7 @@ public enum FloeCADStrings {
 
     /// Localized format substitution. Supports the host catalog's `%@`
     /// convention AND typed printf specifiers (`%d`, `%lld`, `%ld`, `%i`,
-    /// `%u`, `%f`, `%.2f`) left to right. This exists because the same key is
+    /// `%u`, `%f`, `%.2f`) including positional forms. The same key is
     /// shared with native code that formats byte counts with `%lld`; a catalog
     /// value must never reach the user with a raw conversion token.
     nonisolated public static func format(_ key: String, _ fallback: String,
@@ -48,7 +48,7 @@ public enum FloeCADStrings {
     /// than trapping — a raw conversion token is still better than a crash.
     public static func formatTemplate(_ template: String, arguments: [Any]) -> String {
         var result = ""
-        var args = arguments
+        var nextArgument = 0
         var index = template.startIndex
         while index < template.endIndex {
             guard template[index] == "%" else {
@@ -68,11 +68,13 @@ public enum FloeCADStrings {
                 continue
             }
             index = specifier.end
-            guard !args.isEmpty else {
+            let argumentIndex = specifier.argumentIndex ?? nextArgument
+            guard arguments.indices.contains(argumentIndex) else {
                 result += token
                 continue
             }
-            let argument = args.removeFirst()
+            if specifier.argumentIndex == nil { nextArgument += 1 }
+            let argument = arguments[argumentIndex]
             result += Parse.render(argument: argument, conversion: specifier.conversion,
                                    rawToken: token)
         }
@@ -80,7 +82,11 @@ public enum FloeCADStrings {
     }
 
     private enum Parse {
-        struct Scanned { let end: String.Index; let conversion: String }
+        struct Scanned {
+            let end: String.Index
+            let conversion: String
+            let argumentIndex: Int?
+        }
 
         /// Parse one printf-style conversion starting at the `%`. Returns nil
         /// when this `%` does not begin a recognized specifier.
@@ -91,13 +97,25 @@ public enum FloeCADStrings {
                     cursor = template.index(after: cursor)
                 }
             }
+            let afterPercent = cursor
+            let digits: Set<Character> = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+            take(digits)
+            let argumentIndex: Int?
+            if cursor > afterPercent, cursor < template.endIndex, template[cursor] == "$" {
+                guard let position = Int(template[afterPercent..<cursor]), position > 0 else { return nil }
+                argumentIndex = position - 1
+                cursor = template.index(after: cursor)
+            } else {
+                argumentIndex = nil
+                cursor = afterPercent
+            }
             // Flags
             take(["-", "+", " ", "#", "0"])
             // Width (digits or *)
             if cursor < template.endIndex, template[cursor] == "*" {
                 cursor = template.index(after: cursor)
             } else {
-                take(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
+                take(digits)
             }
             // Precision
             if cursor < template.endIndex, template[cursor] == "." {
@@ -105,7 +123,7 @@ public enum FloeCADStrings {
                 if cursor < template.endIndex, template[cursor] == "*" {
                     cursor = template.index(after: cursor)
                 } else {
-                    take(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
+                    take(digits)
                 }
             }
             // Length modifiers
@@ -117,7 +135,7 @@ public enum FloeCADStrings {
                                            "A", "c", "C", "s", "S", "%"]
             guard allowed.contains(conversion) else { return nil }
             let end = template.index(after: cursor)
-            return Scanned(end: end, conversion: String(conversion))
+            return Scanned(end: end, conversion: String(conversion), argumentIndex: argumentIndex)
         }
 
         static func render(argument: Any, conversion: String, rawToken: String) -> String {

@@ -113,9 +113,7 @@ extension WorkbenchAIBridge {
                 return try await Self.deliver(jobID: jobID, environment: environment)
             },
             costNote: { _ in
-                FloeLocalized.t(
-                    "实际费用以供应商账户账单为准；Floe 不推算价格。",
-                    "Actual charges appear on your provider account; Floe does not estimate prices.")
+                FloeL10n.l("app.workbench_environment.actual_charges_appear_on_your")
             }
         )
     }
@@ -124,8 +122,7 @@ extension WorkbenchAIBridge {
         let routes = center.agentVideoRoutes()
         guard let route = routes.first(where: { $0.modelID == modelID }) else {
             throw FloeError.invalidConfiguration(
-                FloeLocalized.t("所选视频模型当前不可用或未配置适配器。",
-                                "The selected video model is not enabled with a configured adapter."))
+                FloeL10n.l("app.workbench_environment.the_selected_video_model_is"))
         }
         return try await Self.modelProfile(id: route.modelID, center: center)
     }
@@ -181,8 +178,7 @@ extension WorkbenchAIBridge {
               let asset = try? await environment.creativeAssetStore.asset(id: localAssetID),
               let relative = asset.localRelativePath else {
             throw FloeError.validationFailed(
-                FloeLocalized.t("生成任务尚未完成，暂无可导入的结果。",
-                                "The generation job is not ready; there is no result to import yet."))
+                FloeL10n.l("app.workbench_environment.the_generation_job_is_not"))
         }
         let support = try FileManager.default.url(for: .applicationSupportDirectory,
                                                   in: .userDomainMask, appropriateFor: nil, create: false)
