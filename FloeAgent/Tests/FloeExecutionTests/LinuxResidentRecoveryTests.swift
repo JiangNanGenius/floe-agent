@@ -348,6 +348,7 @@ final class LinuxResidentRecoveryTests: XCTestCase, @unchecked Sendable {
         let transaction = try store.begin(imageID: "trusted-new")
         defer { transaction.endAdmission() }
         _ = try transaction.replace(prepare: { try f.prepare($0) })
+        transaction.endAdmission()
         let guard1 = try LinuxResidentDiskBarrier.acquireRecoveryGuard(root: f.root)
         XCTAssertEqual(guard1.receipt?.imageID, "trusted-new")
         guard1.finish()
