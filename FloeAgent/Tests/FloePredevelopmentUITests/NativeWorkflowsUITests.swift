@@ -1829,9 +1829,14 @@ import XCTest
         for _ in 0..<8 where !render.isHittable { app.swipeUp() }
         XCTAssertTrue(render.isHittable)
         render.tap()
+        XCTAssertTrue(app.images["导出的音频波形图"].firstMatch.waitForExistence(timeout: 25))
         let share = app.buttons["分享波形 PNG"].firstMatch
-        XCTAssertTrue(share.waitForExistence(timeout: 25))
-        XCTAssertTrue(app.images["导出的音频波形图"].firstMatch.waitForExistence(timeout: 5))
+        // The native share row is materialized below the newly inserted preview.
+        // Wait for its label and check the real frame once the form has scrolled.
+        app.swipeUp()
+        XCTAssertTrue(share.waitForExistence(timeout: 8))
+        XCTAssertGreaterThan(share.frame.height, 0)
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(CGPoint(x: share.frame.midX, y: share.frame.midY)))
         app.buttons["保存并应用"].tap()
         XCTAssertTrue(app.buttons["我的音色"].firstMatch.waitForExistence(timeout: 10))
     }
