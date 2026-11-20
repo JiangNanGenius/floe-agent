@@ -4,25 +4,52 @@ import SwiftUI
 import SceneKit
 import FloePrintCore
 
+/// Sliced-result preview: real per-layer extrusion paths for FDM G-code
+/// (including Bambu G2/G3 arcs) and exposure rasters for CTB. A `.3mf` URL
+/// (or bytes) opens the embedded plate G-code and offers a plate picker when
+/// the slicer wrote more than one plate; a model-only 3MF has no plate
+/// streams, so its fallback to the geometry viewer is the caller's job.
 struct PrintResultPreview: View {
     let url: URL
     let preset: PrintPreset
     var machine: PrintMachineConfiguration? = nil
+    /// Immutable workspace snapshot. When supplied for `.3mf`/`.gcode`,
+    /// the disk is never read; the URL is only identity/display name.
+    var sourceData: Data? = nil
     @State private var gcode: PrintGCodePreview?
     @State private var resin: PrintCTBPreview?
     @State private var raster: CGImage?
+    @State private var plates: [PrintThreeMF.PlateEntry] = []
+    @State private var selectedPlate = 1
     @State private var layer = 1.0
     @State private var showLower = true
     @State private var playing = false
     @State private var failed = false
     private var count: Int { gcode?.layers.count ?? resin?.header.layerCount ?? 1 }
     private var index: Int { min(max(0, Int(layer) - 1), max(0, count - 1)) }
+
+    /// Workspace imports carry no machine, and toolpath dialects disagree on
+    /// the origin (front-left Marlin vs centred firmware). Centre the actual
+    /// toolpath extent on the bed so any imported file renders on the plate
+    /// instead of half off it. Explicitly passed machines always win.
+    private var effectiveMachine: PrintMachineConfiguration {
+        if let machine { return machine }
+        var value = PrintMachineConfiguration.generic(for: preset)
+        value.origin = .custom
+        if let gcode {
+            value.originX = (gcode.summary.minimum[0] + gcode.summary.maximum[0]) / 2
+            value.originY = (gcode.summary.minimum[1] + gcode.summary.maximum[1]) / 2
+        }
+        return value
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 if let gcode, !gcode.layers.isEmpty {
-                    PrintLayerScene(layers: showLower ? Array(gcode.layers.prefix(index + 1)) : [gcode.layers[index]], preset: preset,
-                        identity: url.lastPathComponent + ":\(index):\(showLower)", machine: machine ?? .generic(for: preset))
+                    PrintLayerScene(layers: showLower ? Array(gcode.layers.prefix(index + 1)) : [gcode.layers[index]],
+                        preset: preset, identity: sceneIdentity, machine: effectiveMachine)
+                        .accessibilityIdentifier("printing.slicedPreview")
                 } else if let raster {
                     ZStack { Color.black; Image(decorative: raster, scale: 1).resizable().interpolation(.none).scaledToFit().padding(20) }
                 } else if failed {
@@ -34,7 +61,25 @@ struct PrintResultPreview: View {
                 HStack {
                     Button { playing.toggle() } label: { Image(systemName: playing ? "pause.fill" : "play.fill").frame(width: 44, height: 44) }
                         .accessibilityLabel(playing ? IDELanguageRunText.t("暂停逐层播放", "Pause layer playback") : IDELanguageRunText.t("播放逐层预览", "Play layers"))
+                    Button { if layer < Double(count) { layer += 1 } } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
+                        .accessibilityLabel(IDELanguageRunText.t("下一层", "Next layer"))
+                        .accessibilityIdentifier("printing.layer.next")
+                        .disabled(layer >= Double(count))
                     Text(IDELanguageRunText.t("层", "Layer") + " \(index + 1) / \(count)").monospacedDigit()
+                        .accessibilityIdentifier("printing.layer.current")
+                    if plates.count > 1 {
+                        Menu {
+                            ForEach(plates, id: \.plateID) { entry in
+                                Button(entry.plateID == selectedPlate
+                                    ? "✓ \(IDELanguageRunText.t("盘", "Plate")) \(entry.plateID)"
+                                    : "\(IDELanguageRunText.t("盘", "Plate")) \(entry.plateID)") { selectedPlate = entry.plateID }
+                            }
+                        } label: {
+                            Label(IDELanguageRunText.t("盘", "Plate") + " \(selectedPlate)/\(plates.count)", systemImage: "rectangle.3.group")
+                                .frame(minHeight: 44)
+                        }
+                        .accessibilityIdentifier("printing.platePicker")
+                    }
                     Spacer()
                     if let gcode { Text(String(format: "Z %.2f mm", gcode.layers[index].z)).monospacedDigit() }
                     if gcode != nil { Toggle(IDELanguageRunText.t("显示下层", "Show lower layers"), isOn: $showLower).fixedSize() }
@@ -57,16 +102,58 @@ struct PrintResultPreview: View {
                 }
             }.padding(.horizontal).padding(.bottom, 8).background(.bar)
         }
-        .task(id: url) {
+        .id(url.absoluteString)
+        .task(id: "load-\(url.absoluteString)-\(selectedPlate)") {
             gcode = nil; resin = nil; raster = nil; failed = false; playing = false
+            let ext = url.pathExtension.lowercased()
+            // Immutable workspace snapshot: the disk is never read when set.
+            let snapshot = (sourceData != nil && (ext == "3mf" || ext == "gcode")) ? sourceData : nil
+            let requestedPlate = selectedPlate
             do {
-                let data = try await Task.detached { try Data(contentsOf: url, options: .mappedIfSafe) }.value
-                if url.pathExtension == "gcode" { gcode = try await Task.detached { try PrintGCodePreview.read(data) }.value }
-                else { resin = try PrintCTBPreview(data: data) }
+                let work = Task.detached(priority: .userInitiated) { () -> LoadResult in
+                    let data: Data
+                    if let snapshot {
+                        data = snapshot
+                    } else {
+                        data = try Data(contentsOf: url, options: .mappedIfSafe)
+                    }
+                    if ext == "gcode" {
+                        return .gcode(try PrintGCodePreview.read(data), plates: [])
+                    }
+                    if ext == "3mf" {
+                        let entries = try PrintThreeMF.plateEntries(in: data)
+                        guard !entries.isEmpty else { return .noPlates }
+                        let chosen = entries.contains(where: { $0.plateID == requestedPlate }) ? requestedPlate : entries[0].plateID
+                        guard chosen == requestedPlate else { return .redirect(chosen) }
+                        let plate = try PrintThreeMF.plate(chosen, in: data)
+                        return .gcode(try PrintGCodePreview.read(plate.data), plates: entries)
+                    }
+                    return .resin(try PrintCTBPreview(data: data))
+                }
+                let result = try await withTaskCancellationHandler {
+                    try await work.value
+                } onCancel: { work.cancel() }
+                // A late or stale parse (plate switched, file changed, view
+                // gone) must never replace the current presentation.
+                guard !Task.isCancelled, selectedPlate == requestedPlate else { return }
+                switch result {
+                case .gcode(let preview, let entries):
+                    plates = entries
+                    gcode = preview
+                case .resin(let preview):
+                    resin = preview
+                case .redirect(let plateID):
+                    selectedPlate = plateID
+                    return
+                case .noPlates:
+                    failed = true
+                    return
+                }
                 layer = 1
+            } catch is CancellationError {
             } catch { failed = true }
         }
-        .task(id: "\(url.lastPathComponent):\(index):\(resin != nil)") {
+        .task(id: "resin-\(url.absoluteString):\(index):\(resin != nil)") {
             guard let resin else { return }
             do {
                 let selectedIndex = index
@@ -85,6 +172,19 @@ struct PrintResultPreview: View {
             }
         }
     }
+
+    /// Cache identity for the scene: full source URL and plate. Sliding the
+    /// layer control never resets the cached layer nodes.
+    private var sceneIdentity: String { "\(url.absoluteString)#\(selectedPlate)" }
+}
+
+/// One load attempt's outcome, produced off the main actor. `.redirect`
+/// resolves an out-of-range plate selection through the state machine.
+private enum LoadResult {
+    case gcode(PrintGCodePreview, plates: [PrintThreeMF.PlateEntry])
+    case resin(PrintCTBPreview)
+    case redirect(Int)
+    case noPlates
 }
 
 private struct PrintLayerScene: UIViewRepresentable {
@@ -92,43 +192,105 @@ private struct PrintLayerScene: UIViewRepresentable {
     let preset: PrintPreset
     let identity: String
     let machine: PrintMachineConfiguration
-    final class Coordinator { var identity: String? }
+    static let maximumRenderedSegments = 50_000
+
+    final class Coordinator {
+        var identity: String?
+        var nodes: [Int: SCNNode] = [:]
+        var segmentCounts: [Int: Int] = [:]
+    }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView(); view.allowsCameraControl = true; view.antialiasingMode = .multisampling4X
         view.backgroundColor = .secondarySystemGroupedBackground; return view
     }
     func updateUIView(_ view: SCNView, context: Context) {
-        guard context.coordinator.identity != identity else { return }; context.coordinator.identity = identity
-        let scene = SCNScene(), bed = (width: machine.bedWidth, depth: machine.bedDepth), offset = machine.coordinateOffset
-        let plate = SCNNode(geometry: SCNBox(width: bed.width, height: 0.2, length: bed.depth, chamferRadius: 0))
-        plate.position.y = -0.2; plate.geometry?.firstMaterial?.diffuse.contents = UIColor.tertiarySystemFill
-        scene.rootNode.addChildNode(plate)
-        var groups: [String: [SCNVector3]] = [:], rendered = 0
-        for layer in layers.reversed() {
-            for segment in layer.segments where rendered < 50_000 {
-                let key = segment.kind.rawValue + (layer.id == layers.last?.id ? ":current" : ":lower")
-                groups[key, default: []] += [segment.start, segment.end].map {
-                    SCNVector3(Double($0[0]) - offset[0], Double($0[2]) - offset[2], -(Double($0[1]) - offset[1]))
-                }; rendered += 1
+        let coordinator = context.coordinator
+        if coordinator.identity != identity {
+            coordinator.identity = identity; coordinator.nodes = [:]; coordinator.segmentCounts = [:]
+            let scene = SCNScene(), bed = (width: machine.bedWidth, depth: machine.bedDepth)
+            let plate = SCNNode(geometry: SCNBox(width: bed.width, height: 0.2, length: bed.depth, chamferRadius: 0))
+            plate.position.y = -0.2; plate.geometry?.firstMaterial?.diffuse.contents = UIColor.tertiarySystemFill
+            scene.rootNode.addChildNode(plate)
+            view.scene = scene
+            if view.pointOfView?.camera == nil {
+                let camera = SCNNode()
+                camera.camera = SCNCamera(); camera.camera?.zNear = 0.1; camera.camera?.zFar = 5_000
+                let span = max(bed.width, bed.depth); camera.position = SCNVector3(span * 0.75, span * 0.8, span * 0.9)
+                camera.look(at: SCNVector3Zero)
+                scene.rootNode.addChildNode(camera)
+                view.pointOfView = camera
+                view.defaultCameraController.target = SCNVector3Zero
             }
         }
+        guard let scene = view.scene else { return }
+        let visibleIds = layers.map(\.id)
+
+        // Deterministic budget: scan newest → oldest, granting each visible
+        // layer min(remaining, its segment count). The selected layer is
+        // always satisfied first; oldest layers lose segments last.
+        var wanted: [Int: Int] = [:]
+        var remaining = Self.maximumRenderedSegments
+        for layer in layers.reversed() {
+            guard remaining > 0 else { break }
+            let take = min(remaining, layer.segments.count)
+            guard take > 0 else { continue }
+            wanted[layer.id] = take
+            remaining -= take
+        }
+        // Evict anything without an allocation, or whose allocation changed.
+        for (id, node) in coordinator.nodes where wanted[id] != coordinator.segmentCounts[id] {
+            evict(coordinator, id: id, node: node)
+        }
+        // Build missing nodes with their exact allocation.
+        for layer in layers.reversed() {
+            guard let allocation = wanted[layer.id], coordinator.nodes[layer.id] == nil else { continue }
+            guard let node = makeLayerNode(layer, limit: allocation, coordinator: coordinator) else { continue }
+            coordinator.nodes[layer.id] = node
+            scene.rootNode.addChildNode(node)
+        }
+        // Depth cue: only the top layer is fully opaque.
+        if let top = visibleIds.last {
+            for (id, node) in coordinator.nodes {
+                node.childNodes.forEach { $0.opacity = id == top ? 1 : 0.18 }
+            }
+        }
+    }
+
+    private func evict(_ coordinator: Coordinator, id: Int, node: SCNNode) {
+        node.removeFromParentNode()
+        coordinator.segmentCounts.removeValue(forKey: id)
+        coordinator.nodes.removeValue(forKey: id)
+    }
+
+    /// Builds one layer's node consuming at most `limit` segments.
+    private func makeLayerNode(_ layer: PrintPathLayer, limit: Int, coordinator: Coordinator) -> SCNNode? {
+        guard limit > 0 else { return nil }
+        let offset = machine.coordinateOffset
+        var groups: [String: [SCNVector3]] = [:]
+        var consumed = 0
+        for segment in layer.segments {
+            guard consumed < limit else { break }
+            groups[segment.kind.rawValue, default: []] += [segment.start, segment.end].map {
+                SCNVector3(Double($0[0]) - offset[0], Double($0[2]) - offset[2], -(Double($0[1]) - offset[1]))
+            }
+            consumed += 1
+        }
+        guard !groups.isEmpty else { return nil }
+        let node = SCNNode()
         for (key, vertices) in groups {
             let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices)],
                 elements: [SCNGeometryElement(indices: vertices.indices.map(UInt32.init), primitiveType: .line)])
-            let color: UIColor = key.hasPrefix("support") ? .systemPurple : key.hasPrefix("infill") ? .systemTeal : key.hasPrefix("travel") ? .secondaryLabel : .systemBlue
-            geometry.firstMaterial?.diffuse.contents = color.withAlphaComponent(key.hasSuffix("lower") ? 0.18 : 1)
+            geometry.firstMaterial?.diffuse.contents = color(for: key)
             geometry.firstMaterial?.lightingModel = .constant
-            scene.rootNode.addChildNode(SCNNode(geometry: geometry))
+            node.addChildNode(SCNNode(geometry: geometry))
         }
-        let camera = view.pointOfView ?? SCNNode()
-        if camera.camera == nil {
-            camera.camera = SCNCamera(); camera.camera?.zNear = 0.1; camera.camera?.zFar = 5_000
-            let span = max(bed.width, bed.depth); camera.position = SCNVector3(span * 0.75, span * 0.8, span * 0.9)
-            camera.look(at: SCNVector3Zero)
-        }
-        camera.removeFromParentNode(); scene.rootNode.addChildNode(camera)
-        view.scene = scene; view.pointOfView = camera; view.defaultCameraController.target = SCNVector3Zero
+        coordinator.segmentCounts[layer.id] = consumed
+        return node
+    }
+
+    private func color(for kind: String) -> UIColor {
+        kind.hasPrefix("support") ? .systemPurple : kind.hasPrefix("infill") ? .systemTeal : kind.hasPrefix("travel") ? .secondaryLabel : .systemBlue
     }
 }
 #endif

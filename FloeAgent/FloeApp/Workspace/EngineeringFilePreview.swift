@@ -7,6 +7,7 @@ import FloeWorkspace
 import FloeCAD
 import FloeWorkbench
 import FloeCore
+import FloePrintCore
 
 /// Exact staged-document identity for a Canvas CAD drawing under edit. When
 /// a review capture carries this, the Drawing Assistant binds its durable
@@ -2029,6 +2030,7 @@ struct EngineeringPreviewURLView: View {
     let source: EngineeringPreviewSource
     @Environment(\.dismiss) private var dismiss
     @State private var package: EngineeringPreviewPackage?
+    @State private var slicedPlateData: Data?
     @State private var error: String?
     @State private var isLoading = true
     @State private var largeSourceID: UUID?
@@ -2040,7 +2042,10 @@ struct EngineeringPreviewURLView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let package {
+                if let slicedPlateData {
+                    PrintResultPreview(url: source.url.deletingLastPathComponent().appendingPathComponent((source.displayName as NSString).lastPathComponent),
+                                       preset: .genericMarlinPLA, sourceData: slicedPlateData)
+                } else if let package {
                     EngineeringFilePreview(package: package)
                 } else if let error {
                     ContentUnavailableView {
@@ -2077,18 +2082,31 @@ struct EngineeringPreviewURLView: View {
         let limits: EngineeringPreviewLimits = usesExpandedReadOnly ? .expandedReadOnly : .standard
         mayOpenLargeModel = false
         package = nil
+        slicedPlateData = nil
         error = nil
         isLoading = true
         let accessing = source.startsSecurityScope && source.url.startAccessingSecurityScopedResource()
         defer { if accessing { source.url.stopAccessingSecurityScopedResource() } }
         do {
             let worker = Task.detached(priority: .userInitiated) {
-                try EngineeringPreviewPackage.load(
+                let package = try EngineeringPreviewPackage.load(
                     fileURL: source.url,
                     displayName: source.displayName,
                     includeSiblingResources: source.includeSiblingResources, limits: limits)
+                var sliced: Data?
+                if package.name.lowercased().hasSuffix(".gcode.3mf"), package.provenance.sourceByteCount > PrintThreeMF.maximumArchiveBytes {
+                    throw PrintError.sizeLimit
+                }
+                if (package.name as NSString).pathExtension.lowercased() == "3mf",
+                   package.provenance.sourceByteCount <= PrintThreeMF.maximumArchiveBytes,
+                   let primary = package.files.first,
+                   let data = Data(base64Encoded: primary.base64),
+                   try !PrintThreeMF.plateEntries(in: data).isEmpty {
+                    sliced = data
+                }
+                return (package, sliced)
             }
-            let loaded = try await withTaskCancellationHandler {
+            let (loaded, sliced) = try await withTaskCancellationHandler {
                 try await worker.value
             } onCancel: {
                 worker.cancel()
@@ -2098,7 +2116,8 @@ struct EngineeringPreviewURLView: View {
                 throw EngineeringPreviewURLFailure.changed
             }
             guard !Task.isCancelled, loadID == attempt else { return }
-            package = loaded
+            if let sliced { slicedPlateData = sliced }
+            else { package = loaded }
         } catch is CancellationError {
         } catch {
             guard !Task.isCancelled, loadID == attempt else { return }

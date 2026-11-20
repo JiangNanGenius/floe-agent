@@ -19,48 +19,93 @@ public struct PrintGCodePreview: Sendable {
 
     /// Preview the validated output bytes; neither the source mesh nor a
     /// synthetic clipping plane stands in for actual extrusion paths.
+    /// G0/G1 linear moves plus G2/G3 arcs (XY IJ or R centres, helical Z
+    /// interpolation and P repeats) are tessellated into bounded segments.
     public static func read(_ data: Data, maximumSegments: Int = 500_000) throws -> Self {
         guard (1...500_000).contains(maximumSegments) else { throw PrintError.sizeLimit }
         let summary = try GCodeInspector.inspect(data)
         guard let text = String(data: data, encoding: .utf8) else { throw PrintError.invalidArtifact }
         var xyz = [0.0, 0, 0], extrusion = 0.0, absolute = true, absoluteE = true, feed = 0.0
+        var planeXY = true
         var kind = PrintPathSegment.Kind.shell, seconds = 0.0, count = 0, truncated = false
         var paths: [Int64: [PrintPathSegment]] = [:], currentZ: Int64?
+
+        func emit(_ from: [Double], _ to: [Double], extrudes: Bool, bucketZ: Double? = nil) {
+            let distance = sqrt(zip(from, to).reduce(0.0) { $0 + pow($1.1 - $1.0, 2) })
+            if feed > 0 { seconds += distance / feed * 60 }
+            if extrudes {
+                // Helical arc steps all belong to the commanded destination
+                // layer; planar moves keep their own end height.
+                let z = Int64(((bucketZ ?? to[2]) * 10_000).rounded()); currentZ = z
+                if paths[z] == nil { paths[z] = [] }
+            }
+            guard let z = currentZ else { return }
+            guard count < maximumSegments else { truncated = true; return }
+            paths[z, default: []].append(.init(start: from.map(Float.init), end: to.map(Float.init), kind: extrudes ? kind : .travel)); count += 1
+        }
+
         for raw in text.split(whereSeparator: \.isNewline) {
             try Task.checkCancellation()
-            if raw.contains("feature") {
-                let comment = raw.lowercased()
-                kind = comment.contains("support") ? .support : (comment.contains("shell") ? .shell : .infill)
+            if let marker = raw.firstIndex(of: ";") {
+                let comment = raw[marker...].lowercased()
+                if comment.contains("feature") || comment.contains("type:") {
+                    kind = comment.contains("support") ? .support
+                        : (["wall", "shell", "perimeter", "tower", "brim", "skirt"].contains { comment.contains($0) } ? .shell : .infill)
+                }
             }
             let code = raw.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)[0]
             let words = code.split(whereSeparator: \.isWhitespace)
             guard let command = words.first else { continue }
             if command == "G90" { absolute = true }; if command == "G91" { absolute = false }
             if command == "M82" { absoluteE = true }; if command == "M83" { absoluteE = false }
+            if command == "G17" { planeXY = true }
+            if command == "G18" || command == "G19" { planeXY = false }
             var values: [Character: Double] = [:]
             for word in words.dropFirst() {
-                if let key = word.first, "XYZEF".contains(key), let value = Double(word.dropFirst()), value.isFinite { values[key] = value }
+                if let key = word.first, "XYZEFIJRP".contains(key), let value = Double(word.dropFirst()), value.isFinite { values[key] = value }
             }
             if command == "G92" {
                 for (index, key) in Array("XYZ").enumerated() { if let value = values[key] { xyz[index] = value } }
                 if let value = values["E"] { extrusion = value }; continue
             }
-            guard ["G0", "G00", "G1", "G01"].contains(String(command)) else { continue }
+            guard ["G0", "G00", "G1", "G01", "G2", "G02", "G3", "G03"].contains(String(command)) else { continue }
+            let isArc = command == "G2" || command == "G02" || command == "G3" || command == "G03"
+            // Arcs exist only in the XY plane; a G18/G19 arc would render
+            // wrong geometry, so the read fails clearly instead.
+            guard planeXY || !isArc else { throw PrintError.unsupportedFormat }
             let start = xyz
-            for (index, key) in Array("XYZ").enumerated() { if let value = values[key] { xyz[index] = absolute ? value : xyz[index] + value } }
+            var end = xyz
+            for (index, key) in Array("XYZ").enumerated() {
+                if let value = values[key] { end[index] = absolute ? value : end[index] + value }
+            }
             if let value = values["F"], value > 0 { feed = value }
             let nextE = values["E"].map { absoluteE ? $0 : extrusion + $0 } ?? extrusion
-            let extrudes = nextE - extrusion > 1e-7; extrusion = nextE
-            guard start != xyz else { continue }
-            let distance = sqrt(zip(start, xyz).reduce(0.0) { $0 + pow($1.1 - $1.0, 2) })
-            if feed > 0 { seconds += distance / feed * 60 }
-            if extrudes {
-                let z = Int64((xyz[2] * 10_000).rounded()); currentZ = z
-                if paths[z] == nil { paths[z] = [] }
+            let eDelta = nextE - extrusion
+            if isArc, let geometry = PrintArcGeometry.solve(
+                startX: start[0], startY: start[1], endX: end[0], endY: end[1],
+                i: values["I"], j: values["J"], r: values["R"],
+                clockwise: command == "G2" || command == "G02",
+                repeats: PrintArcGeometry.boundedRepeats(values["P"])) {
+                let steps = max(1, min(720, Int((abs(geometry.sweep) / (.pi / 18)).rounded(.up))))
+                var previous = start
+                for step in 1...steps {
+                    let fraction = Double(step) / Double(steps)
+                    let angle = geometry.startAngle + geometry.sweep * fraction
+                    var point = [geometry.centerX + geometry.radius * cos(angle),
+                                 geometry.centerY + geometry.radius * sin(angle),
+                                 start[2] + (end[2] - start[2]) * fraction]
+                    if step == steps { point = end } // land exactly on the commanded end
+                    emit(previous, point, extrudes: eDelta > 1e-7, bucketZ: eDelta > 1e-7 ? end[2] : nil)
+                    previous = point
+                }
+                xyz = end; extrusion = nextE
+                continue
             }
-            guard let z = currentZ else { continue }
-            guard count < maximumSegments else { truncated = true; continue }
-            paths[z, default: []].append(.init(start: start.map(Float.init), end: xyz.map(Float.init), kind: extrudes ? kind : .travel)); count += 1
+            xyz = end; extrusion = nextE
+            // Zero-motion moves (including degenerate arcs and pure E primes)
+            // never became segments; the inspector skips them identically.
+            guard start != xyz else { continue }
+            emit(start, xyz, extrudes: eDelta > 1e-7)
         }
         let layers = paths.keys.sorted().enumerated().map { index, z in
             PrintPathLayer(id: index, z: Double(z) / 10_000, segments: paths[z] ?? [])

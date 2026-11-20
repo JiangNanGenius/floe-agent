@@ -13,12 +13,21 @@ import FloeCore
 import FloeImages
 import FloeWorkspace
 import FloeCAD
+import FloePrintCore
 
 /// Unknown extensions are candidates, not a text verdict. Validate the
 /// complete stream with the existing reader codecs, using bounded chunks.
 /// Only a content/encoding refusal routes to Quick Look; read failures,
 /// permissions, size limits and cancellation keep their real errors.
 enum WorkspacePreviewContentProbe {
+    /// Mill programs may also use .gcode. Keep their existing source reader
+    /// unless the program contains a motion with an extruder coordinate.
+    nonisolated static func containsExtruderMotion(_ data: Data) -> Bool {
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        return text.range(of: #"(?m)^[ \t]*G0?[0-3][ \t]+(?:[^;\r\n]*?[ \t])?E[+-]?(?:[0-9]|\.[0-9])"#,
+                          options: .regularExpression) != nil
+    }
+
     static func usesTextReader(source: any ReaderByteSource, limits: ReaderLimits = .default,
                                cancellation: ReaderCancellation = .never) throws -> Bool {
         try cancellation.throwIfCancelled()
@@ -120,6 +129,7 @@ struct FilePreviewView: View {
     @State private var isArchiveBrowserPresented = false
     @State private var imageEditRequest: WorkspaceImageEditRequest?
     @State private var engineeringPackage: EngineeringPreviewPackage?
+    @State private var printFile: (url: URL, data: Data)?
     @State private var largePreviewPath: String?
     @State private var mayOpenLargeModel = false
     private var usesExpandedReadOnly: Bool { largePreviewPath == relativePath }
@@ -243,6 +253,8 @@ struct FilePreviewView: View {
                     floecadDocument=document
                     Task { await center.recordRecentFile(relativePath:path,displayName:(path as NSString).lastPathComponent) }
                 }.id(nativeModelImportPath)
+            } else if let printFile {
+                PrintResultPreview(url: printFile.url, preset: .genericMarlinPLA, sourceData: printFile.data)
             } else if let engineeringPackage {
                 if isEngineeringFullScreen {
                     Color.clear
@@ -1616,6 +1628,7 @@ struct FilePreviewView: View {
         binaryPreviewURL = nil
         nativeOfficeURL = nil
         engineeringPackage = nil
+        printFile = nil
         nativeModelImportPath = nil
         mayOpenLargeModel = false
         engineeringRoot = nil
@@ -1812,11 +1825,49 @@ struct FilePreviewView: View {
             } catch { loadError=error.localizedDescription }
             return
         }
+        let fileExtension = (name as NSString).pathExtension.lowercased()
+        var modelSnapshot: Data?
+        if fileExtension == "3mf" || fileExtension == "gcode" {
+            do {
+                let scope = try WorkspaceFileActionScope(center: center)
+                let bytes = try await readingSource.makeBytes().source
+                let maximum = PrintThreeMF.maximumArchiveBytes
+                if bytes.byteLength <= maximum {
+                    let worker = Task.detached(priority: .userInitiated) {
+                        try Task.checkCancellation()
+                        let data = try (bytes as? ReaderDataByteSource)?.data ?? bytes.read(offset: 0, length: Int(bytes.byteLength))
+                        guard data.count == bytes.byteLength else { throw CocoaError(.fileReadCorruptFile) }
+                        let sliced = fileExtension == "gcode"
+                            ? WorkspacePreviewContentProbe.containsExtruderMotion(data)
+                            : try !PrintThreeMF.plateEntries(in: data).isEmpty
+                        return (data, sliced)
+                    }
+                    let (data, sliced) = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                    try scope.validate(center)
+                    try Task.checkCancellation()
+                    guard displayedPath == path else { return }
+                    if sliced {
+                        printFile = (scope.root.appendingPathComponent(path), data)
+                        await center.recordRecentFile(relativePath: path, displayName: name)
+                        return
+                    }
+                    if center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) { modelSnapshot = data }
+                } else if name.lowercased().hasSuffix(".gcode.3mf") {
+                    throw PrintError.sizeLimit
+                }
+            } catch is CancellationError { return }
+            catch {
+                if !Task.isCancelled, displayedPath == path { loadError = error.localizedDescription }
+                return
+            }
+        }
         if EngineeringPreviewKind.identify(path) != nil, let service = center.fileService {
             do {
                 let package: EngineeringPreviewPackage
                 if center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) {
-                    let bytes = try await center.readRemotePreview(relativePath: path)
+                    let bytes: Data
+                    if let modelSnapshot { bytes = modelSnapshot }
+                    else { bytes = try await center.readRemotePreview(relativePath: path) }
                     package = try EngineeringPreviewPackage.single(name: name, bytes: bytes)
                 } else {
                     engineeringRoot = service.guardResolver.rootURL

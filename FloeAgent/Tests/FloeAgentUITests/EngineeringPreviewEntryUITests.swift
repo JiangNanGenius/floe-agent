@@ -19,6 +19,7 @@
 
 #if canImport(XCTest)
 import XCTest
+import CryptoKit
 
 @MainActor
 final class EngineeringPreviewEntryUITests: XCTestCase {
@@ -91,6 +92,33 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
         dismissURLPreview(app)
     }
 
+    func testWorkspaceOpensEmbeddedPrintLayers() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "bambu-cube.gcode", withExtension: "3mf"))
+        let source = try Data(contentsOf: url)
+        let app = launch("workspace", printPlate: (
+            try (source as NSData).compressed(using: .zlib).base64EncodedString(),
+            SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+        ))
+        let row = app.buttons["fileTree.row.Cube.gcode.3mf"].firstMatch
+        if !row.waitForExistence(timeout: 3), app.buttons["Back"].firstMatch.exists {
+            app.buttons["Back"].firstMatch.tap()
+        }
+        XCTAssertTrue(row.waitForExistence(timeout: 20))
+        row.tap()
+        let layer = app.sliders["printing.layerSlider"]
+        XCTAssertTrue(layer.waitForExistence(timeout: 30))
+        let current = app.staticTexts["printing.layer.current"]
+        let firstLayer = NSPredicate(format: "label ENDSWITH %@", "1 / 114")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: firstLayer, object: current)], timeout: 30), .completed)
+        layer.adjust(toNormalizedSliderPosition: 0.5)
+        let middle = NSPredicate(format: "label MATCHES %@", ".* (5[0-9]|6[0-5]) / 114")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: middle, object: current)], timeout: 10), .completed)
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Workspace · Bambu plate, middle layer"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     func test04WorkspaceTreeUsesSharedEngineeringPreview() throws {
         let app = launch("workspace")
         // The real inspector restores its last selected file. Actual92's
@@ -139,7 +167,7 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
 
     // MARK: - Launch / assertions
 
-    private func launch(_ route: String) -> XCUIApplication {
+    private func launch(_ route: String, printPlate: (base64: String, hash: String)? = nil) -> XCUIApplication {
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
         app.launchArguments = [
@@ -150,10 +178,14 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
             "--ui-test-engineering-entry-fixture",
             "--ui-test-engineering-entry-route=\(route)",
         ]
+        if printPlate != nil {
+            app.launchArguments.append("--ui-test-print-plate")
+            app.launchEnvironment["FLOE_ENGINEERING_ENTRY_ISOLATE_ASSET"] = "1"
+        }
         app.launchEnvironment[EngineeringPreviewEntryFixtureAsset.environmentKey] =
-            EngineeringPreviewEntryFixtureAsset.base64
+            printPlate?.base64 ?? EngineeringPreviewEntryFixtureAsset.base64
         app.launchEnvironment[EngineeringPreviewEntryFixtureAsset.shaEnvironmentKey] =
-            EngineeringPreviewEntryFixtureAsset.sha256
+            printPlate?.hash ?? EngineeringPreviewEntryFixtureAsset.sha256
         app.launch()
         self.app = app
         let fixture = app.descendants(matching: .any)["engineeringEntryFixture"].firstMatch

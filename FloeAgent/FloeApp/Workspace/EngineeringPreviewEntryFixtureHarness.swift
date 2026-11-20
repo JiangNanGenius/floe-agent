@@ -210,7 +210,7 @@ enum EngineeringPreviewEntryFixture {
 
     private static func seed(environment: AppEnvironment,
                              route: EngineeringPreviewEntryRoute,
-                             asset: FixtureAsset) async throws -> URL {
+                             asset: FixtureAsset) async throws -> URL? {
         let conversationStore = SQLiteConversationStore(database: environment.database)
         if (try? await conversationStore.conversation(id: conversationID)) == nil {
             try await conversationStore.saveConversation(ConversationRecord(
@@ -224,6 +224,12 @@ enum EngineeringPreviewEntryFixture {
         let lease = try await environment.workspaceCenter.acquireTaskRoot(
             workspaceRecord, conversationID: conversationID)
         defer { lease.release() }
+
+        if route == .workspace, isolatesAsset,
+           ProcessInfo.processInfo.arguments.contains("--ui-test-print-plate") {
+            try asset.data.write(to: lease.url.appendingPathComponent("Cube.gcode.3mf"), options: .atomic)
+            return nil
+        }
 
         let modelURL = lease.url.appendingPathComponent(workspaceRelativePath)
         try FileManager.default.createDirectory(
