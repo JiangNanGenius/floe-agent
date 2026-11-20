@@ -11,6 +11,7 @@ import FloeCore
 import FloeMacBridgeProtocol
 import FloeMacToolbox
 import FloeModels
+import FloeTools
 import Foundation
 
 @MainActor
@@ -67,7 +68,8 @@ final class UnifiedMacSmoke {
     }
 
     func exercise(model: BridgeAppModel) async {
-        if CommandLine.arguments.contains("--verify-saved-launch-mode") {
+        let firstLaunch = CommandLine.arguments.contains("--verify-first-launch")
+        if firstLaunch || CommandLine.arguments.contains("--verify-saved-launch-mode") {
             let deadline = ContinuousClock.now + .seconds(5)
             while (!model.listenerReady || model.macWorkspace?.agent == nil) && ContinuousClock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(30))
@@ -75,6 +77,20 @@ final class UnifiedMacSmoke {
             let startedInAgent = model.isAgentMode && model.listenerReady && NSApp.activationPolicy() == .regular
                 && visibleWorkbench != nil
                 && model.smokeSettingsWindow?.isVisible != true
+            if firstLaunch {
+                let preferenceWasAbsent = preferences.string(forKey: "floe.mac.launchMode") == nil
+                if let agent = model.macWorkspace?.agent {
+                    await agent.prepare()
+                    while (agent.isPreparing || model.updates.installation.activity.activityCount != 0) && ContinuousClock.now < deadline {
+                        try? await Task.sleep(for: .milliseconds(30))
+                    }
+                }
+                let switched = (try? await model.switchToBridge()) == true
+                finish(["agentIsDefault": preferenceWasAbsent && startedInAgent,
+                        "explicitBridgeSaved": switched && preferences.string(forKey: "floe.mac.launchMode") == "bridge"
+                            && model.macWorkspace == nil, "pid": getpid()])
+                return
+            }
             if let agent = model.macWorkspace?.agent {
                 await agent.prepare()
                 while model.updates.installation.activity.activityCount != 0 && ContinuousClock.now < deadline {
@@ -83,6 +99,17 @@ final class UnifiedMacSmoke {
                 if agent.beginTermination() { try? await agent.finishTermination() }
             }
             finish(["agentModeRestoredOnRelaunch": startedInAgent, "pid": getpid()])
+            return
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--background-window-fixture"),
+           CommandLine.arguments.indices.contains(flag + 2), let pid = Int32(CommandLine.arguments[flag + 1]),
+           let window = Int(CommandLine.arguments[flag + 2]) {
+            await verifyBackgroundWindow(model, fixturePID: pid, window: window)
+            return
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--native-command-fixture"),
+           CommandLine.arguments.indices.contains(flag + 1), let endpoint = URL(string: CommandLine.arguments[flag + 1]) {
+            await exerciseNativeCommands(model, endpoint: endpoint)
             return
         }
         if CommandLine.arguments.contains("--creative-only") {
@@ -355,6 +382,130 @@ final class UnifiedMacSmoke {
             "pid": getpid()
         ]
         finish(output)
+    }
+
+    private func verifyBackgroundWindow(_ model: BridgeAppModel, fixturePID: Int32, window: Int) async {
+        let app = "org.floeagent.qa.background-window"
+        let before = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard fixturePID > 0, window > 0, before != fixturePID,
+              NSRunningApplication(processIdentifier: fixturePID)?.bundleIdentifier == app,
+              let desktop = MacNativeDesktopTools.available(rootURL: root).compactMap({ $0 as? MacDesktopControl }).first else {
+            finish(["error": "Background fixture or signed companion unavailable"]); return
+        }
+        let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root,
+                                  cancellation: CancellationToken(), approvalOrigin: .humanCard)
+        func invoke(_ action: MacDesktopControl.Action, snapshot: String? = nil, index: Int? = nil,
+                    value: String? = nil) async throws -> ToolExecutionOutput {
+            try await desktop.execute(.init(action: action, app: app, pid: fixturePID, windowID: window,
+                                            snapshotID: snapshot, index: index, value: value), context: context)
+        }
+        func snapshot(_ text: String, role: String) throws -> (String, Int) {
+            let pattern = #"(?<=snapshot_id=)[A-Fa-f0-9-]{36}"#
+            guard let id = text.range(of: pattern, options: .regularExpression),
+                  let line = text.split(separator: "\n").first(where: { $0.contains(role) }),
+                  let range = line.range(of: #"(?<=\[)[0-9]+(?=\])"#, options: .regularExpression),
+                  let index = Int(line[range]) else { throw MacKimiError.invalidTarget }
+            return (String(text[id]), index)
+        }
+        var result: [String: Any] = [:]
+        do {
+            let fieldState = try await invoke(.inspect)
+            let field = try snapshot(fieldState.summary, role: "AXTextField")
+            _ = try await invoke(.setValue, snapshot: field.0, index: field.1, value: "Floe background edit")
+            let buttonState = try await invoke(.inspect)
+            result["fieldVerified"] = buttonState.summary.contains("Floe background edit")
+            let button = try snapshot(buttonState.summary, role: "Record fixture click")
+            let clicked = try await invoke(.click, snapshot: button.0, index: button.1)
+            result["clickDelivered"] = clicked.exitStatus != 1 && clicked.summary.contains("Window after action:")
+            let capture = try await invoke(.screenshot)
+            if let item = capture.artifacts.first {
+                let data = try Data(contentsOf: root.appendingPathComponent(item.relativePath))
+                result["imageVerified"] = NSImage(data: data) != nil && FloeDigest.sha256Hex(data) == item.sha256
+            }
+            result["foregroundPreserved"] = NSWorkspace.shared.frontmostApplication?.processIdentifier == before
+        } catch { result["error"] = error.localizedDescription }
+        if let agent = model.macWorkspace?.agent {
+            let end = ContinuousClock.now + .seconds(8)
+            while agent.isPreparing && ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(30)) }
+            if agent.beginTermination() { try? await agent.finishTermination() }
+        }
+        finish(result)
+    }
+
+    private func exerciseNativeCommands(_ model: BridgeAppModel, endpoint: URL) async {
+        var checks: [String: Bool] = [:]
+        guard let agent = model.macWorkspace?.agent else { finish(["error": "Missing Agent"]); return }
+        await agent.prepare()
+        let deadline = ContinuousClock.now + .seconds(8)
+        while agent.isPreparing && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+        guard agent.isReady, agent.useNativeCommandFixture(endpoint: endpoint) else {
+            finish(["error": "Test provider unavailable", "ready": agent.isReady,
+                    "storage": agent.storageErrorKind ?? "", "notice": agent.notice ?? ""]); return
+        }
+        // The only host-scoped file touched by the test sits inside its private fixture directory.
+        let outside = root.appendingPathComponent("approval-fixture.txt")
+        func taskRoot() -> URL? {
+            guard let record = agent.fileWorkspaceForCurrentTask else { return nil }
+            var stale = false
+            return try? URL(resolvingBookmarkData: record.rootBookmark, options: [.withoutUI], relativeTo: nil,
+                            bookmarkDataIsStale: &stale)
+        }
+        func run(_ scenario: String, decide: Bool? = nil, requireCard: Bool = false) async -> Bool {
+            let prompt = "Native fixture " + scenario + "\nHost fixture: " + outside.path
+            guard agent.send(prompt, mode: agent.composerMode) else { return false }
+            let end = ContinuousClock.now + .seconds(15)
+            var approvedCalls = Set<String>()
+            while agent.isSending && ContinuousClock.now < end {
+                if let approval = agent.pendingApproval, approvedCalls.insert(approval.callID).inserted {
+                    guard let decide, approval.toolName == "exec.shell" else { agent.stop(); return false }
+                    await agent.resolveApproval(approval, allow: decide)
+                }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            return !agent.isSending && (!requireCard || !approvedCalls.isEmpty)
+                && agent.messages.contains { $0.role == "assistant" && $0.content.contains("finished-" + scenario) }
+        }
+        checks["commandRiskLevels"] = MacNativeCommandPolicy.commandRisk("pwd") == .low
+            && MacNativeCommandPolicy.commandRisk("printf from-mac > result.txt") == .medium
+            && MacNativeCommandPolicy.commandRisk("rm result.txt") == .high
+            && MacNativeCommandPolicy.commandRisk("cat .env") == .high
+            && MacNativeCommandPolicy.commandRisk("ls; whoami") == .high
+        checks["agentDefault"] = agent.composerMode == .agent && agent.selectedWorkspaceID == nil
+        let draftRoot = taskRoot()
+        checks["nativeCommand"] = await run("native")
+        let firstID = agent.selectedID
+        let firstRoot = taskRoot()
+        checks["draftRootPreserved"] = draftRoot != nil && firstRoot?.standardizedFileURL == draftRoot?.standardizedFileURL
+        checks["write"] = await run("write", decide: true)
+        checks["savedOutput"] = firstRoot.flatMap { try? String(contentsOf: $0.appendingPathComponent("result.txt"), encoding: .utf8) } == "from-mac"
+        var revealed: String?
+        let output = HostAgentToolActivity(id: "fixture-output", toolName: "exec.shell", state: "completed",
+            outputPath: "result.txt", outputWorkspaceID: agent.selectedConversationWorkspace?.id)
+        agent.withOutputFile(output) { revealed = try? String(contentsOf: $0, encoding: .utf8) }
+        checks["openOutput"] = revealed == "from-mac"
+        checks["automaticMode"] = await agent.setApprovalMode(.automatic, asDefault: false)
+        checks["hostDenied"] = await run("deny", decide: false, requireCard: true) && !FileManager.default.fileExists(atPath: outside.path)
+        checks["askMode"] = await agent.setApprovalMode(.ask, asDefault: false)
+        checks["hostApproved"] = await run("approve", decide: true, requireCard: true)
+        checks["approvedFile"] = (try? String(contentsOf: outside, encoding: .utf8)) == "approved"
+        checks["workspaceConfined"] = await run("confine", decide: true)
+        checks["symlinkConfined"] = await run("confineRead", decide: true)
+        checks["hostFileUnchanged"] = (try? String(contentsOf: outside, encoding: .utf8)) == "approved"
+        agent.smokeOwnerAuthentication = { true }
+        let full = await agent.setApprovalMode(.fullAccess, asDefault: false)
+        checks["fullAccess"] = false
+        if full { checks["fullAccess"] = await run("full") }
+        checks["fullAccessFile"] = (try? String(contentsOf: outside, encoding: .utf8)) == "full"
+        await agent.select(nil)
+        checks["secondTask"] = await run("second")
+        let secondRoot = taskRoot()
+        checks["separateFolders"] = agent.selectedID != firstID && firstRoot != nil && secondRoot != nil
+            && firstRoot?.standardizedFileURL != secondRoot?.standardizedFileURL
+            && secondRoot.map { !FileManager.default.fileExists(atPath: $0.appendingPathComponent("result.txt").path) } == true
+        if let firstID { await agent.select(firstID) }
+        checks["reopen"] = firstRoot != nil && taskRoot()?.standardizedFileURL == firstRoot?.standardizedFileURL
+        if agent.beginTermination() { try? await agent.finishTermination() }
+        finish(["checks": checks, "diagnostics": agent.smokeRunDiagnostics, "notice": agent.notice ?? ""])
     }
 
     private func finish(_ output: [String: Any]) {

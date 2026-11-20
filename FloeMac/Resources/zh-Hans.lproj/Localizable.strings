@@ -296,6 +296,9 @@
 "mac.workspace.files" = "工作区文件";
 "space.title" = "空间";
 "mac.workspace.spaceFiles" = "文件";
+"mac.workspace.spaceDefaultRoot" = "任务文件";
+"mac.workspace.spaceDefaultRootHelp" = "未加入项目的任务文件";
+"mac.workspace.chooseSpaceRoot" = "选择要浏览的文件夹";
 "mac.workspace.toolbox" = "工具箱";
 "mac.workspace.services" = "服务";
 "mac.workspace.findTask" = "查找任务";

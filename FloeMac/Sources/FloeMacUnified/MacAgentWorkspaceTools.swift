@@ -192,18 +192,26 @@ public enum MacAgentWorkspaceTools {
         ".git", ".svn", ".hg", "node_modules", ".build", "DerivedData", ".swiftpm"
     ]
 
-    /// Composes the complete tool capability for one explicit user-selected
-    /// project workspace.
+    /// Composes the complete tool capability for one workspace — either an
+    /// explicit user-selected project or the per-task private (personal)
+    /// workspace of an ordinary conversation. Both kinds resolve through the
+    /// exact same descriptor-relative executor and the same verified host
+    /// gate; only the root resolution differs.
     ///
     /// - Parameters:
-    ///   - workspace: A real stored `.project` workspace record. Its
-    ///     security-scoped root bookmark is resolved here; a stale or
-    ///     unresolvable bookmark, a non-directory root, or the filesystem /
-    ///     user-home root fails closed.
+    ///   - workspace: A stored workspace record. `.project` rows carry a
+    ///     security-scoped root bookmark; `.privateTask` rows carry an empty
+    ///     bookmark and resolve as
+    ///     `<privateTaskRootBase>/<internalRelativePath>` (the runtime
+    ///     directory is the base; the row path is `PrivateTasks/<task id>`).
+    ///     Any other shape fails closed.
+    ///   - privateTaskRootBase: Host-configured lease base for personal task
+    ///     roots (the owner-only runtime directory). Required exactly when
+    ///     `workspace.kind == .privateTask`; ignored for projects.
     ///   - readOnly: When true (plan-style investigation) the binding
     ///     advertises and permits only the read tools. When false
     ///     (agent/goal) the task approval policy governs text writes.
-    ///   - delegationRegistry: When non-nil (normal project Agent/Goal runs
+    ///   - delegationRegistry: When non-nil (normal Agent/Goal runs
     ///     only; never chat/plan), the binding additionally advertises the
     ///     delegation tools (`delegate`, `delegate.wait`) as private
     ///     instances bound to that child-subagent registry, so the task can
@@ -212,28 +220,19 @@ public enum MacAgentWorkspaceTools {
     /// - Returns: A binding ready for `FloeMacSelfRuntime.startSession`.
     public static func binding(
         workspace: WorkspaceRecord,
+        privateTaskRootBase: URL? = nil,
         readOnly: Bool,
         chatOnly: Bool = false,
         delegationRegistry: SubagentRunnerRegistry? = nil,
         approvalPolicy: ((URL, [String: String]) -> any ApprovalPolicy)? = nil
     ) throws -> FloeMacSelfToolBinding {
-        guard workspace.kind == .project else {
-            throw MacAgentWorkspaceToolsError.workspaceKindUnsupported(workspace.kind.rawValue)
+        let root: URL
+        switch workspace.kind {
+        case .project:
+            root = try resolveProjectRoot(workspace)
+        case .privateTask:
+            root = try resolvePrivateTaskRoot(workspace, base: privateTaskRootBase)
         }
-        guard !workspace.rootBookmark.isEmpty else {
-            throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable
-        }
-        var stale = false
-        guard let resolved = try? URL(
-            resolvingBookmarkData: workspace.rootBookmark,
-            options: [],
-            relativeTo: nil,
-            bookmarkDataIsStale: &stale
-        ), !stale else {
-            throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable
-        }
-        let root = resolved.resolvingSymlinksInPath().standardizedFileURL
-        try validateWorkspaceRoot(root)
         // The executor pins descriptors against the physical root; it must
         // exist at composition time or every tool would fail identically.
         guard MacAgentWorkspacePinSupport.physicalPath(root.path) != nil else {
@@ -248,6 +247,7 @@ public enum MacAgentWorkspaceTools {
         )
         var allowed = chatOnly ? readToolNames.intersection(ConversationToolAccess.chatNames)
             : (readOnly ? readToolNames : readToolNames.union(writeToolNames))
+        if !readOnly && !chatOnly { allowed.formUnion(baseExecutor.allDescriptors.map(\.name)) }
         let executor: any ToolExecutor
         if let delegationRegistry, !chatOnly {
             allowed.formUnion(FloeMacDelegatingProjectToolExecutor.defaultDelegatingNames)
@@ -272,7 +272,7 @@ public enum MacAgentWorkspaceTools {
         let policy = approvalPolicy?(root, identities) ?? HumanApprovalPolicy()
         let hostGate = FloeMacSelfHostGate(
             workspaceID: workspace.id,
-            workspaceRootPath: root.path,
+            workspaceRootPath: root.resolvingSymlinksInPath().standardizedFileURL.path,
             approvalPolicySource: policy.policyName,
             toolCorpusIdentifier: toolCorpusIdentifier,
             approvedToolNames: allowed,
@@ -289,20 +289,113 @@ public enum MacAgentWorkspaceTools {
         )
     }
 
+    /// Project roots resolve from the stored security-scoped bookmark; a
+    /// stale or unresolvable bookmark, an empty bookmark, or a non-directory
+    /// root fails closed.
+    private static func resolveProjectRoot(_ workspace: WorkspaceRecord) throws -> URL {
+        guard workspace.kind == .project else {
+            throw MacAgentWorkspaceToolsError.workspaceKindUnsupported(workspace.kind.rawValue)
+        }
+        guard !workspace.rootBookmark.isEmpty else {
+            throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable
+        }
+        var stale = false
+        guard let resolved = try? URL(
+            resolvingBookmarkData: workspace.rootBookmark,
+            options: [],
+            relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        ), !stale else {
+            throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable
+        }
+        let root = resolved.resolvingSymlinksInPath().standardizedFileURL
+        try validateWorkspaceRoot(root)
+        return root
+    }
+
+    /// Personal task roots resolve by the row's canonical
+    /// `PrivateTasks/<task UUID>` relative path under the host-configured
+    /// lease base (the owner-only runtime directory — the same base the
+    /// self-core lease appends the relative path to, so the binding root and
+    /// the verified lease root are identical). The leaf is materialized only
+    /// when a tool session actually binds this workspace. Anything but the
+    /// exact two-component task-keyed shape fails closed — a personal
+    /// workspace is never a shared parent and never falls back.
+    private static func resolvePrivateTaskRoot(_ workspace: WorkspaceRecord, base: URL?) throws -> URL {
+        guard workspace.kind == .privateTask else {
+            throw MacAgentWorkspaceToolsError.workspaceKindUnsupported(workspace.kind.rawValue)
+        }
+        guard let base else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "a personal task workspace requires the host-configured lease base"
+            )
+        }
+        guard let relative = workspace.internalRelativePath,
+              workspace.isDisposableTaskWorkspace,
+              MacAgentWorkspacePinSupport.canonicalPersonalLeaf(relative) != nil else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task workspace path is not a canonical PrivateTasks/<task id> path"
+            )
+        }
+        let root = try MacAgentWorkspacePinSupport.verifiedPersonalTaskRoot(
+            relativePath: relative, leaseBase: base, createIfNeeded: true
+        )
+        try validateWorkspaceRoot(root)
+        return root
+    }
+
+    /// The verified per-task personal root for one durable
+    /// `PrivateTasks/<task UUID>` relative path under the host lease base.
+    /// Shared by the tool binding and the host's file presentation:
+    /// identical pinning, ownership and exact-physical-path checks, so the
+    /// UI bookmark and the tool boundary always name the same leaf with the
+    /// same spelling the durable row persists. Pass `createIfNeeded: false`
+    /// for a pure lookup.
+    public static func verifiedPersonalTaskRoot(
+        relativePath: String,
+        leaseBase: URL,
+        createIfNeeded: Bool
+    ) throws -> URL {
+        try MacAgentWorkspacePinSupport.verifiedPersonalTaskRoot(
+            relativePath: relativePath, leaseBase: leaseBase, createIfNeeded: createIfNeeded
+        )
+    }
+
+    /// Extracts the stable task UUID from a canonical
+    /// `PrivateTasks/<task UUID>` relative path.
+    static func personalTaskID(relativePath: String) -> UUID? {
+        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == "PrivateTasks" else { return nil }
+        return UUID(uuidString: String(parts[1]))
+    }
+
     static func canRememberFile(_ path: String) -> Bool {
         path != "." && (try? MacAgentWorkspacePinSupport.standardizedRelativePath(path)) == path
     }
 
-    /// Reveal the current regular file only while the original project bookmark and verified descriptor are held.
-    static func withProjectFile(_ workspace: WorkspaceRecord, path: String, use: (URL) -> Void) throws {
-        guard workspace.kind == .project else { throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable }
-        var stale = false
-        let resolved = try URL(resolvingBookmarkData: workspace.rootBookmark, options: [.withoutUI],
-                               relativeTo: nil, bookmarkDataIsStale: &stale)
-        guard !stale else { throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable }
-        let scoped = resolved.startAccessingSecurityScopedResource()
-        defer { if scoped { resolved.stopAccessingSecurityScopedResource() } }
-        let url = resolved.resolvingSymlinksInPath().standardizedFileURL
+    /// Reveal the current regular file only while the original project
+    /// bookmark (or, for a personal task row, the verified per-task root)
+    /// and the verified descriptor are held.
+    static func withWorkspaceFile(_ workspace: WorkspaceRecord, privateTaskRootBase: URL,
+                                  path: String, use: (URL) -> Void) throws {
+        let url: URL
+        var scopedURL: URL?
+        defer { scopedURL?.stopAccessingSecurityScopedResource() }
+        switch workspace.kind {
+        case .project:
+            var stale = false
+            let resolved = try URL(resolvingBookmarkData: workspace.rootBookmark, options: [.withoutUI],
+                                   relativeTo: nil, bookmarkDataIsStale: &stale)
+            guard !stale else { throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable }
+            if resolved.startAccessingSecurityScopedResource() { scopedURL = resolved }
+            url = resolved.resolvingSymlinksInPath().standardizedFileURL
+        case .privateTask:
+            guard let relative = workspace.internalRelativePath else {
+                throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable
+            }
+            url = try verifiedPersonalTaskRoot(relativePath: relative, leaseBase: privateTaskRootBase,
+                                               createIfNeeded: false)
+        }
         try validateWorkspaceRoot(url)
         let root = MacAgentWorkspaceRoot(url)
         let (physical, relative) = try macWorkspacePinSetup(root: root, path: path)
@@ -358,6 +451,136 @@ public enum MacAgentWorkspaceTools {
 /// user-controlled path after admission.
 enum MacAgentWorkspacePinSupport {
     private static let directoryOpenFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+
+    /// Verified per-task personal workspace root, shared by the tool binding
+    /// and the host's UI presentation record. Every path component is pinned
+    /// with `openat(O_DIRECTORY | O_NOFOLLOW)` from the physical lease base
+    /// and checked for euid ownership, so a symlinked leaf or a swapped
+    /// ancestor can never redirect the root into a sibling task folder, the
+    /// `PrivateTasks` parent, or the runtime database directory. When
+    /// `createIfNeeded` is true, the `<task UUID>` leaf is materialized with
+    /// `mkdirat(0700)` through the pinned parent descriptor (and the
+    /// `PrivateTasks` parent likewise); nothing is created otherwise. The
+    /// leaf name is used in exactly the spelling the durable row persists
+    /// (`PrivateTasks/<id.uuidString>`), so the binding root and the lease
+    /// root agree byte-for-byte on case-sensitive volumes. The returned path
+    /// is the exact physical leaf — canonical string equality, never a
+    /// prefix check.
+    static func verifiedPersonalTaskRoot(
+        relativePath: String,
+        leaseBase: URL,
+        createIfNeeded: Bool
+    ) throws -> URL {
+        guard let leafName = canonicalPersonalLeaf(relativePath) else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid("invalid task id")
+        }
+        guard let basePath = physicalPath(leaseBase.path) else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task lease base is unavailable"
+            )
+        }
+        // Pin the physical base by descriptor with an identity check.
+        let baseRoot = MacAgentWorkspaceRoot(URL(fileURLWithPath: basePath, isDirectory: true))
+        guard baseRoot.physicalPath != nil else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task lease base is not a directory"
+            )
+        }
+        var descriptor = try openPinnedDirectory(physicalRoot: basePath, components: [], root: baseRoot)
+        let tasksPath = basePath + "/PrivateTasks"
+        do {
+            let tasksFD = try verifiedChild(
+                parent: descriptor, parentPath: basePath, name: "PrivateTasks",
+                createIfNeeded: createIfNeeded
+            )
+            Darwin.close(descriptor)
+            descriptor = tasksFD
+            let leafFD = try verifiedChild(
+                parent: descriptor, parentPath: tasksPath, name: leafName,
+                createIfNeeded: createIfNeeded
+            )
+            Darwin.close(descriptor)
+            descriptor = leafFD
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+        defer { Darwin.close(descriptor) }
+        // Exact physical identity: the pinned leaf must BE the canonical
+        // path — a string-prefix check would admit a symlink into a sibling.
+        let expected = tasksPath + "/" + leafName
+        guard let physical = physicalPath(expected) else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task workspace path does not resolve"
+            )
+        }
+        guard physical == expected else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task workspace resolved outside its canonical location"
+            )
+        }
+        var pinned = stat(), actual = stat()
+        guard fstat(descriptor, &pinned) == 0, lstat(expected, &actual) == 0,
+              pinned.st_dev == actual.st_dev, pinned.st_ino == actual.st_ino,
+              pinned.st_uid == geteuid(), actual.st_uid == geteuid() else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task workspace identity could not be verified"
+            )
+        }
+        return URL(fileURLWithPath: expected, isDirectory: true)
+    }
+
+    /// The exact `<task UUID>` leaf spelling of a canonical
+    /// `PrivateTasks/<task UUID>` relative path, or nil for any other shape.
+    static func canonicalPersonalLeaf(_ relativePath: String) -> String? {
+        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == "PrivateTasks",
+              UUID(uuidString: String(parts[1])) != nil else { return nil }
+        return String(parts[1])
+    }
+
+    /// Opens `name` inside the pinned `parent` descriptor with
+    /// `O_DIRECTORY | O_NOFOLLOW` (+`O_EXCL`-free `mkdirat(0700)` first when
+    /// allowed and missing), verifies device/inode against the canonical
+    /// child path and euid ownership, and returns the owned descriptor.
+    private static func verifiedChild(
+        parent: Int32,
+        parentPath: String,
+        name: String,
+        createIfNeeded: Bool
+    ) throws -> Int32 {
+        var info = stat()
+        let missing = fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT
+        if missing {
+            guard createIfNeeded else {
+                throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                    "the personal task workspace does not exist yet"
+                )
+            }
+            guard mkdirat(parent, name, 0o700) == 0 || errno == EEXIST else {
+                throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                    "the personal task workspace could not be created"
+                )
+            }
+        }
+        let child = openat(parent, name, directoryOpenFlags)
+        guard child >= 0 else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task workspace path could not be pinned"
+            )
+        }
+        var expected = stat(), pinned = stat()
+        let childPath = parentPath + "/" + name
+        guard stat(childPath, &expected) == 0, fstat(child, &pinned) == 0,
+              expected.st_dev == pinned.st_dev, expected.st_ino == pinned.st_ino,
+              pinned.st_mode & S_IFMT == S_IFDIR, pinned.st_uid == geteuid() else {
+            Darwin.close(child)
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid(
+                "the personal task workspace path failed its identity check"
+            )
+        }
+        return child
+    }
 
     /// realpath, or nil when the path does not resolve.
     static func physicalPath(_ path: String) -> String? {
@@ -588,6 +811,12 @@ protocol MacAgentWorkspaceExecutable: Sendable {
 }
 
 extension MacAgentWorkspaceExecutable where Self: AgentTool {
+    static var descriptor: ToolCatalog.Descriptor {
+        .init(name: name, toolDescription: toolDescription, parametersJSON: parametersJSON,
+              riskLabels: riskLabels, isSideEffecting: isSideEffecting, requiresHostScope: requiresHostScope,
+              executionBoundary: executionBoundary)
+    }
+
     var executionDescriptor: ToolCatalog.Descriptor { Self.descriptor }
 
     func run(argumentsJSON: Data, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -1914,6 +2143,10 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             MacAgentWorkspaceTools.readDocumentToolName: MacAgentWorkspaceReadDocumentTool(rootURL: root),
         ]
         if !readOnly {
+            if FileManager.default.isExecutableFile(atPath: MacNativeShellTool.sandbox) {
+                table[MacNativeShellTool.name] = MacNativeShellTool(root: MacAgentWorkspaceRoot(root))
+            }
+            for tool in MacNativeDesktopTools.available(rootURL: root) { table[tool.executionDescriptor.name] = tool }
             table[MacAgentWorkspaceTools.createFileToolName] = MacAgentWorkspaceCreateFileTool(rootURL: root)
             table[MacAgentWorkspaceTools.replaceTextToolName] = MacAgentWorkspaceReplaceTextTool(rootURL: root)
         }

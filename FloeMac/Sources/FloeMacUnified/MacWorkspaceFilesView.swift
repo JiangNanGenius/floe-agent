@@ -72,6 +72,13 @@ enum MacWorkspaceFilesLayout: Sendable {
 /// place, Back returning to the list — and leaves every selection,
 /// attachment, editing and security behavior to the existing paths.
 ///
+/// `fixedRootURL` (default `nil`) pins the root to a host-resolved directory
+/// that carries no bookmark — the app-owned default conversations directory
+/// is the current use. It behaves exactly like `fixedRootBookmark`: the user
+/// cannot close or change the folder, nothing is persisted here, and an
+/// unreadable or missing directory shows the fixed-root unavailable state
+/// instead of the picker.
+///
 /// `remembersRoot` (default `true`) persists the chosen root as a bookmark so
 /// the folder survives relaunch. Smoke/embedder hosts that must never touch
 /// production state pass `false`; in addition, `FLOE_MAC_HOST_SMOKE` builds
@@ -99,6 +106,7 @@ struct MacWorkspaceFilesView: View {
     var canInsertInDraft: Bool
     var remembersRoot: Bool = true
     var fixedRootBookmark: Data?
+    var fixedRootURL: URL? = nil
     var workspaceRevision: UUID? = nil
     /// When the host composer tracks staged file URLs for the active task it
     /// injects them here; while non-nil the UI reads this set verbatim and
@@ -111,6 +119,18 @@ struct MacWorkspaceFilesView: View {
     var onArtifact: ((MacWorkspaceArtifactEvent) -> Void)? = nil
     var layout: MacWorkspaceFilesLayout = .adaptive
     var findRequest: UUID? = nil
+    /// Display-only ownership labels for immediate folder children of the
+    /// app-owned default conversations root, keyed by real folder basename
+    /// (the per-task UUID). The host supplies known conversation titles;
+    /// every filesystem operation keeps the real name and URL.
+    var rootFolderLabels: [String: String] = [:]
+    /// Task-inspector mode without a usable host-provided per-task root: the
+    /// surface shows an unavailable state with a choose-project action instead
+    /// of the folder picker, and the remembered ad-hoc bookmark is never
+    /// restored. Space's custom selection is a different mode and keeps its
+    /// own restore path.
+    var requiresTaskRoot = false
+    var onChooseProject: (() -> Void)? = nil
 
     @FocusState private var filterFocused: Bool
     @Environment(\.locale) private var locale
@@ -143,6 +163,22 @@ struct MacWorkspaceFilesView: View {
             if directory == nil && fixedRootBookmark != nil {
                 ContentUnavailableView(t("无法读取项目文件夹", "Project Folder Unavailable"),
                                        systemImage: "folder.badge.questionmark")
+            } else if directory == nil && fixedRootURL != nil {
+                ContentUnavailableView(t("无法读取任务文件夹", "Task Files Unavailable"),
+                                       systemImage: "folder.badge.questionmark")
+            } else if directory == nil && requiresTaskRoot {
+                ContentUnavailableView {
+                    Label(t("任务文件不可用", "Task Files Unavailable"), systemImage: "folder.badge.questionmark")
+                } description: {
+                    Text(t("此任务还没有可用的文件工作区。为任务选择一个项目后即可浏览和附加文件。",
+                           "This task has no file workspace yet. Choose a project to browse and attach files."))
+                } actions: {
+                    if let onChooseProject {
+                        Button(t("选择项目…", "Choose Project…")) { onChooseProject() }
+                            .disabled(!canChangeFiles())
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if directory == nil {
                 ContentUnavailableView {
                     Label(t("选择文件夹", "Choose a Folder"), systemImage: "folder")
@@ -219,7 +255,7 @@ struct MacWorkspaceFilesView: View {
                     .font(.headline)
                     .lineLimit(1)
                     .contextMenu {
-                        if directory != nil && fixedRootBookmark == nil {
+                        if directory != nil && !rootIsFixed {
                             Button(t("关闭文件夹", "Close Folder"), action: clearFolder)
                                 .disabled(hasPendingChanges)
                         }
@@ -236,7 +272,13 @@ struct MacWorkspaceFilesView: View {
                         .help(t("刷新", "Refresh"))
                         .accessibilityLabel(t("刷新", "Refresh"))
                         .accessibilityIdentifier("workspace.files.reload")
-                    if fixedRootBookmark == nil {
+                    Button(action: revealRootInFinder) {
+                        Image(systemName: "folder")
+                    }
+                    .help(t("在 Finder 中显示根文件夹", "Reveal Root in Finder"))
+                    .accessibilityLabel(t("在 Finder 中显示根文件夹", "Reveal Root in Finder"))
+                    .accessibilityIdentifier("workspace.files.revealRoot")
+                    if !rootIsFixed {
                         Button(action: chooseFolder) {
                             Label(t("更换文件夹…", "Change Folder…"), systemImage: "folder.badge.gearshape")
                         }
@@ -441,7 +483,7 @@ struct MacWorkspaceFilesView: View {
                     ForEach(shown) { entry in
                         Group {
                             if canAccess(entry) {
-                                Label(entry.name, systemImage: entry.folder ? "folder" : "doc")
+                                Label(displayTitle(entry), systemImage: entry.folder ? "folder" : "doc")
                                     .lineLimit(1)
                                     .tag(entry.url)
                                     .contextMenu { actions(for: entry) }
@@ -451,7 +493,7 @@ struct MacWorkspaceFilesView: View {
                                     }
                                     .simultaneousGesture(TapGesture(count: 2).onEnded { open(entry) })
                             } else {
-                                Label(entry.name, systemImage: entry.folder ? "folder" : "doc")
+                                Label(displayTitle(entry), systemImage: entry.folder ? "folder" : "doc")
                                     .lineLimit(1)
                                     .tag(entry.url)
                                     .contextMenu { actions(for: entry) }
@@ -526,7 +568,7 @@ struct MacWorkspaceFilesView: View {
 
     private func folderPane(_ entry: MacWorkspaceFileEntry) -> some View {
         ContentUnavailableView {
-            Label(entry.name, systemImage: "folder")
+            Label(displayTitle(entry), systemImage: "folder")
         } description: {
             Text(t("打开此文件夹以浏览其内容。", "Open this folder to browse its contents."))
         } actions: {
@@ -690,8 +732,19 @@ struct MacWorkspaceFilesView: View {
 
     // MARK: - Entries & selection
 
+    /// What the user reads in the list: the ownership label when the host
+    /// provided one (known conversation title for a per-task folder of the
+    /// default conversations root), otherwise the real on-disk name.
+    private func displayTitle(_ entry: MacWorkspaceFileEntry) -> String {
+        entry.displayName ?? entry.name
+    }
+
     private var visible: [MacWorkspaceFileEntry] {
-        entries.filter { filter.isEmpty || $0.name.localizedStandardContains(filter) }
+        entries.filter {
+            filter.isEmpty
+                || $0.name.localizedStandardContains(filter)
+                || displayTitle($0).localizedStandardContains(filter)
+        }
     }
 
     private var selectedEntries: [MacWorkspaceFileEntry] {
@@ -768,8 +821,20 @@ struct MacWorkspaceFilesView: View {
 
     // MARK: - Root folder
 
+    /// The root is host-fixed (project bookmark or default directory): the
+    /// user cannot close or change it, and the choice is never persisted.
+    private var rootIsFixed: Bool { fixedRootBookmark != nil || fixedRootURL != nil }
+
+    /// Reveals the current root folder in Finder. The root is either
+    /// host-verified (fixed) or was picked through the guarded panel, so this
+    /// only ever exposes a directory the surface already browses.
+    private func revealRootInFinder() {
+        guard let root else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([root])
+    }
+
     private func chooseFolder() {
-        guard fixedRootBookmark == nil, !hasPendingChanges else { return }
+        guard !rootIsFixed, !hasPendingChanges else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -786,7 +851,7 @@ struct MacWorkspaceFilesView: View {
 
     private func setRoot(_ resolved: URL) {
         root = resolved
-        if fixedRootBookmark == nil && remembersRoot {
+        if !rootIsFixed && remembersRoot {
             savedRootBookmark = try? resolved.bookmarkData(options: [],
                                                            includingResourceValuesForKeys: nil, relativeTo: nil)
         }
@@ -801,6 +866,22 @@ struct MacWorkspaceFilesView: View {
     }
 
     private func restoreSavedRoot() {
+        // A task inspector without a usable per-task root stays empty: the
+        // remembered ad-hoc folder must never load or stage here. Space's
+        // custom selection restores through this same bookmark branch, so
+        // the guard keys on the task mode only.
+        guard !requiresTaskRoot else { return }
+        if let fixedRootURL {
+            // Host-resolved app-owned directory: verify it is still a
+            // readable directory, then browse it. The view never creates it;
+            // the host owns the storage layout.
+            guard root == nil else { return }
+            let resolved = fixedRootURL.resolvingSymlinksInPath().standardizedFileURL
+            guard FileManager.default.isReadableFile(atPath: resolved.path),
+                  (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return }
+            setRoot(resolved)
+            return
+        }
         if let fixedRootBookmark {
             var stale = false
             guard root == nil,
@@ -1127,7 +1208,10 @@ struct MacWorkspaceFilesView: View {
         guard let root, let directory else { return }
         loading = true
         failed = false
-        let worker = Task.detached(priority: .userInitiated) { try MacWorkspaceFolderSnapshot.read(directory, in: root) }
+        let labels = rootFolderLabels
+        let worker = Task.detached(priority: .userInitiated) {
+            try MacWorkspaceFolderSnapshot.read(directory, in: root, ownershipLabels: labels)
+        }
         let result = await withTaskCancellationHandler { await worker.result } onCancel: { worker.cancel() }
         guard !Task.isCancelled, self.directory == directory else { return }
         switch result {
@@ -1174,7 +1258,11 @@ private enum MacWorkspaceFileEditError: Error, Equatable {
 
 private struct MacWorkspaceFileEntry: Identifiable, Sendable {
     let url: URL
+    /// Real basename on disk; every filesystem operation uses this or the URL.
     let name: String
+    /// Ownership label (known conversation title) for per-task folders of the
+    /// app-owned conversations root; display-only.
+    var displayName: String? = nil
     let folder: Bool
     let openable: Bool
     var id: URL { url }
@@ -1680,7 +1768,7 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
         return String(validatingCString: resolved)
     }
 
-    static func read(_ directory: URL, in root: URL) throws -> Self {
+    static func read(_ directory: URL, in root: URL, ownershipLabels: [String: String] = [:]) throws -> Self {
         guard containsPhysicalDirectory(directory, in: root),
               FileManager.default.isReadableFile(atPath: directory.path),
               try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
@@ -1696,19 +1784,29 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
         }
         var entries: [MacWorkspaceFileEntry] = []
         var limited = false
+        let showOwnership = !ownershipLabels.isEmpty && directory.standardizedFileURL == root.standardizedFileURL
         for (index, item) in enumerator.enumerated() {
             try Task.checkCancellation()
             guard index < 2_000 else { limited = true; break }
             guard let url = item as? URL, let values = try? url.resourceValues(forKeys: keys) else { continue }
             let real = values.isSymbolicLink == false && values.isAliasFile == false
-            entries.append(MacWorkspaceFileEntry(url: url, name: values.localizedName ?? url.lastPathComponent,
-                                                 folder: real && values.isDirectory == true && values.isPackage != true,
+            let isFolder = real && values.isDirectory == true && values.isPackage != true
+            let name = values.localizedName ?? url.lastPathComponent
+            // Ownership labels apply only to the immediate folders of the
+            // app-owned conversations root itself, never inside them. Keys
+            // are real basenames (per-task UUIDs), not localized names.
+            let ownership = showOwnership && isFolder
+                && url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL
+                ? ownershipLabels[url.lastPathComponent] : nil
+            entries.append(MacWorkspaceFileEntry(url: url, name: name, displayName: ownership,
+                                                 folder: isFolder,
                                                  openable: real && values.isRegularFile == true))
         }
         if let enumerationError { throw enumerationError }
         entries.sort {
             if $0.folder != $1.folder { return $0.folder }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            let left = $0.displayName ?? $0.name, right = $1.displayName ?? $1.name
+            return left.localizedStandardCompare(right) == .orderedAscending
         }
         return Self(entries: entries, limited: limited)
     }

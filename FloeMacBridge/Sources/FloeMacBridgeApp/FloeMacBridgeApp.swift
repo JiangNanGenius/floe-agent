@@ -118,7 +118,7 @@ final class BridgeAppModel: ObservableObject {
         static let preferenceKey = "floe.mac.launchMode"
     }
 
-    @Published private var launchMode: LaunchMode = .bridge
+    @Published private var launchMode: LaunchMode = .agent
     var isAgentMode: Bool { launchMode == .agent }
 
     private func rememberMode(_ mode: LaunchMode) {
@@ -163,7 +163,7 @@ final class BridgeAppModel: ObservableObject {
         let activity = BridgeUpdateActivity()
         updates = BridgeUpdaterModel(activity: activity)
         #if FLOE_UNIFIED_MAC
-        launchMode = preferences.string(forKey: LaunchMode.preferenceKey).flatMap(LaunchMode.init(rawValue:)) ?? .bridge
+        launchMode = preferences.string(forKey: LaunchMode.preferenceKey).flatMap(LaunchMode.init(rawValue:)) ?? .agent
         appearance = preferences.string(forKey: "floe.mac.appearance").flatMap(Appearance.init(rawValue:)) ?? .system
         #endif
         BridgeApplicationDelegate.model = self
@@ -301,9 +301,10 @@ final class BridgeAppModel: ObservableObject {
         let url = category == "Caches" ? paths.caches : category == "Logs" ? paths.logs : paths.root.appendingPathComponent(category)
         NSWorkspace.shared.open(url)
     }
-    func requestPermission(_ capability: String) async {
-        do { _ = try service?.permissions(request: capability); await refresh() }
-        catch { self.error = error.localizedDescription }
+    func refreshPermissions(request capability: String? = nil) {
+        do {
+            if let service { permissions = try service.permissions(request: capability).compactMapValues(\.bool) }
+        } catch { self.error = error.localizedDescription }
     }
     var connectionStatus: String {
         if let listenerError { return listenerError }
@@ -572,7 +573,7 @@ private struct UnifiedMacSettingsView: View {
                 })
             }
         case .permissions:
-            MacPermissionsSettingsView(workspace: workspace)
+            MacPermissionsSettingsView(workspace: workspace, bridge: model)
         case .bridge:
             BridgeSettingsView(model: model)
         }
@@ -625,8 +626,6 @@ private extension BridgeAppModel.SettingsPane {
 private struct BridgeSettingsView: View {
     @ObservedObject var model: BridgeAppModel
     @State private var managesStorage = false
-    @State private var kimiInstalled = false
-    @State private var openingKimiDownload = false
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 10) {
@@ -649,10 +648,7 @@ private struct BridgeSettingsView: View {
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         .coordinateSpace(.named("bridgeSettings"))
         #endif
-        .task {
-            kimiInstalled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ai.kimi.cu") != nil
-            await model.refresh()
-        }
+        .task { await model.refresh() }
         .sheet(isPresented: $managesStorage) {
             VStack(alignment: .leading) {
                 HStack { Text("Unused Items").font(.title2.bold()); Spacer(); Button("Done") { managesStorage = false } }.padding()
@@ -692,22 +688,7 @@ private struct BridgeSettingsView: View {
                 }
             }
             Section("Mac Control") {
-                HStack {
-                    Text("Kimi CU"); Spacer()
-                    Text(kimiInstalled ? String(localized: "Installed") : String(localized: "Not installed")).foregroundStyle(.secondary)
-                    if kimiInstalled {
-                        Button("Open") {
-                            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ai.kimi.cu") { NSWorkspace.shared.open(url) }
-                        }
-                    }
-                    Button("Download Kimi CU") {
-                        openingKimiDownload = true
-                        Task {
-                            let url = (try? await BridgeConfiguration.latestKimiCUDownloadURL()) ?? BridgeConfiguration.kimiCUDocumentationURL
-                            NSWorkspace.shared.open(url); openingKimiDownload = false
-                        }
-                    }.disabled(openingKimiDownload)
-                }
+                MacKimiCompanionRow()
             }
             BridgeUpdateSettingsView(updates: model.updates)
             if let error = model.listenerError ?? model.error { Text(error).foregroundStyle(.red) }
@@ -733,16 +714,7 @@ private struct BridgeSettingsView: View {
     private var permissions: some View {
         Form {
             Section {
-                HStack {
-                    Text("Screen Recording"); Spacer()
-                    Text(model.permissions["screenCapture"] == true ? String(localized: "Allowed") : String(localized: "Not allowed")).foregroundStyle(.secondary)
-                    if model.permissions["screenCapture"] != true { Button("Allow…") { Task { await model.requestPermission("screenCapture") } } }
-                }
-                HStack {
-                    Text("Accessibility"); Spacer()
-                    Text(model.permissions["accessibility"] == true ? String(localized: "Allowed") : String(localized: "Not allowed")).foregroundStyle(.secondary)
-                    if model.permissions["accessibility"] != true { Button("Allow…") { Task { await model.requestPermission("accessibility") } } }
-                }
+                MacSystemPermissionRows(model: model)
             }
         }.formStyle(.grouped).controlSize(.small)
     }
@@ -765,6 +737,70 @@ private struct BridgeUpdateSettingsView: View {
                 Text("The update could not finish. Reopen Floe to resume work.").foregroundStyle(.secondary)
             } else if updates.failed {
                 Text("The update could not finish. You can try again later.").foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+struct MacKimiCompanionRow: View {
+    @State private var companion: URL?
+    @State private var openingDownload = false
+
+    var body: some View {
+        HStack {
+            Text("Kimi CU")
+            Spacer()
+            Text(companion == nil ? String(localized: "Not installed") : String(localized: "Installed"))
+                .foregroundStyle(.secondary)
+            if let companion {
+                Button("Open") { NSWorkspace.shared.open(companion) }
+            } else {
+                Button("Download Kimi CU") {
+                    openingDownload = true
+                    Task {
+                        let url = (try? await BridgeConfiguration.latestKimiCUDownloadURL()) ?? BridgeConfiguration.kimiCUDocumentationURL
+                        NSWorkspace.shared.open(url)
+                        openingDownload = false
+                    }
+                }.disabled(openingDownload)
+            }
+        }
+        .onAppear { refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+    }
+
+    private func refresh() {
+        #if FLOE_UNIFIED_MAC
+        companion = MacKimiComputerUse.installedURL()
+        #else
+        companion = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ai.kimi.cu")
+        #endif
+    }
+}
+
+struct MacSystemPermissionRows: View {
+    @ObservedObject var model: BridgeAppModel
+
+    var body: some View {
+        Group {
+            row("Screen Recording", capability: "screenCapture")
+            row("Accessibility", capability: "accessibility")
+        }
+        .onAppear { model.refreshPermissions() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshPermissions()
+        }
+    }
+
+    private func row(_ title: LocalizedStringKey, capability: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            let granted = model.permissions[capability] == true
+            Text(granted ? String(localized: "Allowed") : String(localized: "Not allowed"))
+                .foregroundStyle(.secondary)
+            if !granted {
+                Button("Allow…") { model.refreshPermissions(request: capability) }
             }
         }
     }

@@ -15,7 +15,6 @@ struct HostAgentWorkspaceView: View {
     var workspaceDraft: Binding<String>? = nil
     var openModelSettings: (() -> Void)? = nil
     var openFiles: (() -> Void)? = nil
-    var chooseTaskProject: (() -> Void)? = nil
     var openImageWorkbench: (() -> Void)? = nil
     var findRequest: UUID? = nil
     var findConversationID: UUID? = nil
@@ -43,13 +42,12 @@ struct HostAgentWorkspaceView: View {
 
     init(workspace: HostAgentWorkspace, workspaceDraft: Binding<String>? = nil,
          openModelSettings: (() -> Void)? = nil, openFiles: (() -> Void)? = nil,
-         chooseTaskProject: (() -> Void)? = nil, openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
+         openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
          findConversationID: UUID? = nil) {
         self.workspace = workspace
         self.workspaceDraft = workspaceDraft
         self.openModelSettings = openModelSettings
         self.openFiles = openFiles
-        self.chooseTaskProject = chooseTaskProject
         self.openImageWorkbench = openImageWorkbench
         self.findRequest = findRequest
         self.findConversationID = findConversationID
@@ -349,23 +347,14 @@ struct HostAgentWorkspaceView: View {
     }
 
     #if FLOE_UNIFIED_MAC
-    private var needsProject: Bool {
-        guard mode == .plan || mode == .agent else { return false }
-        if workspace.selectedID == nil { return workspace.selectedWorkspaceID == nil }
-        return workspace.selectedConversationWorkspace?.kind != .project
-    }
-
     private var composer: some View {
         VStack(alignment: .leading, spacing: 5) {
-            if !workspace.isSending {
-                if needsProject, let chooseTaskProject {
-                    Button("mac.workspace.chooseProject", systemImage: "folder.badge.plus", action: chooseTaskProject)
-                        .help("mac.agent.projectRequired")
-                        .controlSize(.small)
-                } else if mode != .chat, let provider = workspace.composerProvider,
-                          !provider.model.capabilities.contains(.tools) {
-                    Text("mac.agent.toolsModelRequired").font(.caption).foregroundStyle(.secondary)
-                }
+            if !workspace.isSending, mode != .chat, let provider = workspace.composerProvider,
+               !provider.model.capabilities.contains(.tools) {
+                // Projects stay optional — every conversation owns a personal
+                // safe-files root — so the only model gate left is an honest
+                // tools-capability notice for Agent/Plan/Goal modes.
+                Text("mac.agent.toolsModelRequired").font(.caption).foregroundStyle(.secondary)
             }
             if !workspace.stagedAttachments.isEmpty {
                 attachmentStrip
@@ -425,7 +414,7 @@ struct HostAgentWorkspaceView: View {
                 } else {
                     let isNewGoal = mode == .goal && workspace.goal?.status.isTerminal != false
                     let compatible = mode == .chat || workspace.composerProvider?.model.capabilities.contains(.tools) == true
-                    let canSend = workspace.composerProvider != nil && compatible && !needsProject && !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let canSend = workspace.composerProvider != nil && compatible && !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         && !workspace.isTerminating && !workspace.isAcceptingPlan
                     Button {
                         let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil

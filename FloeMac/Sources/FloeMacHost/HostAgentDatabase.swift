@@ -31,8 +31,50 @@ enum HostAgentDatabase {
             databaseName: databaseName, directoryIdentity: directoryIdentity,
             lockDirectoryIdentity: directoryIdentity, databaseIdentity: databaseIdentity
         )
+        // Personal conversations own a durable safe-files root each. The
+        // lease resolves a private-task row as `<base>/<internalRelativePath>`
+        // (i.e. `<base>/PrivateTasks/<task UUID>`), so the configured base is
+        // the owner-only runtime directory itself — never the PrivateTasks
+        // leaf (no duplicate PrivateTasks/PrivateTasks) and never a shared
+        // parent. The unstandardized `directory` spelling is used here: the
+        // standardized form shortens `/private/var` to `/var`, which the
+        // no-follow directory walker rejects. The leaf directory is still
+        // created here with the same 0o700 discipline; individual task
+        // folders materialize only when a tool session binds that task's
+        // workspace.
+        let privateTaskRootBase = try preparePrivateTaskRootBase(runtimeDirectory: directory)
         return try FloeMacSelfRuntime(databaseURL: database,
-                                     owner: .init(displayName: "Floe Mac"), provenance: provenance)
+                                      owner: .init(displayName: "Floe Mac"), provenance: provenance,
+                                      options: .init(privateTaskRootBaseURL: privateTaskRootBase))
+    }
+
+    /// Canonical on-disk base of every per-task personal workspace:
+    /// `<runtime directory>/PrivateTasks`. Returns the runtime directory,
+    /// which is the lease/binding base; the managed leaf is created with the
+    /// same descriptor-based 0o700 discipline as the runtime directory.
+    /// Individual `<task UUID>` folders are materialized only when a tool
+    /// session binds that task's workspace.
+    static func preparePrivateTaskRootBase(runtimeDirectory: URL) throws -> URL {
+        let (fd, _) = try openPrivateDirectory(parent: runtimeDirectory, name: "PrivateTasks")
+        Darwin.close(fd)
+        return runtimeDirectory.standardizedFileURL
+    }
+
+    /// Pure location of the managed per-task workspace aggregate
+    /// (`<runtime directory>/PrivateTasks`). Performs no I/O; the host uses
+    /// it for read-only UI exposure (Space browsing), while
+    /// `preparePrivateTaskRootBase` remains the only creating entry point.
+    static func privateTasksDirectoryURL(applicationSupport: URL, namespace: String) -> URL {
+        runtimeDirectoryURL(applicationSupport: applicationSupport, namespace: namespace)
+            .appendingPathComponent("PrivateTasks", isDirectory: true)
+            .standardizedFileURL
+    }
+
+    /// Pure location of the owner-only runtime directory. Performs no I/O.
+    static func runtimeDirectoryURL(applicationSupport: URL, namespace: String) -> URL {
+        applicationSupport
+            .appendingPathComponent(directoryName(for: namespace), isDirectory: true)
+            .standardizedFileURL
     }
 
     /// Deterministic private location of the committed-task SyncStore that

@@ -27,6 +27,7 @@ struct MacWorkspaceRootView: View {
     @ObservedObject var draftStore: MacWorkspaceDraftStore
     @AppStorage("floe.mac.workspace.lastConversation") private var lastConversation = ""
     @AppStorage("floe.mac.workspace.spaceProject") private var lastSpaceProject = ""
+    @AppStorage("floe.mac.workspace.spaceFilesRoot") private var spaceFilesRootRaw = ""
 
     @State private var destination: MacWorkspaceDestination? = .newTask(nil)
     @State private var requestedConversation: UUID?
@@ -55,10 +56,10 @@ struct MacWorkspaceRootView: View {
     @State private var taskToMove: ConversationRecord?
     @State private var showMove = false
     @State private var showMoveError = false
-    @State private var spaceProjectID: UUID?
+    @State private var spaceFilesRoot: MacSpaceFilesRoot = .conversations
     @State private var addingProject = false
     @State private var showProjectError = false
-    @State private var displayedFileProject: WorkspaceRecord?
+    @State private var displayedFileRoot: WorkspaceRecord?
     @State private var expandedWorkspaceIDs: Set<UUID> = []
 
     var body: some View {
@@ -87,9 +88,17 @@ struct MacWorkspaceRootView: View {
         .task(id: workspace.isReady) {
             guard workspace.isReady, !restoredInitialDestination else { return }
             restoredInitialDestination = true
-            if remembersFileRoot, let id = UUID(uuidString: lastSpaceProject),
-               workspace.workspaces.contains(where: { $0.id == id && $0.kind == .project }) {
-                spaceProjectID = id
+            // Restore the Space Files root (default conversations directory,
+            // explicit project, or the remembered ad-hoc folder), migrating
+            // the pre-project-UX remembered project when present.
+            if remembersFileRoot {
+                spaceFilesRoot = MacSpaceFilesRoot.restored(
+                    raw: spaceFilesRootRaw.isEmpty ? nil : spaceFilesRootRaw,
+                    legacyProjectRaw: lastSpaceProject,
+                    projects: projects,
+                    hasRememberedCustomFolder: UserDefaults.standard
+                        .data(forKey: MacSpaceFilesRoot.customBookmarkKey) != nil,
+                    remembers: remembersFileRoot)
             }
             guard destination == .newTask(nil) else { return }
             if remembersFileRoot, let savedID = UUID(uuidString: lastConversation),
@@ -133,8 +142,8 @@ struct MacWorkspaceRootView: View {
         .onChange(of: showsTask, initial: true) { _, active in
             workspace.windowShowsTask = active
         }
-        .onChange(of: preferredFileProject, initial: true) { _, project in
-            if !workspace.hasPendingWorkspaceFileChanges { displayedFileProject = project }
+        .onChange(of: preferredFileRoot, initial: true) { _, root in
+            if !workspace.hasPendingWorkspaceFileChanges { displayedFileRoot = root }
         }
         .alert("mac.workspace.rename", isPresented: $showRename) {
             TextField("mac.workspace.taskName", text: $taskTitle)
@@ -241,31 +250,35 @@ struct MacWorkspaceRootView: View {
 
     private var filesPane: some View {
         let selectionID = workspace.draftSelectionID
-        let projectID = displayedFileProject?.id
+        let rootID = preferredFileRoot?.id
         return MacWorkspaceFilesView(
             insertInDraft: { text in
-                guard selectionID == workspace.draftSelectionID, projectID == displayedFileProject?.id else { return }
+                guard selectionID == workspace.draftSelectionID, rootID == displayedFileRoot?.id else { return }
                 insertFileText(text)
             },
             canInsertInDraft: canUseFileInTask,
             remembersRoot: remembersFileRoot,
-            fixedRootBookmark: displayedFileProject?.rootBookmark,
+            fixedRootBookmark: displayedFileRootBookmark,
+            fixedRootURL: spaceFilesFixedURL,
             workspaceRevision: workspace.workspaceRevision,
             taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
             onFolderPicked: registerPickedFolder,
             onAttachmentsChanged: { files in
-                guard selectionID == workspace.draftSelectionID, projectID == displayedFileProject?.id else { return }
+                guard selectionID == workspace.draftSelectionID, rootID == displayedFileRoot?.id else { return }
                 updateFileAttachments(files)
             },
             canChangeFiles: { !workspace.isTerminating },
             onPendingChanges: { pending in
                 workspace.hasPendingWorkspaceFileChanges = pending
-                if !pending { displayedFileProject = preferredFileProject }
+                if !pending { displayedFileRoot = preferredFileRoot }
             },
             layout: showsSpaceFiles ? .adaptive : .inspector,
-            findRequest: fileFindRequest
+            findRequest: fileFindRequest,
+            rootFolderLabels: spaceRootFolderLabels,
+            requiresTaskRoot: showsTask && !currentTaskFileRootUsable,
+            onChooseProject: chooseProjectForTask
         )
-        .id(displayedFileProject?.id)
+        .id(filesPaneIdentity)
         .opacity(filesVisible ? 1 : 0)
         .disabled(!filesVisible)
         .allowsHitTesting(filesVisible)
@@ -430,9 +443,9 @@ struct MacWorkspaceRootView: View {
 
     @ViewBuilder private func projectActions(_ project: WorkspaceRecord) -> some View {
         Button("mac.workspace.browseFiles", systemImage: "folder") {
-            selectSpaceProject(project.id)
+            selectSpaceRoot(.project(project.id))
         }
-        .disabled(workspace.hasPendingWorkspaceFileChanges && displayedFileProject?.id != project.id)
+        .disabled(workspace.hasPendingWorkspaceFileChanges && displayedFileRoot?.id != project.id)
         Button("workbench.new_task", systemImage: "square.and.pencil") { startNewTask(in: project.id) }
     }
 
@@ -543,7 +556,10 @@ struct MacWorkspaceRootView: View {
 
     private var projects: [WorkspaceRecord] { workspace.workspaces.filter { $0.kind == .project } }
 
-    private var spaceProject: WorkspaceRecord? { projects.first { $0.id == spaceProjectID } }
+    private var spaceProject: WorkspaceRecord? {
+        if case .project(let id) = spaceFilesRoot { return projects.first { $0.id == id } }
+        return nil
+    }
 
     private var selectedTaskProject: WorkspaceRecord? {
         if workspace.selectedID != nil {
@@ -553,12 +569,19 @@ struct MacWorkspaceRootView: View {
         return projects.first { $0.id == workspace.selectedWorkspaceID }
     }
 
-    private var preferredFileProject: WorkspaceRecord? {
+    /// The file workspace of the current task: the explicit project when the
+    /// task is bound to one, otherwise the host-provided per-task workspace
+    /// (every conversation, including the unsaved draft, owns one). Nil when
+    /// the host cannot resolve the root; the task inspector then shows its
+    /// unavailable state — never a saved or ad-hoc folder.
+    private var currentTaskFileRecord: WorkspaceRecord? { workspace.fileWorkspaceForCurrentTask }
+
+    private var preferredFileRoot: WorkspaceRecord? {
         switch destination {
         case .conversation(let id) where id == workspace.selectedID:
-            return selectedTaskProject
+            return currentTaskFileRecord
         case .newTask where workspace.selectedID == nil:
-            return selectedTaskProject
+            return currentTaskFileRecord
         case .space(.files):
             return spaceProject
         default:
@@ -566,10 +589,54 @@ struct MacWorkspaceRootView: View {
         }
     }
 
+    /// Per-task workspace rows carry an empty bookmark by design, so only a
+    /// non-empty, resolvable bookmark may fix the files root; the host's
+    /// presentation record is expected to populate it exactly like a project
+    /// row.
+    private var displayedFileRootBookmark: Data? {
+        guard let record = displayedFileRoot, !record.rootBookmark.isEmpty else { return nil }
+        return record.rootBookmark
+    }
+
+    /// The Space files default: the host's app-owned conversations directory,
+    /// only while Space is the visible destination and no explicit project is
+    /// selected. Task destinations always root at the per-task record.
+    private var spaceFilesFixedURL: URL? {
+        guard case .space(.files) = destination, case .conversations = spaceFilesRoot else { return nil }
+        return workspace.defaultConversationsDirectory
+    }
+
+    /// Ownership labels for the immediate per-task folders of the default
+    /// conversations root: real folder name (task UUID) → known conversation
+    /// title. Space + default root only; project roots and task inspectors
+    /// receive none, so nothing else is ever relabeled.
+    private var spaceRootFolderLabels: [String: String] {
+        guard case .space(.files) = destination, case .conversations = spaceFilesRoot else { return [:] }
+        return workspace.conversations.reduce(into: [:]) { labels, conversation in
+            labels[conversation.id.uuidString] = conversation.workbenchDisplayTitle
+        }
+    }
+
+    /// One identity per root source so switching tasks, projects or Space
+    /// modes resets the browser; two personal tasks never share a root.
+    private var filesPaneIdentity: AnyHashable {
+        if let record = preferredFileRoot { return AnyHashable(record.id) }
+        return AnyHashable(spaceFilesRoot)
+    }
+
+    /// A task-mode file root is usable only when the host provides a
+    /// per-task record with a resolvable bookmark (the presentation record
+    /// populates it like a project row). Anything else keeps the inspector
+    /// in its unavailable state — staging from a saved or ad-hoc folder is
+    /// never allowed for a personal task.
+    private var currentTaskFileRootUsable: Bool {
+        currentTaskFileRecord?.rootBookmark.isEmpty == false
+    }
+
     private var canUseFileInTask: Bool {
-        canEditVisibleDraft && displayedFileProject?.id == preferredFileProject?.id
-            && displayedFileProject?.id == selectedTaskProject?.id
-            && (!showsTask || destinationConversationID == workspace.selectedID)
+        guard canEditVisibleDraft, !showsTask || destinationConversationID == workspace.selectedID else { return false }
+        guard let record = currentTaskFileRecord, !record.rootBookmark.isEmpty else { return false }
+        return displayedFileRoot?.id == record.id
     }
 
     private var activeSpacePage: MacSpacePage? {
@@ -661,36 +728,25 @@ struct MacWorkspaceRootView: View {
     }
 
     private var spaceProjectControl: some View {
-        Menu {
-            ForEach(projects) { project in
-                Button { selectSpaceProject(project.id) } label: {
-                    if spaceProjectID == project.id {
-                        Label(project.name, systemImage: "checkmark")
-                    } else {
-                        Text(verbatim: project.name)
-                    }
-                }
-                .disabled(workspace.hasPendingWorkspaceFileChanges && displayedFileProject?.id != project.id)
-            }
-            if !projects.isEmpty { Divider() }
-            Button("mac.workspace.otherFolders") { selectSpaceProject(nil) }
-                .disabled(workspace.hasPendingWorkspaceFileChanges && displayedFileProject != nil)
-            Button("mac.workspace.addProject", action: chooseProjectFolder)
-                .disabled(!canChooseProject)
-            if let project = spaceProject {
-                Divider()
-                Button("workbench.new_task", systemImage: "square.and.pencil") { startNewTask(in: project.id) }
-                    .disabled(!canSelectTask)
-            }
-        } label: {
-            Label {
-                Text(verbatim: spaceProject?.name ?? String(localized: "mac.workspace.otherFolders"))
-                    .lineLimit(1).truncationMode(.middle)
-            } icon: { Image(systemName: "folder") }
-        }
-        .menuStyle(.borderlessButton)
-        .help("mac.workspace.chooseProject")
-        .accessibilityIdentifier("workspace.space.projects")
+        MacSpaceFilesRootPicker(
+            projects: projects,
+            root: spaceFilesRoot,
+            defaultAvailable: workspace.defaultConversationsDirectory != nil,
+            canAddProject: canChooseProject,
+            canStartTask: canSelectTask,
+            canSwitch: canSwitchSpaceRoot,
+            select: selectSpaceRoot,
+            addProject: chooseProjectFolder,
+            newTask: { startNewTask(in: $0) }
+        )
+    }
+
+    /// Pending workspace-file edits may only move to the root that is
+    /// already displayed; everything else would abandon unsaved work.
+    private func canSwitchSpaceRoot(to target: MacSpaceFilesRoot) -> Bool {
+        guard workspace.hasPendingWorkspaceFileChanges else { return true }
+        if case .project(let id) = target { return displayedFileRoot?.id == id }
+        return displayedFileRoot == nil
     }
 
     private var headerActions: some View {
@@ -793,7 +849,7 @@ struct MacWorkspaceRootView: View {
                     HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
                                            openModelSettings: openModelSettings,
                                            openFiles: { showInspector = true },
-                                           chooseTaskProject: chooseProjectForTask, openImageWorkbench: openImageWorkbench,
+                                           openImageWorkbench: openImageWorkbench,
                                            findRequest: conversationFindRequest,
                                            findConversationID: destinationConversationID)
                         .id(destinationConversationID)
@@ -815,7 +871,8 @@ struct MacWorkspaceRootView: View {
         default:
             MacWorkspaceTaskCenter(workspace: workspace, findRequest: taskCenterFindRequest, onOpen: openTask, onNew: startNewTask,
                                    onArchive: { updateTask(id: $0, change: .archive($1)) },
-                                   onMove: chooseTaskWorkspace, onDelete: confirmDelete)
+                                   onMove: chooseTaskWorkspace, onDelete: confirmDelete,
+                                   didDeleteArchived: { draftStore.clear(for: $0) })
         }
     }
 
@@ -843,10 +900,10 @@ struct MacWorkspaceRootView: View {
         workspace.isReady && !workspace.isTerminating && !addingProject && !workspace.hasPendingWorkspaceFileChanges
     }
 
-    private func selectSpaceProject(_ id: UUID?) {
-        guard !workspace.hasPendingWorkspaceFileChanges || displayedFileProject?.id == id else { return }
-        spaceProjectID = id
-        if remembersFileRoot { lastSpaceProject = id?.uuidString ?? "" }
+    private func selectSpaceRoot(_ root: MacSpaceFilesRoot) {
+        guard canSwitchSpaceRoot(to: root) else { return }
+        spaceFilesRoot = root
+        if remembersFileRoot { spaceFilesRootRaw = root.persistedToken }
         destination = .space(.files)
     }
 
@@ -882,7 +939,7 @@ struct MacWorkspaceRootView: View {
     private func registerProject(_ folder: URL, openInSpace: Bool) {
         guard canChooseProject else { return }
         let startingDestination = destination
-        let startingProjectID = spaceProjectID
+        let startingSpaceRoot = spaceFilesRoot
         let startingDraftProjectID = workspace.selectedWorkspaceID
         let startingSelection = workspace.draftSelectionID
         addingProject = true
@@ -896,8 +953,8 @@ struct MacWorkspaceRootView: View {
             }
             expandedWorkspaceIDs.insert(project.id)
             guard destination == startingDestination, openInSpace || workspace.draftSelectionID == startingSelection else { return }
-            if openInSpace, startingProjectID == spaceProjectID {
-                selectSpaceProject(project.id)
+            if openInSpace, startingSpaceRoot == spaceFilesRoot {
+                selectSpaceRoot(.project(project.id))
             } else if !openInSpace, case .newTask = destination, workspace.selectedID == nil,
                       startingDraftProjectID == workspace.selectedWorkspaceID {
                 workspace.selectWorkspace(project.id)

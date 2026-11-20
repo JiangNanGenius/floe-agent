@@ -295,6 +295,9 @@
 "mac.workspace.files" = "Workspace Files";
 "space.title" = "Space";
 "mac.workspace.spaceFiles" = "Files";
+"mac.workspace.spaceDefaultRoot" = "Task Files";
+"mac.workspace.spaceDefaultRootHelp" = "Files of tasks without a project";
+"mac.workspace.chooseSpaceRoot" = "Choose which folder to browse";
 "mac.workspace.toolbox" = "Toolbox";
 "mac.workspace.services" = "Services";
 "mac.workspace.findTask" = "Find a task";

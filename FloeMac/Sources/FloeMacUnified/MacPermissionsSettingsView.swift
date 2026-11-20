@@ -17,6 +17,7 @@ import SwiftUI
 /// English and Simplified Chinese stay aligned without new catalog keys.
 struct MacPermissionsSettingsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
+    @ObservedObject var bridge: BridgeAppModel
     @State private var confirmsFullAccess = false
 
     /// Reviewer candidates use the same eligibility rule as the workspace
@@ -67,10 +68,23 @@ struct MacPermissionsSettingsView: View {
                 }
 
                 Section {
+                    LabeledContent(MacPermissionsText.t("低风险", "Low risk"),
+                                   value: MacPermissionsText.t("查看工作区文件列表等，可直接执行", "Workspace reads such as listing files run directly"))
+                    LabeledContent(MacPermissionsText.t("中风险", "Medium risk"),
+                                   value: MacPermissionsText.t("生成文件或构建项目，按任务审批设置处理", "File creation and builds follow the task’s approval setting"))
+                    LabeledContent(MacPermissionsText.t("高风险", "High risk"),
+                                   value: MacPermissionsText.t("删除或复杂命令，请你确认", "Deletion and complex commands ask for confirmation"))
+                } header: {
+                    Text(MacPermissionsText.t("普通任务的命令审批", "Command Approval for Standard Tasks"))
+                } footer: {
+                    Text(MacPermissionsText.t("访问工作区外的文件也需要你确认。", "Access to files outside the workspace also asks for confirmation."))
+                }
+
+                Section {
                     Label {
                         Text(MacPermissionsText.t(
-                            "完全访问允许任务自动执行项目中已启用的操作。高危操作仍受安全规则限制。",
-                            "Full Access lets the task run enabled project actions automatically. Safety rules still apply to high-risk actions."))
+                            "完全访问允许命令访问当前 Mac 账户可用的文件，包括工作区外的文件。macOS 隐私权限仍然生效。",
+                            "Full Access lets commands access files available to your Mac account, including files outside the workspace. macOS privacy permissions still apply."))
                     } icon: {
                         Image(systemName: "info.circle")
                     }
@@ -81,9 +95,23 @@ struct MacPermissionsSettingsView: View {
                 }
 
                 Section {
-                    Toggle("mac.settings.workspaceWrites", isOn: $workspace.allowsWorkspaceWrites)
+                    Toggle(MacPermissionsText.t("允许 Agent 执行操作", "Allow Agent Actions"), isOn: $workspace.allowsWorkspaceWrites)
                 } footer: {
-                    Text("mac.settings.workspaceWrites.detail")
+                    Text(MacPermissionsText.t("关闭后，新运行只能读取工作区文件。命令、文件修改和窗口操作均会停用。", "Turn off to make future runs read-only. Commands, file edits and window control will be unavailable."))
+                }
+
+                Section {
+                    MacKimiCompanionRow()
+                } header: {
+                    Text(MacPermissionsText.t("后台操作其他应用", "Background App Control"))
+                } footer: {
+                    Text(MacPermissionsText.t("在 Kimi CU 中配置辅助功能和屏幕录制权限。", "Configure Accessibility and Screen Recording in Kimi CU."))
+                }
+
+                Section {
+                    MacSystemPermissionRows(model: bridge)
+                } header: {
+                    Text(MacPermissionsText.t("Mac 系统权限", "Mac System Permissions"))
                 }
 
                 Section {
@@ -158,6 +186,6 @@ extension View {
         alert(asDefault ? Text("mac.permissions.confirmDefault") : Text("mac.permissions.confirmTask"), isPresented: isPresented) {
             Button("host.chat.cancel", role: .cancel) {}
             Button("mac.permissions.verifyOwner", role: .destructive, action: confirm)
-        } message: { Text("mac.permissions.confirmDetail") }
+        } message: { Text(MacPermissionsText.t("命令可直接访问工作区外的本机文件。仅为可信任务启用。", "Commands can access files outside the workspace without asking. Enable this for trusted tasks.")) }
     }
 }

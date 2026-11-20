@@ -7,6 +7,12 @@ import SwiftUI
 /// run state per task. Every status comes from real `ConversationRecord` /
 /// `RunRecord` rows published by `HostAgentWorkspace`; the view fabricates
 /// nothing and falls back to an honest "unknown" for unrecognized states.
+///
+/// History management mirrors the iPad Chat list on the same durable
+/// commands: pin/unpin and rename (metadata changes), move/archive/delete,
+/// an archived scope with the archived date, restore and a confirmed
+/// clear-archive, plus title/goal search that shows a small content snippet
+/// when the match came from the run goal rather than the title.
 struct MacWorkspaceTaskCenter: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let onOpen: (UUID) -> Void
@@ -17,14 +23,25 @@ struct MacWorkspaceTaskCenter: View {
 
     @Environment(\.locale) private var locale
     let findRequest: UUID?
+    let didDeleteArchived: (UUID) -> Void
     @FocusState private var searchFocused: Bool
     @State private var query = ""
     @State private var showsArchived = false
+    @State private var renameTarget: ConversationRecord?
+    @State private var renameDraft = ""
+    @State private var renameError: String?
+    /// Inline, dismissible banner for failed management actions (pin,
+    /// rename, clear archive). Honest text only; cleared by the next action.
+    @State private var actionError: String?
+    @State private var confirmsClearArchive = false
+    @State private var archiveDeletionIDs: [UUID] = []
+    @State private var clearingArchive = false
     private let relativeFormatter: RelativeDateTimeFormatter
 
     init(workspace: HostAgentWorkspace, findRequest: UUID? = nil, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
          onArchive: @escaping (UUID, Bool) -> Void, onMove: @escaping (ConversationRecord) -> Void,
-         onDelete: @escaping (ConversationRecord) -> Void) {
+         onDelete: @escaping (ConversationRecord) -> Void, didDeleteArchived: @escaping (UUID) -> Void) {
+        self.didDeleteArchived = didDeleteArchived
         self.findRequest = findRequest
         self.workspace = workspace
         self.onOpen = onOpen
@@ -70,12 +87,33 @@ struct MacWorkspaceTaskCenter: View {
         .onChange(of: workspace.activeRunCount) { previous, count in
             if count < previous { Task { await workspace.loadTaskRuns() } }
         }
+        .popover(item: $renameTarget, arrowEdge: .trailing) { record in
+            renamePopover(for: record)
+        }
+        .alert(t("清空归档？", "Clear Archive?"), isPresented: $confirmsClearArchive) {
+            Button(t("取消", "Cancel"), role: .cancel) {}
+            Button(t("永久删除", "Delete Permanently"), role: .destructive) {
+                Task { await clearArchived() }
+            }
+        } message: {
+            Text(t("归档中的 \(archiveDeletionIDs.count) 个任务及其会话记录将被永久删除。",
+                   "The \(archiveDeletionIDs.count) archived tasks and their conversation history will be deleted permanently."))
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 taskFilters
+                if showsArchived && !tasks.isEmpty {
+                    Spacer(minLength: 8)
+                    Button(t("清空归档…", "Clear Archive…")) {
+                        archiveDeletionIDs = tasks.map(\.id)
+                        confirmsClearArchive = true
+                    }
+                        .disabled(clearingArchive || workspace.isTerminating || workspace.isAcceptingPlan)
+                        .accessibilityIdentifier("workspace.task.clearArchive")
+                }
             }
             if workspace.taskRunLookupFailed {
                 HStack(spacing: 8) {
@@ -89,6 +127,20 @@ struct MacWorkspaceTaskCenter: View {
                     Button(t("重试", "Retry")) { Task { await workspace.loadTaskRuns() } }
                         .accessibilityIdentifier("workspace.task.retry.runs")
                 }
+            }
+            if let actionError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    Text(actionError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer()
+                    Button(t("关闭", "Dismiss")) { self.actionError = nil }
+                        .accessibilityIdentifier("workspace.task.actionError.dismiss")
+                }
+                .accessibilityIdentifier("workspace.task.actionError")
             }
         }
         .padding(.horizontal, 12)
@@ -157,7 +209,7 @@ struct MacWorkspaceTaskCenter: View {
 
     private var visible: [ConversationRecord] {
         let ordered = ConversationListOrdering.sorted(tasks)
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let trimmed = searchQuery
         guard !trimmed.isEmpty else { return ordered }
         return ordered.filter { record in
             if record.title.localizedStandardContains(trimmed) { return true }
@@ -166,8 +218,40 @@ struct MacWorkspaceTaskCenter: View {
         }
     }
 
+    private var searchQuery: String { query.trimmingCharacters(in: .whitespaces) }
+
+    /// iPad list parity: when the query matched persisted run content rather
+    /// than the title, surface a small window around the first hit so the
+    /// match is explainable (the iPad row shows the same kind of snippet).
+    private func matchSnippet(for record: ConversationRecord) -> String? {
+        let trimmed = searchQuery
+        guard !trimmed.isEmpty,
+              !record.title.localizedStandardContains(trimmed),
+              let run = workspace.recentTaskRuns[record.id],
+              run.goal.localizedStandardContains(trimmed) else { return nil }
+        return Self.matchSnippet(goal: run.goal, query: trimmed)
+    }
+
+    /// Pure snippet helper: a bounded window around the first
+    /// case/diacritic-insensitive occurrence, honest ellipses when clipped.
+    static func matchSnippet(goal: String, query: String, limit: Int = 120) -> String? {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              let range = goal.range(of: trimmed, options: [.caseInsensitive, .diacriticInsensitive])
+        else { return nil }
+        guard goal.utf8.count > limit else { return goal }
+        let lower = goal.index(range.lowerBound, offsetBy: -(limit / 3),
+                               limitedBy: goal.startIndex) ?? goal.startIndex
+        let upper = goal.index(range.upperBound, offsetBy: limit / 2,
+                               limitedBy: goal.endIndex) ?? goal.endIndex
+        return (lower > goal.startIndex ? "…" : "")
+            + goal[lower..<upper]
+            + (upper < goal.endIndex ? "…" : "")
+    }
+
     private func row(for record: ConversationRecord) -> some View {
         let run = workspace.recentTaskRuns[record.id]
+        let snippet = matchSnippet(for: record)
         // A persisted nonterminal row is the LAST RECORDED state, not proof of
         // live ownership: only the workspace's actual current send spins.
         let sendingHere = workspace.isTaskRunning(record.id)
@@ -201,12 +285,19 @@ struct MacWorkspaceTaskCenter: View {
                                 .font(.body)
                                 .lineLimit(1)
                         }
+                        if let snippet {
+                            Text(snippet)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .accessibilityIdentifier("workspace.task.snippet")
+                        }
                         caption(run: run, taskID: record.id, sendingHere: sendingHere)
                             .font(.caption)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Text(timeText(run?.startedAt ?? record.updatedAt))
+                    Text(timeText(rowDate(record: record, run: run)))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -226,9 +317,23 @@ struct MacWorkspaceTaskCenter: View {
                 Button("host.chat.stop", systemImage: "stop.circle") { workspace.stopTask(record.id) }
             }
             if !showsArchived {
+                Button(LocalizedStringKey(record.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
+                       systemImage: record.isPinned ? "pin.slash" : "pin") {
+                    Task { await setPinned(!record.isPinned, for: record.id) }
+                }
+                .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
+                Button("mac.workspace.rename", systemImage: "pencil") {
+                    renameTarget = record
+                    renameDraft = record.title
+                    renameError = nil
+                }
+                .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
                 Button("mac.workspace.moveTask", systemImage: "folder") { onMove(record) }
                     .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
                 Button(t("归档", "Archive"), systemImage: "archivebox") { onArchive(record.id, true) }
+                    .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
+            } else {
+                Button(t("恢复", "Restore"), systemImage: "arrow.uturn.backward") { onArchive(record.id, false) }
                     .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
             }
             Button(t("删除任务…", "Delete Task…"), systemImage: "trash", role: .destructive) { onDelete(record) }
@@ -237,6 +342,13 @@ struct MacWorkspaceTaskCenter: View {
         .listRowBackground(workspace.selectedID == record.id
                            ? Color.accentColor.opacity(0.12) : Color.clear)
         .accessibilityIdentifier("workspace.task.row.\(record.id.uuidString)")
+    }
+
+    /// Archived rows answer "when was it archived" (iPad archive parity);
+    /// current rows keep the run/activity recency date.
+    private func rowDate(record: ConversationRecord, run: RunRecord?) -> Date {
+        if showsArchived { return record.archivedAt ?? record.updatedAt }
+        return run?.startedAt ?? record.updatedAt
     }
 
     private func caption(run: RunRecord?, taskID: UUID, sendingHere: Bool) -> Text {
@@ -280,6 +392,86 @@ struct MacWorkspaceTaskCenter: View {
 
     private func title(for record: ConversationRecord) -> String {
         record.workbenchDisplayTitle
+    }
+
+    // MARK: - Task management actions (durable runtime commands)
+
+    /// Pin/unpin through the same metadata command the sidebar uses; a
+    /// failure is surfaced inline instead of failing silently.
+    private func setPinned(_ pinned: Bool, for id: UUID) async {
+        actionError = nil
+        let changed = await workspace.changeConversationMetadata(id: id, change: .pin(pinned))
+        if !changed { actionError = String(localized: "mac.workspace.saveFailed") }
+    }
+
+    /// The runtime caps titles at 200 UTF-8 bytes; the Save button stays
+    /// disabled past that, and the inline message explains why.
+    private var renameTooLong: Bool { renameDraft.utf8.count > 200 }
+
+    private func renamePopover(for record: ConversationRecord) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("mac.workspace.taskName", text: $renameDraft)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 280)
+                .accessibilityIdentifier("workspace.task.rename.field")
+            if renameTooLong {
+                Text(t("名称过长（最多 200 字节）。", "The name is too long (200 bytes maximum)."))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if let renameError {
+                Text(renameError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                Button("host.chat.cancel", role: .cancel) { renameTarget = nil }
+                    .accessibilityIdentifier("workspace.task.rename.cancel")
+                Button("host.chat.save") { Task { await saveRename(for: record) } }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameTooLong)
+                    .accessibilityIdentifier("workspace.task.rename.save")
+            }
+        }
+        .padding(14)
+        .accessibilityIdentifier("workspace.task.rename.popover")
+    }
+
+    private func saveRename(for record: ConversationRecord) async {
+        let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.utf8.count <= 200 else {
+            renameError = t("请输入有效名称。", "Enter a valid name.")
+            return
+        }
+        actionError = nil
+        let saved = await workspace.changeConversationMetadata(id: record.id, change: .rename(title))
+        renameTarget = nil
+        renameError = nil
+        if !saved { actionError = String(localized: "mac.workspace.saveFailed") }
+    }
+
+    private func clearArchived() async {
+        guard !clearingArchive else { return }
+        clearingArchive = true
+        defer { clearingArchive = false }
+        actionError = nil
+        var failures = 0
+        let confirmed = archiveDeletionIDs
+        for id in confirmed {
+            guard let record = workspace.conversations.first(where: { $0.id == id }),
+                  record.archivedAt != nil, record.purpose == .ordinary, record.visibility == .normal,
+                  record.editorOwnership == nil else { continue }
+            guard !workspace.isTaskRunning(id),
+                  await workspace.changeConversationMetadata(id: id, change: .delete) else {
+                failures += 1
+                continue
+            }
+            didDeleteArchived(id)
+        }
+        if failures > 0 {
+            actionError = t("\(failures) 个任务删除失败，请重试。",
+                            "\(failures) tasks could not be deleted. Try again.")
+        }
     }
 
     // MARK: - Run state presentation (machine name → concise bilingual label)

@@ -1592,6 +1592,57 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    /// Ensures the durable per-task private workspace row for a personal
+    /// conversation so the host can bind the safe-files tool ceiling before
+    /// the launch transaction creates the conversation. The row is keyed by
+    /// the stable task UUID (`internalRelativePath == PrivateTasks/<id>`,
+    /// empty bookmark by design) and resolves under the host-configured
+    /// `privateTaskRootBaseURL` through the same verified lease as project
+    /// workspaces. Idempotent per conversation: an existing owner is returned
+    /// untouched, and an unattached row left by an earlier failed first
+    /// launch is reused. This call never writes ownership (the launch
+    /// transaction links a new conversation; `moveConversation` and the
+    /// upstream canonical-owner repair own existing rows), never binds a
+    /// shared parent, and creates no on-disk directory — the directory is
+    /// materialized only when a tool session actually binds the workspace.
+    @discardableResult
+    public func ensurePersonalWorkspace(
+        conversationID: UUID,
+        title: String
+    ) async throws -> WorkspaceRecord {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        do {
+            if let ownerID = try await stores.workspaces.workspaceID(
+                conversationID: conversationID
+            ), let owner = try await stores.workspaces.workspace(id: ownerID) {
+                return owner
+            }
+            let relativePath = "PrivateTasks/\(conversationID.uuidString)"
+            if let existing = try await stores.workspaces.workspaces().first(where: {
+                $0.kind == .privateTask && $0.internalRelativePath == relativePath
+            }) {
+                return existing
+            }
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let record = WorkspaceRecord(
+                name: trimmed.isEmpty ? "Chat" : String(trimmed.prefix(80)),
+                rootBookmark: Data(),
+                kind: .privateTask,
+                internalRelativePath: relativePath
+            )
+            try ensureAdmissionStillAllowed()
+            try requireAuthority()
+            try await stores.workspaces.saveWorkspace(record)
+            return record
+        } catch let error as FloeMacSelfCoreError {
+            throw error
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
     // MARK: - Plan and Goal read-back
 
     /// Newest durable plan draft for the conversation, if any. Revisions are

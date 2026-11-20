@@ -144,6 +144,9 @@ struct HostAgentApproval: Equatable {
     var callID: String { toolCall.id }
     var toolName: String { toolCall.toolName }
     var canAllow: Bool {
+        #if FLOE_UNIFIED_MAC
+        if MacNativeCommandPolicy.review(toolCall) != nil { return true }
+        #endif
         if toolName == DelegateTool.name { return text?.isEmpty == false }
         return path?.isEmpty == false && text != nil
     }
@@ -151,10 +154,17 @@ struct HostAgentApproval: Equatable {
     #if FLOE_UNIFIED_MAC
     var cardRequest: PendingApproval {
         let writesFiles = MacAgentWorkspaceTools.writeToolNames.contains(toolName)
+        let riskLabels: Set<String>
+        switch toolName {
+        case MacNativeShellTool.name: riskLabels = ["executesLocalCode", "writesFiles"]
+        case MacDesktopControl.name: riskLabels = ["controlsGUI"]
+        case DelegateTool.name: riskLabels = ["readsFiles", "networkAccess"]
+        default: riskLabels = writesFiles ? ["writesFiles"] : []
+        }
         let displayReason = reason == "Human approval policy requires explicit user decision" ? "" : reason
         return PendingApproval(runID: runID, conversationID: conversationID, toolCall: toolCall,
-                               reason: displayReason, riskLabels: writesFiles ? ["writesFiles"] : (toolName == DelegateTool.name ? ["readsFiles", "networkAccess"] : []),
-                               isSideEffecting: writesFiles || toolName == DelegateTool.name,
+                               reason: displayReason, riskLabels: riskLabels,
+                               isSideEffecting: !riskLabels.isEmpty,
                                requestedAt: requestedAt, workspaceID: workspaceID)
     }
     #endif
@@ -171,10 +181,11 @@ private struct MacProjectApprovalContext {
     let networkStatus: NetworkStatusMonitor
 
     func policy(_ mode: TaskApprovalMode, reviewer: FloeMacSelfProviderBinding?) -> any ApprovalPolicy {
-        grants.wrapping(MacTaskApprovalPolicy.make(mode: mode, reviewer: reviewer,
-                        primaryIsOnDevice: primaryIsOnDevice, isOffline: networkStatus.isOffline),
-                        workspaceID: workspaceID, conversationID: conversationID,
-                        workspaceRoot: root, authorizationIdentities: identities)
+        let taskPolicy = MacTaskApprovalPolicy.make(mode: mode, reviewer: reviewer,
+            primaryIsOnDevice: primaryIsOnDevice, isOffline: networkStatus.isOffline)
+        let files = grants.wrapping(taskPolicy, workspaceID: workspaceID, conversationID: conversationID,
+                                   workspaceRoot: root, authorizationIdentities: identities)
+        return MacNativeCommandPolicy(mode: mode, base: files)
     }
 }
 
@@ -604,6 +615,42 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var projectTaskMembership: [UUID: Set<UUID>]?
     @Published private(set) var projectTasksUnavailable = false
     @Published private(set) var selectedWorkspaceID: UUID?
+    #if FLOE_UNIFIED_MAC
+
+    /// Stable UUID of the current unsaved draft, persisting across
+    /// navigating away and relaunches until the first send is durably
+    /// admitted. A draft's personal safe-files root
+    /// (`PrivateTasks/<draft UUID>`) is therefore stable from before the
+    /// first send through admission; the next draft — including one started
+    /// after an admitted conversation or while other runs are live — always
+    /// allocates a fresh UUID once the previous one has been admitted.
+    /// Reading this property never creates a directory; it only mints and
+    /// persists an id on first use, so repeated SwiftUI body reads observe
+    /// one constant value.
+    private var cachedDraftTaskID: UUID?
+    private static let draftTaskIDKey = "floe.mac.agent.draftTaskID"
+
+    private var draftTaskID: UUID {
+        if let cachedDraftTaskID { return cachedDraftTaskID }
+        if let raw = preferences.string(forKey: Self.draftTaskIDKey),
+           let persisted = UUID(uuidString: raw) {
+            cachedDraftTaskID = persisted
+            return persisted
+        }
+        let minted = UUID()
+        preferences.set(minted.uuidString, forKey: Self.draftTaskIDKey)
+        cachedDraftTaskID = minted
+        return minted
+    }
+
+    /// Called once a draft's first send is durably admitted: the admitted
+    /// conversation itself owns the id from here on, so the next draft must
+    /// allocate a distinct UUID.
+    private func clearDraftTaskID() {
+        cachedDraftTaskID = nil
+        preferences.removeObject(forKey: Self.draftTaskIDKey)
+    }
+    #endif
     @Published private(set) var selectedConversationWorkspace: WorkspaceRecord?
     /// Files staged for the next send; cleared once a run starts.
     @Published private(set) var stagedAttachments: [HostAgentAttachmentDraft] = []
@@ -685,7 +732,10 @@ final class HostAgentWorkspace: ObservableObject {
         self.approvalModelID = preferences.string(forKey: Self.reviewerKey).flatMap(UUID.init(uuidString:))
         self.allowsWorkspaceWrites = preferences.object(forKey: "floe.mac.workspace.allowWrites") as? Bool ?? true
         self.verifyAgentAnswers = preferences.bool(forKey: "floe.mac.agent.verifyAnswers")
-        self.defaultMode = preferences.string(forKey: "floe.mac.agent.defaultMode").flatMap(HostAgentMode.init(rawValue:)) ?? .chat
+        // A fresh install composes in Agent: both the first launch and every
+        // new task default to Agent until the user explicitly picks another
+        // mode (the explicit choice keeps persisting here).
+        self.defaultMode = preferences.string(forKey: "floe.mac.agent.defaultMode").flatMap(HostAgentMode.init(rawValue:)) ?? .agent
         self.taskModes = preferences.dictionary(forKey: Self.taskModesKey) as? [String: String] ?? [:]
         #endif
     }
@@ -985,6 +1035,11 @@ final class HostAgentWorkspace: ObservableObject {
         selectedApprovalMode = nil
         draftApprovalMode = nil
         chatReasoning = .fast
+        // Entering the composer reuses the persisted draft id when the
+        // previous draft has not been admitted yet; selecting a saved task
+        // drops the cached copy (the persisted value survives until the
+        // first durable admission clears it).
+        if id != nil { cachedDraftTaskID = nil }
         #endif
         isLoadingHistory = id != nil
         isLoadingEarlierMessages = false
@@ -1326,6 +1381,84 @@ final class HostAgentWorkspace: ObservableObject {
             return false
         }
     }
+
+    // MARK: - Personal file workspace
+
+    /// The file workspace of the current task, for file panes and Space
+    /// browsing only: the explicit project when the selected conversation
+    /// (or the draft's project picker) is bound to one, otherwise the
+    /// per-task personal workspace — the durable owner row for a saved
+    /// conversation, or a synthetic private record for the unsaved draft.
+    /// Personal records carry an empty bookmark by design, so the returned
+    /// presentation record populates a bookmark bound to the verified
+    /// per-task root exactly like a project row. For the current task only,
+    /// the root may be materialized lazily (0o700, owner-pinned) so a fresh
+    /// draft's Files work before the first send; no folder is ever created
+    /// for tasks other than the current one, and the stable UUID keeps the
+    /// root constant across repeated reads.
+    var fileWorkspaceForCurrentTask: WorkspaceRecord? {
+        if let selectedID {
+            guard let owner = selectedConversationWorkspace else { return nil }
+            return presentationRecord(for: owner)
+        }
+        // Draft: an explicitly picked project wins; otherwise the synthetic
+        // per-task scope keyed by the persisted draft UUID.
+        if let projectID = selectedWorkspaceID,
+           let project = workspaces.first(where: { $0.id == projectID && $0.kind == .project }) {
+            return project
+        }
+        return presentationRecord(for: personalWorkspaceRecord(id: draftTaskID, title: ""))
+    }
+
+    /// App-owned directory that aggregates every personal task folder
+    /// (`<runtime directory>/PrivateTasks`). Space browsing only; pure
+    /// location lookup, no I/O and no directory creation.
+    var defaultConversationsDirectory: URL? {
+        HostAgentDatabase.privateTasksDirectoryURL(applicationSupport: supportDirectory, namespace: namespace)
+    }
+
+    /// Owner-only runtime directory: the lease base every personal task
+    /// root resolves under (`<base>/PrivateTasks/<task UUID>`).
+    var personalTaskLeaseBase: URL {
+        HostAgentDatabase.runtimeDirectoryURL(applicationSupport: supportDirectory, namespace: namespace)
+    }
+
+    /// Durable-shaped private workspace record for one stable task UUID.
+    private func personalWorkspaceRecord(id: UUID, title: String) -> WorkspaceRecord {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return WorkspaceRecord(
+            id: id,
+            name: trimmed.isEmpty ? "Chat" : String(trimmed.prefix(80)),
+            rootBookmark: Data(),
+            kind: .privateTask,
+            internalRelativePath: "PrivateTasks/\(id.uuidString)"
+        )
+    }
+
+    /// UI presentation form of a workspace record: personal rows resolve
+    /// their root through the same verified pinned resolver as the tool
+    /// binding (which may lazily materialize the current task's leaf with
+    /// 0o700 ownership checks) and gain a bookmark bound to that exact leaf —
+    /// personal rows persist an empty bookmark by design. Project rows are
+    /// returned unchanged. Nil when the root cannot be verified; never binds
+    /// a shared parent instead.
+    private func presentationRecord(for record: WorkspaceRecord) -> WorkspaceRecord? {
+        guard record.kind == .privateTask else { return record }
+        guard let relative = record.internalRelativePath,
+              MacAgentWorkspaceTools.personalTaskID(relativePath: relative) != nil else { return nil }
+        let root: URL
+        do {
+            root = try MacAgentWorkspaceTools.verifiedPersonalTaskRoot(
+                relativePath: relative, leaseBase: personalTaskLeaseBase, createIfNeeded: true
+            )
+        } catch {
+            return nil
+        }
+        guard let bookmark = try? root.bookmarkData() else { return nil }
+        var presented = record
+        presented.rootBookmark = bookmark
+        return presented
+    }
     #endif
 
     private func reloadConversations(using runtime: FloeMacSelfRuntime) async throws {
@@ -1426,7 +1559,14 @@ final class HostAgentWorkspace: ObservableObject {
         let auxRoutes = FloeMacSelfAuxiliaryRoutes()
         #endif
         let currentID = queued?.conversationID ?? selectedID
+        #if FLOE_UNIFIED_MAC
+        // A draft keeps its persisted stable task UUID, so its personal
+        // safe-files root is the same one the file panes showed before the
+        // first send; a saved task (or queued input) always uses its own id.
+        let taskID = currentID ?? draftTaskID
+        #else
         let taskID = currentID ?? UUID()
+        #endif
         let originSelection = historySelection
         guard (queued != nil ? liveRuns[taskID] == nil : !isSending), !isTerminating, !changingTasks.contains(taskID) else { return false }
         let currentGoal = queuedGoal ?? (mode == .goal && criterion.isEmpty && goal?.conversationID == currentID
@@ -1448,11 +1588,9 @@ final class HostAgentWorkspace: ObservableObject {
         let draftReasoning: ChatReasoningPreference? = nil
         let acceptsQuestions = false
         #endif
-        let requiresProject = mode == .agent || mode == .plan
-        if requiresProject && currentID == nil && selectedProject == nil {
-            notice = String(localized: "mac.agent.projectRequired")
-            return false
-        }
+        // Agent and Plan mode no longer require an explicit project: an
+        // ordinary personal conversation gets its own durable safe-files
+        // root instead (below), so nothing here blocks the send.
         guard let release = admit() else { return false }
         if currentID == nil { newDraftRunID = taskID }
         liveRuns[taskID] = LiveRun(prompt: acceptedPlan == nil ? text : nil, mode: mode, modelID: provider.model.id)
@@ -1505,26 +1643,55 @@ final class HostAgentWorkspace: ObservableObject {
                 if let currentID { approvalMode = try await runtime.taskApprovalMode(conversationID: currentID) }
                 else { approvalMode = newTaskApproval }
                 let project: WorkspaceRecord?
+                let durablePersonal: WorkspaceRecord?
                 if let currentID {
                     let owner = try await runtime.workspaceForConversation(currentID)
                     if let queued, owner?.id != queued.workspaceID { throw CocoaError(.userCancelled) }
-                    project = owner?.kind == .project ? owner : nil
+                    if let owner, owner.kind == .project {
+                        project = owner
+                        durablePersonal = nil
+                    } else {
+                        // Ordinary personal conversation: its durable owner
+                        // is the per-task private workspace (nil only for a
+                        // legacy ownerless row, which stays tool-free rather
+                        // than ever binding a shared parent).
+                        project = nil
+                        durablePersonal = owner
+                    }
                 } else {
                     project = selectedProject
+                    durablePersonal = nil
                 }
-                if requiresProject && project == nil {
-                    if selectedID == currentID && historySelection == originSelection {
-                        rejectedPrompt = text
-                        notice = String(localized: "mac.agent.projectRequired")
+                // The workspace that tools bind to: the explicit project when
+                // there is one, otherwise the per-task personal workspace.
+                // Agent/Plan always need it; Goal uses it when present; chat
+                // binds it only when the model actually offers tools.
+                let toolWorkspace: WorkspaceRecord?
+                if project != nil {
+                    toolWorkspace = project
+                } else if mode != .chat || provider.model.capabilities.contains(.tools) {
+                    if let currentID {
+                        toolWorkspace = durablePersonal
+                    } else {
+                        // First launch of a personal draft: materialize the
+                        // durable per-task row (keyed by the draft's stable
+                        // UUID) so the binding and the launch transaction
+                        // agree on the exact owner.
+                        toolWorkspace = try await runtime.ensurePersonalWorkspace(
+                            conversationID: taskID,
+                            title: Self.initialTaskTitle(text, provider: provider)
+                        )
                     }
-                    return
+                } else {
+                    toolWorkspace = nil
                 }
                 let delegationRegistry = delegationRunID == nil ? nil : childSubagents.childRegistry
-                if let project, mode != .chat || provider.model.capabilities.contains(.tools) {
+                if let toolWorkspace, mode != .chat || provider.model.capabilities.contains(.tools) {
                     let grants = try await runtime.approvalGrantStore()
-                    tools = try MacAgentWorkspaceTools.binding(workspace: project, readOnly: readOnly,
+                    tools = try MacAgentWorkspaceTools.binding(workspace: toolWorkspace,
+                        privateTaskRootBase: personalTaskLeaseBase, readOnly: readOnly,
                         chatOnly: mode == .chat, delegationRegistry: delegationRegistry) { root, identities in
-                        let context = MacProjectApprovalContext(grants: grants, workspaceID: project.id,
+                        let context = MacProjectApprovalContext(grants: grants, workspaceID: toolWorkspace.id,
                             conversationID: taskID, root: root, identities: identities,
                             primaryIsOnDevice: provider.provider.id == ProviderProfile.onDeviceProviderID, networkStatus: self.networkStatus)
                         self.liveRuns[taskID]?.approvalContext = context
@@ -1549,7 +1716,7 @@ final class HostAgentWorkspace: ObservableObject {
                 }
                 #else
                 let approvalMode: TaskApprovalMode = .ask
-                let project = selectedProject
+                let toolWorkspace = selectedProject
                 tools = nil
                 #endif
                 let acceptedExecution: FloeMacSelfAcceptedPlanExecution?
@@ -1569,13 +1736,13 @@ final class HostAgentWorkspace: ObservableObject {
                 let request = FloeMacSelfSessionRequest(
                     conversationID: currentID,
                     newConversationID: currentID == nil ? taskID : nil,
-                    workspaceID: tools == nil ? workspaceID : project?.id,
+                    workspaceID: tools == nil ? workspaceID : toolWorkspace?.id,
                     conversationTitle: currentID == nil ? Self.initialTaskTitle(text, provider: provider) : "",
                     goal: acceptedExecution?.goal ?? text,
                     mode: acceptedExecution?.conversationMode ?? mode.runtimeMode,
                     initialPolicy: .init(approvalMode: approvalMode),
                     runID: acceptedExecution?.runID ?? queued?.id ?? delegationRunID,
-                    context: FloeMacSelfRunContext(workspaceName: project?.name),
+                    context: FloeMacSelfRunContext(workspaceName: toolWorkspace?.name),
                     attachments: drafts.map {
                         FloeMacSelfSessionAttachment(
                             id: $0.id,
@@ -1604,8 +1771,9 @@ final class HostAgentWorkspace: ObservableObject {
                 }
                 admitted = true
                 let events = handle.events()
-                let hasOriginSelection = selectedID == currentID && historySelection == originSelection
+                var hasOriginSelection: Bool { selectedID == currentID && historySelection == originSelection }
                 #if FLOE_UNIFIED_MAC
+                if currentID == nil, cachedDraftTaskID == taskID { clearDraftTaskID() }
                 if let queued, let store = try? await runtime.runningInputStore() {
                     do { try await store.markConsumed(id: queued.id, runID: handle.identity.runID) }
                     catch { if selectedID == taskID { notice = String(localized: "mac.agent.queueUnavailable") } }
@@ -1623,8 +1791,14 @@ final class HostAgentWorkspace: ObservableObject {
                 liveRuns[taskID]?.handle = handle
                 if acceptsQuestions { await refreshQuestionCard(for: taskID) }
                 if liveRuns[taskID]?.stopping == true { cancelRun(handle, taskID: taskID) }
+                let admittedOwner: WorkspaceRecord?
+                if currentID == nil, hasOriginSelection, toolWorkspace == nil {
+                    admittedOwner = try? await runtime.workspaceForConversation(handle.identity.conversationID)
+                } else {
+                    admittedOwner = toolWorkspace
+                }
                 if hasOriginSelection && currentID == nil {
-                    selectedConversationWorkspace = project
+                    selectedConversationWorkspace = admittedOwner
                     selectedID = handle.identity.conversationID
                     #if FLOE_UNIFIED_MAC
                     admittedDraftID = handle.identity.conversationID
@@ -1967,7 +2141,7 @@ final class HostAgentWorkspace: ObservableObject {
             let details = args.map { [$0.task, $0.context].compactMap { $0 }.joined(separator: "\n\n") }
             preview = (nil, details, nil)
         default:
-            preview = (nil, nil, nil)
+            preview = (nil, MacNativeCommandPolicy.preview(call), nil)
         }
         #else
         preview = (nil, nil, nil)
@@ -2497,7 +2671,7 @@ final class HostAgentWorkspace: ObservableObject {
     func withOutputFile(_ step: HostAgentToolActivity, use: (URL) -> Void) {
         guard let path = step.outputPath, let project = selectedConversationWorkspace,
               project.id == step.outputWorkspaceID else { notice = String(localized: "mac.run.fileUnavailable"); return }
-        do { try MacAgentWorkspaceTools.withProjectFile(project, path: path, use: use) }
+        do { try MacAgentWorkspaceTools.withWorkspaceFile(project, privateTaskRootBase: personalTaskLeaseBase, path: path, use: use) }
         catch { notice = String(localized: "mac.run.fileUnavailable") }
     }
 
@@ -2784,6 +2958,26 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     #if FLOE_MAC_HOST_SMOKE
+    /// Debug-only fixture for the packaged App smoke: installs an in-memory
+    /// provider aimed at the coordinator's loopback mock so an ordinary send
+    /// runs without a project and without touching the Keychain, user
+    /// providers or any persisted artifact. Loopback http only; production
+    /// vault-backed hosts never enter this path.
+    @discardableResult
+    func useNativeCommandFixture(endpoint: URL) -> Bool {
+        guard vault == nil, isReady, !isTerminating,
+              endpoint.scheme == "http",
+              endpoint.host == "127.0.0.1" || endpoint.host == "localhost",
+              endpoint.port != nil,
+              let config = try? HostAgentProvider(endpoint: endpoint.absoluteString,
+                  protocolKind: .openAIChatCompletions, modelID: "native-mac-fixture", apiKey: "",
+                  supportsTools: true, allowsPlainHTTP: true) else { return false }
+        providers = [config]
+        selectedProviderID = config.profile.id
+        selectedModelID = config.model.id
+        return true
+    }
+
     // Used only by the packaged App smoke command with its temporary
     // database and Keychain disabled. The adapter never creates a request.
     func verifyChatSmoke(admissionIsClosedToInstall: () -> Bool = { true }) async -> Bool {
@@ -2988,6 +3182,7 @@ final class HostAgentWorkspace: ObservableObject {
         return selectedConversationWorkspace?.id == personal.id && messages.map(\.id) == messagesBefore
             && conversations.first(where: { $0.id == id })?.isPinned == true
     }
+
     #endif
 
     private struct SmokeChatAdapter: ProviderAdapter {

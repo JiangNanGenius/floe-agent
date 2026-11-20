@@ -51,6 +51,10 @@ struct MacWorkspaceApprovalView: View {
     }
 
     private var action: String {
+        if let review = MacNativeCommandPolicy.review(approval.toolCall) {
+            let target = review.host ? MacPermissionsText.t("本机", "This Mac") : MacPermissionsText.t("工作区", "Workspace")
+            return review.risk.title + " · " + target
+        }
         if approval.toolName == DelegateTool.name { return String(localized: "mac.child.approve") }
         if approval.previousText != nil { return String(localized: "mac.agent.replaceTextApproval") }
         if approval.path != nil { return String(localized: "mac.agent.createFileApproval") }
@@ -65,7 +69,9 @@ struct MacWorkspaceApprovalView: View {
                 Text("mac.permissions.projectFile").tag(Optional(FloeMacFileGrantScope.workspace))
             }.pickerStyle(.menu).controlSize(.small)
         }
-        if approval.toolName == DelegateTool.name, let task = approval.text {
+        if let detail = MacNativeCommandPolicy.preview(approval.toolCall) {
+            ScrollView { preview(detail) }.frame(maxHeight: 135)
+        } else if approval.toolName == DelegateTool.name, let task = approval.text {
             Text(verbatim: task).font(.callout).lineLimit(6).textSelection(.enabled)
             DisclosureGroup("mac.child.details") {
                 ScrollView { preview(task) }.frame(maxHeight: 135)
