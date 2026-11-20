@@ -774,6 +774,8 @@ public actor FloeAgentRuntime {
         /// checkpoint metadata can name still-waiting requests. Nil keeps
         /// the historical recovery policy for runs without questions.
         public var userQuestionRecovery: (any UserQuestionRuntimeRecovery)?
+        /// Lets the host release an idle browser when the run moves to another tool.
+        public var willExecuteToolBatch: (@Sendable ([String]) async -> Void)?
         /// Live presentation subset of the compiled/frozen task ceiling.
         /// Main-runtime only; nil preserves the historical catalog behavior.
         public var currentToolAvailability: (@Sendable () async -> Set<String>)?
@@ -6109,6 +6111,7 @@ public actor FloeAgentRuntime {
             )
             return
         }
+        await configuration.willExecuteToolBatch?(calls.map(\.toolName))
         var approvedByID: [String: ApprovalGrant] = [:]
         var resultsByID: [String: ToolResult] = [:]
         var budgetWasExhausted = false

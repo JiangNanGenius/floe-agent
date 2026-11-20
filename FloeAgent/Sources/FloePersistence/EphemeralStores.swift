@@ -869,7 +869,7 @@ public actor EphemeralRunningInputStore: RunningInputStore {
         try await mutate({ durable in
             try await durable.updateContent(id: id, content: trimmed)
         }, affected: id) {
-            guard var value = inputs[id], value.status == .queued, value.executionMode != "browserControlNotice" else {
+            guard var value = inputs[id], value.status == .queued, !["browserControlNotice", "browserReturnComment"].contains(value.executionMode) else {
                 throw FloeError.validationFailed("Only queued input can be edited")
             }
             value.content = trimmed
@@ -888,6 +888,19 @@ public actor EphemeralRunningInputStore: RunningInputStore {
             value.status = .cancelled
             value.updatedAt = Date()
             inputs[id] = value
+        }
+    }
+
+    public func cancelPendingSteer(id: UUID, owner: UUID, runID: UUID) async throws {
+        try requireHosted(owner)
+        try await mutate({ durable in
+            try await durable.cancelPendingSteer(id: id, owner: owner, runID: runID)
+        }, affected: id) {
+            guard var input = inputs[id], input.conversationID == owner, input.targetRunID == runID,
+                  input.mode == .steer, input.status.isPending else { return }
+            input.status = .cancelled
+            input.updatedAt = Date()
+            inputs[id] = input
         }
     }
 
@@ -912,7 +925,7 @@ public actor EphemeralRunningInputStore: RunningInputStore {
         switch gate {
         case .active, .promoting:
             guard var next = pendingOrdered(conversationID)
-                .first(where: { $0.status == .queued && !["browserHandoff", "browserControlNotice"].contains($0.executionMode) })
+                .first(where: { $0.status == .queued && !["browserHandoff", "browserControlNotice", "browserReturnComment"].contains($0.executionMode) })
             else { return nil }
             next.status = .promoting
             next.updatedAt = Date()
@@ -956,7 +969,7 @@ public actor EphemeralRunningInputStore: RunningInputStore {
             try await durable.markSteerAccepted(id: id, runID: runID)
         }, affected: id) {
             guard var value = inputs[id] else { throw FloeError.notFound("input \(id.uuidString)") }
-            if value.executionMode == "browserControlNotice" {
+            if ["browserControlNotice", "browserReturnComment"].contains(value.executionMode) {
                 guard value.targetRunID == runID, value.status == .promoting else { return }
             }
             value.status = .steerPending
@@ -971,7 +984,7 @@ public actor EphemeralRunningInputStore: RunningInputStore {
             try await durable.markConsumed(id: id, runID: runID)
         }, affected: id) {
             guard var value = inputs[id] else { throw FloeError.notFound("input \(id.uuidString)") }
-            if value.executionMode == "browserControlNotice" {
+            if ["browserControlNotice", "browserReturnComment"].contains(value.executionMode) {
                 guard value.targetRunID == runID, value.status == .promoting || value.status == .steerPending else { return }
             }
             value.status = .consumed
@@ -994,7 +1007,7 @@ public actor EphemeralRunningInputStore: RunningInputStore {
                 throw FloeError.validationFailed("Only a pending promotion can be restored")
             }
             value.status = .queued
-            if ["browserControlNotice", "browserHandoff"].contains(value.executionMode) {
+            if ["browserControlNotice", "browserHandoff", "browserReturnComment"].contains(value.executionMode) {
                 value.mode = .steer
             } else {
                 value.mode = .queue

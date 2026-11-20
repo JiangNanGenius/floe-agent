@@ -12,6 +12,7 @@ import SwiftUI
 import WebKit
 import FloeCore
 import FloeExecution
+import FloeSecurity
 
 @MainActor
 final class BrowserSessionCenter: NSObject, ObservableObject {
@@ -19,6 +20,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     typealias VisualFallbackEvidence = BrowserTaskSession.VisualFallbackEvidence
     typealias SurfaceState = BrowserTaskSession.SurfaceState
 
+    struct ReturnComment: Codable, Equatable {
+        let id: UUID
+        let text: String
+    }
     struct Handoff: Codable, Equatable {
         let id: UUID
         let conversationID: UUID
@@ -28,6 +33,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         var returning: Bool
         // Older receipts only have the return ID. An assistance request creates no arrival event.
         var takeoverEventID: UUID?
+        var comment: ReturnComment?
         var closedAfterRestart: Bool?
         var humanPresent: Bool { takeoverEventID != nil && closedAfterRestart != true }
     }
@@ -369,6 +375,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     func endModelControl(conversationID: UUID, runID: UUID) -> Bool {
         guard let session = store.session(for: conversationID) else { return false }
         return session.endModelControl(runID: runID)
+    }
+
+    func releaseIdlePage(conversationID: UUID, runID: UUID) {
+        guard let session = store.session(for: conversationID),
+              session.activeExecutionCount == 0, let lease = session.modelControl, lease.runID == runID else { return }
+        _ = session.releaseModelControl(controlID: lease.id, runID: runID)
     }
 
     func session(for conversationID: UUID) -> BrowserTaskSession? {
@@ -805,16 +817,16 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         return task
     }
 
-    func returnControlIfCurrent(for session: BrowserTaskSession, handoffID: UUID?, presentationID: UUID? = nil) async -> Bool {
+    func returnControlIfCurrent(for session: BrowserTaskSession, handoffID: UUID?, presentationID: UUID? = nil, comment: String = "") async -> Bool {
         guard visibleSession === session, !session.isReleased, session.isUserControlling, !session.takeoverPending,
               handoff?.id == handoffID, previewInteractionID == presentationID else { return false }
-        await returnToAgent()
+        await returnToAgent(comment: comment)
         return visibleSession === session && !session.isReleased && !session.isUserControlling
             && handoff?.id == handoffID && previewInteractionID == presentationID
     }
 
     // Older callers may request continuation. Resuming a stopped run belongs to the original task.
-    func returnToAgent(continueTask _: Bool = false) async {
+    func returnToAgent(continueTask _: Bool = false, comment: String = "") async {
         guard taskHandoffsEnabled, !returningControl, visibleSession?.takeoverPending != true else { return }
         // A user who took over an idle browser (no model holder, no receipt)
         // simply returns that browser to idle. Nothing is delivered and no
@@ -836,6 +848,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         do {
             var updated = event
             updated.returning = true
+            let text = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+            if updated.comment == nil, !text.isEmpty {
+                guard text.utf8.count <= 8_000 else {
+                    throw FloeError.validationFailed(IDELanguageRunText.t("备注太长，请缩短后再交还。", "Shorten the comment before returning control."))
+                }
+                updated.comment = ReturnComment(id: UUID(), text: SecretIngressScanner.scan(text).sanitizedText)
+            }
             let ownerSession = currentHumanOwner(for: event)
             let page = ownerSession?.activeWebView
             ownerSession?.returningToModel = true
@@ -845,6 +864,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             }
             page?.isUserInteractionEnabled = false
             handoffs[event.conversationID] = updated
+            handoff = updated
             try persistHandoffs()
             if let prior = startTakeoverDelivery(updated) { _ = try await prior.value }
             guard handoffs[event.conversationID]?.id == event.id else { return }

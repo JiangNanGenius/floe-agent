@@ -1706,6 +1706,9 @@ private actor FailpointInputStore: RunningInputStore {
     func updateContent(id: UUID, content: String) async throws {
         try await upstream.updateContent(id: id, content: content)
     }
+    func cancelPendingSteer(id: UUID, owner: UUID, runID: UUID) async throws {
+        try await upstream.cancelPendingSteer(id: id, owner: owner, runID: runID)
+    }
     func cancel(id: UUID) async throws { try await upstream.cancel(id: id) }
     func reorder(conversationID: UUID, orderedIDs: [UUID]) async throws {
         try await upstream.reorder(conversationID: conversationID, orderedIDs: orderedIDs)

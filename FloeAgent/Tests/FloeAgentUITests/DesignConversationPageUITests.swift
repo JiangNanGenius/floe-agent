@@ -162,7 +162,7 @@ final class DesignConversationPageUITests: XCTestCase {
         } else {
             XCTAssertFalse(liveImage(app).exists)
             XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label IN %@",
-                ["AI 正在操作网页", "AI is using the page"])).firstMatch.waitForExistence(timeout: 8))
+                ["模型正在查看网页", "The model is viewing the page"])).firstMatch.waitForExistence(timeout: 8))
         }
     }
 

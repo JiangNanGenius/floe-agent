@@ -1567,6 +1567,9 @@ final class ConversationCenter: ObservableObject {
             guard let self else { throw FloeError.invalidConfiguration("Task service unavailable") }
             let notice: BrowserControlNotice = event.closedAfterRestart == true ? .sessionEnded : .returned
             let delivered = try await self.deliverBrowserControlNotice(notice, id: event.id, event: event)
+            if let comment = event.comment {
+                try await self.deliverBrowserReturnComment(comment, event: event)
+            }
             return !delivered
         }
         approvalDefaultObserver = environment.settingsCenter.$defaultAgentMode
@@ -1608,9 +1611,9 @@ final class ConversationCenter: ObservableObject {
             if existing.status == .consumed { return existing.consumedRunID == runID }
             if existing.status == .cancelled { return false }
         }
-        let existingMessages = try await conversation.messages(conversationID: owner)
+        let existingMessage = try await conversation.message(id: id, conversationID: owner)
         try checkOwner()
-        if let mirror = existingMessages.first(where: { $0.id == id }) {
+        if let mirror = existingMessage {
             guard mirror.role == "system", mirror.runID == runID, mirror.content == notice.message,
                   mirror.parts.contains(where: { $0.metadata[BrowserControlNotice.historyMarker] == "1" }) else {
                 throw FloeError.validationFailed("Browser notice identity is already in use")
@@ -1673,6 +1676,59 @@ final class ConversationCenter: ObservableObject {
         }
         publishSession(owner)
         return true
+    }
+
+    /// User guidance has its own message identity and ordinary user role.
+    /// Replaying a handoff cannot launch a follow-up or target a replacement run.
+    private func deliverBrowserReturnComment(_ comment: BrowserSessionCenter.ReturnComment,
+                                             event: BrowserSessionCenter.Handoff) async throws {
+        let owner = event.conversationID
+        guard let run = event.runID, try await runStore(for: owner).run(id: run)?.conversationID == owner else { return }
+        func checkOwner() throws {
+            guard !Task.isCancelled, !deletingConversationIDs.contains(owner),
+                  environment.browserCenter.handoff(for: owner)?.id == event.id else { throw CancellationError() }
+        }
+        try checkOwner()
+        let store = runningInputStore(for: owner)
+        let history = conversationStore(for: owner)
+        let id = comment.id
+        let row = try await store.input(id: id)
+        if let row {
+            guard row.conversationID == owner, row.targetRunID == run, row.content == comment.text,
+                  row.executionMode == "browserReturnComment" else { throw FloeError.validationFailed("Mismatched browser comment") }
+            if row.status == .consumed || row.status == .cancelled { return }
+        }
+        let priorComment = try await history.message(id: id, conversationID: owner)
+        try checkOwner()
+        if let existing = priorComment {
+            guard existing.role == "user", existing.runID == run, existing.content == comment.text else {
+                throw FloeError.validationFailed("Browser comment identity is already in use")
+            }
+        } else {
+            try await history.appendMessage(.init(id: id, conversationID: owner, role: "user", content: comment.text,
+                createdAt: Date(), parts: [.init(messageID: id, partIndex: 0, kind: .text, text: comment.text)], runID: run))
+        }
+        try checkOwner()
+        guard let service = runServices[run], service.conversationID == owner, !(await service.snapshot()).isTerminal else {
+            try await store.cancelPendingSteer(id: id, owner: owner, runID: run)
+            publishSession(owner)
+            return
+        }
+        if row == nil {
+            try await store.upsert(.init(id: id, conversationID: owner, targetRunID: run, content: comment.text,
+                mode: .steer, status: .steerPending, executionMode: "browserReturnComment"))
+        } else if row?.status == .queued {
+            guard try await store.beginSteerPromotion(id: id, expectedRunID: run) != nil else { return }
+        }
+        try checkOwner()
+        let result = await service.steer(.init(id: id, content: comment.text), expectedRunID: run)
+        if case .rejected(let reason) = result {
+            guard (await service.snapshot()).isTerminal else { throw FloeError.validationFailed(reason) }
+            try await store.cancelPendingSteer(id: id, owner: owner, runID: run)
+        } else if row != nil {
+            try await store.markSteerAccepted(id: id, runID: run)
+        }
+        publishSession(owner)
     }
 
     // MARK: - Loading
@@ -4950,6 +5006,10 @@ final class ConversationCenter: ObservableObject {
             }
         )
         let subagentRegistry = environment.subagentRunnerRegistry
+        configuration.willExecuteToolBatch = { [weak environment] tools in
+            guard !tools.contains(where: { $0.hasPrefix("browser.") || $0.hasPrefix("preview.") }) else { return }
+            await environment?.browserCenter.releaseIdlePage(conversationID: conversationID, runID: runID)
+        }
         configuration.settleBackgroundChildren = {
             try await subagentRegistry.settleBackground(runID: runID, conversationID: conversationID)
         }

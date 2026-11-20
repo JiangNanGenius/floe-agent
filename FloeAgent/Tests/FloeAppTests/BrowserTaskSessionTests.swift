@@ -750,13 +750,15 @@ struct BrowserTaskSessionTests {
         #expect(try await environment.conversationStore.messages(conversationID: owner).isEmpty)
         center.recordOwnerRun(conversationID: owner, runID: newerRun)
         #expect(session.registerUserInput())
-        #expect(await center.returnControlIfCurrent(for: session, handoffID: requested.id))
+        #expect(await center.returnControlIfCurrent(for: session, handoffID: requested.id, comment: "Use the second result"))
         await center.recoverHandoff(conversationID: owner, runID: newerRun)
         await center.recoverHandoff(conversationID: owner, runID: runID)
         let notices = try await environment.conversationStore.messages(conversationID: owner)
-        #expect(notices.map(\.content) == [BrowserControlNotice.humanTookControl.message, BrowserControlNotice.returned.message])
-        #expect(notices.allSatisfy { $0.role == "system" && $0.runID == runID && !$0.content.contains("private-canary") })
-        #expect(Set(notices.map(\.id)).count == 2)
+        let controls = notices.filter { $0.role == "system" }
+        #expect(notices.filter { $0.role == "user" }.map(\.content) == ["Use the second result"])
+        #expect(controls.map(\.content) == [BrowserControlNotice.humanTookControl.message, BrowserControlNotice.returned.message])
+        #expect(notices.allSatisfy { $0.role != "assistant" && $0.runID == runID && !$0.content.contains("private-canary") })
+        #expect(Set(notices.map(\.id)).count == 3)
         #expect(try await environment.runningInputStore.pending(conversationID: owner).isEmpty)
         let runs = try await environment.runStore.runs(conversationID: owner)
         #expect(Set(runs.map(\.id)) == [runID, newerRun] && runs.allSatisfy { $0.state == "completed" })
@@ -2714,6 +2716,45 @@ struct BrowserTaskSessionTests {
         #expect(session.isUserControlling)
         #expect(center.endModelControl(conversationID: owner, runID: runID) == false)
         #expect(session.isUserControlling)
+    }
+
+    @Test("Moving to other tools releases the current model lease and leaves the tab open")
+    func idleReleasePreservesOpenTabsAndHumanControl() async throws {
+        let center = makeCenter(), owner = UUID(), runID = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: runID)
+        _ = try await run(registry, "browser.tabs", "{}", as: ctx)
+        let session = try #require(center.session(for: owner))
+        let tabs = session.tabs.map(\.id)
+        let lease = try #require(session.modelControl)
+        center.releaseIdlePage(conversationID: owner, runID: UUID())
+        #expect(session.modelControl == lease)
+        center.releaseIdlePage(conversationID: owner, runID: runID)
+        #expect(!session.isModelActive && session.tabs.map(\.id) == tabs)
+        _ = try await run(registry, "browser.tabs", "{}", as: ctx)
+        center.takeControl()
+        center.releaseIdlePage(conversationID: owner, runID: runID)
+        #expect(session.isUserControlling && session.tabs.map(\.id) == tabs)
+    }
+
+    @Test("A recovered return comment cannot launch a new turn or enter a different run")
+    func recoveredBrowserCommentKeepsItsTargetRun() async throws {
+        let environment = AppEnvironment.preview(), owner = UUID(), run = UUID(), id = UUID()
+        try await environment.database.migrate()
+        try await environment.conversationStore.saveConversation(.init(id: owner, title: "Handoff", createdAt: Date(), updatedAt: Date()))
+        try await environment.runStore.saveRun(.init(id: run, conversationID: owner, state: "executing", goal: "Return", startedAt: Date()))
+        let store = environment.runningInputStore
+        try await store.upsert(.init(id: id, conversationID: owner, targetRunID: run, content: "Use this tab",
+            mode: .steer, status: .steerPending, executionMode: "browserReturnComment"))
+        try await store.recoverTransientInputs()
+        #expect(try await store.claimNextQueued(conversationID: owner) == nil)
+        #expect(try await store.beginSteerPromotion(id: id, expectedRunID: UUID()) == nil)
+        #expect(try await store.beginSteerPromotion(id: id, expectedRunID: run)?.targetRunID == run)
+        try await store.cancelPendingSteer(id: id, owner: owner, runID: run)
+        #expect(try await store.input(id: id)?.status == .cancelled)
+        try await environment.conversationStore.deleteConversation(id: owner)
     }
 
     @Test("Repeated and stale release tokens never unlock a newer holding period")

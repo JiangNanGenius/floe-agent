@@ -51,9 +51,11 @@ private final class BrowserPreviewPanel: Identifiable, Sendable {
     let id = UUID()
     let mode: Mode
     let session: BrowserTaskSession
+    let initialActivity: UInt64
     private let center: BrowserSessionCenter
 
-    init(mode: Mode, session: BrowserTaskSession, center: BrowserSessionCenter) {
+    @MainActor init(mode: Mode, session: BrowserTaskSession, center: BrowserSessionCenter) {
+        initialActivity = session.humanActivitySequence
         self.mode = mode
         self.session = session
         self.center = center
@@ -88,7 +90,15 @@ private struct BrowserPreviewPresenter: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.browserPreviewPresentation, BrowserPreviewPresentation(panelID: panel?.id, open: open))
-            .sheet(item: $panel) { shown in
+            .sheet(item: Binding(get: { panel }, set: { next in
+                guard next == nil, let old = panel, old.mode == .interacting,
+                      old.session.isUserControlling, center.previewInteractionID == old.id else { panel = next; return }
+                let receipt = center.handoff(for: old.session.conversationID)?.id
+                Task {
+                    _ = await center.returnControlIfCurrent(for: old.session, handoffID: receipt, presentationID: old.id)
+                    if panel?.id == old.id { panel = nil }
+                }
+            })) { shown in
                 BrowserLivePreviewSheet(center: center, session: shown.session, panel: shown) {
                     if panel?.id == shown.id { panel = nil }
                 }
@@ -140,17 +150,12 @@ private struct BrowserReturnedHandoffStatus: View {
         guard let event = center.handoff(for: owner), event.conversationID == owner,
               center.session(for: owner)?.isUserControlling != true,
               center.session(for: owner)?.modelControl == nil else { return nil }
-        if event.closedAfterRestart == true { return event }
-        guard event.returning, center.conversationID == owner, center.handoff?.id == event.id,
-              center.handoffNeedsContinue, !center.returningControl else { return nil }
-        return event
+        return event.closedAfterRestart == true ? event : nil
     }
 
     var body: some View {
-        if let event = receipt {
-            Text(event.closedAfterRestart == true
-                ? IDELanguageRunText.t("上次打开的网页已关闭。请返回原任务查看。", "The previous browser page closed. Check the original task.")
-                : IDELanguageRunText.t("网页已交还，原任务未运行。请返回原任务查看。", "The browser was returned. The original task is not running. Check the original task."))
+        if receipt != nil {
+            Text(IDELanguageRunText.t("上次打开的网页已关闭。", "The previous browser page closed."))
                 .font(.caption).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 4)
                 .accessibilityIdentifier("browser.handoff.taskStatus")
@@ -172,7 +177,7 @@ private struct BrowserLivePreviewControls: View {
         scenePhase == .active && session.isModelActive && onScreen && inlineImage && !collapsed && presentation?.panelID == nil
     }
 
-    private var isActive: Bool { session.lastModelActivity != nil || session.isUserControlling }
+    private var isActive: Bool { session.isModelActive || session.isUserControlling }
 
     var body: some View {
         let page = session.previewPageIdentity
@@ -201,12 +206,8 @@ private struct BrowserLivePreviewControls: View {
                     }
                     if session.isUserControlling, let receipt = center.handoff(for: session.conversationID),
                        receipt.humanPresent, center.visibleSession === session {
-                        Button(IDELanguageRunText.t("交还给 AI", "Return to AI")) {
-                            Task { _ = await center.returnControlIfCurrent(for: session, handoffID: receipt.id) }
-                        }
-                        .font(.caption.weight(.semibold)).frame(minHeight: 44)
-                        .disabled(session.takeoverPending || center.returningControl)
-                        .accessibilityIdentifier("browser.live.return")
+                        BrowserReturnActions(center: center, session: session, handoffID: receipt.id, presentationID: nil,
+                                             closes: false, identifier: "browser.live.return", completed: {})
                     }
                     Button {
                         presentation?.open(.interacting, session, page, lease)
@@ -253,47 +254,89 @@ private struct BrowserLivePreviewSheet: View {
                 case .interacting:
                     BrowserView(center: center, previewInteractionID: panel.id, expectedSession: session, onClose: close)
                 case .watching:
-                    VStack(spacing: 16) {
-                        if scenePhase == .active, session.isModelActive, let tab = session.fixedViewportTab ?? session.activeTab {
-                            BrowserZoomablePreview(tab: tab, presentationID: panel.id, priority: 2)
-                                .frame(maxHeight: .infinity)
-                        }
-                        Text(session.livePreviewStatus(in: center)).font(.callout)
+                    if scenePhase == .active, session.isModelActive, let tab = session.fixedViewportTab ?? session.activeTab {
+                        BrowserZoomablePreview(tab: tab, presentationID: panel.id, priority: 2)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .navigationTitle(tab.webView.url?.host ?? IDELanguageRunText.t("网页预览", "Page preview"))
                     }
-                    .padding()
-                    .navigationTitle(IDELanguageRunText.t("浏览器预览", "Browser preview"))
                 }
             }
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    if panel.mode == .interacting, session.isUserControlling {
-                        Button {
-                            let handoffID = center.handoff(for: session.conversationID)?.id
-                            Task {
-                                if await center.returnControlIfCurrent(for: session, handoffID: handoffID, presentationID: panel.id) {
-                                    close()
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "hand.tap")
-                        }
-                            .accessibilityLabel(IDELanguageRunText.t("交还并关闭", "Return control and close"))
-                            .disabled(session.takeoverPending || center.returningControl || session.returningToModel)
-                            .accessibilityIdentifier("browser.live.back")
+                    if panel.mode == .interacting && session.isUserControlling {
+                        BrowserReturnActions(center: center, session: session, handoffID: center.handoff(for: session.conversationID)?.id,
+                                             presentationID: panel.id, closes: true, identifier: "browser.live.back", completed: close)
                     } else {
-                        Button(IDELanguageRunText.t("返回", "Back"), action: close)
+                        Button(action: close) { Image(systemName: "xmark") }
+                            .accessibilityLabel(IDELanguageRunText.t("关闭预览", "Close preview"))
                             .accessibilityIdentifier("browser.live.back")
                     }
                 }
             }
         }
-        .interactiveDismissDisabled((panel.mode == .interacting && session.isUserControlling)
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled((panel.mode == .interacting && session.isUserControlling &&
+            (session.humanActivitySequence != panel.initialActivity || session.takeoverPending))
             || (center.visibleSession === session && (center.returningControl || session.returningToModel)))
+        .onChange(of: session.isModelActive) { _, active in
+            if panel.mode == .watching && !active { close() }
+        }
         .onChange(of: center.conversationID) { _, owner in
             if panel.mode == .interacting, owner != session.conversationID { close() }
         }
         .onChange(of: center.session(for: session.conversationID)?.sessionID) { _, live in
             if live != session.sessionID { close() }
+        }
+    }
+}
+
+/// Closing is one tap. A separate optional note is delivered as user input to this handoff's run.
+private struct BrowserReturnActions: View {
+    @ObservedObject var center: BrowserSessionCenter
+    @ObservedObject var session: BrowserTaskSession
+    let handoffID: UUID?
+    let presentationID: UUID?
+    let closes: Bool
+    let identifier: String
+    let completed: () -> Void
+    @State private var composing = false
+    @State private var note = ""
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button { handback("") } label: {
+                Image(systemName: closes ? "xmark" : "arrow.uturn.backward").frame(minWidth: 44, minHeight: 44)
+            }
+            .accessibilityLabel(closes ? IDELanguageRunText.t("交还并关闭", "Return control and close") : IDELanguageRunText.t("交还给模型", "Return to model"))
+            .accessibilityIdentifier(identifier)
+            if handoffID != nil {
+                Button { composing = true } label: {
+                    Image(systemName: "text.bubble").frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel(IDELanguageRunText.t("带备注交还", "Return with a comment"))
+                .popover(isPresented: $composing) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField(IDELanguageRunText.t("给模型的备注", "Comment for the model"), text: $note, axis: .vertical)
+                            .lineLimit(2...5).textFieldStyle(.roundedBorder)
+                        if let error = center.handoffError { Text(error).foregroundStyle(.red).font(.caption) }
+                        Button(IDELanguageRunText.t("交还给模型", "Return to model")) { handback(note) }
+                            .buttonStyle(.borderedProminent)
+                    }.padding().frame(idealWidth: 320).presentationCompactAdaptation(.popover)
+                }
+            }
+        }
+        .disabled(session.takeoverPending || center.returningControl || session.returningToModel)
+        .onChange(of: handoffID) { _, _ in note = ""; composing = false }
+    }
+
+    private func handback(_ comment: String) {
+        Task {
+            if await center.returnControlIfCurrent(for: session, handoffID: handoffID, presentationID: presentationID, comment: comment) {
+                composing = false
+                note = ""
+                completed()
+            }
         }
     }
 }
@@ -313,7 +356,7 @@ private extension BrowserTaskSession {
             return IDELanguageRunText.t("当前没有浏览器操作", "No current browser action")
         }
         if kind == .clicking, let label = livePreviewFrame?.clickedLabel {
-            return IDELanguageRunText.t("AI 点击了「\(label)」", "AI clicked “\(label)”")
+            return IDELanguageRunText.t("模型点击了「\(label)」", "The model clicked “\(label)”")
         }
         return BrowserModelStatusBar.description(for: kind)
     }
@@ -552,22 +595,6 @@ private struct BrowserSurface: View {
         reminderID = period.handoff
     }
 
-    private func handback(_ handoff: UUID?) {
-        let presentation = interactionID
-        Task { @MainActor in
-            guard await center.returnControlIfCurrent(for: session, handoffID: handoff, presentationID: presentation),
-                  center.visibleSession === session, center.previewInteractionID == presentation else { return }
-            onClose?()
-        }
-    }
-
-    private func handbackLabel(hasRun: Bool) -> String {
-        if onClose != nil {
-            return hasRun ? IDELanguageRunText.t("交还并返回", "Return to AI and close") : IDELanguageRunText.t("完成并返回", "Done and close")
-        }
-        return hasRun ? IDELanguageRunText.t("交还给 AI", "Return to AI") : IDELanguageRunText.t("完成", "Done")
-    }
-
     @ViewBuilder private var humanHandoffBadge: some View {
             if center.taskHandoffsEnabled && session.isUserControlling {
                 let receipt = center.handoff(for: session.conversationID)
@@ -603,20 +630,11 @@ private struct BrowserSurface: View {
                             Button(IDELanguageRunText.t("继续由我操作", "Keep control")) { reminderID = nil }
                                 .font(.caption).frame(minHeight: 44)
                                 .accessibilityIdentifier("browser.handoff.keep")
-                        } else if let onClose, interactionID == nil {
-                            Button(IDELanguageRunText.t("仅收起", "Close for now"), action: onClose)
-                                .font(.caption).frame(minHeight: 44)
-                                .accessibilityIdentifier("browser.handoff.close")
                         }
-                        Button { handback(receipt?.id) } label: {
-                            if center.returningControl {
-                                HStack { ProgressView(); Text(IDELanguageRunText.t("正在交还", "Returning control")) }
-                            }
-                            else { Text(handbackLabel(hasRun: receipt?.runID != nil)) }
+                        if interactionID == nil {
+                            BrowserReturnActions(center: center, session: session, handoffID: receipt?.id, presentationID: nil,
+                                                 closes: onClose != nil, identifier: "browser.handoff.return", completed: { onClose?() })
                         }
-                        .disabled(center.returningControl)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("browser.handoff.return")
                     }
                 }.padding(.horizontal, 12)
                     .background(.thinMaterial, in: Capsule())
@@ -631,7 +649,7 @@ private struct BrowserSurface: View {
                 if session.usesFixedViewport {
                     HStack {
                         Label(session.humanBrowsingTabID == nil
-                              ? IDELanguageRunText.t("AI 正在浏览", "AI browsing")
+                              ? IDELanguageRunText.t("模型正在浏览", "AI browsing")
                               : IDELanguageRunText.t("浏览标签页", "Browsing tab"),
                               systemImage: session.humanBrowsingTabID == nil ? "sparkles" : "safari")
                         Spacer()
@@ -659,11 +677,6 @@ private struct BrowserSurface: View {
             }
             .background(.bar)
             BrowserProgressBar(session: session)
-            if center.taskHandoffsEnabled && center.handoffNotified {
-                Label(IDELanguageRunText.t("已通知原任务", "Original task notified"), systemImage: "checkmark.circle")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("browser.taskHandoffNotified")
-            }
             if center.taskHandoffsEnabled {
                 BrowserReturnedHandoffStatus(center: center, owner: session.conversationID)
             }
@@ -685,7 +698,9 @@ private struct BrowserSurface: View {
                 }
             }
                 .overlay(alignment: .topLeading) {
-                    humanHandoffBadge.padding(8)
+                    if interactionID == nil || reminderID != nil || session.takeoverPending || center.handoffError != nil {
+                        humanHandoffBadge.padding(8)
+                    }
                 }
                 .overlay(alignment: .topTrailing) {
                     if center.taskHandoffsEnabled && !session.isUserControlling && session.modelControl != nil && session.humanBrowsingTabID == nil {
@@ -767,7 +782,7 @@ private struct BrowserConcurrentTabStrip: View {
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(selected ? .isSelected : [])
                         .accessibilityHint(isModelTab
-                            ? IDELanguageRunText.t("查看 AI 正在操作的标签页", "View the tab controlled by AI")
+                            ? IDELanguageRunText.t("查看模型正在操作的标签页", "View the tab controlled by the model")
                             : IDELanguageRunText.t("打开这个标签页", "Open this tab"))
                     }
                     .background(selected ? Color(uiColor: .systemBackground) : .clear,
@@ -945,7 +960,7 @@ private struct BrowserModelStatusBar: View {
     private var activityText: String {
         let kind = session.lastModelActivity?.kind ?? .observing
         if kind == .clicking, let detail = session.livePreviewFrame?.clickedLabel {
-            return IDELanguageRunText.t("AI 点击了「\(detail)」", "AI clicked “\(detail)”")
+            return IDELanguageRunText.t("模型点击了「\(detail)」", "The model clicked “\(detail)”")
         }
         return Self.description(for: kind)
     }
@@ -953,19 +968,19 @@ private struct BrowserModelStatusBar: View {
     static func description(for kind: BrowserModelActivity.Kind) -> String {
         switch kind {
         case .observing:
-            return IDELanguageRunText.t("AI 正在查看网页", "AI is viewing the page")
+            return IDELanguageRunText.t("模型正在查看网页", "The model is viewing the page")
         case .navigating:
-            return IDELanguageRunText.t("AI 正在打开网页", "AI is opening a page")
+            return IDELanguageRunText.t("模型正在打开网页", "The model is opening a page")
         case .clicking:
-            return IDELanguageRunText.t("AI 正在操作网页", "AI is using the page")
+            return IDELanguageRunText.t("模型正在操作网页", "The model is using the page")
         case .typing:
-            return IDELanguageRunText.t("AI 正在填写表单", "AI is filling in a form")
+            return IDELanguageRunText.t("模型正在填写表单", "The model is filling in a form")
         case .scrolling:
-            return IDELanguageRunText.t("AI 正在滚动网页", "AI is scrolling the page")
+            return IDELanguageRunText.t("模型正在滚动网页", "The model is scrolling the page")
         case .waiting:
-            return IDELanguageRunText.t("AI 正在等待网页", "AI is waiting for the page")
+            return IDELanguageRunText.t("模型正在等待网页", "The model is waiting for the page")
         case .exporting, .downloading:
-            return IDELanguageRunText.t("AI 正在保存网页文件", "AI is saving a page file")
+            return IDELanguageRunText.t("模型正在保存网页文件", "The model is saving a page file")
         }
     }
 }

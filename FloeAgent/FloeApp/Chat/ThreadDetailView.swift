@@ -1693,9 +1693,12 @@ struct ThreadDetailView: View {
                     TaskBrowserLivePreview(center: environment.browserCenter,
                                            conversationID: viewModel.conversationID, inlineImage: false)
                 }
-                if !viewModel.pendingInputs.isEmpty {
+                let composerInputs = viewModel.pendingInputs.filter {
+                    $0.executionMode != BrowserControlNotice.executionMode && !["browserHandoff", "browserReturnComment"].contains($0.executionMode)
+                }
+                if !composerInputs.isEmpty {
                     PendingInputQueueView(
-                        inputs: viewModel.pendingInputs,
+                        inputs: composerInputs,
                         canSteer: viewModel.isRunning,
                         onEdit: { editingPendingInput = $0 },
                         onDelete: { input in Task { await viewModel.removePendingInput(input) } },
