@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在聊天回复下展开一个文件，核对本轮差异。分别从游戏工程主页和 IDE 运行游戏，再返回原界面。更改全局审批方式，检查编辑器助手是否跟随，然后给一个工程单独设置。让助手并行处理两项独立工作，分别试试停止单项和停止整轮。",
+  "en-US": "Expand a file beneath a reply to check its changes. Run a game from the project home and from the IDE, then return to where you started. Change global approval settings, check an editor assistant, and set a project override. Start two independent subtasks and try stopping one and stopping the entire turn."
+}

@@ -8,6 +8,7 @@ import FloeModels
 import FloeProviders
 import FloeSecurity
 import FloeAgentRuntime
+import FloePersistence
 import FloeTestSupport
 @testable import FloeApp
 
@@ -98,7 +99,7 @@ struct NativeStudioApprovalIntegrationTests {
     func closedActionTable() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at:root) }
         let paths = await PersonalContentLibrary(root:root.appendingPathComponent("Library")).typedServiceStorePaths()
-        #expect(TypedMutationContract.nativeStudioMediaToolIDs == MediaV2Session.localToolIDs.union(StudioMediaSourceContracts.hostToolIDs))
+        #expect(TypedMutationContract.nativeStudioMediaToolIDs == MediaV2Session.localToolIDs.union(StudioMediaSourceContracts.hostToolIDs).union(StudioMediaSourceContracts.videoHostToolIDs))
         for (name,actions) in [
             ("studio.run",["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","inspectAudio"]),
             ("studio.machining",["inspect","prepare","configure","calculate","exportSTL","exportToolpath","preparePrint"]),
@@ -214,6 +215,147 @@ struct NativeStudioApprovalIntegrationTests {
         #expect(try await !authority.canAccess(conversationID:task,projectID:original,editing:true))
         let reopened = try StudioDocumentAccess(root:root.appendingPathComponent("Authority"))
         #expect(try await !reopened.canAccess(conversationID:stranger,projectID:owned,editing:false))
+    }
+}
+
+@Suite("Editor approval inheritance", .serialized)
+@MainActor
+struct EditorApprovalInheritanceTests {
+    private func makeDatabase() async throws -> DatabaseManager {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        return database
+    }
+
+    private func makeConversation(in database: DatabaseManager) async throws -> UUID {
+        let id = UUID()
+        try await SQLiteConversationStore(database: database).saveConversation(
+            .init(id: id, title: "Approval fixture", createdAt: Date(), updatedAt: Date()))
+        return id
+    }
+
+    @Test("A stored override always wins; without one the task follows the live global default")
+    func resolutionRules() {
+        // No override: follows the live global source in every position.
+        #expect(EditorApprovalInheritance.effectiveMode(saved:nil, global:.human) == .ask)
+        #expect(EditorApprovalInheritance.effectiveMode(saved:nil, global:.approvalModel) == .automatic)
+        #expect(EditorApprovalInheritance.effectiveMode(saved:nil, global:.fullControl) == .fullAccess)
+        // Explicit overrides win over a different global (old decisions honored).
+        #expect(EditorApprovalInheritance.effectiveMode(saved:"ask", global:.fullControl) == .ask)
+        #expect(EditorApprovalInheritance.effectiveMode(saved:"automatic", global:.human) == .automatic)
+        #expect(EditorApprovalInheritance.effectiveMode(saved:"fullAccess", global:.human) == .fullAccess)
+        // Legacy AgentMode spellings written by older builds keep resolving.
+        #expect(EditorApprovalInheritance.effectiveMode(saved:"approvalModel", global:.human) == .automatic)
+        #expect(EditorApprovalInheritance.effectiveMode(saved:"fullControl", global:.human) == .fullAccess)
+        // An unrecognized stored value cannot pin a task: it falls back to
+        // Ask until the user explicitly changes or resets it.
+        #expect(EditorApprovalInheritance.effectiveMode(saved:"futureMode", global:.approvalModel) == .ask)
+    }
+
+    @Test("Only genuinely saved modes count as overrides; nil means inherit")
+    func overrideDetection() {
+        #expect(!EditorApprovalInheritance.hasOverride(nil))
+        #expect(EditorApprovalInheritance.hasOverride("futureMode"))
+        #expect(EditorApprovalInheritance.hasOverride("ask"))
+        #expect(EditorApprovalInheritance.hasOverride("automatic"))
+        #expect(EditorApprovalInheritance.hasOverride("fullAccess"))
+        #expect(EditorApprovalInheritance.hasOverride("approvalModel"))
+        // Migration boundary: the `.automatic` older builds seeded for new
+        // assistants is indistinguishable from a user choice, so it is
+        // honored as an explicit override and never rewritten silently.
+        #expect(EditorApprovalInheritance.effectiveMode(saved:"automatic", global:.human) == .automatic)
+    }
+
+    @Test("A policy saved with no approval mode round-trips as inherit, keeping separate capability ceilings")
+    func inheritRoundTripPreservesCeilings() async throws {
+        let database = try await makeDatabase()
+        let store = SQLiteWorkspaceStore(database:database)
+        let conversation = try await makeConversation(in: database)
+        // Exactly what the editor surfaces now seed for a brand-new assistant.
+        try await store.saveTaskPolicy(.init(conversationID:conversation,
+            approvalMode:nil, allowedToolNames:["studio.edit","studio.read"],
+            filePaths:[], networkAllowed:true, browserControlAllowed:false,
+            uploadAllowed:false, credentialsAllowed:false, remoteExecutionAllowed:false,
+            recoveryPolicy:.safePoint, notificationPolicy:.stages))
+        let saved = try await store.taskPolicy(conversationID:conversation)
+        #expect(saved.approvalMode == nil)
+        #expect(EditorApprovalInheritance.hasOverride(saved.approvalMode) == false)
+        #expect(saved.allowedToolNames == ["studio.edit","studio.read"])
+        #expect(saved.networkAllowed == true)
+        #expect(saved.browserControlAllowed == false)
+        #expect(saved.uploadAllowed == false)
+        #expect(saved.credentialsAllowed == false)
+        #expect(saved.remoteExecutionAllowed == false)
+        // Live re-resolution: the same row follows a later global change.
+        #expect(EditorApprovalInheritance.effectiveMode(saved:saved.approvalMode, global:.approvalModel) == .automatic)
+        #expect(EditorApprovalInheritance.effectiveMode(saved:saved.approvalMode, global:.human) == .ask)
+    }
+
+    @Test("Setting then resetting an override clears the stored mode back to inherit")
+    func overrideSetAndReset() async throws {
+        let database = try await makeDatabase()
+        let store = SQLiteWorkspaceStore(database:database)
+        let conversation = try await makeConversation(in: database)
+        try await store.saveTaskPolicy(.init(conversationID:conversation,
+            approvalMode:TaskApprovalMode.fullAccess.rawValue, networkAllowed:true,
+            recoveryPolicy:.alwaysRetry, notificationPolicy:.off))
+        let overridden = try await store.taskPolicy(conversationID:conversation)
+        #expect(overridden.approvalMode == "fullAccess")
+        #expect(EditorApprovalInheritance.effectiveMode(saved:overridden.approvalMode, global:.human) == .fullAccess)
+        // Reset through the same affordance write the inspector uses: the
+        // stored mode becomes NULL again and the task follows the global.
+        try await store.saveTaskPolicy(.init(conversationID:conversation,
+            approvalMode:nil, networkAllowed:true,
+            recoveryPolicy:overridden.recoveryPolicy, notificationPolicy:overridden.notificationPolicy))
+        let reset = try await store.taskPolicy(conversationID:conversation)
+        #expect(reset.approvalMode == nil)
+        #expect(EditorApprovalInheritance.effectiveMode(saved:reset.approvalMode, global:.approvalModel) == .automatic)
+        // The user's other choices survive the reset untouched.
+        #expect(reset.recoveryPolicy == .alwaysRetry)
+        #expect(reset.notificationPolicy == .off)
+    }
+
+    @Test("A replacement assistant inherits its own project's choices and never another project's")
+    func restartCarriesForwardWithinProjectOnly() async throws {
+        let database = try await makeDatabase()
+        let store = SQLiteWorkspaceStore(database:database)
+        // Project A's first assistant carries an explicit user override plus
+        // narrowed recovery/notification choices and a stale ceiling byte.
+        let projectA = try await makeConversation(in: database)
+        let projectB = try await makeConversation(in: database)
+        try await store.saveTaskPolicy(.init(conversationID:projectA,
+            approvalMode:TaskApprovalMode.fullAccess.rawValue,
+            allowedToolNames:["legacy.tool"], filePaths:["stale/path"],
+            networkAllowed:false, browserControlAllowed:false, uploadAllowed:false,
+            credentialsAllowed:false, remoteExecutionAllowed:false,
+            recoveryPolicy:.alwaysRetry, notificationPolicy:.off))
+        // Project B's assistant keeps the shipping default (inherit).
+        try await store.saveTaskPolicy(.init(conversationID:projectB,
+            networkAllowed:true, browserControlAllowed:false, uploadAllowed:false,
+            credentialsAllowed:false, remoteExecutionAllowed:false))
+        // Restart project A exactly like `StudioCoordinator.prepareAssistant`:
+        // carry THIS project's approval/recovery/notification forward, while
+        // the capability ceilings stay owned by the surface and are refreshed
+        // to their defaults instead of being copied from the old row.
+        let replaced = try await store.taskPolicy(conversationID:projectA)
+        let successor = try await makeConversation(in: database)
+        try await store.saveTaskPolicy(.init(conversationID:successor,
+            approvalMode:replaced.approvalMode,
+            networkAllowed:true, browserControlAllowed:false, uploadAllowed:false,
+            credentialsAllowed:false, remoteExecutionAllowed:false,
+            recoveryPolicy:replaced.recoveryPolicy,
+            notificationPolicy:replaced.notificationPolicy))
+        let carried = try await store.taskPolicy(conversationID:successor)
+        #expect(carried.approvalMode == "fullAccess")
+        #expect(carried.recoveryPolicy == .alwaysRetry)
+        #expect(carried.notificationPolicy == .off)
+        #expect(carried.allowedToolNames == nil)
+        #expect(carried.filePaths == [])
+        #expect(carried.networkAllowed == true)
+        // Project B is untouched: it still inherits and gains no override.
+        let b = try await store.taskPolicy(conversationID:projectB)
+        #expect(b.approvalMode == nil)
+        #expect(EditorApprovalInheritance.hasOverride(b.approvalMode) == false)
     }
 }
 #endif

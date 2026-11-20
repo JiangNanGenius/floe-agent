@@ -778,6 +778,15 @@ final class SettingsCenter: ObservableObject {
         await persist(mode, forKey: AppSettingsKey.defaultAgentMode)
     }
 
+    // MARK: - Editor approval inheritance
+
+    /// The live global approval source editor-assistant tasks inherit from.
+    /// Reads the current `defaultAgentMode` on every access so a task without
+    /// an explicit override always tracks the user's latest global choice.
+    var editorGlobalApprovalMode: TaskApprovalMode {
+        EditorApprovalInheritance.storedMode(defaultAgentMode.taskApprovalModeName) ?? .ask
+    }
+
     func loadRunningInputMode() async {
         if let stored = try? await settingsStore.value(
             forKey: AppSettingsKey.runningInputMode,
@@ -1147,6 +1156,58 @@ struct BackgroundPreferencesRepository: Sendable {
     func saveWorkSessionSnapshot(_ snapshot: BackgroundWorkSessionSnapshot) async throws {
         try await store.setValue(snapshot, forKey: BackgroundWorkSessionSnapshot.settingsKey)
     }
+}
+
+/// Shared editor-assistant approval inheritance.
+///
+/// Editor assistants (file, canvas, typeface, toolbox, notes and every other
+/// project-bound assistant) follow the live app-wide default approval mode
+/// until the user saves an explicit per-task override in the task approval
+/// affordance. A saved override always wins over later global changes; with
+/// no override the task tracks `SettingsCenter.defaultAgentMode` live.
+///
+/// Capability ceilings (allowed tool names, network/browser/upload/
+/// credentials/remote flags and file paths) are per-task and owned by the
+/// binding editor surface. They are never derived from, or widened by, the
+/// global approval mode — this helper resolves ONLY the approval mode.
+///
+/// Migration boundary: stored values written by older builds (including the
+/// `.automatic` defaults seeded for new assistants) are indistinguishable
+/// from a user's explicit choice and are therefore honored as overrides;
+/// nothing rewrites existing rows. Assistant surfaces seed new assistants
+/// with `approvalMode == nil` (inherit); tasks that never stored a mode
+/// (toolbox, notes) start following the global default, which resolves to
+/// the same "ask" they used before unless the user changed the default.
+enum EditorApprovalInheritance {
+    /// Maps a stored task-policy value to a user-facing mode. Accepts the
+    /// legacy `AgentMode` spellings (`approvalModel`/`fullControl`) written by
+    /// older builds, mirroring `TaskPolicy.resolvedApprovalMode`.
+    static func storedMode(_ raw: String?) -> TaskApprovalMode? {
+        guard let raw else { return nil }
+        switch raw {
+        case TaskApprovalMode.ask.rawValue: return .ask
+        case TaskApprovalMode.automatic.rawValue, "approvalModel": return .automatic
+        case TaskApprovalMode.fullAccess.rawValue, "fullControl": return .fullAccess
+        default: return nil
+        }
+    }
+
+    /// Effective mode for a task: the explicitly saved override wins; a task
+    /// without one follows the live global default.
+    static func effectiveMode(saved raw: String?, global: AgentMode) -> TaskApprovalMode {
+        effectiveMode(saved: raw, global: storedMode(global.taskApprovalModeName) ?? .ask)
+    }
+
+    /// Convenience for callers that already hold the resolved global mode.
+    static func effectiveMode(saved raw: String?, global: TaskApprovalMode) -> TaskApprovalMode {
+        raw == nil ? global : (storedMode(raw) ?? .ask)
+    }
+
+    /// Whether the task carries its own explicit decision (saved by either
+    /// an older build's seeding or the user). When false, every effective-mode
+    /// read must re-resolve against the live global default instead of
+    /// caching a snapshot.
+    static func hasOverride(_ raw: String?) -> Bool { raw != nil }
 }
 
 #endif

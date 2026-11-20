@@ -3022,6 +3022,7 @@ struct NotesDocumentApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     /// the task's own guest mounts (engine 9p share list + walk/symlink
     /// enforcement), never in a shared or native interpreter.
     let executionConfined: Bool
+    let askBeforeExecution: Bool
     /// `TaskPolicy.networkAllowed != false`: the task's download/execution
     /// policy. When false, network-capable calls (exec, shell, package
     /// installs) escalate instead of inheriting scope.
@@ -3029,10 +3030,11 @@ struct NotesDocumentApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     let latexAuthorization:(@Sendable (ProposedAction) async throws -> Bool)?
     let policyName = "document-assistant"
 
-    init(conversationID: UUID, store: NotesStore, executionConfined: Bool = false, networkPermitted: Bool = true,
+    init(conversationID: UUID, store: NotesStore, executionConfined: Bool = false, askBeforeExecution: Bool = false, networkPermitted: Bool = true,
          latexAuthorization:(@Sendable (ProposedAction) async throws -> Bool)? = nil) {
         self.conversationID = conversationID
         self.store = store
+        self.askBeforeExecution = askBeforeExecution
         self.executionConfined = executionConfined
         self.networkPermitted = networkPermitted
         self.latexAuthorization=latexAuthorization
@@ -3089,6 +3091,7 @@ struct NotesDocumentApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             guard executionConfined else {
                 return .escalateToHuman(reason: "Script execution in a Notes task requires its own Linux guest environment; confirm to run this once while that is unavailable")
             }
+            if askBeforeExecution { return try await HumanApprovalPolicy().decide(action) }
             guard networkPermitted else {
                 return .escalateToHuman(reason: "This task's policy disallows network access; running scripts or installing packages needs your confirmation")
             }

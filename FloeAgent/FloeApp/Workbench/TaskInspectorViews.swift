@@ -47,6 +47,18 @@ private enum TaskInspectorText {
     static let transcriptLoadFailed = ChatBilingualCatalog.localized(
         key: "workbench.task_inspector_views.transcript_load_failed",
         en: "Could not load the child transcript: %@", zh: "无法加载子会话记录：%@")
+    static let cancelSubagent = ChatBilingualCatalog.localized(
+        key: "workbench.task_inspector_views.cancel_subagent",
+        en: "Cancel subagent", zh: "取消子任务")
+    static let cancelSubagentConfirmationTitle = ChatBilingualCatalog.localized(
+        key: "workbench.task_inspector_views.cancel_subagent_confirmation_title",
+        en: "Cancel this subagent?", zh: "取消这个子任务？")
+    static let cancelSubagentConfirmationMessage = ChatBilingualCatalog.localized(
+        key: "workbench.task_inspector_views.cancel_subagent_confirmation_message",
+        en: "It will stop now and end without a result.", zh: "它会立即停止，并以无结果结束。")
+    static let cancelSubagentFailed = ChatBilingualCatalog.localized(
+        key: "workbench.task_inspector_views.cancel_subagent_failed",
+        en: "Could not cancel the subagent: %@", zh: "无法取消子任务：%@")
 
     static let jobDetails = ChatBilingualCatalog.localized(
         key: "workbench.task_inspector_views.job_details",
@@ -752,6 +764,7 @@ private struct InspectorBoundedEvidence: View {
 
 struct ChildAgentsInspectorView: View {
     let conversationID: UUID?
+    var parentRunID: UUID? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @State private var children: [ChildRunRecord] = []
     @State private var hasActiveParentRun = false
@@ -811,10 +824,16 @@ struct ChildAgentsInspectorView: View {
             // The lifecycle owner's typed store is the single source of truth;
             // the old hand-written `runs` join (with the never-existing
             // `budget_tokens` column and a swallowed error) is gone.
-            children = try await SQLiteChildRunStore(database: environment.database)
-                .children(conversationID: conversationID)
+            let store = SQLiteChildRunStore(database: environment.database)
+            if let parentRunID {
+                children = try await store.children(parentRunID: parentRunID).filter {
+                    $0.conversationID == conversationID && $0.delegateCallID != nil
+                }
+            } else {
+                children = try await store.children(conversationID: conversationID)
+            }
             let runs = (try? await environment.runStore.runs(conversationID: conversationID)) ?? []
-            hasActiveParentRun = runs.contains { !RunStateLocalizer.isTerminal($0.state) }
+            hasActiveParentRun = runs.contains { (parentRunID == nil || $0.id == parentRunID) && !RunStateLocalizer.isTerminal($0.state) }
             loadError = nil
         } catch {
             // Never swallow a failure: an unreadable store is reported, not
@@ -1006,8 +1025,12 @@ struct ChildAgentDetailView: View {
     @State private var loadError: String?
     @State private var resumeAvailability: ChildResumeAvailability = .unavailable
     @State private var hasLiveParent = false
+    @State private var hasBackgroundOwnership = false
     @State private var isResuming = false
     @State private var resumeNotice: String?
+    @State private var isCancelling = false
+    @State private var cancelNotice: String?
+    @State private var confirmCancel = false
 
     private let pageSize = 80
 
@@ -1047,6 +1070,27 @@ struct ChildAgentDetailView: View {
                                 Text(String(localized: "This subagent has used its execution allowance."))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
+                        }
+                        // Deliberate single-child cancel: terminal, never
+                        // resumable; the parent reconciles the actual
+                        // `cancelled` outcome when it settles. Only a real
+                        // background child of a live parent run can be
+                        // cancelled — a foreground subtask has no background
+                        // task behind it, so no dead button is shown.
+                        if !child.state.isTerminal, hasBackgroundOwnership, hasLiveParent {
+                            Button(role: .destructive) {
+                                confirmCancel = true
+                            } label: {
+                                Label(TaskInspectorText.cancelSubagent, systemImage: "stop.circle")
+                            }
+                            .disabled(isCancelling)
+                            .frame(minHeight: FloeTheme.minimumTarget)
+                            .accessibilityIdentifier("inspector.childDetail.cancel")
+                        }
+                        if let cancelNotice {
+                            Text(cancelNotice)
+                                .font(.caption)
+                                .foregroundStyle(FloeTheme.destructive)
                         }
                         if let resumeNotice {
                             Text(resumeNotice).font(.caption).textSelection(.enabled)
@@ -1120,6 +1164,17 @@ struct ChildAgentDetailView: View {
             await reload()
             await pollWhileActive()
         }
+        .confirmationDialog(
+            TaskInspectorText.cancelSubagentConfirmationTitle,
+            isPresented: $confirmCancel,
+            titleVisibility: .visible
+        ) {
+            Button(TaskInspectorText.cancelSubagent, role: .destructive) {
+                Task { await cancelChild() }
+            }
+        } message: {
+            Text(TaskInspectorText.cancelSubagentConfirmationMessage)
+        }
     }
 
     /// Pairs each tool request with its later result by call id within the
@@ -1138,7 +1193,9 @@ struct ChildAgentDetailView: View {
         hasMorePage = false
         loadError = nil
         do {
-            child = try await SQLiteChildRunStore(database: environment.database).child(id: childRunID)
+            let store = SQLiteChildRunStore(database: environment.database)
+            child = try await store.child(id: childRunID)
+            hasBackgroundOwnership = try await store.backgroundOwner(childID: childRunID) != nil
             resumeAvailability = try await environment.childResumeService.availability(childID: childRunID)
             if let child {
                 hasLiveParent = await environment.conversationCenter.canResumeInterruptedChild(
@@ -1160,6 +1217,20 @@ struct ChildAgentDetailView: View {
                 childID: child.id, conversationID: child.conversationID)
             resumeNotice = outcome.status == .completed ? nil : outcome.findings
         } catch { resumeNotice = error.localizedDescription }
+        await reload()
+    }
+
+    private func cancelChild() async {
+        guard !isCancelling, let child else { return }
+        isCancelling = true
+        defer { isCancelling = false }
+        do {
+            try await environment.conversationCenter.cancelBackgroundChild(
+                childID: child.id, conversationID: child.conversationID)
+            cancelNotice = nil
+        } catch {
+            cancelNotice = String(format: TaskInspectorText.cancelSubagentFailed, error.localizedDescription)
+        }
         await reload()
     }
 
@@ -1213,6 +1284,12 @@ struct ChildAgentDetailView: View {
                 loadError = error.localizedDescription
             }
             guard let child else { return }
+            // Keep the action gates honest while polling: a parent that stops
+            // must disable resume/cancel without waiting for a manual reload.
+            // Background ownership never disappears once assigned, so the
+            // reload read stays authoritative.
+            hasLiveParent = await environment.conversationCenter.canResumeInterruptedChild(
+                conversationID: child.conversationID)
             if child.state.isTerminal {
                 await drainTerminalTail()
                 return
@@ -1427,18 +1504,22 @@ struct TaskPermissionsInspectorView: View {
     @State private var didSave = false
     @State private var resolvedIsLocalModel = false
 
+    @State private var globalApproval: AgentMode = .human
+    private static let inheritTag = "inherit-app-default"
+
     var body: some View {
         Form {
             if policy != nil {
                 Section("home.draft_task_permissions_sheet.approval_mode") {
                     Picker("workbench.task_inspector_views.this_task", selection: approvalModeBinding) {
+                        Text("settings.agent_permissions_view.follow_app_default").tag(Self.inheritTag)
                         Text("settings.agent_permissions_view.ask").tag(TaskApprovalMode.ask.rawValue)
                         Text("settings.agent_permissions_view.auto_approve").tag(TaskApprovalMode.automatic.rawValue)
                         Text("settings.agent_permissions_view.full_access")
                             .tag(TaskApprovalMode.fullAccess.rawValue)
                             .disabled(resolvedIsLocalModel)
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     Text(modeExplanation)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1475,17 +1556,18 @@ struct TaskPermissionsInspectorView: View {
         }
         .navigationTitle("workspace.file_inspector_view.permissions")
         .task(id: conversationID) { await load() }
+        .onReceive(environment.settingsCenter.$defaultAgentMode) { globalApproval = $0 }
     }
 
     private var approvalModeBinding: Binding<String> {
         Binding<String>(
-            get: { policy?.resolvedApprovalMode.rawValue ?? TaskApprovalMode.ask.rawValue },
+            get: { policy?.approvalMode.map { EditorApprovalInheritance.storedMode($0)?.rawValue ?? TaskApprovalMode.ask.rawValue } ?? Self.inheritTag },
             set: { value in
                 if value == TaskApprovalMode.fullAccess.rawValue {
                     guard !resolvedIsLocalModel else { return }
                     Task { await authenticateFullAccess() }
                 } else {
-                    policy?.approvalMode = value
+                    policy?.approvalMode = value == Self.inheritTag ? nil : value
                     Task { await save() }
                 }
             }
@@ -1493,7 +1575,16 @@ struct TaskPermissionsInspectorView: View {
     }
 
     private var modeExplanation: String {
-        switch policy?.resolvedApprovalMode ?? .ask {
+        let effective = EditorApprovalInheritance.effectiveMode(saved: policy?.approvalMode, global: globalApproval)
+        if policy?.approvalMode == nil {
+            let key: String = switch effective {
+            case .ask: "settings.agent_permissions_view.ask"
+            case .automatic: "settings.agent_permissions_view.auto_approve"
+            case .fullAccess: "settings.agent_permissions_view.full_access"
+            }
+            return FloeL10n.l("settings.agent_permissions_view.follow_app_default_value", FloeL10n.l(key))
+        }
+        return switch effective {
         case .ask: FloeL10n.l("home.draft_task_permissions_sheet.reads_run_automatically_side_effecting_actions")
         case .automatic: FloeL10n.l("workbench.task_inspector_views.routine_in_scope_steps_toward_the")
         case .fullAccess: FloeL10n.l("workbench.task_inspector_views.tools_for_this_task_run_automatically")

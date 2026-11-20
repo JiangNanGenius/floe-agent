@@ -197,7 +197,9 @@ import FloeHeavyEditorsHostAdapter
         let workspace = SQLiteWorkspaceStore(database: environment.database)
         let id: UUID
         // Defaults belong to a newly created assistant. Reopening an existing
-        // typeface assistant must retain its user's saved permissions.
+        // typeface assistant must retain its user's saved permissions; a
+        // brand-new assistant inherits the live global approval mode
+        // (approvalMode == nil).
         if let bound = try await authority.assistant(projectID: designID),
            let existing = try await environment.conversationStore.conversation(id: bound), existing.purpose == .ordinary {
             id = bound
@@ -208,7 +210,7 @@ import FloeHeavyEditorsHostAdapter
                     title: FontDesignText.t("字体助手 · ", "Typeface assistant · ") + project.title,
                     createdAt: now, updatedAt: now, titleOrigin: .manual))
                 _ = try await workspace.ensureWorkspace(conversationID: id, title: project.title)
-                try await workspace.saveTaskPolicy(.init(conversationID: id, approvalMode: TaskApprovalMode.automatic.rawValue,
+                try await workspace.saveTaskPolicy(.init(conversationID: id,
                     networkAllowed: true, browserControlAllowed: false, uploadAllowed: false, credentialsAllowed: false, remoteExecutionAllowed: false))
                 try await authority.bindAssistant(conversationID: id, projectID: designID)
                 environment.conversationCenter.taskPolicyDidChange(conversationID: id)

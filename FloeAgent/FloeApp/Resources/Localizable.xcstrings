@@ -79087,6 +79087,74 @@
         }
       }
     },
+    "editor.approval.inherited_suffix" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "default"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认"
+          }
+        }
+      }
+    },
+    "settings.agent_permissions_view.follow_app_default" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Follow App Default"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跟随应用默认"
+          }
+        }
+      }
+    },
+    "settings.agent_permissions_view.follow_app_default_explanation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This task follows the live app-wide default approval mode. Choose a specific mode to override it for this task only, or switch back anytime."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本任务跟随应用实时的默认审批模式。选择特定模式可仅覆盖本任务，也可随时切换回跟随默认。"
+          }
+        }
+      }
+    },
+    "settings.agent_permissions_view.follow_app_default_value" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App Default · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用默认 · %@"
+          }
+        }
+      }
+    },
     "settings.agent_permissions_view.ask": {
       "extractionState": "manual",
       "localizations": {

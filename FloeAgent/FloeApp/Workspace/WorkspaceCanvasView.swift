@@ -12906,6 +12906,18 @@ private struct CanvasAgentFloatingPanel: View {
         } catch { setupError = error.localizedDescription }
     }
 
+    /// Whether a read-back policy row carries real user state rather than the
+    /// factory default a missing row decodes to. Every policy this surface
+    /// persists has the tool ceiling set, so `allowedToolNames != nil` alone
+    /// proves the row exists; the approval/recovery checks additionally keep
+    /// an inheriting task's (nil mode) choices alive across a restart.
+    private static func isStoredCanvasPolicy(_ policy: TaskPolicy) -> Bool {
+        policy.approvalMode != nil
+            || policy.allowedToolNames != nil
+            || policy.recoveryPolicy != .safePoint
+            || policy.notificationPolicy != .stages
+    }
+
     @MainActor
     private func ensureConversationAndPolicy(documentID: UUID, replacing previous: UUID? = nil) async throws -> UUID {
         let owner = ConversationEditorOwnership.canvas(store.project.id, documentID: documentID)
@@ -12981,23 +12993,28 @@ private struct CanvasAgentFloatingPanel: View {
         // retain the user's saved approval/recovery/notification choices
         // (same contract as the file assistants); only the capability
         // ceilings are refreshed every prepare because the canvas tool
-        // catalog can change. A policy read failure fails closed (the error
-        // propagates and nothing is written), never treating a DB error as
-        // first use and overwriting a stored policy with defaults.
+        // catalog can change. A brand-new conversation stores no approval
+        // mode (nil) and follows the live app-wide default until the user
+        // saves an explicit override. An inheriting task (nil mode) still
+        // carries its recovery/notification choices: any stored policy row
+        // with real content counts as user state, not first use. A policy
+        // read failure fails closed (the error propagates and nothing is
+        // written), never treating a DB error as first use and overwriting a
+        // stored policy with defaults.
         let names = mcpCenter.canvasAllowedToolNames()
         let hasMCP = !names.subtracting(CanvasAgentToolPolicy.nativeToolNames).isEmpty
         var savedPolicy: TaskPolicy?
         if let previous {
             let previousPolicy = try await workspaceStore.taskPolicy(conversationID: previous)
-            if previousPolicy.approvalMode != nil { savedPolicy = previousPolicy }
+            if Self.isStoredCanvasPolicy(previousPolicy) { savedPolicy = previousPolicy }
         }
         if savedPolicy == nil {
             let currentPolicy = try await workspaceStore.taskPolicy(conversationID: conversationID)
-            if currentPolicy.approvalMode != nil { savedPolicy = currentPolicy }
+            if Self.isStoredCanvasPolicy(currentPolicy) { savedPolicy = currentPolicy }
         }
         try await workspaceStore.saveTaskPolicy(TaskPolicy(
             conversationID: conversationID,
-            approvalMode: savedPolicy?.approvalMode ?? TaskApprovalMode.automatic.rawValue,
+            approvalMode: savedPolicy?.approvalMode,
             allowedToolNames: names,
             filePaths: savedPolicy?.filePaths ?? [],
             networkAllowed: true,
@@ -13039,6 +13056,10 @@ private struct SharedCanvasAgentConversation: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var viewModel: ThreadDetailViewModel
     @ObservedObject var store: CanvasDocumentStore
+    /// The live global approval source. Observed directly so an inherited
+    /// canvas task re-titles the moment the user changes the app-wide
+    /// default; an explicit override is unaffected by definition.
+    @ObservedObject private var settingsCenter: SettingsCenter
 
     let center: ConversationCenter
     let workspace: WorkspaceRecord?
@@ -13072,6 +13093,7 @@ private struct SharedCanvasAgentConversation: View {
             center: center
         ))
         self.store = store
+        self.settingsCenter = center.environment.settingsCenter
         self.center = center
         self.workspace = workspace
         self.contextSnapshot = contextSnapshot
@@ -13369,15 +13391,24 @@ private struct SharedCanvasAgentConversation: View {
         .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    /// Current saved approval mode for the canvas task, mirroring the shared
-    /// composer's chip vocabulary. The value comes from the same durable
-    /// task policy the run executes under.
+    /// Current effective approval mode for the canvas task, mirroring the
+    /// shared composer's chip vocabulary. An explicit saved override wins;
+    /// otherwise the chip advertises the live app-wide default (and marks
+    /// itself as inherited) so a follow-global task never looks silently
+    /// pinned. The value comes from the same durable task policy the run
+    /// executes under.
     private var canvasApprovalTitle: String {
-        switch viewModel.taskPolicy.resolvedApprovalMode {
+        let override = EditorApprovalInheritance.storedMode(viewModel.taskPolicy.approvalMode)
+        let mode = override ?? settingsCenter.editorGlobalApprovalMode
+        let title = switch mode {
         case .ask: FloeL10n.l("settings.agent_permissions_view.ask")
         case .automatic: FloeL10n.l("settings.agent_permissions_view.auto_approve")
         case .fullAccess: FloeL10n.l("settings.agent_permissions_view.full_access")
         }
+        guard override != nil else {
+            return title + " · " + FloeL10n.l("editor.approval.inherited_suffix")
+        }
+        return title
     }
 
     private var canvasVoiceError: String? {

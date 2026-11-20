@@ -116,6 +116,13 @@ struct NotesAssistantPanel: View {
             let next = try await environment.conversationCenter.createConversation(
                 title: FloeL10n.l("notes.notes_assistant_panel.notes", document.title), purpose: .notes)
             do {
+                let policies = SQLiteWorkspaceStore(database: environment.database)
+                let oldPolicy = try await policies.taskPolicy(conversationID: previous)
+                var nextPolicy = try await policies.taskPolicy(conversationID: next.id)
+                nextPolicy.approvalMode = oldPolicy.approvalMode
+                nextPolicy.notificationPolicy = oldPolicy.notificationPolicy
+                nextPolicy.recoveryPolicy = oldPolicy.recoveryPolicy
+                try await policies.saveTaskPolicy(nextPolicy)
                 try await store.replaceAssistant(conversationID: next.id, documentID: document.id, expectedPrevious: previous)
                 do { try await environment.conversationStore.setArchived(id: previous, archived: true) }
                 catch {

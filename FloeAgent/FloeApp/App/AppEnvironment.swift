@@ -2801,9 +2801,12 @@ final class AppEnvironment: ObservableObject {
         if let policy = try? await workspaceStore.taskPolicy(conversationID: conversationID) {
             // Freeze exactly the policy the task really runs under (approval
             // mode / recovery / notifications); the execution boundary
-            // re-checks it and never widens it.
+            // re-checks it and never widens it. Editor tasks with no explicit
+            // override freeze the CURRENT global default — the schedule, once
+            // created, never silently follows a later settings change.
             let draft = DraftTaskPolicy(
-                approvalMode: policy.resolvedApprovalMode,
+                approvalMode: EditorApprovalInheritance.effectiveMode(
+                    saved: policy.approvalMode, global: settingsCenter.defaultAgentMode),
                 recoveryPolicy: policy.recoveryPolicy,
                 notificationPolicy: policy.notificationPolicy)
             permissionJSON = (try? JSONEncoder().encode(draft))

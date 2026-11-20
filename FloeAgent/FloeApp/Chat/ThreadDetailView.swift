@@ -87,6 +87,7 @@ struct ThreadDetailView: View {
     @State private var scheduleDetail: ScheduleDetailRequest?
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var designEntryState: DesignEntryStateCenter
+    @State private var globalApproval: AgentMode = .human
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -249,6 +250,12 @@ struct ThreadDetailView: View {
                     Divider()
                 }
                 threadScroll
+                if let progress = parallelSubtaskProgress {
+                    ParallelSubtaskProgressLine(active: progress.active, completed: progress.completed) {
+                        openParallelSubtasks(progress.children)
+                    }
+                    Divider()
+                }
                 UserQuestionPanel(
                     questions: environment.userQuestions,
                     conversationID: viewModel.conversationID,
@@ -407,6 +414,7 @@ struct ThreadDetailView: View {
                 }
                 Task { @MainActor in environment.continuousVoicePresentation.consumeReturnedDraft(returned.id) }
             }
+            .onReceive(environment.settingsCenter.$defaultAgentMode) { globalApproval = $0 }
             .onReceive(environment.ttsSettingsService.$snapshot) { settings in
                 autoReadEnabled = settings.autoReadEnabled
             }
@@ -1249,6 +1257,37 @@ struct ThreadDetailView: View {
         }
     }
 
+    /// Live delegated children of the SELECTED run (parallel background
+    /// work). Derived from the view model's durable child records — the same
+    /// records the delegate cards and the child-agents inspector read — so
+    /// the line never builds a second view of the run. `completed` counts
+    /// ONLY real `.completed` children of this round: cancelled/failed/
+    /// interrupted children are never reported as done. The line shows while
+    /// at least one child is still active and passes all children from this turn
+    /// to the detail entry.
+    private var parallelSubtaskProgress: (active: Int, completed: Int, children: [ChildRunRecord])? {
+        guard !viewModel.isTemporary, let runID = viewModel.selectedRun?.id else { return nil }
+        let delegated = viewModel.childRunRecords.filter {
+            $0.parentRunID == runID && $0.delegateCallID != nil
+        }
+        let active = delegated.filter { !$0.state.isTerminal }
+        guard !active.isEmpty else { return nil }
+        let completed = delegated.filter { $0.state == .completed }.count
+        return (active.count, completed, delegated)
+    }
+
+    /// One compact progress line opens the EXISTING subtask detail: a single
+    /// child opens its durable transcript directly; several open the shared
+    /// child-agents inspector. No new registry, no duplicate entry.
+    private func openParallelSubtasks(_ children: [ChildRunRecord]) {
+        if children.count == 1, let child = children.first {
+            presentedChild = PresentedChildRun(id: child.id)
+        } else {
+            router.inspectorRoute = AppRouter.InspectorRoute(
+                content: .childAgents, conversationID: viewModel.conversationID, parentRunID: children.first?.parentRunID)
+        }
+    }
+
     /// Opens the find bar and focuses its field. The composer draft,
     /// attachments and selection are untouched; closing find does not move
     /// the reader away from the current hit.
@@ -1722,7 +1761,8 @@ struct ThreadDetailView: View {
                 viewModel.handleModelSwitchForHistory(previousModelID: previous, incoming: incoming)
             },
             onPermissions: { showingPermissionsSheet = true },
-            approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
+            approvalMode: EditorApprovalInheritance.effectiveMode(saved: viewModel.taskPolicy.approvalMode, global: globalApproval),
+            approvalInherited: viewModel.taskPolicy.approvalMode == nil,
             contextID: viewModel.conversationID,
             isDraftConsumedBySend: viewModel.isConsumingDraft,
             embedded: embedded,
@@ -2418,6 +2458,52 @@ private struct TaskExportFile: Identifiable {
     let id = UUID()
     let url: URL
     let lease: ScratchLeaseToken
+}
+
+/// One compact line for the selected run's live parallel subtasks, keeping
+/// this round's completed count on the same line ("2 in progress · 1
+/// completed"). Tapping it opens the existing subtask detail (transcript or
+/// the shared inspector); it renders nothing when no delegated child is
+/// active.
+private struct ParallelSubtaskProgressLine: View {
+    let active: Int
+    let completed: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "person.2")
+                    .accessibilityHidden(true)
+                Text(title)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .accessibilityHidden(true)
+            }
+            .font(FloeTheme.Typography.metadata.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("thread.parallelSubtasks")
+    }
+
+    private var title: String {
+        guard completed > 0 else {
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view.parallel_subtasks_running",
+                en: String(format: "%d subtask(s) in progress", active),
+                zh: String(format: "%d 个子任务进行中", active))
+        }
+        return ChatBilingualCatalog.localized(
+            key: "chat.thread_detail_view.parallel_subtasks_progress",
+            en: String(format: "%d in progress · %d completed", active, completed),
+            zh: String(format: "%d 项并行中 · %d 项已完成", active, completed))
+    }
 }
 
 private struct TaskExportShareSheet: UIViewControllerRepresentable {

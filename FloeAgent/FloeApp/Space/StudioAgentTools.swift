@@ -150,11 +150,23 @@ enum StudioToolOutput {
                 // File assistants persist with their document. Grouping in
                 // the task center derives from the real binding below, not
                 // from hiding the conversation in the archive bucket.
-                // Defaults belong to a newly created assistant. Reopening an
-                // existing document must retain its user's saved permissions.
-                try await workspace.saveTaskPolicy(.init(conversationID: id, approvalMode: TaskApprovalMode.automatic.rawValue,
+                // A brand-new assistant inherits the live global approval
+                // mode (approvalMode == nil); restarting into this project's
+                // replacement carries THIS project's saved approval /
+                // recovery / notification choices forward — never another
+                // project's — while the capability ceilings stay owned by
+                // this surface and are never copied from the old row.
+                var inheritedChoices: TaskPolicy?
+                if let expected {
+                    let replaced = try await workspace.taskPolicy(conversationID: expected)
+                    inheritedChoices = replaced
+                }
+                try await workspace.saveTaskPolicy(.init(conversationID: id,
+                    approvalMode: inheritedChoices?.approvalMode,
                     networkAllowed: true, browserControlAllowed: false, uploadAllowed: false,
-                    credentialsAllowed: false, remoteExecutionAllowed: false))
+                    credentialsAllowed: false, remoteExecutionAllowed: false,
+                    recoveryPolicy: inheritedChoices?.recoveryPolicy ?? .safePoint,
+                    notificationPolicy: inheritedChoices?.notificationPolicy ?? .stages))
                 if case .building(let mount) = record { try buildingProjects.verify(mount) }
                 try await authority.replaceAssistant(conversationID: id, projectID: record.id, expectedPrevious: previous)
                 if let expected {

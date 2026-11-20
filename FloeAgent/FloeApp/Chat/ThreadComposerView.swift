@@ -182,7 +182,17 @@ struct ThreadComposerView: View {
     /// callback are unaffected.
     var onModelApplied: ((UUID?, ModelProfile) -> Void)? = nil
     var onPermissions: () -> Void = {}
+    /// Effective approval mode advertised by the chip. Hosts pass the
+    /// inheritance-aware value (the task's saved override, else the live
+    /// app-wide default for editor assistants).
     var approvalMode: TaskApprovalMode = .ask
+    /// True when the advertised mode is inherited from the live app-wide
+    /// default because the task stores no explicit override. The chip then
+    /// marks the title as inherited instead of looking silently pinned.
+    /// Defaults to false so hosts that predate the marker keep their
+    /// previous appearance; ordinary chat tasks always store a mode and
+    /// normally keep this false.
+    var approvalInherited: Bool = false
     /// Changes when the composer is reused for another conversation. Local
     /// transient errors must not leak into the next task.
     var contextID: UUID? = nil
@@ -1271,11 +1281,13 @@ struct ThreadComposerView: View {
     }
 
     private var approvalModeTitle: String {
-        switch approvalMode {
+        let title = switch approvalMode {
         case .ask: FloeL10n.l("settings.agent_permissions_view.ask")
         case .automatic: FloeL10n.l("settings.agent_permissions_view.auto_approve")
         case .fullAccess: FloeL10n.l("settings.agent_permissions_view.full_access")
         }
+        guard approvalInherited else { return title }
+        return title + " · " + FloeL10n.l("editor.approval.inherited_suffix")
     }
 
     private var sendSystemImage: String {

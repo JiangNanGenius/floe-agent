@@ -512,14 +512,20 @@ public enum TypedMutationContract {
     /// host paths. Actual task/project binding, source reads, CAS and native
     /// locks remain mandatory in the service after this classification.
     public static let nativeStudioMediaToolIDs: Set<String> = [
-            "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
-            "image.brush", "image.eraser", "image.fill", "image.eyedropper", "image.layer-mask", "image.vector-mask", "image.clip-mask",
-            "image.adjustment-layer", "image.group-layer", "image.duplicate-layer", "image.merge-layer", "image.crop", "image.rotate", "image.flip",
-            "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels",
-            "image.hsl", "image.white-balance", "image.bw", "video.trim", "video.split", "video.slip", "video.speed",
-            "video.transition", "video.pip", "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing",
-            "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll",
-            "video.srt", "image.align", "image.blend-mode", "media.import", "video.importFrames"
+        "image.remove-asset", "video.remove-asset", "image.feather-brush",
+        "image.remove", "image.content-fill", "image.heal", "image.patch", "image.smudge", "image.clone", "image.gradient", "image.blur-brush", "image.sharpen-brush", "image.layer-effect",
+        "image.perspective", "image.distort", "image.wand", "image.subject", "image.refine-edge", "image.expand", "image.smooth", "image.background", "image.curves", "image.balance", "image.lut", "image.denoise",
+        "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
+        "image.brush", "image.eraser", "image.fill", "image.eyedropper", "image.layer-mask", "image.vector-mask", "image.clip-mask",
+        "image.adjustment-layer", "image.group-layer", "image.duplicate-layer", "image.merge-layer", "image.crop", "image.rotate", "image.flip",
+        "image.boolean", "image.path-text", "image.outline", "image.resize", "image.canvas-size", "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw",
+        "video.video-curves", "video.wheels", "video.video-hsl", "video.video-lut", "video.tracking", "video.stabilize", "video.color-match", "video.hdr",
+        "video.chroma", "video.video-blend", "video.scopes", "video.eq", "video.compressor", "video.noise", "video.duck",
+        "video.graph", "video.motion-path", "video.motion-title", "video.preset-motion",
+        "video.reverse", "video.freeze", "video.caption-style", "video.nest",
+        "video.trim", "video.split", "video.slip", "video.speed", "video.transition", "video.pip",
+        "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing", "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll", "video.srt", "image.align", "image.blend-mode",
+        "media.import", "video.importFrames"
     ]
 
     private static func nativeStudioSpecs(toolName:String,arguments:[String:Any]) -> [TypedOutputSpec] {

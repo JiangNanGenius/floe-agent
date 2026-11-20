@@ -11,6 +11,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import Combine
 import UIKit
 import CryptoKit
 import FloeCore
@@ -1311,6 +1312,7 @@ final class ConversationCenter: ObservableObject {
 
     /// Live run services keyed by run ID. The center is the single owner;
     /// thread view-models observe through it.
+    private var approvalDefaultObserver: AnyCancellable?
     private var runServices: [UUID: ConversationRunService] = [:]
     private var environmentMigrationWaitingLaunches: Set<UUID> = []
     /// Provider-loop tasks retained so destructive actions can cancel and
@@ -1567,6 +1569,11 @@ final class ConversationCenter: ObservableObject {
             let delivered = try await self.deliverBrowserControlNotice(notice, id: event.id, event: event)
             return !delivered
         }
+        approvalDefaultObserver = environment.settingsCenter.$defaultAgentMode
+            .removeDuplicates().dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor in await self?.refreshInheritedApproval() }
+            }
     }
 
     /// Only the receipt's original run can consume either phase. A disconnected or finished run
@@ -5104,6 +5111,7 @@ final class ConversationCenter: ObservableObject {
                 notesExecutionConfined: notesExecutionConfined
             ),
             executor: catalogExecutor,
+            executionConfined: notesExecutionConfined,
             credentials: credentials,
             gate: environment.catastrophicGate,
             // Temporary runs never write recovery checkpoints (payload holds
@@ -5229,12 +5237,15 @@ final class ConversationCenter: ObservableObject {
         primaryModel: ModelProfile,
         notesExecutionConfined: Bool = false
     ) async -> any ApprovalPolicy {
-        if (try? await environment.conversationStore.conversation(id: taskPolicy.conversationID))?.purpose == .notes,
-           let store = try? await NotesRepository.shared.store() {
+        let mode = EditorApprovalInheritance.effectiveMode(saved: taskPolicy.approvalMode,
+                                                         global: environment.settingsCenter.defaultAgentMode)
+        if (try? await environment.conversationStore.conversation(id: taskPolicy.conversationID))?.purpose == .notes {
+            guard let store = try? await NotesRepository.shared.store() else { return HumanApprovalPolicy() }
             return NotesDocumentApprovalPolicy(
                 conversationID: taskPolicy.conversationID,
                 store: store,
                 executionConfined: notesExecutionConfined,
+                askBeforeExecution: mode == .ask,
                 networkPermitted: taskPolicy.networkAllowed != false,
                 latexAuthorization:{[weak environment] action in
                     guard let environment else {return false}
@@ -5247,7 +5258,7 @@ final class ConversationCenter: ObservableObject {
         let localBackend = await localApprovalBackend(primaryModel: primaryModel)
         let mustUseLocalApproval = environment.networkStatusMonitor.isOffline
             || primaryModel.providerID == ProviderProfile.onDeviceProviderID
-        switch taskPolicy.resolvedApprovalMode {
+        switch mode {
         case .ask:
             return HumanApprovalPolicy()
         case .automatic:
@@ -5556,6 +5567,32 @@ final class ConversationCenter: ObservableObject {
             resumeService: environment.childResumeService, runner: runner)
         publishSession(conversationID)
         return outcome
+    }
+
+    /// Cancels exactly one running background subagent of this conversation.
+    /// Ownership is revalidated against the durable child record (no
+    /// model-supplied run id); siblings and every other task's children are
+    /// untouched. The child settles as terminal `.cancelled` with a real
+    /// outcome, so its parent run finishes by reconciling the actual result.
+    func cancelBackgroundChild(childID: UUID, conversationID: UUID) async throws {
+        guard !isTemporaryConversation(conversationID) else {
+            throw FloeError.validationFailed(String(localized: "Subagents cannot be cancelled in a temporary chat."))
+        }
+        guard let owner = try await SQLiteChildRunStore(database: environment.database)
+            .backgroundOwner(childID: childID),
+            owner.conversationID == conversationID else {
+            throw FloeError.validationFailed(String(localized: "This subagent does not belong to the current task."))
+        }
+        do {
+            try await environment.subagentRunnerRegistry.cancelBackgroundChild(
+                runID: owner.parentRunID, conversationID: conversationID, childID: childID)
+        } catch FloeError.invalidConfiguration(_) {
+            // No live runner owns the parent run anymore (it finished or the
+            // process restarted): the durable record was already reconciled
+            // and there is nothing running to cancel.
+            throw FloeError.validationFailed(String(localized: "This subagent is no longer running."))
+        }
+        publishSession(conversationID)
     }
 
     /// The single live run for a conversation, when one exists.
@@ -9357,7 +9394,8 @@ final class ConversationCenter: ObservableObject {
         for service in liveServices {
             let nextPolicy = await approvalPolicy(
                 for: normalized,
-                primaryModel: service.primaryModel
+                primaryModel: service.primaryModel,
+                notesExecutionConfined: service.executionConfined
             )
             await service.updateApprovalPolicy(nextPolicy)
         }
@@ -11026,6 +11064,16 @@ final class ConversationCenter: ObservableObject {
         try await refreshActiveApprovalPolicies(ifDifferentFrom: previousReviewModels)
     }
 
+    private func refreshInheritedApproval() async {
+        let store = SQLiteWorkspaceStore(database: environment.database)
+        for service in Array(runServices.values) {
+            guard let policy = try? await store.taskPolicy(conversationID: service.conversationID),
+                  policy.approvalMode == nil else { continue }
+            let next = await approvalPolicy(for: policy, primaryModel: service.primaryModel, notesExecutionConfined: service.executionConfined)
+            await service.updateApprovalPolicy(next)
+        }
+    }
+
     private func refreshActiveApprovalPolicies(ifDifferentFrom previousReviewModels: [UUID?]) async throws {
         // An active run holds a stable DynamicApprovalPolicy. Updating only
         // model preferences left it using the old (or missing) classifier and
@@ -11037,7 +11085,7 @@ final class ConversationCenter: ObservableObject {
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         for service in Array(runServices.values) {
             let taskPolicy = try await workspaceStore.taskPolicy(conversationID: service.conversationID)
-            let nextPolicy = await approvalPolicy(for: taskPolicy, primaryModel: service.primaryModel)
+            let nextPolicy = await approvalPolicy(for: taskPolicy, primaryModel: service.primaryModel, notesExecutionConfined: service.executionConfined)
             await service.updateApprovalPolicy(nextPolicy)
         }
     }

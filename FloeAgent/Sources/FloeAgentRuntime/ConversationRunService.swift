@@ -122,6 +122,7 @@ public actor ConversationRunService {
     /// Model identity used to rebuild the effective policy when permissions
     /// change during this run.
     public nonisolated let primaryModel: ModelProfile
+    public nonisolated let executionConfined: Bool
     /// Immutable execution contract copied into the durable run and live UI
     /// projection. Recovery must never infer this from mutable conversation UI.
     public nonisolated let conversationMode: ConversationMode
@@ -390,6 +391,7 @@ public actor ConversationRunService {
         adapter: any ProviderAdapter,
         policy: any ApprovalPolicy,
         executor: any ToolExecutor,
+        executionConfined: Bool = false,
         credentials: ProviderCredentials = ProviderCredentials(),
         gate: CatastrophicActionGate? = nil,
         auditSink: (any AuditSink)? = nil,
@@ -414,6 +416,7 @@ public actor ConversationRunService {
     ) {
         self.runID = runID
         self.conversationID = configuration.conversationID
+        self.executionConfined = executionConfined
         self.primaryModel = configuration.model
         self.conversationStore = conversationStore
         self.runStore = runStore
