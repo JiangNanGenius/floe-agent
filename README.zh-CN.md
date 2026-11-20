@@ -35,7 +35,7 @@
 | --- | --- | --- |
 | **Floe Agent · iOS / iPadOS** | [App Store 正式版](https://apps.apple.com/app/id6801209053) · [申请 TestFlight](https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_zh#beta) · [GitHub IPA 版本](https://www.floe-agent.com/releases?platform=ios&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) | iOS/iPadOS 26+。商店可用性以所在地区为准，内测以实际测试组为准；GitHub IPA 需要自行签名。 |
 | **Floe Agent · Android** | [下载 Full APK](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) · [安装指南](docs/ANDROID_GUIDE.zh-CN.md) | Android 9+ ARM64，自行分发。测试版标记及安装要求以所选发布说明为准。 |
-| **Floe Agent · Mac** | [下载 Mac 版](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.9) | 支持 Apple 芯片和 macOS 15 或更新版本。现有 Floe Bridge 用户可选择「检查更新」直接升级。 |
+| **Floe Agent · Mac** | [下载 Mac 版](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.10) | 支持 Apple 芯片和 macOS 15 或更新版本。现有 Floe Bridge 用户可选择「检查更新」直接升级。 |
 | **Floe Bridge · Mac** | [伴随程序介绍](https://www.floe-agent.com/bridge?utm_source=github&utm_medium=referral&utm_campaign=readme_zh) · [下载版本](https://www.floe-agent.com/releases?platform=bridge&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) | 可选的菜单栏伴随程序，为运行在**同一台 Mac** 上的 Floe 提供终端、文件与 MCP。 |
 | **Floe iOS Bridge** | [伴随程序介绍](https://www.floe-agent.com/ios-bridge?utm_source=github&utm_medium=referral&utm_campaign=readme_zh) · [安装指南](FloeIOSBridge/INSTALL.zh-CN.md) · [下载版本](https://www.floe-agent.com/releases?platform=ios-bridge&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) | 独立的 iPhone/iPad 设备控制应用。首次设置需要电脑、签名与开发者配对；当前独立版本尚未接入 Floe 主应用。 |
 

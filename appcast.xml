@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.10.10</title>
+      <pubDate>Fri, 20 Nov 2026 14:25:51 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.10</link>
+      <sparkle:version>29</sparkle:version>
+      <sparkle:shortVersionString>1.10.10</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;支持同一供应商管理多个模型，并可为任务命名和图片理解选择辅助模型。&lt;/p&gt;&lt;p&gt;Manage multiple models per provider and choose helpers for task titles and image understanding.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.10.10/Floe-Agent-1.10.10.dmg" length="31640184" type="application/octet-stream" sparkle:edSignature="Y2J+4b3kxkiy4S2l1sZrNbklqvAvXid4bSvI9Xb1DqfnHL7qIi7Le3/t6EoGzxWx7F/LXng0NhoKXvKT2K/CCA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.10.9</title>
       <pubDate>Fri, 20 Nov 2026 13:07:56 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.9</link>
