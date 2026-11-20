@@ -8600,7 +8600,7 @@ final class ConversationCenter: ObservableObject {
         } catch {
             title = ""
         }
-        let normalized = Self.normalizedTaskTitle(title, fallbackGoal: goal)
+        let normalized = TaskTitlePrompt.normalizedTitle(title, fallbackGoal: goal)
         if (try? await environment.conversationStore.setAutomaticTitle(
             id: conversationID,
             title: normalized
@@ -8610,20 +8610,7 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
-    private static func normalizedTaskTitle(_ generated: String, fallbackGoal: String) -> String {
-        let raw = generated
-            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'“”‘’`#*。.，,!?！？:：;；")))
-        let source = raw.isEmpty ? fallbackGoal.trimmingCharacters(in: .whitespacesAndNewlines) : raw
-        let containsCJK = source.unicodeScalars.contains {
-            (0x3400...0x9FFF).contains(Int($0.value))
-        }
-        if containsCJK {
-            let compact = source.replacingOccurrences(of: "\n", with: " ")
-            return String(compact.prefix(12))
-        }
-        let words = source.split(whereSeparator: { $0.isWhitespace }).prefix(8)
-        return words.isEmpty ? String(fallbackGoal.prefix(40)) : words.joined(separator: " ")
-    }
+
 
     /// Cancels a live run. The runtime owns the terminal transition.
     /// Explicit composer Stop is distinct from system/file cancellation:

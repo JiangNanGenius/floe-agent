@@ -130,6 +130,9 @@ final class UnifiedMacSmoke {
         var projectWorkflow = false
         var concurrentTasks = false
         var catalog = false
+        var providerAccountsVerified = false
+        var auxiliaryModelsVerified = false
+        var auxiliaryPanelVerified = false
         var providerConnectionVerified = false
         var standardTaskMenus = false
         var imageGeneration = false
@@ -249,6 +252,37 @@ final class UnifiedMacSmoke {
             }
             catalog = await verifyProviderCatalog(in: agent)
             providerConnectionVerified = await verifyProviderConnection(in: agent)
+            providerAccountsVerified = await agent.verifyProviderAccountsSmoke()
+            if let index = CommandLine.arguments.firstIndex(of: "--model-catalog-fixture"), index + 1 < CommandLine.arguments.count,
+               let endpoint = URL(string: CommandLine.arguments[index + 1]) {
+                auxiliaryModelsVerified = await agent.verifyAuxiliaryModelsSmoke(endpoint: endpoint) {
+                    model.openSettings(.models)
+                    defer { model.closeSettingsWindow() }
+                    try? await Task.sleep(for: .milliseconds(220))
+                    guard let window = model.smokeAgentSettingsSheet, let body = window.contentView else { return }
+                    capture(body, extension: "settings-provider-accounts.png")
+                    if !pressAccessibilityButton(body, id: "settings.openAuxiliaryModels"), let frame = agent.smokeAuxiliaryButtonFrame {
+                        let point = NSPoint(x: frame.midX, y: body.isFlipped ? frame.midY : body.bounds.height - frame.midY)
+                        _ = click(body, at: point, in: window)
+                    }
+                    let deadline = ContinuousClock.now + .seconds(3)
+                    while !agent.smokeAuxiliaryModelsMounted && ContinuousClock.now < deadline {
+                        try? await Task.sleep(for: .milliseconds(40))
+                    }
+                    auxiliaryPanelVerified = agent.smokeAuxiliaryModelsMounted
+                    if auxiliaryPanelVerified {
+                        try? await Task.sleep(for: .milliseconds(240))
+                        let sheet = window.attachedSheet ?? NSApp.keyWindow ?? window
+                        if let content = sheet.contentView {
+                            capture(content, extension: "settings-auxiliary.png")
+                            if !pressAccessibilityButton(content, id: "settings.closeAuxiliaryModels") && sheet !== window {
+                                sheet.performClose(nil)
+                            }
+                        }
+                        try? await Task.sleep(for: .milliseconds(180))
+                    }
+                }
+            }
             standardTaskMenus = await verifyTaskMenus(model: model, workspace: agent)
             imageGeneration = await verifyImageGeneration()
         }
@@ -277,6 +311,9 @@ final class UnifiedMacSmoke {
             "composerDraftsReloaded": verifyDraftStorage(),
             "providerCatalogFetched": catalog,
             "providerCatalogPreservedOverrides": verifyCatalogOverrides(),
+            "providerAccountsVerified": providerAccountsVerified,
+            "auxiliaryModelsVerified": auxiliaryModelsVerified,
+            "auxiliaryPanelVerified": auxiliaryPanelVerified,
             "providerConnectionVerified": providerConnectionVerified,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
             "desktopFilesLayoutVerified": desktopFilesLayout,

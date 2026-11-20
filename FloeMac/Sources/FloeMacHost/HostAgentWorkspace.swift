@@ -60,26 +60,17 @@ struct HostAgentProvider: Codable {
     init(displayName: String? = nil, endpoint: String, protocolKind: ModelProtocol, modelID: String, apiKey: String,
          supportsImages: Bool = false, supportsTools: Bool = false, presetID: String? = nil,
          limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false) throws {
-        guard let endpointURL = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw InvalidConfiguration.endpoint
-        }
+        let account = try HostProviderAccount.configured(name: displayName, endpoint: endpoint, protocolKind: protocolKind,
+            apiKey: apiKey, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
         let modelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !apiKey.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-            throw InvalidConfiguration.key
-        }
-        profile = ProviderProfile(kind: .custom, wireProtocol: protocolKind, baseURL: endpointURL,
-                                  displayName: trimmedName?.isEmpty == false ? trimmedName : nil,
-                                  presetID: presetID)
-        profile.allowsPlainHTTP = allowsPlainHTTP
+        profile = account.profile
         var capabilities = ModelCapabilities.defaultTextModel(for: protocolKind).subtracting([.tools, .vision])
         if supportsImages { capabilities.insert(.vision) }
         if supportsTools { capabilities.insert(.tools) }
         model = ModelProfile(providerID: profile.id, remoteModelID: modelID, displayName: modelID,
                              limits: limits,
                              capabilities: capabilities)
-        self.apiKey = apiKey
+        self.apiKey = account.apiKey
         self.presetID = presetID
         try validate()
     }
@@ -115,25 +106,17 @@ struct HostAgentProvider: Codable {
             credentials: ProviderCredentials(apiKey: apiKey.isEmpty ? nil : apiKey))
     }
 
-    private enum InvalidConfiguration: Error {
-        case endpoint, key
+    init(profile: ProviderProfile, model: ModelProfile, apiKey: String, presetID: String?) {
+        self.profile = profile
+        self.model = model
+        self.apiKey = apiKey
+        self.presetID = presetID
     }
-}
 
-/// Durable multi-provider record persisted in the existing chat Keychain
-/// namespace (service `<bundle>.chat`). Version 1 is the first list-capable
-/// format; a record written by a newer build fails closed on read so its
-/// extra fields are never dropped by an older one. The legacy
-/// single-profile account stays in place as a mirror of the selected record
-/// so a downgrade to the 1.3.0 layout keeps working.
-private struct ProviderListEnvelope: Codable {
-    var version: Int
-    var providers: [HostAgentProvider]
-    var selectedProviderID: UUID?
-}
+    var canSelectAsPrimary: Bool {
+        profile.isEnabled && model.isEnabled && model.isVisibleInPrimaryPicker && model.supportsChatAgentSurface
+    }
 
-private enum ProviderStoreError: Error {
-    case missingRecord
 }
 
 enum HostAgentMode: String, CaseIterable {
@@ -309,6 +292,8 @@ final class HostAgentWorkspace: ObservableObject {
     var draftSelectionID: UUID { historySelection }
     #if FLOE_MAC_HOST_SMOKE
     var smokeOwnerAuthentication: (() -> Bool)?
+    var smokeAuxiliaryModelsMounted = false
+    var smokeAuxiliaryButtonFrame: CGRect?
     var smokeTaskSearchMounted = false
     var smokeTaskFindInvocations = 0
     var smokeConversationSearchMounted = false
@@ -446,10 +431,8 @@ final class HostAgentWorkspace: ObservableObject {
 
     func changeModelEffort(_ value: ModelReasoningEffort, modelID: UUID) {
         _ = updateProviderStore { store in
-            guard let index = store.providers.firstIndex(where: { $0.model.id == modelID }) else {
-                throw ProviderStoreError.missingRecord
-            }
-            store.providers[index].model.reasoningEffort = value == .automatic ? nil : value
+            let (i, j) = try store.indices(for: modelID)
+            store.accounts[i].models[j].reasoningEffort = value == .automatic ? nil : value
         }
     }
 
@@ -479,8 +462,89 @@ final class HostAgentWorkspace: ObservableObject {
         preferences.set(taskModes, forKey: Self.taskModesKey)
     }
     private let networkStatus = NetworkStatusMonitor()
+    @Published private(set) var auxiliaryPreferences: ModelSelectionPreferences
+    @Published var auxiliaryVisionReasoning: Bool {
+        didSet { preferences.set(auxiliaryVisionReasoning, forKey: Self.visionReasoningKey) }
+    }
+    private static let auxiliaryPreferencesKey = "floe.mac.agent.auxiliaryModels.v1"
+    private static let visionReasoningKey = "floe.mac.agent.auxiliaryVisionReasoning"
+    private var namingTasks: [UUID: Task<Void, Never>] = [:]
+
+    func updateProviderOptions(providerID: UUID, modelID: UUID, enabled: Bool, compatibility: Bool,
+                               headers: [String: String], displayName: String, hidden: Bool, omitReasoning: Bool) -> Bool {
+        updateProviderStore { store in
+            let (i, j) = try store.indices(for: modelID)
+            guard store.accounts[i].id == providerID else { throw ProviderStoreError.missingRecord }
+            store.accounts[i].profile.isEnabled = enabled
+            store.accounts[i].profile.toolNameCompatibility = compatibility
+            store.accounts[i].profile.nonSecretHeaders = headers
+            store.accounts[i].models[j].displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            store.accounts[i].models[j].isHiddenFromPrimaryPicker = hidden
+            store.accounts[i].models[j].omitReasoningParameters = omitReasoning
+        }
+    }
+
+    func auxiliaryCandidates(_ role: MacAuxiliaryRole) -> [HostAgentProvider] {
+        providers.filter { $0.profile.isEnabled && $0.model.isEnabled && role.accepts($0.model) }
+    }
+
+    func setAuxiliaryModel(_ id: UUID?, for role: MacAuxiliaryRole) {
+        guard id == nil || auxiliaryCandidates(role).contains(where: { $0.model.id == id }) else { return }
+        var next = auxiliaryPreferences
+        switch role {
+        case .text: next.generalAuxiliaryLLMModelID = id
+        case .vision: next.visionModelID = id
+        }
+        guard next != auxiliaryPreferences else { return }
+        next.updatedAt = Date()
+        guard let data = try? JSONEncoder().encode(next) else { return }
+        preferences.set(data, forKey: Self.auxiliaryPreferencesKey)
+        auxiliaryPreferences = next
+    }
+
+    func reconcileAuxiliaryModels() {
+        for role in MacAuxiliaryRole.allCases {
+            if let id = role.selection(in: auxiliaryPreferences), !providers.contains(where: { $0.model.id == id }) {
+                setAuxiliaryModel(nil, for: role)
+            }
+        }
+    }
+
+    func selectedAuxiliary(_ role: MacAuxiliaryRole) -> HostAgentProvider? {
+        let id = role.selection(in: auxiliaryPreferences)
+        return auxiliaryCandidates(role).first { $0.model.id == id }
+    }
+
+    private func auxiliaryText(for main: FloeMacSelfProviderBinding) -> FloeMacSelfProviderBinding? {
+        if auxiliaryPreferences.generalAuxiliaryLLMModelID != nil { return selectedAuxiliary(.text)?.binding() }
+        return main.model.supportsGeneralAuxiliaryLLM ? main : nil
+    }
+
+    private func auxiliaryRoutes(for main: FloeMacSelfProviderBinding) -> FloeMacSelfAuxiliaryRoutes {
+        let helper = auxiliaryText(for: main)
+        let classifier = helper.flatMap { binding -> AutomaticReasoningEffortAuxiliaryClassifier? in
+            if binding.provider.kind == .local && binding.model.id == main.model.id { return nil }
+            return .init(provider: binding.provider, model: binding.model, credentials: binding.credentials, adapter: binding.adapter)
+        }
+        return .init(vision: selectedAuxiliary(.vision)?.binding(), visionReasoning: auxiliaryVisionReasoning, effortClassifier: classifier)
+    }
+
+    private func scheduleTaskTitle(_ id: UUID, prompt: String, helper: FloeMacSelfProviderBinding,
+                                   primary: FloeMacSelfProviderBinding, runtime: FloeMacSelfRuntime) {
+        guard !isTerminating, namingTasks[id] == nil else { return }
+        let safePrompt = SecretRedactor.redact(SecretRedactor.redact(prompt, secret: primary.credentials.apiKey), secret: helper.credentials.apiKey)
+        guard !safePrompt.contains(SecretRedactor.replacement) else { return }
+        namingTasks[id] = Task { [weak self] in
+            defer { self?.namingTasks.removeValue(forKey: id) }
+            guard let title = try? await MacTaskNaming.title(for: safePrompt, using: helper),
+                  !Task.isCancelled, let self, !self.isTerminating,
+                  (try? await runtime.saveAutomaticTitle(title, conversationID: id)) == true else { return }
+            try? await self.reloadConversations(using: runtime)
+        }
+    }
+
     private let preferences: UserDefaults
-    @Published private var taskProviderID: UUID?
+    @Published private var taskModelID: UUID?
     @Published private var failedRunID: UUID?
     @Published private var changingGoals = Set<UUID>()
     @Published private(set) var settledQuestions: [UUID: [UserQuestionWaitingSnapshot]] = [:]
@@ -492,9 +556,9 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     var composerProvider: HostAgentProvider? {
-        providers.first { $0.profile.id == taskProviderID }
-            ?? providers.first { $0.profile.id == selectedProviderID }
-            ?? providers.first
+        providers.first { $0.model.id == taskModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }
+            ?? providers.first { $0.model.id == selectedModelID && $0.canSelectAsPrimary }
+            ?? providers.first(where: \.canSelectAsPrimary)
     }
 
     var failedUserMessage: PersistedMessage? {
@@ -506,11 +570,18 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func selectComposerProvider(_ id: UUID) {
-        guard !isSending, !isLoadingHistory, !isTerminating,
-              providers.contains(where: { $0.profile.id == id }) else { return }
-        taskProviderID = id
-        if vault != nil, selectedProviderID != id { _ = selectChatProvider(id: id) }
+        if let model = providers.first(where: { $0.profile.id == id && $0.canSelectAsPrimary }) { selectComposerModel(model.model.id) }
     }
+
+    @discardableResult
+    func selectComposerModel(_ id: UUID) -> Bool {
+        guard !isSending, !isLoadingHistory, !isTerminating,
+              providers.contains(where: { $0.model.id == id && $0.canSelectAsPrimary }) else { return false }
+        if vault != nil, selectedID == nil, !selectDefaultModel(id) { return false }
+        taskModelID = id
+        return true
+    }
+
     #endif
     @Published private(set) var modelName: String?
     @Published private(set) var conversations: [ConversationRecord] = []
@@ -592,7 +663,8 @@ final class HostAgentWorkspace: ObservableObject {
     private var questionSubscription: UUID?
     private static let settingsAccount = "selected-chat-provider.v1"
     private static let providerListAccount = "chat-providers.v2"
-    private static let currentProviderListVersion = 1
+    @Published private(set) var accounts: [HostProviderAccount] = []
+    @Published private(set) var selectedModelID: UUID?
 
     init(supportDirectory: URL, namespace: String, useKeychain: Bool = true, preferences: UserDefaults = .standard,
          admitWork: @escaping AdmitWork = { {} }) {
@@ -603,6 +675,9 @@ final class HostAgentWorkspace: ObservableObject {
         self.admitWork = admitWork
         #if FLOE_UNIFIED_MAC
         self.preferences = preferences
+        self.auxiliaryPreferences = preferences.data(forKey: Self.auxiliaryPreferencesKey)
+            .flatMap { try? JSONDecoder().decode(ModelSelectionPreferences.self, from: $0) } ?? .init()
+        self.auxiliaryVisionReasoning = preferences.bool(forKey: Self.visionReasoningKey)
         self.defaultApprovalMode = preferences.string(forKey: Self.defaultApprovalKey).flatMap(TaskApprovalMode.init(rawValue:)) ?? .ask
         self.approvalModelID = preferences.string(forKey: Self.reviewerKey).flatMap(UUID.init(uuidString:))
         self.allowsWorkspaceWrites = preferences.object(forKey: "floe.mac.workspace.allowWrites") as? Bool ?? true
@@ -668,29 +743,11 @@ final class HostAgentWorkspace: ObservableObject {
     /// behavior in list terms: update the selected provider when one exists,
     /// otherwise create it and make it the selected provider.
     func saveProvider(endpoint: String, protocolKind: ModelProtocol, modelID: String, key: String) -> Bool {
-        updateProviderStore { store in
-            var record = try HostAgentProvider(endpoint: endpoint, protocolKind: protocolKind,
-                                               modelID: modelID, apiKey: key)
-            if let selected = store.selectedProviderID,
-               let index = store.providers.firstIndex(where: { $0.profile.id == selected }) {
-                record.profile.id = selected
-                record.model.id = store.providers[index].model.id
-                record.model.providerID = selected
-                record.model.capabilities = store.providers[index].model.capabilities
-                store.providers[index] = record
-            } else if !store.providers.isEmpty {
-                let existing = store.providers[0].profile.id
-                record.profile.id = existing
-                record.model.id = store.providers[0].model.id
-                record.model.providerID = existing
-                record.model.capabilities = store.providers[0].model.capabilities
-                store.providers[0] = record
-                store.selectedProviderID = existing
-            } else {
-                store.providers = [record]
-                store.selectedProviderID = record.profile.id
-            }
+        if let active = providers.first(where: { $0.model.id == selectedModelID }) {
+            return updateProvider(id: active.profile.id, name: active.profile.displayName, endpoint: endpoint,
+                                  protocolKind: protocolKind, modelID: modelID, key: key, editingModelID: active.model.id)
         }
+        return addProvider(name: nil, endpoint: endpoint, protocolKind: protocolKind, modelID: modelID, key: key)
     }
 
     /// Adds a provider and makes it the selected one for chat.
@@ -701,6 +758,11 @@ final class HostAgentWorkspace: ObservableObject {
                      allowsPlainHTTP: Bool = false, catalogModel: ModelProfile? = nil,
                      explicit: ModelCapabilities = [], supportsApproval: Bool? = nil) -> Bool {
         updateProviderStore { store in
+            if modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                store.accounts.append(try HostProviderAccount.configured(name: name, endpoint: endpoint, protocolKind: protocolKind,
+                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP))
+                return
+            }
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
                                                protocolKind: protocolKind, modelID: modelID, apiKey: key,
                                                supportsImages: supportsImages, supportsTools: supportsTools,
@@ -708,8 +770,8 @@ final class HostAgentWorkspace: ObservableObject {
             record.model.explicitCapabilities = explicit
             record.applyCatalogModel(catalogModel)
             if let supportsApproval { record.setApprovalEligibility(supportsApproval) }
-            store.providers.append(record)
-            store.selectedProviderID = record.profile.id
+            store.accounts.append(HostProviderAccount(record))
+            store.selectedModelID = record.model.id
         }
     }
 
@@ -719,23 +781,27 @@ final class HostAgentWorkspace: ObservableObject {
     func updateProvider(id: UUID, name: String?, endpoint: String, protocolKind: ModelProtocol,
                         modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false,
                         presetID: String? = nil, limits: ModelLimits? = nil, allowsPlainHTTP: Bool = false,
-                        catalogModel: ModelProfile? = nil, explicit: ModelCapabilities = [], supportsApproval: Bool? = nil) -> Bool {
+                        catalogModel: ModelProfile? = nil, explicit: ModelCapabilities = [], supportsApproval: Bool? = nil, editingModelID: UUID? = nil) -> Bool {
         updateProviderStore { store in
-            guard let index = store.providers.firstIndex(where: { $0.profile.id == id }) else {
-                throw ProviderStoreError.missingRecord
+            let i = try store.accountIndex(id)
+            let account = store.accounts[i]
+            guard let j = account.models.firstIndex(where: { $0.id == editingModelID }) ?? (editingModelID == nil ? account.models.indices.first : nil)
+            else {
+                guard account.models.isEmpty && editingModelID == nil else { throw ProviderStoreError.missingRecord }
+                var updated = try HostProviderAccount.configured(name: name, endpoint: endpoint, protocolKind: protocolKind,
+                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+                updated.profile = account.profileForEdit(updated.profile)
+                store.accounts[i] = updated
+                return
             }
-            let previous = store.providers[index]
+            let previous = account.record(account.models[j])
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
                                                protocolKind: protocolKind, modelID: modelID, apiKey: key,
                                                supportsImages: supportsImages, supportsTools: supportsTools,
                                                presetID: presetID, limits: limits ?? previous.model.limits,
                                                allowsPlainHTTP: allowsPlainHTTP)
-            record.profile.id = id
+            record.profile = account.profileForEdit(record.profile)
             if previous.profile.baseURL == record.profile.baseURL && previous.profile.wireProtocol == protocolKind {
-                record.profile.kind = previous.profile.kind
-                record.profile.region = previous.profile.region
-                record.profile.nonSecretHeaders = previous.profile.nonSecretHeaders
-                record.profile.toolNameCompatibility = previous.profile.toolNameCompatibility
                 if previous.model.remoteModelID == record.model.remoteModelID {
                     let editable: ModelCapabilities = [.vision, .tools]
                     let selectedCapabilities = record.model.capabilities.intersection(editable)
@@ -757,19 +823,51 @@ final class HostAgentWorkspace: ObservableObject {
             if let supportsApproval { record.setApprovalEligibility(supportsApproval) }
             record.model.id = previous.model.id
             record.model.providerID = id
-            store.providers[index] = record
+            if previous.model.displayName != previous.model.remoteModelID && previous.model.remoteModelID == record.model.remoteModelID {
+                record.model.displayName = previous.model.displayName
+            }
+            store.accounts[i].profile = record.profile
+            store.accounts[i].apiKey = record.apiKey
+            store.accounts[i].presetID = record.presetID
+            store.accounts[i].models[j] = record.model
+        }
+    }
+
+    @discardableResult
+    func addProviderModel(providerID: UUID, model: ModelProfile) -> Bool {
+        updateProviderStore { store in
+            let i = try store.accountIndex(providerID)
+            var added = model
+            added.providerID = providerID
+            store.accounts[i].models.append(added)
+        }
+    }
+
+    @discardableResult
+    func removeProviderModel(modelID: UUID) -> Bool {
+        updateProviderStore { store in
+            let (i, j) = try store.indices(for: modelID)
+            store.accounts[i].models.remove(at: j)
+        }
+    }
+
+    @discardableResult
+    func setProviderModelEnabled(modelID: UUID, enabled: Bool) -> Bool {
+        updateProviderStore { store in
+            let (i, j) = try store.indices(for: modelID)
+            store.accounts[i].models[j].isEnabled = enabled
         }
     }
 
     #if FLOE_UNIFIED_MAC
-    func synchronizeCloudModels(publishing providerID: UUID? = nil) async throws -> [MacCloudModelEntry] {
+    func synchronizeCloudModels(publishingModelID modelID: UUID? = nil) async throws -> [MacCloudModelEntry] {
         guard vault != nil, isReady, !isSending, !isTerminating, !isSynchronizingCloudModels,
               let release = admit() else { throw MacICloudModelError.temporarilyUnavailable }
         isSynchronizingCloudModels = true
         defer { isSynchronizingCloudModels = false; release() }
         let entry: MacCloudModelEntry?
-        if let providerID {
-            guard let record = providers.first(where: { $0.profile.id == providerID }),
+        if let modelID {
+            guard let record = providers.first(where: { $0.model.id == modelID }),
                   record.apiKey.isEmpty || !record.profile.baseURL.absoluteString.contains(record.apiKey),
                   MacCloudModelEntry.accepts(record.profile, model: record.model) else {
                 throw MacICloudModelError.invalidProvider
@@ -791,20 +889,19 @@ final class HostAgentWorkspace: ObservableObject {
         return updateProviderStore { store in
             var base = entry.provider
             base.secretRef = nil
-            let index = store.providers.firstIndex { $0.profile.id == base.id }
-            let previous = index.map { store.providers[$0] }
-            let sameConnection = previous?.profile.baseURL == base.baseURL
-                && previous?.profile.wireProtocol == base.wireProtocol && previous?.profile.kind == base.kind
-            var record = try HostAgentProvider(displayName: base.displayName, endpoint: base.baseURL.absoluteString,
-                                              protocolKind: base.wireProtocol, modelID: entry.model.remoteModelID,
-                                              apiKey: sameConnection ? previous?.apiKey ?? "" : "",
-                                              presetID: base.presetID)
-            record.profile = base
-            record.model = entry.model
-            if let index {
-                store.providers[index] = record
+            if let i = store.accounts.firstIndex(where: { $0.id == base.id }) {
+                let saved = store.accounts[i].profile
+                guard saved.baseURL == base.baseURL, saved.wireProtocol == base.wireProtocol, saved.kind == base.kind else {
+                    throw MacICloudModelError.invalidProvider
+                }
+                if let j = store.accounts[i].models.firstIndex(where: { $0.id == entry.model.id }) {
+                    guard store.accounts[i].models[j].remoteModelID == entry.model.remoteModelID else { throw MacICloudModelError.invalidProvider }
+                    store.accounts[i].models[j] = entry.model
+                } else {
+                    store.accounts[i].models.append(entry.model)
+                }
             } else {
-                store.providers.append(record)
+                store.accounts.append(HostProviderAccount(profile: base, apiKey: "", presetID: base.presetID, models: [entry.model]))
             }
         }
     }
@@ -815,25 +912,19 @@ final class HostAgentWorkspace: ObservableObject {
     @discardableResult
     func removeProvider(id: UUID) -> Bool {
         updateProviderStore { store in
-            store.providers.removeAll { $0.profile.id == id }
-            if store.selectedProviderID == id {
-                store.selectedProviderID = store.providers.first?.profile.id
-            }
+            let i = try store.accountIndex(id)
+            store.accounts.remove(at: i)
         }
     }
 
-    /// Chooses which provider `send` uses for new runs.
     @discardableResult
-    func selectChatProvider(id: UUID?) -> Bool {
+    func selectDefaultModel(_ id: UUID) -> Bool {
         updateProviderStore { store in
-            if let id {
-                guard store.providers.contains(where: { $0.profile.id == id }) else {
-                    throw ProviderStoreError.missingRecord
-                }
-            }
-            store.selectedProviderID = id
+            guard store.providers.contains(where: { $0.model.id == id && $0.canSelectAsPrimary }) else { throw ProviderStoreError.missingRecord }
+            store.selectedModelID = id
         }
     }
+
 
     func select(_ id: UUID?) async {
         guard isReady, !isTerminating, !isAcceptingPlan, let runtime else { return }
@@ -1289,7 +1380,12 @@ final class HostAgentWorkspace: ObservableObject {
                 notice = String(localized: "host.chat.configureFirst")
                 return false
             }
-            guard config.model.capabilities.contains(.vision) || !stagedAttachments.contains(where: { $0.kind == .image }) else {
+            #if FLOE_UNIFIED_MAC
+            let acceptsImages = config.model.capabilities.contains(.vision) || selectedAuxiliary(.vision) != nil
+            #else
+            let acceptsImages = config.model.capabilities.contains(.vision)
+            #endif
+            guard acceptsImages || !stagedAttachments.contains(where: { $0.kind == .image }) else {
                 notice = String(localized: "mac.workspace.selectVisionModel")
                 return false
             }
@@ -1320,6 +1416,12 @@ final class HostAgentWorkspace: ObservableObject {
                            acceptedPlan: PlanConfirmationSnapshot? = nil, resumingGoal: Bool = false,
                            queued: PendingUserInput? = nil, queuedGoal: ConversationGoal? = nil,
                            onAdmitted: (() -> Void)? = nil) -> Bool {
+        #if FLOE_UNIFIED_MAC
+        let auxRoutes = auxiliaryRoutes(for: provider)
+        let titleHelper = auxiliaryText(for: provider)
+        #else
+        let auxRoutes = FloeMacSelfAuxiliaryRoutes()
+        #endif
         let currentID = queued?.conversationID ?? selectedID
         let taskID = currentID ?? UUID()
         let originSelection = historySelection
@@ -1493,9 +1595,9 @@ final class HostAgentWorkspace: ObservableObject {
                 guard liveRuns[taskID]?.stopping == false else { return }
                 let handle: FloeMacSelfSessionHandle
                 if resumingGoal {
-                    handle = try await runtime.resumeGoalSession(request, provider: provider, tools: tools)
+                    handle = try await runtime.resumeGoalSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
                 } else {
-                    handle = try await runtime.startSession(request, provider: provider, tools: tools)
+                    handle = try await runtime.startSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
                 }
                 admitted = true
                 let events = handle.events()
@@ -1529,7 +1631,7 @@ final class HostAgentWorkspace: ObservableObject {
                 #if FLOE_UNIFIED_MAC
                 if selectedID == taskID {
                     selectedApprovalMode = approvalMode
-                    taskProviderID = provider.provider.id
+                    taskModelID = provider.model.id
                     failedRunID = nil
                 }
                 #endif
@@ -1559,6 +1661,9 @@ final class HostAgentWorkspace: ObservableObject {
                 let terminal = await handle.waitForTerminal()
                 finishedNormally = terminal?.confirmed == true && terminal?.outcome == .completed && liveRuns[taskID]?.stopping != true
                 #if FLOE_UNIFIED_MAC
+                if finishedNormally, currentID == nil, let titleHelper, providers.contains(where: { $0.model.id == provider.model.id }) {
+                    scheduleTaskTitle(taskID, prompt: text, helper: titleHelper, primary: provider, runtime: runtime)
+                }
                 await loadToolActivity(runID: handle.identity.runID, conversationID: handle.identity.conversationID,
                                        runtime: runtime)
                 #endif
@@ -2208,7 +2313,7 @@ final class HostAgentWorkspace: ObservableObject {
                         continue
                     }
                     guard let mode = HostAgentMode(rawValue: input.executionMode),
-                          let model = providers.first(where: { $0.model.id == input.selectedModelID }),
+                          let model = providers.first(where: { $0.model.id == input.selectedModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }),
                           let owner = try await runtime.workspaceForConversation(id), owner.id == input.workspaceID,
                           !isTerminating, !changingTasks.contains(id), liveRuns[id] == nil,
                           input.attachments.isEmpty else { throw CocoaError(.userCancelled) }
@@ -2311,6 +2416,11 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func finishTermination() async throws {
+        #if FLOE_UNIFIED_MAC
+        let background = Array(namingTasks.values)
+        for task in background { task.cancel() }
+        for task in background { await task.value }
+        #endif
         if let runtime {
             _ = try await runtime.shutdown(cancelActive: false)
             questionSubscription = nil
@@ -2328,18 +2438,17 @@ final class HostAgentWorkspace: ObservableObject {
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         if vault == nil { return composerProvider }
         #endif
-        guard let vault else { return nil }
+        guard vault != nil else { return nil }
         let store = try loadProviderStore()
         #if FLOE_UNIFIED_MAC
-        if let provider = store.providers.first(where: { $0.profile.id == taskProviderID }) { return provider }
+        if let provider = store.providers.first(where: { $0.model.id == taskModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }) { return provider }
         #endif
-        return store.providers.first(where: { $0.profile.id == store.selectedProviderID })
-            ?? store.providers.first
+        return store.selected
     }
 
     #if FLOE_UNIFIED_MAC
     private func applyComposerRun(_ run: RunRecord?) {
-        taskProviderID = run?.providerID
+        taskModelID = run?.modelID
         if let run, ["failed", "blocked", "interrupted"].contains(run.state) {
             failedRunID = run.id
         } else {
@@ -2429,99 +2538,34 @@ final class HostAgentWorkspace: ObservableObject {
     /// fail closed (surfaced as the existing Keychain-unavailable notice)
     /// and the stored bytes are never rewritten by a read.
     private func loadProviderStore() throws -> ProviderListEnvelope {
-        guard let vault else { return Self.emptyProviderStore() }
-        let envelope: ProviderListEnvelope
+        guard let vault else { return ProviderListEnvelope() }
         do {
-            let encoded = try vault.read(account: Self.providerListAccount)
-            let decoded = try JSONDecoder().decode(ProviderListEnvelope.self, from: encoded)
-            guard decoded.version <= Self.currentProviderListVersion else {
-                throw DecodingError.dataCorrupted(.init(
-                    codingPath: [], debugDescription: "newer provider list version \(decoded.version)"))
-            }
-            envelope = decoded
+            return try JSONDecoder().decode(ProviderListEnvelope.self, from: vault.read(account: Self.providerListAccount))
         } catch KeychainStoreError.itemNotFound {
-            return try migrateLegacyProviderStore()
-        }
-        try validateProviderEnvelope(envelope)
-        return recoverLegacySelectionIfNeeded(envelope)
-    }
-
-    /// Imports the legacy single-profile record without deleting it: the
-    /// envelope is written so later launches read the list directly, while
-    /// the legacy account remains as the downgrade mirror and as the
-    /// recovery source when the list has no selected profile.
-    private func migrateLegacyProviderStore() throws -> ProviderListEnvelope {
-        guard let vault else { return Self.emptyProviderStore() }
-        do {
-            let encoded = try vault.read(account: Self.settingsAccount)
-            let record = try JSONDecoder().decode(HostAgentProvider.self, from: encoded)
-            try record.validate()
-            let envelope = ProviderListEnvelope(version: Self.currentProviderListVersion,
-                                                providers: [record], selectedProviderID: record.profile.id)
-            try persistProviderStore(envelope)
-            return envelope
-        } catch KeychainStoreError.itemNotFound {
-            return Self.emptyProviderStore()
+            do {
+                let old = try JSONDecoder().decode(HostAgentProvider.self, from: vault.read(account: Self.settingsAccount))
+                try old.validate()
+                var store = ProviderListEnvelope(accounts: [HostProviderAccount(old)], selectedModelID: old.model.id)
+                store.normalizeSelection()
+                try persistProviderStore(store)
+                return store
+            } catch KeychainStoreError.itemNotFound { return ProviderListEnvelope() }
         }
     }
 
-    /// Every record must validate and IDs must be unique. A violation makes
-    /// the whole list unreadable on purpose: the bytes stay untouched for
-    /// repair instead of being silently rewritten under changed validation
-    /// rules or dropped by a read.
-    private func validateProviderEnvelope(_ envelope: ProviderListEnvelope) throws {
-        var seen = Set<UUID>()
-        for record in envelope.providers {
-            try record.validate()
-            guard seen.insert(record.profile.id).inserted,
-                  record.model.providerID == record.profile.id else {
-                throw DecodingError.dataCorrupted(.init(
-                    codingPath: [], debugDescription: "duplicate or inconsistent provider record"))
-            }
-        }
-    }
-
-    /// Read-only recovery: when the persisted list names no selected
-    /// profile, the legacy 1.3.0 account may still hold one. The envelope
-    /// bytes stay untouched; the recovery lives only in memory until the
-    /// next successful save.
-    private func recoverLegacySelectionIfNeeded(_ envelope: ProviderListEnvelope) -> ProviderListEnvelope {
-        guard envelope.selectedProviderID == nil else { return envelope }
-        guard let vault,
-              let encoded = try? vault.read(account: Self.settingsAccount),
-              let record = try? JSONDecoder().decode(HostAgentProvider.self, from: encoded),
-              (try? record.validate()) != nil else { return envelope }
-        var recovered = envelope
-        if !recovered.providers.contains(where: { $0.profile.id == record.profile.id }) {
-            recovered.providers.append(record)
-        }
-        recovered.selectedProviderID = record.profile.id
-        return recovered
-    }
-
-    /// Canonical list commit first; the 1.3.0 legacy mirror is best-effort
-    /// afterwards so a mirror failure cannot fail an already-committed save.
     private func persistProviderStore(_ store: ProviderListEnvelope) throws {
         guard let vault else { return }
         let encoder = JSONEncoder()
         try vault.store(account: Self.providerListAccount, secret: encoder.encode(store))
-        if let selected = store.providers.first(where: { $0.profile.id == store.selectedProviderID }) {
-            try? vault.store(account: Self.settingsAccount, secret: encoder.encode(selected))
-        } else {
-            // No selected profile (e.g. the last provider was removed):
-            // clear the mirror so the legacy recovery path cannot resurrect
-            // a record the user deleted.
-            try? vault.delete(account: Self.settingsAccount)
-        }
-    }
-
-    private static func emptyProviderStore() -> ProviderListEnvelope {
-        ProviderListEnvelope(version: currentProviderListVersion, providers: [], selectedProviderID: nil)
+        if let selected = store.selected { try? vault.store(account: Self.settingsAccount, secret: encoder.encode(selected)) }
+        else { try? vault.delete(account: Self.settingsAccount) }
     }
 
     private func reloadProviders() {
-        guard let vault else {
+        guard vault != nil else {
             providers = []
+            accounts = []
+            selectedModelID = nil
             selectedProviderID = nil
             modelName = nil
             return
@@ -2534,17 +2578,19 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func applyProviderStore(_ store: ProviderListEnvelope) {
+        accounts = store.accounts
         providers = store.providers
+        selectedModelID = store.selectedModelID
         #if FLOE_UNIFIED_MAC
+        reconcileAuxiliaryModels()
         if let approvalModelID, !providers.contains(where: { $0.model.id == approvalModelID }) {
             self.approvalModelID = nil
             preferences.removeObject(forKey: Self.reviewerKey)
         }
         refreshAutomaticReviewers()
         #endif
-        selectedProviderID = store.selectedProviderID
-        modelName = store.providers.first { $0.profile.id == store.selectedProviderID }
-            .map { $0.profile.displayName ?? $0.model.displayName }
+        selectedProviderID = store.selected?.profile.id
+        modelName = store.selected?.model.displayName
     }
 
     /// Serialized list mutation: load, mutate, persist, then republish. Any
@@ -2552,12 +2598,14 @@ final class HostAgentWorkspace: ObservableObject {
     /// untouched and reports the existing local error notices.
     @discardableResult
     private func updateProviderStore(_ mutation: (inout ProviderListEnvelope) throws -> Void) -> Bool {
-        guard let vault, !isSending, !isTerminating else { return false }
+        guard vault != nil, !isSending, !isTerminating else { return false }
         guard let release = admit() else { return false }
         defer { release() }
         do {
             var store = try loadProviderStore()
             try mutation(&store)
+            try store.validate()
+            store.normalizeSelection()
             try persistProviderStore(store)
             applyProviderStore(store)
             notice = nil
@@ -2608,7 +2656,7 @@ final class HostAgentWorkspace: ObservableObject {
     /// briefly so a burst of edits collapses into one request; intermediate
     /// endpoints the user typed through never receive a request.
     func requestModelDiscovery(endpoint: String, protocolKind: ModelProtocol, apiKey: String,
-                               debounce: Bool, allowsPlainHTTP: Bool = false) {
+                               debounce: Bool, allowsPlainHTTP: Bool = false, providerID: UUID? = nil) {
         guard !isTerminating else { return }
         modelDiscoveryGeneration &+= 1
         let generation = modelDiscoveryGeneration
@@ -2624,7 +2672,7 @@ final class HostAgentWorkspace: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             await self.runModelDiscovery(generation: generation, endpoint: trimmedEndpoint,
                                          protocolKind: protocolKind, apiKey: trimmedKey,
-                                         allowsPlainHTTP: allowsPlainHTTP)
+                                         allowsPlainHTTP: allowsPlainHTTP, providerID: providerID)
         }
     }
 
@@ -2640,19 +2688,26 @@ final class HostAgentWorkspace: ObservableObject {
 
     #if FLOE_UNIFIED_MAC
     func testProviderConnection(endpoint: String, protocolKind: ModelProtocol, modelID: String,
-                                key: String, allowsPlainHTTP: Bool = false) async throws {
+                                key: String, allowsPlainHTTP: Bool = false, providerID: UUID? = nil) async throws {
         guard isReady, !isTerminating, let release = admit() else { throw CancellationError() }
         defer { release() }
-        let config = try HostAgentProvider(endpoint: endpoint, protocolKind: protocolKind, modelID: modelID,
+        var config = try HostAgentProvider(endpoint: endpoint, protocolKind: protocolKind, modelID: modelID,
                                            apiKey: key, allowsPlainHTTP: allowsPlainHTTP)
+        config.profile.nonSecretHeaders = savedHeaders(for: providerID, endpoint: config.profile.baseURL)
         let binding = config.binding()
         try await ProviderConnectionProbe.testConnection(provider: binding.provider, credentials: binding.credentials,
                                                           modelRemoteID: config.model.remoteModelID, adapter: binding.adapter)
     }
     #endif
 
+    private func savedHeaders(for accountID: UUID?, endpoint: URL) -> [String: String] {
+        guard let accountID, let saved = accounts.first(where: { $0.id == accountID }),
+              saved.profile.baseURL == endpoint else { return [:] }
+        return saved.profile.nonSecretHeaders
+    }
+
     private func runModelDiscovery(generation: UInt64, endpoint: String,
-                                   protocolKind: ModelProtocol, apiKey: String, allowsPlainHTTP: Bool) async {
+                                   protocolKind: ModelProtocol, apiKey: String, allowsPlainHTTP: Bool, providerID: UUID?) async {
         // The endpoint must parse to an absolute http(s) URL before any
         // network work; everything else stays idle.
         guard !endpoint.isEmpty,
@@ -2689,6 +2744,7 @@ final class HostAgentWorkspace: ObservableObject {
             var profile = ProviderProfile(kind: .custom, wireProtocol: protocolKind,
                                           baseURL: url, displayName: nil)
             profile.allowsPlainHTTP = allowsPlainHTTP
+            profile.nonSecretHeaders = savedHeaders(for: providerID, endpoint: url)
             try ProviderConfigurationValidation.validate(profile)
             let adapter = ProviderAdapterFactory().adapter(for: profile)
             let models = try await adapter.listModels(
@@ -2747,6 +2803,115 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     #if FLOE_UNIFIED_MAC
+    func verifyProviderAccountsSmoke() async -> Bool {
+        guard vault == nil else { return false }
+        let scope = "org.floeagent.qa.model-catalog." + UUID().uuidString
+        let fixture = HostAgentWorkspace(supportDirectory: supportDirectory, namespace: scope,
+            useKeychain: true, preferences: preferences, admitWork: { {} })
+        guard let vault = fixture.vault else { return false }
+        defer {
+            try? vault.delete(account: Self.providerListAccount)
+            try? vault.delete(account: Self.settingsAccount)
+        }
+        do {
+            struct OldCatalog: Encodable {
+                var version = 1
+                let providers: [HostAgentProvider]
+                let selectedProviderID: UUID
+            }
+            let a = try HostAgentProvider(displayName: "Example A", endpoint: "https://example.invalid/v1",
+                protocolKind: .openAIChatCompletions, modelID: "base", apiKey: "synthetic-A")
+            let b = try HostAgentProvider(displayName: "Example B", endpoint: "https://example.invalid/v1",
+                protocolKind: .openAIChatCompletions, modelID: "base", apiKey: "synthetic-B")
+            try vault.store(account: Self.providerListAccount, secret: JSONEncoder().encode(OldCatalog(providers: [a,b], selectedProviderID: b.profile.id)))
+            fixture.reloadProviders()
+            guard fixture.accounts.count == 2, fixture.selectedModelID == b.model.id else { return false }
+            let second = ModelProfile(providerID: a.profile.id, remoteModelID: "vision", displayName: "Vision",
+                                      limits: a.model.limits, capabilities: [.text, .vision])
+            guard fixture.addProviderModel(providerID: a.profile.id, model: second), fixture.selectDefaultModel(second.id),
+                  !fixture.addProviderModel(providerID: a.profile.id, model: second),
+                  fixture.updateProviderOptions(providerID: a.profile.id, modelID: second.id, enabled: true, compatibility: true,
+                    headers: ["X-Project": "fixture"], displayName: "Vision review", hidden: true, omitReasoning: true)
+            else { return false }
+            var stored = try fixture.loadProviderStore()
+            guard stored.accounts.count == 2, stored.accounts[0].models.count == 2, stored.selectedModelID != second.id,
+                  stored.accounts[0].models.last?.displayName == "Vision review", stored.accounts[0].apiKey == "synthetic-A",
+                  stored.accounts[0].profile.nonSecretHeaders == ["X-Project": "fixture"],
+                  stored.accounts[1].apiKey == "synthetic-B", stored.accounts[1].profile.nonSecretHeaders.isEmpty,
+                  fixture.setProviderModelEnabled(modelID: second.id, enabled: false),
+                  fixture.removeProviderModel(modelID: second.id), fixture.removeProviderModel(modelID: a.model.id)
+            else { return false }
+            stored = try fixture.loadProviderStore()
+            guard stored.accounts.count == 2, stored.accounts[0].models.isEmpty, stored.selectedModelID == b.model.id,
+                  fixture.addProviderModel(providerID: a.profile.id, model: second), fixture.removeProvider(id: a.profile.id),
+                  fixture.removeProvider(id: b.profile.id) else { return false }
+            fixture.reloadProviders()
+            guard fixture.accounts.isEmpty, fixture.selectedModelID == nil,
+                  fixture.addProvider(name: "Empty", endpoint: a.profile.baseURL.absoluteString, protocolKind: .openAIChatCompletions,
+                                      modelID: "", key: "synthetic-C"), let empty = fixture.accounts.first, empty.models.isEmpty,
+                  fixture.addProviderModel(providerID: empty.id, model: second),
+                  fixture.updateProvider(id: empty.id, name: "Renamed", endpoint: a.profile.baseURL.absoluteString,
+                      protocolKind: .openAIChatCompletions, modelID: second.remoteModelID, key: "synthetic-D",
+                      supportsImages: true, editingModelID: second.id) else { return false }
+            let saved = try fixture.loadProviderStore()
+            return saved.accounts.count == 1 && saved.accounts.first?.apiKey == "synthetic-D"
+                && saved.accounts.first?.models.first?.id == second.id && saved.accounts.first?.name == "Renamed"
+        } catch { return false }
+    }
+
+    func verifyAuxiliaryModelsSmoke(endpoint: URL, showConfiguredModels: @MainActor () async -> Void) async -> Bool {
+        guard vault == nil, let runtime, !isSending, endpoint.host == "127.0.0.1",
+              var primary = try? HostAgentProvider(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
+                  modelID: "task-primary", apiKey: "fixture-primary", allowsPlainHTTP: true),
+              var helper = try? HostAgentProvider(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
+                  modelID: "task-helper", apiKey: "fixture-helper", supportsImages: true, allowsPlainHTTP: true)
+        else { return false }
+        let original = providers
+        let originalAccounts = accounts
+        let originalText = auxiliaryPreferences.generalAuxiliaryLLMModelID
+        let originalVision = auxiliaryPreferences.visionModelID
+        defer {
+            providers = original
+            accounts = originalAccounts
+            setAuxiliaryModel(originalText, for: .text)
+            setAuxiliaryModel(originalVision, for: .vision)
+        }
+        primary.profile.nonSecretHeaders = ["X-Floe-Route": "primary"]
+        helper.profile.nonSecretHeaders = ["X-Floe-Route": "helper"]
+        var second = primary
+        second.model = ModelProfile(providerID: primary.profile.id, remoteModelID: "task-fast",
+                                    displayName: "Fast project model", limits: primary.model.limits, capabilities: [.text])
+        providers = [primary, second, helper]
+        var group = HostProviderAccount(primary)
+        group.models.append(second.model)
+        accounts = [group, HostProviderAccount(helper)]
+        setAuxiliaryModel(nil, for: .text)
+        guard auxiliaryText(for: primary.binding())?.model.id == primary.model.id else { return false }
+        setAuxiliaryModel(helper.model.id, for: .text)
+        setAuxiliaryModel(helper.model.id, for: .vision)
+        setAuxiliaryModel(primary.model.id, for: .vision)
+        guard selectedAuxiliary(.vision)?.model.id == helper.model.id,
+              let data = preferences.data(forKey: Self.auxiliaryPreferencesKey),
+              let stored = try? JSONDecoder().decode(ModelSelectionPreferences.self, from: data),
+              stored.generalAuxiliaryLLMModelID == helper.model.id, stored.visionModelID == helper.model.id
+        else { return false }
+        await showConfiguredModels()
+        await select(nil)
+        selectComposerModel(primary.model.id)
+        guard send("Summarize the project notes") else { return false }
+        let deadline = ContinuousClock.now + .seconds(12)
+        while (isSending || !namingTasks.isEmpty) && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(35))
+        }
+        guard let id = selectedID, !isSending,
+              messages.last?.content == "Summary from primary",
+              conversations.first(where: { $0.id == id })?.title == "Project Notes",
+              await changeConversationMetadata(id: id, change: .rename("My project")),
+              (try? await runtime.saveAutomaticTitle("Late title", conversationID: id)) == false
+        else { return false }
+        return (try? await runtime.conversations().first(where: { $0.id == id })?.title) == "My project"
+    }
+
     func verifyConversationHistorySmoke(reference: URL) async -> Bool {
         guard vault == nil, let runtime, let id = selectedID, !isSending,
               let config = try? HostAgentProvider(endpoint: "https://example.invalid/v1",
@@ -3113,12 +3278,15 @@ final class HostAgentWorkspace: ObservableObject {
                   supportsTools: true, allowsPlainHTTP: true) else { return false }
         let oldProviders = providers
         let oldProviderID = selectedProviderID
+        let oldModelID = selectedModelID
         defer {
             providers = oldProviders
             selectedProviderID = oldProviderID
+            selectedModelID = oldModelID
         }
         providers = [other, chosen]
         selectedProviderID = other.profile.id
+        selectedModelID = other.model.id
         selectComposerProvider(chosen.profile.id)
         smokePlanExecuteFrame = nil
 

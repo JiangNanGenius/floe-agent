@@ -4,18 +4,17 @@ import FloeCore
 import FloeProviders
 import SwiftUI
 
-/// Provider management for the unified Mac workspace: lists the saved
-/// providers, edits or removes them, and chooses which one chat uses.
-/// All records live in the existing device-bound chat Keychain namespace;
-/// failures surface as the workspace's existing local notices.
-///
-/// The editor reuses the shared provider presets and the factory adapters:
-/// picking a preset pre-fills endpoint/protocol/name, a valid endpoint and
-/// key discover the live model listing automatically (debounced, cancelled
-/// on every edit so a stale listing never crosses a provider change), an
-/// explicit Refresh re-runs the listing, discovered rows carry the endpoint's
-/// capability metadata into the draft, and manual model entry always stays
-/// available as the fallback.
+/// Provider management for the unified Mac workspace, grouped the iPad way:
+/// one account (name / base URL / protocol / key) owns any number of chat
+/// models. The list groups `workspace.providers` by `profile.id`; the editor
+/// edits the shared account fields plus exactly one model at a time, so
+/// saving a model never disturbs its siblings. Models are adopted from the
+/// endpoint's live listing or added by hand; per-model enable, capability
+/// and limit overrides persist through the workspace store worker. Removing
+/// the whole provider stays a separate, explicit destructive action. The
+/// existing iCloud controls are unchanged and stay out of scope here; the
+/// auxiliary-models surface and the per-record advanced options sheet are
+/// owned by the root lane.
 struct MacProviderSettingsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let openImageModelSettings: () -> Void
@@ -23,8 +22,12 @@ struct MacProviderSettingsView: View {
     @State private var editingID: UUID?
     @State private var showsEditor = false
     @State private var draft = MacProviderDraft()
+    @State private var manualModelID = ""
     @State private var removalCandidate: UUID?
+    @State private var modelRemovalCandidate: UUID?
     @State private var showingICloud = false
+    @State private var showsAuxiliary = false
+    @State private var optionsRecord: HostAgentProvider?
     @State private var connectionCheck: Task<Void, Never>?
     @State private var connectionCheckID = UUID()
     @State private var connectionStatus: String?
@@ -33,8 +36,30 @@ struct MacProviderSettingsView: View {
     /// presets stay in their own surfaces, exactly like the App.
     private let presets = ProviderPreset.chatPresets
 
+    private var groups: [HostProviderAccount] {
+        workspace.accounts.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     private var selectedRecord: HostAgentProvider? {
         workspace.providers.first { $0.profile.id == editingID }
+    }
+
+    private var connectionMatchesSavedAccount: Bool {
+        guard let record = groups.first(where: { $0.id == editingID }) else { return false }
+        return record.profile.baseURL == URL(string: draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines))
+            && record.profile.wireProtocol == draft.protocolKind && record.apiKey == draft.key
+    }
+
+    /// The saved record the advanced options sheet describes: the model
+    /// currently loaded in the draft when there is one, otherwise the
+    /// account's first model. Nil for an unsaved (new) provider.
+    private var optionsTargetRecord: HostAgentProvider? {
+        guard let providerID = editingID else { return nil }
+        if let modelID = draft.editingModelID,
+           let record = workspace.providers.first(where: { $0.profile.id == providerID && $0.model.id == modelID }) {
+            return record
+        }
+        return selectedRecord
     }
 
     var body: some View {
@@ -72,8 +97,19 @@ struct MacProviderSettingsView: View {
             workspace.cancelModelDiscovery()
         }
         .sheet(isPresented: $showingICloud) {
-            MacICloudModelsView(workspace: workspace, providerID: selectedRecord?.profile.id) { id in
-                if let record = workspace.providers.first(where: { $0.profile.id == id }) { beginEditing(record) }
+            MacICloudModelsView(workspace: workspace, providerID: editingID, modelID: draft.editingModelID) { id in
+                if let record = workspace.providers.first(where: { $0.model.id == id }) { beginEditing(record) }
+            }
+        }
+        .sheet(isPresented: $showsAuxiliary) {
+            MacAuxiliaryModelsView(workspace: workspace, openImageModelSettings: openImageModelSettings)
+        }
+        .sheet(isPresented: Binding(
+            get: { optionsRecord != nil },
+            set: { if !$0 { optionsRecord = nil } }
+        )) {
+            if let record = optionsRecord {
+                MacProviderOptionsView(workspace: workspace, record: record)
             }
         }
         .alert(MacProviderText.t("删除服务商", "Delete Provider"), isPresented: Binding(
@@ -94,8 +130,29 @@ struct MacProviderSettingsView: View {
             }
         } message: {
             Text(MacProviderText.t(
-                "此服务商将从列表中移除，聊天记录会保留。",
-                "This provider is removed from the list. Your chats are kept."))
+                "此服务商及其所有模型将从列表移除，聊天记录会保留。",
+                "This provider and all of its models are removed from the list. Your chats are kept."))
+        }
+        .alert(MacProviderText.t("移除模型", "Remove Model"), isPresented: Binding(
+            get: { modelRemovalCandidate != nil },
+            set: { if !$0 { modelRemovalCandidate = nil } }
+        )) {
+            Button(MacProviderText.t("移除", "Remove"), role: .destructive) {
+                if let modelID = modelRemovalCandidate {
+                    _ = workspace.removeProviderModel(modelID: modelID)
+                    if draft.editingModelID == modelID, let account = groups.first(where: { $0.id == editingID }) {
+                        beginEditingAccount(account)
+                    }
+                }
+                modelRemovalCandidate = nil
+            }
+            Button(MacProviderText.t("取消", "Cancel"), role: .cancel) {
+                modelRemovalCandidate = nil
+            }
+        } message: {
+            Text(MacProviderText.t(
+                "仅此模型从该服务商移除，同账户下的其他模型不受影响。",
+                "Only this model is removed from the provider. Other models under the same account are unaffected."))
         }
     }
 
@@ -126,17 +183,31 @@ struct MacProviderSettingsView: View {
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            if workspace.providers.isEmpty {
+            .padding(.vertical, 8)
+            Button { showsAuxiliary = true } label: {
+                Label(MacProviderText.t("辅助模型", "Auxiliary Models"), systemImage: "wand.and.stars")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityIdentifier("settings.openAuxiliaryModels")
+            #if FLOE_MAC_HOST_SMOKE
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { workspace.smokeAuxiliaryButtonFrame = $0 }
+            #endif
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            if groups.isEmpty {
                 ContentUnavailableView("mac.provider.noProviders", systemImage: "antenna.radiowaves.left.and.right")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(workspace.providers, id: \.profile.id) { record in
-                        Button { beginEditing(record) } label: {
-                            providerRow(record)
+                    ForEach(groups, id: \.id) { group in
+                        Section {
+                            ForEach(group.models, id: \.id) { model in modelListRow(group.record(model)) }
+                            if group.models.isEmpty {
+                                Button(MacProviderText.t("添加模型…", "Add Models…")) { beginEditingAccount(group) }
+                            }
+                        } header: {
+                            providerListHeader(group)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
                 .listStyle(.inset)
@@ -144,37 +215,72 @@ struct MacProviderSettingsView: View {
         }
     }
 
-    private func providerRow(_ record: HostAgentProvider) -> some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(record.displayTitle).lineLimit(1)
-                if record.model.displayName != record.displayTitle {
-                    Text(record.model.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+    private func providerListHeader(_ group: HostProviderAccount) -> some View {
+        HStack(spacing: 6) {
+            Button { beginEditingAccount(group) } label: {
+                HStack(spacing: 5) {
+                    Text(verbatim: group.name).font(.headline).lineLimit(1)
+                    Image(systemName: "slider.horizontal.3").font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .buttonStyle(.plain)
+            .help(MacProviderText.t("供应商配置", "Provider settings"))
             Spacer(minLength: 4)
-            if workspace.selectedProviderID == record.profile.id {
+            Text(MacProviderText.t("\(group.models.count) 个模型", "\(group.models.count) models"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button(MacProviderText.t("编辑", "Edit")) {
+                beginEditingAccount(group)
+            }
+            Button(MacProviderText.t("删除服务商", "Delete Provider"), role: .destructive) {
+                removalCandidate = group.id
+            }
+        }
+    }
+
+    private func modelListRow(_ record: HostAgentProvider) -> some View {
+        HStack(spacing: 8) {
+            Toggle(isOn: Binding(
+                get: { record.model.isEnabled },
+                set: { _ = workspace.setProviderModelEnabled(modelID: record.model.id, enabled: $0) }
+            )) {
+                EmptyView()
+            }
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+            .disabled(workspace.isSending || workspace.isTerminating)
+            Button { beginEditing(record) } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(record.model.displayName).lineLimit(1)
+                    if record.model.displayName != record.model.remoteModelID {
+                        Text(record.model.remoteModelID)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 4)
+            if workspace.composerProvider?.model.id == record.model.id {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.tint)
                     .help(MacProviderText.t("当前用于对话", "Used for chat"))
             }
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 4)
         .contentShape(Rectangle())
         .contextMenu {
             Button(MacProviderText.t("用于对话", "Use for Chat")) {
-                workspace.selectChatProvider(id: record.profile.id)
+                _ = workspace.selectComposerModel(record.model.id)
             }
-            .disabled(workspace.selectedProviderID == record.profile.id
+            .disabled(!record.canSelectAsPrimary || workspace.composerProvider?.model.id == record.model.id
                       || workspace.isSending || workspace.isTerminating)
             Button(MacProviderText.t("编辑", "Edit")) { beginEditing(record) }
-            Button(MacProviderText.t("删除", "Delete"), role: .destructive) {
-                removalCandidate = record.profile.id
-            }
         }
     }
 
@@ -216,6 +322,13 @@ struct MacProviderSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let providerID = editingID, !groupRecords(providerID).isEmpty {
+                Section("mac.provider.models") {
+                    ForEach(groupRecords(providerID), id: \.model.id) { record in
+                        editorModelRow(record)
+                    }
+                }
+            }
             Section {
                 HStack(spacing: 6) {
                     Text("mac.provider.models")
@@ -224,7 +337,30 @@ struct MacProviderSettingsView: View {
                 }
                 discoveryStatus
                 discoveredModelList
-                TextField("host.chat.modelID", text: $draft.modelID)
+                if let providerID = editingID {
+                    /// Saved account: manual entry appends one model under
+                    /// this provider without touching loaded siblings.
+                    if !connectionMatchesSavedAccount {
+                        Text(MacProviderText.t("先保存连接更改，再添加此供应商的模型。", "Save connection changes before adding models."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 8) {
+                        TextField(MacProviderText.t("手动添加模型 ID", "Manual model ID"), text: $manualModelID)
+                        Button(MacProviderText.t("添加", "Add")) {
+                            addManualModel(providerID: providerID)
+                        }
+                        .disabled(!connectionMatchesSavedAccount || manualModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || workspace.isSending || workspace.isTerminating)
+                    }
+                } else {
+                    TextField(MacProviderText.t("首个模型 ID（可稍后添加）", "First model ID (optional)"), text: $draft.modelID)
+                }
+                if let modelID = draft.editingModelID {
+                    Text(MacProviderText.t("正在编辑：\(modelDisplayName(modelID))",
+                                           "Editing: \(modelDisplayName(modelID))"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle(MacProviderText.t("支持图片输入", "Supports Image Input"),
                        isOn: capabilityBinding(\.supportsImages, bit: .vision))
                 Toggle("mac.agent.modelSupportsTools", isOn: capabilityBinding(\.supportsTools, bit: .tools))
@@ -234,6 +370,19 @@ struct MacProviderSettingsView: View {
                 TextField("mac.provider.contextTokens", value: $draft.limits.contextTokens, format: .number)
                 TextField("mac.provider.outputTokens", value: $draft.limits.maxOutputTokens, format: .number)
                 Text("mac.provider.tokenLimits.detail").font(.caption).foregroundStyle(.secondary)
+            }
+            if optionsTargetRecord != nil {
+                Section {
+                    Button { optionsRecord = optionsTargetRecord } label: {
+                        HStack(spacing: 6) {
+                            Label(MacProviderText.t("高级设置", "Advanced Settings"), systemImage: "gearshape")
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             Section {
                 if connectionCheck != nil {
@@ -246,21 +395,20 @@ struct MacProviderSettingsView: View {
                 } else {
                     Button("mac.provider.testConnection", action: testConnection)
                         .disabled(draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                  || draft.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                  || !workspace.isReady || workspace.isTerminating)
+                                          || !workspace.isReady || workspace.isTerminating)
                 }
                 if let connectionStatus { Text(connectionStatus).font(.caption).foregroundStyle(.secondary) }
             }
-            if let record = selectedRecord {
+            if let record = optionsTargetRecord {
                 Section {
                     LabeledContent(MacProviderText.t("默认对话模型", "Default Chat Model")) {
-                        if workspace.selectedProviderID == record.profile.id {
+                        if workspace.selectedModelID == record.model.id {
                             Label(MacProviderText.t("使用中", "In use"), systemImage: "checkmark.circle.fill")
                         } else {
                             Button(MacProviderText.t("设为默认", "Set as Default")) {
-                                workspace.selectChatProvider(id: record.profile.id)
+                                workspace.selectDefaultModel(record.model.id)
                             }
-                            .disabled(workspace.isSending || workspace.isTerminating)
+                            .disabled(!record.canSelectAsPrimary || workspace.isSending || workspace.isTerminating)
                         }
                     }
                 }
@@ -270,12 +418,77 @@ struct MacProviderSettingsView: View {
         .padding()
     }
 
+    private func groupRecords(_ providerID: UUID) -> [HostAgentProvider] {
+        workspace.providers.filter { $0.profile.id == providerID }
+    }
+
+    private func modelDisplayName(_ modelID: UUID) -> String {
+        workspace.providers.first { $0.model.id == modelID }?.model.displayName ?? modelID.uuidString
+    }
+
+    /// One saved model row inside the editor: a direct enable toggle, a tap
+    /// that loads the model into the draft for capability/limit edits, and
+    /// a remove action scoped to exactly this model.
+    private func editorModelRow(_ record: HostAgentProvider) -> some View {
+        HStack(spacing: 8) {
+            Toggle(isOn: Binding(
+                get: { record.model.isEnabled },
+                set: { _ = workspace.setProviderModelEnabled(modelID: record.model.id, enabled: $0) }
+            )) {
+                EmptyView()
+            }
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+            .disabled(workspace.isSending || workspace.isTerminating)
+            Button { loadModelIntoDraft(record) } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text(record.model.displayName).lineLimit(1)
+                        if draft.editingModelID == record.model.id {
+                            Text(MacProviderText.t("编辑中", "Editing"))
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.tint)
+                        }
+                    }
+                    if record.model.displayName != record.model.remoteModelID {
+                        Text(record.model.remoteModelID)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 4)
+            if record.model.capabilities.contains(.vision) {
+                Label("mac.provider.images", systemImage: "photo")
+                    .labelStyle(.iconOnly)
+                    .help("mac.provider.images")
+                    .foregroundStyle(.secondary)
+            }
+            if record.model.capabilities.contains(.tools) {
+                Label("mac.provider.tools", systemImage: "wrench.and.screwdriver")
+                    .labelStyle(.iconOnly)
+                    .help("mac.provider.tools")
+                    .foregroundStyle(.secondary)
+            }
+            Button { modelRemovalCandidate = record.model.id } label: {
+                Image(systemName: "minus.circle")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(MacProviderText.t("移除模型", "Remove Model"))
+            .disabled(workspace.isSending || workspace.isTerminating)
+        }
+        .padding(.vertical, 2)
+    }
+
     /// Re-runs the listing on demand; stays disabled where the endpoint
     /// publishes no listing at all.
     private var refreshButton: some View {
         Button {
             workspace.requestModelDiscovery(endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                             apiKey: draft.key, debounce: false, allowsPlainHTTP: draft.allowsPlainHTTP)
+                                             apiKey: draft.key, debounce: false, allowsPlainHTTP: draft.allowsPlainHTTP, providerID: editingID)
         } label: {
             Label("mac.provider.refreshModels", systemImage: "arrow.triangle.2.circlepath")
                 .labelStyle(.iconOnly)
@@ -324,15 +537,20 @@ struct MacProviderSettingsView: View {
         }
     }
 
-    /// Live listing rows. Selecting one copies the remote model ID into the
-    /// draft and adopts the capability metadata the endpoint reported; the
-    /// manual model field below always stays editable.
+    /// Live listing rows. For a saved provider each row carries an add
+    /// affordance so any number of listed models can be enabled under the
+    /// same account; for a new provider selecting one copies the remote
+    /// model ID into the draft as the account's first model.
     @ViewBuilder private var discoveredModelList: some View {
         if !workspace.discoveredModels.isEmpty {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(workspace.discoveredModels, id: \.remoteModelID) { model in
-                        discoveredModelRow(model)
+                        if editingID != nil {
+                            discoveredModelAddRow(model)
+                        } else {
+                            discoveredModelPickRow(model)
+                        }
                     }
                 }
             }
@@ -340,7 +558,47 @@ struct MacProviderSettingsView: View {
         }
     }
 
-    private func discoveredModelRow(_ model: ModelProfile) -> some View {
+    private func discoveredModelAddRow(_ model: ModelProfile) -> some View {
+        let exists = workspace.providers.contains {
+            $0.profile.id == editingID && $0.model.remoteModelID == model.remoteModelID
+        }
+        return Button {
+            addDiscoveredModel(model)
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.displayName).lineLimit(1)
+                    if model.displayName != model.remoteModelID {
+                        Text(model.remoteModelID)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                if model.capabilities.contains(.vision) {
+                    Label("mac.provider.images", systemImage: "photo")
+                        .labelStyle(.iconOnly)
+                        .help("mac.provider.images")
+                        .foregroundStyle(.secondary)
+                }
+                if model.capabilities.contains(.tools) {
+                    Label("mac.provider.tools", systemImage: "wrench.and.screwdriver")
+                        .labelStyle(.iconOnly)
+                        .help("mac.provider.tools")
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: exists ? "checkmark.circle.fill" : "plus.circle")
+                    .foregroundStyle(exists ? Color.accentColor : Color.secondary.opacity(0.4))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 3)
+        .disabled(!connectionMatchesSavedAccount || exists || workspace.isSending || workspace.isTerminating)
+    }
+
+    private func discoveredModelPickRow(_ model: ModelProfile) -> some View {
         let selected = draft.modelID == model.remoteModelID
         return Button {
             let saved = workspace.providers.first {
@@ -415,14 +673,15 @@ struct MacProviderSettingsView: View {
             }
             Spacer(minLength: 8)
             if editingID != nil {
-                Button(MacProviderText.t("删除", "Delete"), role: .destructive) {
+                /// Provider removal is deliberately separate from per-model
+                /// removal: it always asks before deleting the account.
+                Button(MacProviderText.t("删除服务商", "Delete Provider"), role: .destructive) {
                     removalCandidate = editingID
                 }
             }
             Button(MacProviderText.t("保存", "Save")) { save() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          || draft.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                           || workspace.isSending || workspace.isTerminating)
         }
         .padding(.horizontal, 20)
@@ -507,7 +766,7 @@ struct MacProviderSettingsView: View {
     private func scheduleDiscovery() {
         guard showsEditor else { return }
         workspace.requestModelDiscovery(endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                        apiKey: draft.key, debounce: true, allowsPlainHTTP: draft.allowsPlainHTTP)
+                                        apiKey: draft.key, debounce: true, allowsPlainHTTP: draft.allowsPlainHTTP, providerID: editingID)
     }
 
     /// Applies a user-picked preset: endpoint/protocol pre-fill and, only
@@ -528,7 +787,7 @@ struct MacProviderSettingsView: View {
             draft.allowsPlainHTTP = false
         }
         workspace.requestModelDiscovery(endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                                        apiKey: draft.key, debounce: false, allowsPlainHTTP: draft.allowsPlainHTTP)
+                                        apiKey: draft.key, debounce: false, allowsPlainHTTP: draft.allowsPlainHTTP, providerID: editingID)
     }
 
     /// Single record-activation path for every selection change (list
@@ -544,10 +803,23 @@ struct MacProviderSettingsView: View {
 
     // MARK: - Actions
 
+    private func beginEditingAccount(_ account: HostProviderAccount) {
+        if let model = account.models.first { beginEditing(account.record(model)); return }
+        cancelConnectionCheck()
+        workspace.cancelModelDiscovery()
+        editingID = account.id
+        showsEditor = true
+        draft = MacProviderDraft(name: account.profile.displayName ?? "", endpoint: account.profile.baseURL.absoluteString,
+            protocolKind: account.profile.wireProtocol, key: account.apiKey, presetID: account.presetID.flatMap(ProviderTemplateID.init(rawValue:)),
+            allowsPlainHTTP: account.profile.allowsPlainHTTP)
+        manualModelID = ""
+        scheduleDiscovery()
+    }
+
     private func beginEditing(_ record: HostAgentProvider) {
         editingID = record.profile.id
         showsEditor = true
-        activateCurrentSelection()
+        loadModelIntoDraft(record)
     }
 
     private func beginAdding() {
@@ -556,12 +828,48 @@ struct MacProviderSettingsView: View {
         activateCurrentSelection()
     }
 
+    /// Loads one saved model of the open account into the draft so its
+    /// capability/limit edits save back to exactly that model.
+    private func loadModelIntoDraft(_ record: HostAgentProvider) {
+        cancelConnectionCheck()
+        draft = MacProviderDraft(record: record)
+        scheduleDiscovery()
+    }
+
     private func closeEditor() {
         cancelConnectionCheck()
         showsEditor = false
         editingID = nil
         draft = MacProviderDraft()
+        manualModelID = ""
         workspace.cancelModelDiscovery()
+    }
+
+    /// Adopts one live-listed model under the open account. Siblings are
+    /// untouched; duplicates are rejected by the row's disabled state.
+    private func addDiscoveredModel(_ model: ModelProfile) {
+        guard connectionMatchesSavedAccount, let providerID = editingID, !workspace.isSending, !workspace.isTerminating else { return }
+        var candidate = model
+        candidate.providerID = providerID
+        if workspace.addProviderModel(providerID: providerID, model: candidate), draft.editingModelID == nil,
+           let saved = workspace.providers.first(where: { $0.model.id == candidate.id }) { loadModelIntoDraft(saved) }
+    }
+
+    /// Adds a hand-typed model ID under the open account with the protocol's
+    /// default chat capabilities; users can refine it afterwards through the
+    /// per-model capability and limit controls.
+    private func addManualModel(providerID: UUID) {
+        let remote = manualModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard connectionMatchesSavedAccount, !remote.isEmpty, !workspace.isSending, !workspace.isTerminating else { return }
+        let model = ModelProfile(providerID: providerID, remoteModelID: remote, displayName: remote,
+                                 limits: .init(contextTokens: 32_768, maxOutputTokens: 0),
+                                 capabilities: ModelCapabilities.defaultTextModel(for: draft.protocolKind))
+        if workspace.addProviderModel(providerID: providerID, model: model) {
+            manualModelID = ""
+            if draft.editingModelID == nil, let saved = workspace.providers.first(where: { $0.model.id == model.id }) {
+                loadModelIntoDraft(saved)
+            }
+        }
     }
 
     private func testConnection() {
@@ -574,7 +882,7 @@ struct MacProviderSettingsView: View {
             do {
                 try await workspace.testProviderConnection(endpoint: candidate.endpoint, protocolKind: candidate.protocolKind,
                                                            modelID: candidate.modelID, key: candidate.key,
-                                                           allowsPlainHTTP: candidate.allowsPlainHTTP)
+                                                           allowsPlainHTTP: candidate.allowsPlainHTTP, providerID: editingID)
                 status = String(localized: "mac.provider.connectionSucceeded")
             } catch {
                 status = String(localized: "mac.provider.connectionFailed")
@@ -598,13 +906,17 @@ struct MacProviderSettingsView: View {
         let presetID = draft.presetID?.rawValue
         let saved: Bool
         if let editingID {
+            // Save the model that owns this draft, including when there are siblings.
+            let editingModelID = draft.editingModelID
+                ?? workspace.providers.first { $0.profile.id == editingID }?.model.id
             saved = workspace.updateProvider(id: editingID, name: displayName,
                                              endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                              modelID: draft.modelID, key: draft.key,
                                              supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
                                              presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP,
                                              catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities,
-                                             supportsApproval: draft.editedCapabilities.contains(.approval) ? draft.supportsApproval : nil)
+                                             supportsApproval: draft.editedCapabilities.contains(.approval) ? draft.supportsApproval : nil,
+                                             editingModelID: editingModelID)
         } else {
             saved = workspace.addProvider(name: displayName,
                                           endpoint: draft.endpoint, protocolKind: draft.protocolKind,
@@ -612,7 +924,7 @@ struct MacProviderSettingsView: View {
                                           supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
                                           presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP,
                                           catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities,
-                                             supportsApproval: draft.editedCapabilities.contains(.approval) ? draft.supportsApproval : nil)
+                                          supportsApproval: draft.editedCapabilities.contains(.approval) ? draft.supportsApproval : nil)
         }
         if saved { closeEditor() }
     }
@@ -626,6 +938,9 @@ private struct MacProviderDraft: Equatable {
         let endpoint: String
         let wireProtocol: ModelProtocol
     }
+    /// The saved model this draft's model fields describe; nil for a model
+    /// that does not exist yet (a fresh account).
+    var editingModelID: UUID?
     var catalogSelection: CatalogSelection?
     var editedCapabilities: ModelCapabilities = []
     var selectedCatalogModel: ModelProfile? {
@@ -650,7 +965,8 @@ private struct MacProviderDraft: Equatable {
          protocolKind: ModelProtocol = .openAIChatCompletions,
          modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool? = nil, supportsApproval: Bool? = nil,
          presetID: ProviderTemplateID? = .custom,
-         limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false) {
+         limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false,
+         editingModelID: UUID? = nil) {
         self.name = name
         self.endpoint = endpoint
         self.protocolKind = protocolKind
@@ -662,6 +978,7 @@ private struct MacProviderDraft: Equatable {
         self.supportsTools = supportsTools ?? ModelCapabilities.defaultTextModel(for: protocolKind).contains(.tools)
         self.presetID = presetID
         self.limits = limits
+        self.editingModelID = editingModelID
     }
 
     init(record: HostAgentProvider) {
@@ -677,7 +994,8 @@ private struct MacProviderDraft: Equatable {
                   modelID: record.model.remoteModelID,
                   key: record.apiKey, supportsImages: record.model.capabilities.contains(.vision),
                   supportsTools: record.model.capabilities.contains(.tools), supportsApproval: record.model.supportsApprovalSurface,
-                  presetID: resolved.id, limits: record.model.limits, allowsPlainHTTP: record.profile.allowsPlainHTTP)
+                  presetID: resolved.id, limits: record.model.limits, allowsPlainHTTP: record.profile.allowsPlainHTTP,
+                  editingModelID: record.model.id)
     }
 }
 

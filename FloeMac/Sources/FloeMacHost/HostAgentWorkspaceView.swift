@@ -792,36 +792,40 @@ struct HostAgentWorkspaceView: View {
     }
 
     @ViewBuilder private func modelControl(openSettings: @escaping () -> Void) -> some View {
-        if workspace.providers.isEmpty {
+        let chatModels = workspace.providers.filter {
+            $0.canSelectAsPrimary
+        }
+        if chatModels.isEmpty {
             Button(action: openSettings) {
                 FloeThreadComposerChip(title: Text("host.chat.provider"), systemImage: "cpu")
             }
             .buttonStyle(.plain)
         } else {
             Menu {
-                let groups = Dictionary(grouping: workspace.providers) {
-                    $0.profile.displayName ?? $0.profile.baseURL.host ?? $0.displayTitle
-                }
-                ForEach(groups.keys.sorted(), id: \.self) { name in
+                let groups = Dictionary(grouping: chatModels, by: { $0.profile.id })
+                    .sorted {
+                        providerGroupTitle($0.value).localizedStandardCompare(providerGroupTitle($1.value)) == .orderedAscending
+                    }
+                ForEach(groups, id: \.key) { _, records in
                     Section {
-                        ForEach(groups[name] ?? [], id: \.profile.id) { provider in
+                        ForEach(records, id: \.model.id) { record in
                             Button {
-                                workspace.selectComposerProvider(provider.profile.id)
+                                _ = workspace.selectComposerModel(record.model.id)
                             } label: {
-                                if provider.profile.id == workspace.composerProvider?.profile.id {
-                                    Label(provider.model.displayName, systemImage: "checkmark")
+                                if record.model.id == workspace.composerProvider?.model.id {
+                                    Label(record.model.displayName, systemImage: "checkmark")
                                 } else {
-                                    Text(verbatim: provider.model.displayName)
+                                    Text(verbatim: record.model.displayName)
                                 }
                             }
                         }
-                    } header: { Text(verbatim: name) }
+                    } header: { Text(verbatim: providerGroupTitle(records)) }
                 }
                 Divider()
                 Button("host.chat.provider", action: openSettings)
             } label: {
                 FloeThreadComposerChip(
-                    title: Text(verbatim: workspace.composerProvider?.model.displayName ?? String(localized: "host.chat.provider")),
+                    title: Text(verbatim: composerModelTitle),
                     systemImage: "cpu"
                 )
             }
@@ -829,6 +833,22 @@ struct HostAgentWorkspaceView: View {
             .menuIndicator(.hidden)
             .fixedSize(horizontal: true, vertical: false)
         }
+    }
+
+    /// Readable account title for a composer model group.
+    private func providerGroupTitle(_ records: [HostAgentProvider]) -> String {
+        guard let first = records.first else { return "" }
+        return first.profile.displayName ?? first.profile.baseURL.host ?? first.displayTitle
+    }
+
+    /// Readable "Provider · Model" chip title; the plain provider label only
+    /// stands in while nothing is configured.
+    private var composerModelTitle: String {
+        guard let provider = workspace.composerProvider else {
+            return String(localized: "host.chat.provider")
+        }
+        let account = provider.profile.displayName ?? provider.profile.baseURL.host ?? provider.displayTitle
+        return "\(account) · \(provider.model.displayName)"
     }
 
     private var conversation: some View {

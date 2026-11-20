@@ -7,6 +7,7 @@ struct MacICloudModelsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var workspace: HostAgentWorkspace
     let providerID: UUID?
+    var modelID: UUID? = nil
     let onImport: (UUID) -> Void
 
     @State private var entries: [MacCloudModelEntry] = []
@@ -17,7 +18,9 @@ struct MacICloudModelsView: View {
     @State private var accountGeneration = UUID()
 
     private var savedProvider: HostAgentProvider? {
-        workspace.providers.first { $0.profile.id == providerID }
+        let models = workspace.providers.filter { $0.profile.id == providerID }
+        if let modelID { return models.first { $0.model.id == modelID } }
+        return models.count == 1 ? models.first : nil
     }
 
     var body: some View {
@@ -41,7 +44,7 @@ struct MacICloudModelsView: View {
                                 message = "mac.icloud.importFailed"
                                 return
                             }
-                            onImport(entry.provider.id)
+                            onImport(entry.model.id)
                             dismiss()
                         }
                     }
@@ -73,7 +76,7 @@ struct MacICloudModelsView: View {
         }
         .confirmationDialog("mac.icloud.confirmPublish", isPresented: $confirmPublish, titleVisibility: .visible) {
             Button("mac.icloud.publish") {
-                if let providerID { synchronize(publishing: providerID) }
+                if let savedProvider { synchronize(publishing: savedProvider.model.id) }
             }
         } message: {
             if let savedProvider { Text(verbatim: savedProvider.displayTitle) }
@@ -88,7 +91,7 @@ struct MacICloudModelsView: View {
         Task {
             defer { busy = false }
             do {
-                let loaded = try await workspace.synchronizeCloudModels(publishing: id)
+                let loaded = try await workspace.synchronizeCloudModels(publishingModelID: id)
                 guard generation == accountGeneration else { return }
                 entries = loaded
                 finished = true

@@ -8,7 +8,7 @@
 // and its credential are the user's existing auxiliary text model; no new
 // provider, account or credential store is introduced.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if (canImport(SwiftUI) && canImport(UIKit)) || FLOE_UNIFIED_MAC
 import Foundation
 import FloeCore
 import FloeModels
@@ -52,7 +52,7 @@ struct AutomaticReasoningEffortAuxiliaryClassifier: AutomaticReasoningEffortClas
             model: helperModel,
             messages: [
                 (role: "system", content: Self.instructions),
-                (role: "user", content: input)
+                (role: "user", content: SecretRedactor.redact(input, secret: credentials.apiKey))
             ],
             toolSchemas: [],
             reasoningPolicy: .disabled,

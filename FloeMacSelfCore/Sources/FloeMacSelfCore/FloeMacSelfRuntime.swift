@@ -346,15 +346,17 @@ public actor FloeMacSelfRuntime {
     public func startSession(
         _ request: FloeMacSelfSessionRequest,
         provider: FloeMacSelfProviderBinding,
-        tools: FloeMacSelfToolBinding? = nil
+        tools: FloeMacSelfToolBinding? = nil,
+        auxiliary: FloeMacSelfAuxiliaryRoutes = .init()
     ) async throws -> FloeMacSelfSessionHandle {
-        try await startSession(request, provider: provider, tools: tools, replacingClaim: nil)
+        try await startSession(request, provider: provider, tools: tools, auxiliary: auxiliary, replacingClaim: nil)
     }
 
     private func startSession(
         _ request: FloeMacSelfSessionRequest,
         provider: FloeMacSelfProviderBinding,
         tools: FloeMacSelfToolBinding?,
+        auxiliary: FloeMacSelfAuxiliaryRoutes,
         replacingClaim: UUID?
     ) async throws -> FloeMacSelfSessionHandle {
         guard !shuttingDown, !closed, !authorityCompromised else {
@@ -367,6 +369,15 @@ public actor FloeMacSelfRuntime {
         let canonicalGoal = request.goal.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let resolvedProvider = try FloeMacSelfCapabilityResolver.resolveProvider(provider)
+        let needsVision = request.attachments.contains { $0.kind == .image } && !resolvedProvider.model.capabilities.contains(.vision)
+        if needsVision {
+            guard let vision = auxiliary.vision, vision.model.isEnabled, vision.provider.isEnabled,
+                  vision.model.supportsAuxiliaryVisionSurface else {
+                throw FloeError.invalidConfiguration("Select a vision model for image attachments.")
+            }
+            _ = try FloeMacSelfCapabilityResolver.resolveProvider(vision)
+        }
+
         // Ordinary chat runs tool-free. Plan discovery is read-only but needs
         // the compiled read-only investigation ceiling plus `plan.submit`, so
         // it requires an explicit tool binding like every other tool-enabled
@@ -824,17 +835,35 @@ public actor FloeMacSelfRuntime {
             // Install the wrapper only when this turn actually carries
             // verified text documents; every other run keeps the host's
             // adapter untouched.
-            let serviceAdapter: any ProviderAdapter
+            let documentAdapter: any ProviderAdapter
             if currentUserTextDocuments.isEmpty {
-                serviceAdapter = resolvedProvider.adapter
+                documentAdapter = resolvedProvider.adapter
             } else {
-                serviceAdapter = FloeMacSelfInlineTextDocumentAdapter(
+                documentAdapter = FloeMacSelfInlineTextDocumentAdapter(
                     underlying: resolvedProvider.adapter,
                     currentUserMessageText: canonicalGoal,
                     documentSection: Self.inlineTextDocumentPreamble
                         + "\n\n" + currentUserTextDocuments.joined(separator: "\n\n")
                 )
             }
+            var routes = auxiliary
+            if effectiveChatFastMode || turnModel.effectiveReasoningEffort != .automatic
+                || !AutomaticReasoningEffortSupport.supportsVariableEffort(provider: resolvedProvider.provider, model: turnModel) {
+                routes.effortClassifier = nil
+            }
+            let serviceAdapter: any ProviderAdapter
+            if needsVision || routes.effortClassifier != nil {
+                if needsVision && currentUserImages.count != prepared.attachments.filter({ $0.kind == .image }).count {
+                    throw FloeError.invalidConfiguration("An image attachment changed. Attach it again.")
+                }
+                let helperInput = AutomaticReasoningEffortInputBuilder.build(
+                    goal: SecretRedactor.redact(canonicalGoal, secret: provider.credentials.apiKey), attachments: stagedAttachments)
+                serviceAdapter = FloeMacSelfAuxiliaryAdapter(underlying: documentAdapter, routes: routes,
+                    images: needsVision ? currentUserImages : [], userText: canonicalGoal, classifierInput: helperInput,
+                    runID: runID, recorder: { id, decision in
+                        _ = try? await stores.runs.appendEvent(runID: id, kind: .status, payloadJSON: decision.payloadJSON())
+                    })
+            } else { serviceAdapter = documentAdapter }
             let service = ConversationRunService(
                 configuration: configuration,
                 adapter: serviceAdapter,
@@ -857,7 +886,7 @@ public actor FloeMacSelfRuntime {
                     (id: prepared.workspace.id, root: $0)
                 },
                 conversationHistory: conversationHistory,
-                currentUserImages: currentUserImages,
+                currentUserImages: needsVision ? [] : currentUserImages,
                 runContext: runContext
             )
 
@@ -1074,7 +1103,8 @@ public actor FloeMacSelfRuntime {
     public func resumeGoalSession(
         _ request: FloeMacSelfSessionRequest,
         provider: FloeMacSelfProviderBinding,
-        tools: FloeMacSelfToolBinding? = nil
+        tools: FloeMacSelfToolBinding? = nil,
+        auxiliary: FloeMacSelfAuxiliaryRoutes = .init()
     ) async throws -> FloeMacSelfSessionHandle {
         try ensureAdmissionStillAllowed()
         try requireAuthority()
@@ -1165,7 +1195,7 @@ public actor FloeMacSelfRuntime {
             startedAt: request.startedAt
         )
         do {
-            return try await startSession(resumeRequest, provider: provider, tools: tools, replacingClaim: reservation)
+            return try await startSession(resumeRequest, provider: provider, tools: tools, auxiliary: auxiliary, replacingClaim: reservation)
         } catch {
             let launchError = error
             // Restore the prior state only while this conversation is idle
@@ -2338,6 +2368,12 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    public func saveAutomaticTitle(_ title: String, conversationID: UUID) async throws -> Bool {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        return try await requireStores().conversations.setAutomaticTitle(id: conversationID, title: title)
+    }
+
     public func taskApprovalMode(conversationID: UUID) async throws -> TaskApprovalMode {
         try await requireStores().workspaces.taskPolicy(conversationID: conversationID).resolvedApprovalMode
     }
@@ -2488,19 +2524,25 @@ private struct FloeMacSelfInlineTextDocumentAdapter: ProviderAdapter {
         }
         var expanded = request
         expanded.contentMessages[index].content.append(.text(documentSection))
-        let limits = request.model.limits
+        return expanded.fitsMacAttachmentBudget ? expanded : request
+    }
+}
+
+extension ProviderStreamRequest {
+    var fitsMacAttachmentBudget: Bool {
+        let limits = model.limits
         let reservedOutput = limits.configuredMaxOutputTokens
             .map { min($0, max(1, limits.contextTokens / 2)) }
             ?? min(4_096, max(512, limits.contextTokens / 4))
-        let size = ProviderRequestSizer.measure(messages: expanded.contentMessages,
-                                               schemas: request.toolSchemas,
-                                               replayedToolPairs: request.replayedToolPairs,
+        let size = ProviderRequestSizer.measure(messages: contentMessages,
+                                               schemas: toolSchemas,
+                                               replayedToolPairs: replayedToolPairs,
                                                contextWindowTokens: limits.contextTokens,
                                                reservedOutputTokens: reservedOutput)
-        let pendingBytes = request.toolResults.reduce(0) { $0 + $1.output.utf8.count + 48 }
-            + request.pendingToolCalls.reduce(0) { $0 + $1.argumentsJSON.count + 48 }
-            + (request.pendingAssistantReasoning?.utf8.count ?? 0)
-        return !size.toolResultsCannotFit && size.toolResultBudgetBytes >= pendingBytes ? expanded : request
+        let pendingBytes = toolResults.reduce(0) { $0 + $1.output.utf8.count + 48 }
+            + pendingToolCalls.reduce(0) { $0 + $1.argumentsJSON.count + 48 }
+            + (pendingAssistantReasoning?.utf8.count ?? 0)
+        return !size.toolResultsCannotFit && size.toolResultBudgetBytes >= pendingBytes
     }
 }
 
