@@ -2159,7 +2159,8 @@ private struct InspectorColumnView: View {
             case .progress:
                 TaskProgressInspectorView(conversationID: route.conversationID)
             case .childAgents:
-                ChildAgentsInspectorView(conversationID: route.conversationID)
+                ChildAgentsInspectorView(conversationID: route.conversationID, parentRunID: route.parentRunID)
+                    .id(route.id)
             case .permissions:
                 TaskPermissionsInspectorView(conversationID: route.conversationID)
             }

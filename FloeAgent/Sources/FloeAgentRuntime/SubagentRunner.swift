@@ -313,11 +313,17 @@ public struct SubagentRunner: Sendable {
     /// child-slot release; thrown errors only cover fail-closed setup (e.g.
     /// missing child budget). Provider/tool/cancellation terminations arrive
     /// as structured statuses, never as wrapped success.
+    ///
+    /// `isBackgroundCancelled` is set only by an explicit user cancel of this
+    /// one background child. It takes precedence over the interruption path:
+    /// the child settles as terminal `.cancelled` with a real outcome, never
+    /// the resumable `.interrupted` state used for parent stops and crashes.
     public func runStructured(
         _ request: SubagentRequest,
         context: ToolContext,
         onDurableRegistration: (@Sendable (Bool) -> Void)? = nil,
-        isBackgroundInterrupted: (@Sendable () async -> Bool)? = nil
+        isBackgroundInterrupted: (@Sendable () async -> Bool)? = nil,
+        isBackgroundCancelled: (@Sendable () async -> Bool)? = nil
     ) async throws -> SubagentOutcome {
         guard let childBudget = context.childBudget else {
             onDurableRegistration?(false)
@@ -356,6 +362,41 @@ public struct SubagentRunner: Sendable {
                 return outcome
             }
         }
+        // One terminal-settle rule for every runLoop exit: a deliberate user
+        // cancel of this one background child wins over the interruption
+        // path and commits a terminal `.cancelled` outcome the parent can
+        // reconcile; the interruption path stays resumable for parent stops
+        // and crashes. A child that genuinely completed keeps its result —
+        // a late cancel never rewrites a real answer.
+        func settle(_ outcome: SubagentOutcome, persistence: ChildRunPersistence?, forceInterrupt: Bool = false) async -> SubagentOutcome {
+            if onDurableRegistration != nil { await persistence?.recordBackgroundFailureIfUnready() }
+            if outcome.status != .completed, await isBackgroundCancelled?() == true {
+                let cancelled = SubagentOutcome(
+                    status: .cancelled,
+                    iterationsUsed: outcome.iterationsUsed,
+                    findings: "Subagent cancelled by the user before producing a final answer.",
+                    evidence: outcome.evidence,
+                    unfinished: outcome.unfinished)
+                if let persistence {
+                    return await persistence.finish(cancelled, requireResult: onDurableRegistration != nil)
+                }
+                return cancelled
+            }
+            let interrupted: Bool
+            if forceInterrupt || outcome.status == .completed {
+                interrupted = forceInterrupt
+            } else {
+                interrupted = await isBackgroundInterrupted?() == true
+            }
+            if interrupted {
+                if let persistence { return await persistence.interrupt(outcome) }
+                return outcome
+            }
+            if let persistence {
+                return await persistence.finish(outcome, requireResult: onDurableRegistration != nil)
+            }
+            return outcome
+        }
         do {
             let outcome = try await runLoop(
                 request, context: context, childBudget: childBudget, persistence: persistence,
@@ -365,36 +406,21 @@ public struct SubagentRunner: Sendable {
             // callback's stream is already closed if readiness was signalled.
             onDurableRegistration?(false)
             await childBudget.finish()
-            if let persistence {
-                if onDurableRegistration != nil { await persistence.recordBackgroundFailureIfUnready() }
-                if outcome.status != .completed, await isBackgroundInterrupted?() == true {
-                    return await persistence.interrupt(outcome)
-                }
-                return await persistence.finish(outcome, requireResult: onDurableRegistration != nil)
-            }
-            return outcome
+            return await settle(outcome, persistence: persistence)
         } catch let stopped as CheckpointStop {
             onDurableRegistration?(false)
             await childBudget.finish()
-            if onDurableRegistration != nil { await persistence?.recordBackgroundFailureIfUnready() }
             let outcome = SubagentOutcome(status: .toolError, iterationsUsed: stopped.iterations,
                                            findings: stopped.reason, unfinished: [stopped.reason])
-            if let persistence { return await persistence.interrupt(outcome) }
-            return outcome
+            return await settle(outcome, persistence: persistence, forceInterrupt: true)
         } catch let termination as Termination {
             onDurableRegistration?(false)
             await childBudget.finish()
-            if onDurableRegistration != nil { await persistence?.recordBackgroundFailureIfUnready() }
             let outcome = Self.terminatedOutcome(termination, request: request)
-            if let persistence {
-                if await isBackgroundInterrupted?() == true { return await persistence.interrupt(outcome) }
-                return await persistence.finish(outcome, requireResult: onDurableRegistration != nil)
-            }
-            return outcome
+            return await settle(outcome, persistence: persistence)
         } catch {
             onDurableRegistration?(false)
             await childBudget.finish()
-            if onDurableRegistration != nil { await persistence?.recordBackgroundFailureIfUnready() }
             // Defensive: runLoop classifies every expected failure into a
             // Termination. An error reaching here is an unclassified harness
             // failure, never a success.
@@ -403,11 +429,7 @@ public struct SubagentRunner: Sendable {
                 iterationsUsed: 0,
                 findings: "Subagent stopped by a harness guard: \(error.localizedDescription)"
             )
-            if let persistence {
-                if await isBackgroundInterrupted?() == true { return await persistence.interrupt(outcome) }
-                return await persistence.finish(outcome, requireResult: onDurableRegistration != nil)
-            }
-            return outcome
+            return await settle(outcome, persistence: persistence)
         }
     }
 

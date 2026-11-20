@@ -229,7 +229,11 @@ final class AppRouter: ObservableObject {
     struct InspectorRoute: Identifiable, Hashable, Sendable {
         var content: InspectorContent
         var conversationID: UUID
-        var id: String { "\(content.rawValue).\(conversationID.uuidString)" }
+        var parentRunID: UUID? = nil
+        var id: String {
+            let base = "\(content.rawValue).\(conversationID.uuidString)"
+            return parentRunID.map { base + "." + $0.uuidString } ?? base
+        }
     }
 
     /// The inspector is a trailing pane inside the stable iPad detail column,

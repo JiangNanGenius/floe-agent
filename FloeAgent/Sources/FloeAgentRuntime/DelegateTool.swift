@@ -38,7 +38,7 @@ public struct DelegateTool: AgentTool {
 
     public static let name = "delegate"
     public static let toolDescription =
-        "By default this call waits. Set background=true to continue independently, then use delegate.wait to check or wait for the child; account for its actual outcome before finishing. Delegate one subtask to a focused subagent that works in a clean context and returns a self-contained handoff summary. The subagent inherits this task's ACTUAL effective tools, workspace, environment and permissions — the same ceiling you hold, resolved per call by this task's own approval policy, so expect and honor approval prompts or denials. `type` is only a focus hint: `explore` (default; prefer fast local workspace/conversation reads), `research` (prefer web/network evidence) or `execute` (emphasize implementing/running the work end-to-end). No type grants extra rights or removes a right you hold. Children never modify their own permission ceiling and can never delegate further. Several independent delegate calls in one batch run in parallel — batch them; live sibling children may coordinate through delegate.peers/delegate.message. Give the subagent complete context: it sees nothing of this conversation beyond what you pass. The result is a structured receipt: `status=ok` means the subagent finished with a final answer; `status=partial` / `status=budgetExhausted` mean it ran out of iterations or shared budget and the findings are incomplete (treat them as non-success, not as a completed subtask); `status=cancelled`, `status=providerError` and `status=toolError` are failures. Each non-ok receipt lists bounded findings, evidence references and unfinished items."
+        "By default this call waits and returns the subagent's result — use this whenever the main task depends on the outcome. Set background=true ONLY for independent work with permission: side work that does not block your next step (it still runs under this task's permission policy, so expect and honor approval prompts or denials). Keep making progress on your own work while a background child runs; call delegate.wait to collect it only when the final result actually depends on it, and always reconcile its ACTUAL outcome before finishing — `status=ok` is the only success. Delegate one subtask to a focused subagent that works in a clean context and returns a self-contained handoff summary. The subagent inherits this task's ACTUAL effective tools, workspace, environment and permissions — the same ceiling you hold, resolved per call by this task's own approval policy. `type` is only a focus hint: `explore` (default; prefer fast local workspace/conversation reads), `research` (prefer web/network evidence) or `execute` (emphasize implementing/running the work end-to-end). No type grants extra rights or removes a right you hold. Children never modify their own permission ceiling and can never delegate further. Several independent delegate calls in one batch run in parallel — batch them; live sibling children may coordinate through delegate.peers/delegate.message. Give the subagent complete context: it sees nothing of this conversation beyond what you pass. The result is a structured receipt: `status=ok` means the subagent finished with a final answer; `status=partial` / `status=budgetExhausted` mean it ran out of iterations or shared budget and the findings are incomplete (treat them as non-success, not as a completed subtask); `status=cancelled`, `status=providerError` and `status=toolError` are failures. Each non-ok receipt lists bounded findings, evidence references and unfinished items."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -185,6 +185,17 @@ private actor BackgroundInterruptionFlag {
     func get() -> Bool { interrupted }
 }
 
+/// Set only by an explicit user cancel of ONE background child (the detail
+/// view's cancel action). Distinct from the run-scope interruption flag so a
+/// deliberately stopped child settles as `.cancelled` (terminal, with a real
+/// outcome the parent must reconcile) instead of the resumable `.interrupted`
+/// state used for parent stops and crashes.
+private actor BackgroundCancellationFlag {
+    private var cancelled = false
+    func set() { cancelled = true }
+    func get() -> Bool { cancelled }
+}
+
 public struct BackgroundChildSnapshot: Sendable {
     public let id: UUID
     public let state: ChildRunState
@@ -199,6 +210,7 @@ public actor SubagentRunnerRegistry {
     private var runners: [UUID: SubagentRunner] = [:]
     private var backgroundTasks: [UUID: [UUID: Task<Void, Never>]] = [:]
     private var interruptionFlags: [UUID: [UUID: BackgroundInterruptionFlag]] = [:]
+    private var cancellationFlags: [UUID: [UUID: BackgroundCancellationFlag]] = [:]
     private var starting: Set<String> = []
     private var closingRuns: Set<UUID> = []
     private var enabledBackgroundRuns: Set<UUID> = []
@@ -232,6 +244,44 @@ public actor SubagentRunnerRegistry {
         for task in tasks { await task.value }
         backgroundTasks[runID] = nil
         interruptionFlags[runID] = nil
+        cancellationFlags[runID] = nil
+    }
+
+    /// Cancels exactly ONE background child of this run, leaving every
+    /// sibling — and every child of every other run — untouched. The child
+    /// settles durably as `.cancelled` with a real outcome, so the parent run
+    /// can finish by reconciling the actual result instead of failing on an
+    /// "interrupted" child. A deliberate user cancel is terminal: unlike a
+    /// parent stop or crash it never leaves the child in the resumable
+    /// `.interrupted` state.
+    public func cancelBackgroundChild(runID: UUID, conversationID: UUID, childID: UUID) async throws {
+        guard let runner = runners[runID] else {
+            throw FloeError.invalidConfiguration("No runner is bound to this task")
+        }
+        guard let child = try await runner.backgroundChild(id: childID, parentRunID: runID, conversationID: conversationID) else {
+            throw FloeError.validationFailed("No such child belongs to this task")
+        }
+        let transcript = try await runner.backgroundTranscript(childID: childID)
+        guard transcript.isBackground, child.delegateCallID != nil else {
+            throw FloeError.validationFailed("No such child belongs to this task")
+        }
+        guard !child.state.isTerminal else { return }
+        // The flag was created with the start; fall back to a fresh one only
+        // for a child whose start raced this cancel.
+        let cancellation = cancellationFlags[runID]?[childID] ?? BackgroundCancellationFlag()
+        await cancellation.set()
+        cancellationFlags[runID, default: [:]][childID] = cancellation
+        // Also raise the interruption flag so the run loop stops at its next
+        // boundary check instead of starting another provider turn; the
+        // cancellation flag decides the durable terminal state below.
+        await interruptionFlags[runID]?[childID]?.set()
+        if let task = backgroundTasks[runID]?[childID] {
+            task.cancel()
+            await task.value
+        }
+        backgroundTasks[runID]?[childID] = nil
+        interruptionFlags[runID]?[childID] = nil
+        cancellationFlags[runID]?[childID] = nil
     }
 
     public func startBackground(_ request: SubagentRequest, context: ToolContext) async throws -> UUID {
@@ -281,7 +331,9 @@ public actor SubagentRunnerRegistry {
         }
         let (stream, continuation) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let interruptionFlag = BackgroundInterruptionFlag()
+        let cancellationFlag = BackgroundCancellationFlag()
         interruptionFlags[context.runID, default: [:]][identity.childID] = interruptionFlag
+        cancellationFlags[context.runID, default: [:]][identity.childID] = cancellationFlag
         let task = Task {
             let peers = context.childExecution?.peers
             await peers?.register(String(request.task.prefix(120)))
@@ -289,7 +341,8 @@ public actor SubagentRunnerRegistry {
                 _ = try await runner.runStructured(request, context: context, onDurableRegistration: { value in
                     continuation.yield(value)
                     continuation.finish()
-                }, isBackgroundInterrupted: { await interruptionFlag.get() })
+                }, isBackgroundInterrupted: { await interruptionFlag.get() },
+                isBackgroundCancelled: { await cancellationFlag.get() })
             } catch {
                 continuation.yield(false)
                 continuation.finish()
@@ -302,6 +355,7 @@ public actor SubagentRunnerRegistry {
             await task.value
             backgroundTasks[context.runID]?[identity.childID] = nil
             interruptionFlags[context.runID]?[identity.childID] = nil
+            cancellationFlags[context.runID]?[identity.childID] = nil
             throw FloeError.invalidConfiguration("The background child was not started because its durable record could not be created")
         }
         return identity.childID
