@@ -91,6 +91,7 @@ struct FloeAgentApp: App {
     // SwiftUI retains the original StateObject and system action dependency.
     @MainActor static let liveEnvironment = AppEnvironment.live()
     @UIApplicationDelegateAdaptor(FloeApplicationDelegate.self) private var applicationDelegate
+    @Environment(\.scenePhase) private var applicationPhase
     @StateObject private var environment: AppEnvironment
     @StateObject private var router: AppRouter
     @AppStorage(FloeUserAgreement.storageKey) private var acceptedAgreement = ""
@@ -183,6 +184,10 @@ struct FloeAgentApp: App {
         })
         .commands {
             if showsMainWindow { FloeAgentCommands(router: router) }
+        }
+        // The App phase covers all windows, including the first-launch agreement.
+        .onChange(of: applicationPhase, initial: true) { _, phase in
+            UIApplication.shared.isIdleTimerDisabled = phase == .active || phase == .inactive
         }
     }
 

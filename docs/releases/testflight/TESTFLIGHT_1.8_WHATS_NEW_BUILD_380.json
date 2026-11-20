@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在音乐编辑器里设计并试听一个音色，导出其波形 PNG，再让工程助手设计另一种音色。在普通聊天中请助手查看一个工作区音频文件的波形。接管网页后试试带备注交还，并检查普通 IDE 与游戏工程里的运行入口。 将 Floe 留在前台超过自动锁定时间，检查屏幕是否保持点亮，再切到后台检查系统自动锁定。",
+  "en-US": "Design and audition a timbre in the music editor, export its waveform PNG, then ask the project assistant to design another sound. In chat, ask the assistant to inspect a workspace audio file’s waveform. Return a browser page with a comment and check Run in a regular IDE and a game project. Leave Floe open past the device’s Auto-Lock interval, then switch to the background and check that normal Auto-Lock resumes."
+}
