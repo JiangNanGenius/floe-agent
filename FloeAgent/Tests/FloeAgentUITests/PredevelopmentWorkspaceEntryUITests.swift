@@ -124,7 +124,9 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         let confirmation = app.sheets.buttons["space.files.delete.confirm"].firstMatch
         XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
         confirmation.tap()
-        XCTAssertTrue(menu.waitForNonExistence(timeout: 15))
+        // Closing the game's owned operations and committing its library record are asynchronous.
+        // The row must disappear even when the library contains many other projects.
+        XCTAssertTrue(menu.waitForNonExistence(timeout: 60))
     }
 
     func testNewBuildingDrawsConnectedWallsAndChangesOneFinish() {
