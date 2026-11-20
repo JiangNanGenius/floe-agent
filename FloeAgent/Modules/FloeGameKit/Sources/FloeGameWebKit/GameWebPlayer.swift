@@ -17,7 +17,12 @@ private final class GameViewportWebView: WKWebView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         notifiedSize = nil
+        updateFrameScheduling()
         setNeedsLayout()
+    }
+
+    func updateFrameScheduling() {
+        evaluateJavaScript("window.floeDetachedFrames?.(\(window == nil)); void 0")
     }
 
     override func layoutSubviews() {
@@ -66,6 +71,9 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
     /// even when its project, source revision and storage identity are equal.
     public var runGeneration: Int { generation }
     private var lease: UUID?
+    #if canImport(UIKit)
+    private var framePending = false
+    #endif
     private var pressedKeys: Set<GameKeyboardKey> = []
     private var preparation: Task<Void, any Error>?
     private let saveFlush = GameWebSaveFlush()
@@ -139,11 +147,11 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
             webView.configuration.userContentController.addUserScript(
                 WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             webView.configuration.userContentController.addUserScript(
-                WKUserScript(source: Self.bridge(lease), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                WKUserScript(source: bridge(lease), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         } else {
             webView.configuration.userContentController.removeAllUserScripts()
             webView.configuration.userContentController.addUserScript(
-                WKUserScript(source: Self.bridge(lease), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                WKUserScript(source: bridge(lease), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
         handler.activate()
         let url = URL(string: GameArtifactSchemeHandler.scheme + "://" + storageIdentity.originHost + "/" + package.prepared.entry.value)!
@@ -325,7 +333,12 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
         if let navigation, pendingStop?.navigation == ObjectIdentifier(navigation), webView.url?.absoluteString == "about:blank" {
             finishStop(true)
         }
-        if lease != nil, webView.url?.scheme == GameArtifactSchemeHandler.scheme { loaded = true }
+        if lease != nil, webView.url?.scheme == GameArtifactSchemeHandler.scheme {
+            loaded = true
+            #if canImport(UIKit)
+            (webView as? GameViewportWebView)?.updateFrameScheduling()
+            #endif
+        }
     }
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
         if lease != nil { failure = String(describing: error) }
@@ -396,6 +409,19 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
               let text = message.body as? String, text.utf8.count <= 8_192,
               let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               object["lease"] as? String == lease.uuidString, let kind = object["kind"] as? String else { return }
+        #if canImport(UIKit)
+        if kind == "frame", webView.window == nil, !framePending {
+            framePending = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                self.framePending = false
+                guard self.lease == lease, self.webView.window == nil,
+                      UIApplication.shared.applicationState != .background else { return }
+                self.webView.evaluateJavaScript("window.floeAdvanceFrame?.(); void 0")
+            }
+            return
+        }
+        #endif
         if kind == "ready", let details = object["payload"] as? [String: Any] {
             supportsInput = details["input"] as? Bool == true; supportsState = details["state"] as? Bool == true
             gameReady = true
@@ -463,9 +489,78 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
         previous.values.forEach { $0.continuation.resume(throwing: GameWebPlayerError.staleRun) }
     }
 
-    private static func bridge(_ lease: UUID) -> String {
+    #if canImport(UIKit)
+    /// WebKit suspends animation frames when a running game has no window.
+    /// Coalesce foreground chat frames into one bounded wake-up. The page
+    /// timer covers suspension or a scene transition; WebKit owns visible frames.
+    private static func detachedFrames(initiallyDetached: Bool) -> String {
         """
+        (() => {
+          let detached = \(initiallyDetached), scheduled = null, scheduledWithTimer = false, nextID = 0;
+          const callbacks = new Map();
+          const request = window.requestAnimationFrame.bind(window);
+          const cancel = window.cancelAnimationFrame.bind(window);
+          function schedule() {
+            if (scheduled !== null || !callbacks.size) return;
+            scheduledWithTimer = detached && document.hidden;
+            if (scheduledWithTimer) {
+              scheduled = setTimeout(() => tick(performance.now()), 1000);
+              send('frame', null);
+            } else {
+              scheduled = request(tick);
+            }
+          }
+          function tick(time) {
+            scheduled = null;
+            for (const id of Array.from(callbacks.keys())) {
+              const callback = callbacks.get(id);
+              if (!callback) continue;
+              callbacks.delete(id);
+              try { callback.call(window, time); } catch (error) { reportError(error); }
+            }
+            schedule();
+          }
+          function reschedule() {
+            if (scheduled !== null) {
+              if (scheduledWithTimer) clearTimeout(scheduled); else cancel(scheduled);
+              scheduled = null;
+            }
+            schedule();
+          }
+          window.requestAnimationFrame = callback => {
+            if (typeof callback !== 'function') throw new TypeError('Expected a frame callback');
+            callbacks.set(++nextID, callback);
+            schedule();
+            return nextID;
+          };
+          window.cancelAnimationFrame = id => {
+            callbacks.delete(id);
+            if (!callbacks.size) reschedule();
+          };
+          window.floeAdvanceFrame = () => {
+            if (scheduledWithTimer && scheduled !== null) {
+              clearTimeout(scheduled);
+              tick(performance.now());
+            }
+          };
+          window.floeDetachedFrames = value => {
+            if (detached !== value) { detached = value; reschedule(); }
+          };
+          document.addEventListener('visibilitychange', reschedule);
+        })();
+        """
+    }
+    #endif
+
+    private func bridge(_ lease: UUID) -> String {
+        #if canImport(UIKit)
+        let frames = Self.detachedFrames(initiallyDetached: webView.window == nil)
+        #else
+        let frames = ""
+        #endif
+        return """
         (function(){const lease='\(lease.uuidString)';function send(kind,payload){try{window.webkit.messageHandlers.floeGame.postMessage(JSON.stringify({lease:lease,kind:kind,payload:payload}))}catch(e){}}
+        \(frames)
         Object.defineProperty(window,'floeGameHost',{value:Object.freeze({ready:p=>send('ready',p),log:p=>send('log',String(p).slice(0,2048))}),writable:false});
         for(const level of ['log','info','warn','error']){const original=console[level]?.bind(console);console[level]=function(...args){
           try{original?.(...args)}catch(e){}

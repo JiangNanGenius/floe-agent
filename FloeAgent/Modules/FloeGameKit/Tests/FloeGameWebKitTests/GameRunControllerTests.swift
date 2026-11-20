@@ -65,7 +65,13 @@ private actor PreparationHost: GameWebRunPreparationHost {
         let html = """
         <html><body style="margin:0"><canvas width="800" height="600"></canvas><script>
         const c = document.querySelector('canvas').getContext('2d');
-        c.fillStyle = '#d32640'; c.fillRect(0,0,800,600);
+        const cancelled = requestAnimationFrame(() => { window.unexpectedFrame = true; });
+        cancelAnimationFrame(cancelled);
+        requestAnimationFrame(first => requestAnimationFrame(second => {
+          if (second <= first || window.unexpectedFrame) return;
+          c.fillStyle = '#d32640'; c.fillRect(0,0,800,600);
+          window.testFramePainted = true;
+        }));
         </script></body></html>
         """
         let (root, context, prepared) = try fixture(html: html)
@@ -80,6 +86,13 @@ private actor PreparationHost: GameWebRunPreparationHost {
         XCTAssertNil(player.webView.window)
         for _ in 0..<200 where !player.loaded { try await Task.sleep(for: .milliseconds(25)) }
         XCTAssertTrue(player.loaded)
+        var painted = false
+        for _ in 0..<100 {
+            painted = try await player.webView.evaluateJavaScript("window.testFramePainted === true") as? Bool == true
+            if painted { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(painted)
         // A busy game renderer may take longer than the input-command budget
         // to service the next WebKit snapshot request during scene creation.
         player.webView.evaluateJavaScript("const until = performance.now() + 4500; while (performance.now() < until) {}", completionHandler: nil)

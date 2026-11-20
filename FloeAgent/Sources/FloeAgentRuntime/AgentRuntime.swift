@@ -1072,6 +1072,8 @@ public actor FloeAgentRuntime {
     /// action boundary once; a hard cap keeps weak models from turning the
     /// harness correction itself into a loop.
     private var deferredActionRepairCount = 0
+    private var attemptedAlternateRoute = false
+    private var stalledRoutes: Set<String> = []
     private var actionClaimRepairCount = 0
     /// A provider turn that ends with neither visible text nor a tool call
     /// earns exactly one bounded continuation asking for the final answer;
@@ -2456,6 +2458,8 @@ public actor FloeAgentRuntime {
             // Fresh user guidance is explicit progress. Previous unchanged
             // retry evidence must not block the newly steered route.
             if case .user = input.origin {
+                attemptedAlternateRoute = false
+                stalledRoutes.removeAll()
                 loopGuard.advanceProgressEpoch()
                 if let waiting = activeRuntimeWait {
                     steeredRuntimeWaitIDs.insert(waiting.waitID)
@@ -4380,6 +4384,32 @@ public actor FloeAgentRuntime {
                     return
                 }
             }
+            if stopReason == .noProgress, forcedStopReason == .noProgress,
+               !attemptedAlternateRoute, !didVerifyFinalAnswer, configuration.conversationMode != .plan,
+               !streamText.isEmpty {
+                let facts = await taskClosureFacts()
+                let budget = await budgetLedger.snapshot()
+                guard !Task.isCancelled, !cancellationToken.isCancelled else { return }
+                if !pendingSteers.isEmpty {
+                    await finishOrSteer(stopReason: stopReason)
+                    return
+                }
+                switch state { case .streamingModel, .verifying: break; default: return }
+                if budget.parent < configuration.maxToolSteps, !facts.availableToolNames.isEmpty,
+                   TaskClosureGate.promisesExecution(streamText,
+                       knownWork: facts.hasUnsettledSteps || facts.hasNonSuccessfulWork,
+                       tools: facts.availableToolNames) {
+                    logger.info("noProgressAlternateRoute run=\(runID.uuidString) fencedRoutes=\(stalledRoutes.count)")
+                    attemptedAlternateRoute = true
+                    isFinalizingWithoutTools = false
+                    forcedStopReason = nil
+                    acceptingChildResumes = true
+                    messages.append(ConversationMessage(role: "system", content:
+                        "The stalled approach remains closed. The summary proposed further work. Continue this same task using a materially different permitted operation; if none is feasible, report the blocker now."))
+                    await beginDeferredActionRepair(facts: facts)
+                    return
+                }
+            }
             if stopReason == .endTurn,
                streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !didVerifyFinalAnswer,
@@ -6232,6 +6262,15 @@ public actor FloeAgentRuntime {
                 resultsByID[call.id] = skipped
                 continue
             }
+            if attemptedAlternateRoute, stalledRoutes.contains(ToolLoopGuard.canonicalRoute(for: call)) {
+                let blocked = ToolResult(callID: call.id, status: .failed,
+                    outputSummary: "This unchanged operation already stalled. It was not dispatched again.", outputDigest: "")
+                resultsByID[call.id] = blocked
+                await audit(toolCall: call, result: blocked, decision: "deny:stalled-route")
+                suppressedCallIDs.insert(call.id)
+                blockedNoProgressCallIDs.insert(call.id)
+                continue
+            }
             if let guardrail = loopGuard.blockDecision(for: call,
                 capabilityIdentity: executor.descriptor(named: call.toolName)?.authorizationIdentity) {
                 let blocked = ToolResult(
@@ -6428,7 +6467,7 @@ public actor FloeAgentRuntime {
         )
         var orderedResults: [(call: ToolCall, result: ToolResult)] = []
         var needsUserResult: ToolResult?
-        var noProgressDetected = false
+        var stoppedRoutes = Set<String>()
         loopGuard.beginSettleBatch()
         for call in calls {
             var result = resultsByID[call.id] ?? ToolResult(
@@ -6486,6 +6525,9 @@ public actor FloeAgentRuntime {
             }
             let executedIsSideEffecting = preDispatch?.isSideEffecting
                 ?? (settledDescriptor?.isSideEffecting == true)
+            if attemptedAlternateRoute, result.status == .ok, executedIsSideEffecting, !outcomeUnknown {
+                stalledRoutes.removeAll()
+            }
             var routeStopped = false
             if result.status == .needsUser {
                 needsUserResult = needsUserResult ?? result
@@ -6498,13 +6540,12 @@ public actor FloeAgentRuntime {
                 stopLimit: configuration.unchangedToolOutcomeLimit
             ) {
                 routeStopped = guardrail.shouldStop
-                noProgressDetected = noProgressDetected || guardrail.shouldStop
                 result.outputSummary += "\n\nHarness warning: \(guardrail.message)"
             }
             if blockedNoProgressCallIDs.contains(call.id) {
                 routeStopped = true
-                noProgressDetected = true
             }
+            if routeStopped { stoppedRoutes.insert(ToolLoopGuard.canonicalRoute(for: call)) }
             if call.toolName == UserAskTool.name,
                let receipt = try? JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(result.outputSummary.utf8)) {
                 let sources = receipt.answers.filter { $0.source == .human }.flatMap { answer in
@@ -6588,7 +6629,9 @@ public actor FloeAgentRuntime {
         if let cycleDecision = loopGuard.endSettleBatch(
             stopLimit: configuration.unchangedToolOutcomeLimit
         ) {
-            noProgressDetected = noProgressDetected || cycleDecision.shouldStop
+            if cycleDecision.shouldStop {
+                stoppedRoutes.formUnion(calls.map { ToolLoopGuard.canonicalRoute(for: $0) })
+            }
             let warning = "\n\nHarness warning: \(cycleDecision.message)"
             if let lastIndex = orderedResults.indices.last {
                 orderedResults[lastIndex].result.outputSummary += warning
@@ -6699,7 +6742,10 @@ public actor FloeAgentRuntime {
         }
         if budgetWasExhausted {
             await beginForcedFinalization(with: nil, stopReason: .budgetLimited)
-        } else if noProgressDetected {
+        } else if !stoppedRoutes.isEmpty {
+            if !attemptedAlternateRoute {
+                stalledRoutes = stoppedRoutes
+            }
             await beginForcedFinalization(with: nil, stopReason: .noProgress)
         } else {
             modelTurnContinuationRequested = true

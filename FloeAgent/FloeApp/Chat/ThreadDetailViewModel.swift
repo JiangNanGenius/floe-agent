@@ -296,6 +296,17 @@ final class ThreadDetailViewModel: ObservableObject {
         return reason.hasPrefix(FloeAgentRuntime.dependencyWaitReasonPrefix)
     }
 
+    var displayedRunState: String? {
+        guard liveStateName == "completed", let id = selectedRunID,
+              let terminal = eventsByRun[id]?.last(where: { $0.kind == .terminal }),
+              let reason = ConversationCenter.decodePayload(terminal.payloadJSON)["stopReason"] else { return liveStateName }
+        switch reason {
+        case "noProgress", "budgetLimited": return reason
+        case "maxTokens", "length": return "truncated"
+        default: return liveStateName
+        }
+    }
+
     /// Available projects disappear in temporary mode (no workspace binding).
     var availableProjects: [ComposerProject] {
         guard !isTemporary else { return [] }

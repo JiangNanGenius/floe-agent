@@ -116,8 +116,8 @@ struct TaskClosureGate: Sendable {
         let immediate = ["我现在","现在用","现在调用","接下来我","下一步我","我会立即","立即调用","让我","我先","准备调用","准备执行",
             "i'll now","i will now","next i'll","next i will","let me","i'm going to","i am going to","now i'll","now i will"]
         let continuing = ["接下来继续","下一步继续","我会继续","我将继续","我继续","i will continue","i'll continue","i will proceed","i'll proceed"]
-        let actions = ["调用","执行","观察","检查","读取","连接","安装","测试","打开","获取","截图","重试",
-            "call","run","execute","inspect","observe","read","connect","install","test","open","fetch","capture","retry"]
+        let actions = ["调用","执行","观察","检查","读取","连接","安装","测试","打开","获取","截图","重试","试玩","整理",
+            "playtest","call","run","execute","inspect","observe","read","connect","install","test","open","fetch","capture","retry"]
         let workActions = ["生成","编辑","修改","修正","写入","保存","完成","补齐","分析","计算","切片","导出","验证","generate","edit","write","save","finish","complete"]
         let negative = ["无法继续","不能继续","不会继续","不会再","不再执行","无法调用","不能调用","无法执行","不能执行","will not continue","won't continue","cannot continue","can't continue","unable to continue","cannot execute","can't execute"]
         for clause in clauses {
@@ -127,7 +127,7 @@ struct TaskClosureGate: Sendable {
             // unfinished work when the model never created a checklist.
             // Require a concrete work verb so ordinary offers of help do not
             // keep a completed conversation running.
-            let explicitFutureWork = !awaitsUser && ["我会继续", "我将继续", "我接着", "我会", "我将", "i will continue", "i'll continue"]
+            let explicitFutureWork = !awaitsUser && ["我会继续", "我将继续", "我接着", "我会", "我将", "i will use", "i'll use", "i will switch", "i'll switch", "i will continue", "i'll continue"]
                 .contains(where: clause.contains)
                 && (actions + workActions).contains(where: clause.contains)
                 && !["确认后", "同意后", "批准后", "授权后", "提供后", "if you", "once you", "after you"]

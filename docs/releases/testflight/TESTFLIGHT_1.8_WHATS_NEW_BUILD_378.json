@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在聊天中运行一个 RPG Maker MV 游戏，保持聊天打开，等场景加载后请助手截图，核对画面。观察模型重连提示，并在诊断页检查最新日志和反馈编号复制。若原方式反复失败，请观察助手是否在同一任务中改用已说明的替代方式。",
+  "en-US": "Run an RPG Maker MV game from chat, stay in chat, and ask the assistant to capture the loaded scene. Check the image, model reconnection status, latest diagnostics and feedback reference copying. Check that a promised alternative can run in the same task after a stalled operation."
+}

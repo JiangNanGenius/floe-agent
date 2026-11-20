@@ -1447,7 +1447,7 @@ struct ThreadDetailView: View {
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(FloeTheme.pending)
                 .accessibilityIdentifier("thread.run_state.awaitingDependency")
-        } else if let state = viewModel.liveStateName {
+        } else if let state = viewModel.displayedRunState {
             Text(RunStateLocalizer.title(for: state))
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(RunStateLocalizer.color(for: state))
@@ -2242,7 +2242,7 @@ struct TerminalEventRow: View {
         HStack(spacing: 8) {
             Image(systemName: state == "completed" || state == "endTurn"
                 ? "checkmark.circle" : "stop.circle")
-                .foregroundStyle(RunStateLocalizer.color(for: "completed"))
+                .foregroundStyle(RunStateLocalizer.color(for: ["budgetLimited", "noProgress"].contains(state) ? state : "completed"))
                 .accessibilityHidden(true)
             Text(RunStateLocalizer.terminalTitle(stopReason: state))
                 .font(FloeTheme.Typography.metadata)

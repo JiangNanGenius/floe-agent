@@ -2035,6 +2035,51 @@ struct AgentRuntimeTests {
         })
     }
 
+    @Test("a promised alternative after stalled verification continues the same run")
+    func promisedAlternateRouteContinues() async throws {
+        let adapter = MockAdapter(), executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.preview"] = .init(name: "test.preview", riskLabels: [], isSideEffecting: false)
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "shot-1"))],
+            [.toolRequest(try TestFixtures.toolCall(id: "shot-2"))],
+            [.textDelta(.init(text: "当前截图报错，我会改用实际浏览器试玩，并同步整理可下载的工程。")), .completed(.init(stopReason: .endTurn))],
+            [.toolRequest(try TestFixtures.toolCall(id: "preview", toolName: "test.preview"))],
+            [.textDelta(.init(text: "The preview was inspected.")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let runtime = makeRuntime(adapter: adapter, executor: executor, unchangedToolOutcomeLimit: 2)
+        try await runtime.start(goal: "run and verify the game")
+        #expect(executor.executedCalls.map(\.id) == ["shot-1", "shot-2", "preview"])
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("Expected the alternative operation to settle")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("continuation suppresses the stalled call and stops after one redirect")
+    func repeatedStalledRouteStaysStopped() async throws {
+        let adapter = MockAdapter(), executor = MockExecutor()
+        registerEcho(in: executor)
+        let promise: [AgentEvent] = [.textDelta(.init(text: "我会改用其他方式测试。")), .completed(.init(stopReason: .endTurn))]
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "same-1"))],
+            [.toolRequest(try TestFixtures.toolCall(id: "same-2"))],
+            promise,
+            [.toolRequest(try TestFixtures.toolCall(id: "same-3"))],
+            promise
+        ]
+        let runtime = makeRuntime(adapter: adapter, executor: executor, unchangedToolOutcomeLimit: 2)
+        try await runtime.start(goal: "verify the task")
+        #expect(executor.executedCalls.map(\.id) == ["same-1", "same-2"])
+        #expect(adapter.requests.count == 5)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("Expected a bounded stop")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+    }
+
     @Test("Tool-free no-progress finalization preserves the last provider call/result pair")
     func noProgressFinalizationPreservesDispatchPair() async throws {
         let adapter = MockAdapter()

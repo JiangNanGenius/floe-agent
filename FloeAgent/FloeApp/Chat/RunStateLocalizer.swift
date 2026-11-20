@@ -131,7 +131,7 @@ enum RunStateLocalizer {
             "state.stopped"
         case "maxTokens", "length":
             "state.truncated"
-        case "budgetLimited", "noProgress":"chat.run_state_localizer.task_unfinished_you_can_continue"
+        case "budgetLimited", "noProgress": title(for: stopReason)
         case "toolUse":
             "state.round_ended"
         default:
