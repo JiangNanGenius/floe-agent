@@ -15,6 +15,18 @@ public enum MacToolboxText {
     public static func utilities(_ locale: Locale) -> String {
         t("实用工具", "Utilities", locale)
     }
+
+    public static func browser(_ locale: Locale) -> String {
+        t("浏览器", "Browser", locale)
+    }
+
+    public static func backToTask(_ locale: Locale) -> String {
+        t("返回任务", "Back to Task", locale)
+    }
+
+    public static func openInSystemBrowser(_ locale: Locale) -> String {
+        t("在系统浏览器中打开", "Open in System Browser", locale)
+    }
 }
 
 public enum MacToolboxTool: String, CaseIterable, Identifiable, Sendable {

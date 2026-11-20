@@ -318,7 +318,10 @@ public enum UserQuestionCardAction: Equatable, Sendable {
 
 public struct UserQuestionCardView: View {
     #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
-    @MainActor static var smokeActionFrames: [String: CGRect] = [:]
+    @MainActor static weak var smokeModel: UserQuestionCardModel?
+    static func smokeMarker(_ action: String, target: UserQuestionAnswerTarget?) -> String? {
+        target.map { "question.\($0.requestID).\($0.questionID).\(action)" }
+    }
     #endif
     @ObservedObject private var model: UserQuestionCardModel
     private let onSubmit: (UserQuestionAnswerTarget, UserQuestionAnswer) -> Void
@@ -382,6 +385,9 @@ public struct UserQuestionCardView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("user_question.card")
         .accessibilityLabel(Text("user_question.card.title"))
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        .onAppear { Self.smokeModel = model }
+        #endif
         .onDisappear { model.persistCurrentDraft() }
     }
 
@@ -434,11 +440,12 @@ public struct UserQuestionCardView: View {
                             : FloeTheme.readingSurface,
                         in: RoundedRectangle(cornerRadius: 9)
                     )
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("user_question.option.\(option.id)")
                 #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
-                .background(MacWorkbenchButtonFrameReader { frame in Self.smokeActionFrames["user_question.option.\(option.id)"] = frame })
+                .background(MacWorkbenchButtonFrameReader(marker: Self.smokeMarker("option." + option.id, target: model.currentTarget)) { _ in })
                 #endif
                 .accessibilityAddTraits(model.isSelected(option.id) ? .isSelected : [])
             }
@@ -593,7 +600,7 @@ public struct UserQuestionCardView: View {
             .disabled(!model.canContinue || model.isSubmitting)
             .accessibilityIdentifier("user_question.continue")
             #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
-            .background(MacWorkbenchButtonFrameReader { frame in Self.smokeActionFrames["user_question.continue"] = frame })
+            .background(MacWorkbenchButtonFrameReader(marker: Self.smokeMarker("continue", target: model.currentTarget)) { _ in })
             #endif
         }
     }

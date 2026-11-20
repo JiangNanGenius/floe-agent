@@ -70,16 +70,12 @@ public enum ConversationSpawnAuthority {
     public static func isExplicitRequest(_ text: String) -> Bool {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else { return false }
-        let chinese = [
-            "新建任务", "创建新任务", "新开任务", "开一个新任务", "另开任务",
-            "新建会话", "创建新会话", "新开会话", "开一个新会话", "另开会话"
-        ]
-        let english = [
-            "create a new task", "start a new task", "open a new task",
-            "create a new conversation", "start a new conversation", "open a new conversation"
-        ]
-        return chinese.contains(where: normalized.contains)
-            || english.contains(where: normalized.contains)
+        // Match a request addressed to Floe. A phrase inside quoted instructions,
+        // a question about the feature, or a negative request is not authority.
+        let english = #"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?|(?:i want|i need|i'd like)\s+you\s+to\s+)?(?:create|open|start)\s+(?:a|another)\s+(?:new\s+|separate\s+)?(?:task|conversation|chat)\b"#
+        let chinese = #"^(?:麻烦|请)?(?:你)?(?:帮我|给我|为我)?(?:再|另外|单独)?(?:新建|创建|新开|另开|开一个新)(?:一个|一条|个)?(?:新的|新)?(?:任务|会话|聊天)"#
+        return normalized.range(of: english, options: .regularExpression) != nil
+            || normalized.range(of: chinese, options: .regularExpression) != nil
     }
 }
 

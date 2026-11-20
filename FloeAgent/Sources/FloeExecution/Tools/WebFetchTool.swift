@@ -85,9 +85,7 @@ public struct WebFetchTool: AgentTool {
     private static let mobileUserAgent =
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
 
-    private enum OutputFormat: String {
-        case text, markdown, html, json
-    }
+    private typealias OutputFormat = WebFetchPage.Format
 
     public func validate(_ args: Arguments) throws {
         guard let url = URL(string: args.url) else {
@@ -238,55 +236,14 @@ public struct WebFetchTool: AgentTool {
             )
         }
 
-        let rendered = Self.render(
-            response,
-            format: outputFormat,
-            baseURL: URL(string: response.finalURL ?? url.absoluteString)
-        )
-        let total = rendered.count
-        let pageStart = min(startCharacter, total)
-        let returned = String(rendered.dropFirst(pageStart).prefix(maxCharacters))
-        let nextStart = pageStart + returned.count < total ? pageStart + returned.count : nil
-        let binary = Self.isBinary(response.contentType)
-        let lower = rendered.lowercased()
-        let fallback: String? = binary ? "binary_use_browser_download"
-            : lower.contains("enable javascript") || lower.contains("sign in to continue")
-                ? "page_may_require_browser_interaction"
-                : nil
-        let title = Self.extractTitle(response.body)
         FloeLogger(category: .tools).info(
-            "webFetchFinished trace=\(traceID) host=\(url.host ?? "none") status=\(response.statusCode) contentType=\(String(response.contentType.prefix(80))) characters=\(total) returned=\(returned.count) truncated=\(response.truncated) fallback=\(fallback ?? "none") durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            "webFetchFinished trace=\(traceID) host=\(url.host ?? "none") status=\(response.statusCode) contentType=\(String(response.contentType.prefix(80))) truncated=\(response.truncated) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
-
-        var payload: [String: Any] = [
-            "url": response.finalURL ?? url.absoluteString,
-            "statusCode": response.statusCode,
-            "contentType": response.contentType,
-            "format": outputFormat.rawValue,
-            "truncated": response.truncated || nextStart != nil,
-            "totalCharacters": total,
-            "returnedCharacters": returned.count,
-            "browserFallback": fallback ?? "",
-            "title": title ?? "",
-            "text": binary ? "" : returned
-        ]
-        if let nextStart { payload["nextStartCharacter"] = nextStart }
-        if !cookies.isEmpty { payload["cookieCount"] = cookies.count }
-        if let origin = browserContext.origin { payload["cookieOrigin"] = origin }
-        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-        let summary = String(decoding: data, as: UTF8.self)
-        let digest = FloeDigest.sha256Hex(data)
-        let capture = !binary && rendered.count > returned.count
-            ? String(rendered.prefix(262_144))
-            : nil
-        return ToolExecutionOutput(
-            summary: summary,
-            fullOutputSHA256: digest,
-            exitStatus: (200...399).contains(response.statusCode) ? 0 : 22,
-            maximumSummaryCharacters: 262_144,
-            capturedOutput: capture,
-            capturedOutputTruncated: rendered.count > 262_144
-        )
+        return try WebFetchPage.output(body: response.body, statusCode: response.statusCode,
+                                       contentType: response.contentType, url: response.finalURL ?? url.absoluteString,
+                                       truncated: response.truncated, format: outputFormat,
+                                       startCharacter: startCharacter, maxCharacters: maxCharacters,
+                                       cookieCount: cookies.count, cookieOrigin: browserContext.origin)
     }
 
     // MARK: - Request helpers
@@ -342,143 +299,4 @@ public struct WebFetchTool: AgentTool {
         }
     }
 
-    // MARK: - Rendering
-
-    private static func render(
-        _ response: HTTPResponse,
-        format: OutputFormat,
-        baseURL: URL?
-    ) -> String {
-        let isHTML = response.contentType.lowercased().contains("html")
-            || response.body.localizedCaseInsensitiveContains("<html")
-        switch format {
-        case .html:
-            return response.body
-        case .json:
-            return response.body
-        case .text:
-            guard isHTML else { return response.body }
-            return extract(response.body, contentType: response.contentType)
-        case .markdown:
-            guard isHTML else { return response.body }
-            return markdown(fromHTML: response.body, baseURL: baseURL)
-        }
-    }
-
-    private static func isBinary(_ contentType: String) -> Bool {
-        let lower = contentType.lowercased()
-        return lower.contains("pdf")
-            || lower.contains("octet-stream")
-            || lower.hasPrefix("image/")
-            || lower.contains("zip")
-    }
-
-    private static func extractTitle(_ html: String) -> String? {
-        guard let range = html.range(of: "<title[^>]*>([\\s\\S]*?)</title>", options: [.regularExpression, .caseInsensitive]) else {
-            return nil
-        }
-        let raw = String(html[range])
-            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        let decoded = decodeEntities(raw).trimmingCharacters(in: .whitespacesAndNewlines)
-        return decoded.isEmpty ? nil : String(decoded.prefix(300))
-    }
-
-    static func extract(_ source: String, contentType: String) -> String {
-        guard contentType.lowercased().contains("html") || source.contains("<html") else { return source }
-        var text = source
-        for tag in ["script", "style", "noscript", "svg", "template"] {
-            text = text.replacingOccurrences(
-                of: "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)>", with: " ", options: [.regularExpression, .caseInsensitive]
-            )
-        }
-        text = text.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
-        text = text.replacingOccurrences(of: "</(p|div|section|article|li|tr|h[1-6])>", with: "\n", options: [.regularExpression, .caseInsensitive])
-        text = text.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        text = decodeEntities(text)
-        return text.replacingOccurrences(of: "[\\t ]+", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: " *\\n *", with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func markdown(fromHTML html: String, baseURL: URL?) -> String {
-        var text = html
-        for tag in ["script", "style", "noscript", "svg", "template"] {
-            text = text.replacingOccurrences(
-                of: "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)>", with: " ", options: [.regularExpression, .caseInsensitive]
-            )
-        }
-        text = text.replacingOccurrences(
-            of: "<a\\b[^>]*href\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>([\\s\\S]*?)</a>",
-            with: "[$2]($1)",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        text = text.replacingOccurrences(
-            of: "<img\\b[^>]*alt\\s*=\\s*[\"']([^\"']*)[\"'][^>]*src\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>",
-            with: "![$1]($2)",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        for level in 1...6 {
-            let prefix = String(repeating: "#", count: level)
-            text = text.replacingOccurrences(
-                of: "<h\(level)\\b[^>]*>([\\s\\S]*?)</h\(level)>",
-                with: "\n\n\(prefix) $1\n\n",
-                options: [.regularExpression, .caseInsensitive]
-            )
-        }
-        text = text.replacingOccurrences(of: "<li\\b[^>]*>", with: "\n- ", options: [.regularExpression, .caseInsensitive])
-        text = text.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
-        text = text.replacingOccurrences(
-            of: "</(p|div|section|article|tr|ul|ol|blockquote|pre)>",
-            with: "\n",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        text = text.replacingOccurrences(of: "</t[dh]>", with: " | ", options: [.regularExpression, .caseInsensitive])
-        text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        text = decodeEntities(text)
-        text = text.replacingOccurrences(of: "[\\t ]+", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: " *\\n *", with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Resolve relative markdown links after tag stripping. A relative URL
-        // in a page is meaningful only against the final response URL.
-        guard let baseURL else { return text }
-        return text.replacingOccurrences(
-            of: #"\]\((?!https?://|#|mailto:)([^)]+)\)"#,
-            with: "](" + baseURL.absoluteString + "/$1)",
-            options: .regularExpression
-        )
-    }
-
-    private static func decodeEntities(_ source: String) -> String {
-        var text = source
-        let named = [
-            "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
-            "&quot;": "\"", "&#39;": "'", "&apos;": "'", "&mdash;": "—",
-            "&ndash;": "–", "&hellip;": "…"
-        ]
-        for (entity, value) in named { text = text.replacingOccurrences(of: entity, with: value) }
-        guard let regex = try? NSRegularExpression(pattern: "&#(x?[0-9A-Fa-f]+);") else { return text }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        var replacements: [(Range<String.Index>, String)] = []
-        regex.enumerateMatches(in: text, range: range) { match, _, _ in
-            guard let match,
-                  let full = Range(match.range, in: text),
-                  let valueRange = Range(match.range(at: 1), in: text) else { return }
-            let raw = String(text[valueRange])
-            let scalarValue: UInt32?
-            if raw.lowercased().hasPrefix("x") {
-                scalarValue = UInt32(raw.dropFirst(), radix: 16)
-            } else {
-                scalarValue = UInt32(raw, radix: 10)
-            }
-            if let scalarValue, let scalar = Unicode.Scalar(scalarValue) {
-                replacements.append((full, String(Character(scalar))))
-            }
-        }
-        for (range, value) in replacements.reversed() {
-            text.replaceSubrange(range, with: value)
-        }
-        return text
-    }
 }

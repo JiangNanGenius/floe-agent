@@ -117,7 +117,7 @@ def main():
                 (evidence / "creative-report.json").write_text(json.dumps(result, indent=2))
                 for file in root.glob("report.json.*.png"):
                     (evidence / file.name).write_bytes(file.read_bytes())
-            if not (result["images"] and result["creative"] and counts == [3, 1, 2, 2, 1, 1]):
+            if not (result.get("images") is True and result.get("creative") is True and counts == [4, 2, 3, 3, 2, 2]):
                 raise SystemExit(1)
 
 

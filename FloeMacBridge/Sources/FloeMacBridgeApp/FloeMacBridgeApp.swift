@@ -4,6 +4,7 @@ import AppKit
 import FloeMacBridgeProtocol
 #if FLOE_UNIFIED_MAC
 import FloeCore
+import FloeMacToolbox
 #endif
 
 @main
@@ -25,6 +26,9 @@ struct FloeMacBridgeApp: App {
         }
         .commands {
             #if FLOE_UNIFIED_MAC
+            if model.isAgentMode, let workspace = model.macWorkspace {
+                MacWorkbenchCommands(workspace: workspace)
+            }
             CommandGroup(after: .appSettings) {
                 Button("Check for Updates…") { model.updates.checkForUpdates() }
                     .disabled(!model.updates.canCheckForUpdates)
@@ -50,6 +54,42 @@ struct FloeMacBridgeApp: App {
         }
     }
 }
+
+#if FLOE_UNIFIED_MAC
+private struct MacWorkbenchCommands: Commands {
+    @ObservedObject var workspace: UnifiedMacWorkspace
+
+    var body: some Commands {
+        CommandMenu("Tasks") {
+            Button("workbench.new_task") { workspace.performMenuAction(.newTask) }
+                .keyboardShortcut("n")
+                .disabled(!workspace.menuAvailability.newTask)
+            Button("mac.workspace.find") { workspace.performMenuAction(.findTask) }
+                .keyboardShortcut("f")
+                .disabled(!workspace.menuAvailability.find)
+            Button("mac.workspace.findTask") { workspace.performMenuAction(.findTaskTitles) }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(!workspace.menuAvailability.find)
+            Divider()
+            Button("host.chat.stop") { workspace.performMenuAction(.stopTask) }
+                .keyboardShortcut(".")
+                .disabled(!workspace.menuAvailability.stop)
+        }
+        CommandMenu("space.title") {
+            Button("mac.workspace.spaceFiles") { workspace.performMenuAction(.openSpace(.files)) }
+                .disabled(!workspace.menuAvailability.openSpace)
+            Button("mac.workspace.toolbox") { workspace.performMenuAction(.openSpace(.toolbox)) }
+                .disabled(!workspace.menuAvailability.openSpace)
+            Button(MacToolboxText.browser(.current)) { workspace.openBrowserFromMenu() }
+                .disabled(!workspace.menuAvailability.openSpace)
+            Divider()
+            Button("mac.workspace.toggleFiles") { workspace.performMenuAction(.toggleFiles) }
+                .keyboardShortcut("0", modifiers: [.command, .option])
+                .disabled(!workspace.menuAvailability.toggleFiles)
+        }
+    }
+}
+#endif
 
 private struct BridgeStatusLabel: View {
     @ObservedObject var model: BridgeAppModel
@@ -92,7 +132,7 @@ private struct BridgeMenuView: View {
 
 @MainActor
 final class BridgeAppModel: ObservableObject {
-    enum SettingsPane: String, CaseIterable { case general, models, auxiliary, permissions, bridge }
+    enum SettingsPane: String, CaseIterable { case general, models, auxiliary, webSearch, usage, permissions, bridge }
 
     @Published var error: String?
     @Published var clients: [(String, String)] = []
@@ -140,6 +180,7 @@ final class BridgeAppModel: ObservableObject {
     private let smoke = UnifiedMacSmoke.configured()
     var smokePort: UInt16? { server?.boundPort }
     var smokeSettingsFrames: [SettingsPane: CGRect] = [:]
+    var smokeSettingsBackFrame: CGRect?
     var smokeSettingsWindow: NSWindow? { settingsWindow }
     var smokeAgentSettingsSheet: NSWindow? { macWorkspace?.settingsSheet }
     private(set) var smokeSwitchFrame: CGRect?
@@ -511,74 +552,189 @@ private struct UnifiedMacSettingsView: View {
         return BridgeAppModel.SettingsPane.allCases.filter { term.isEmpty || $0.searchTerms.localizedStandardContains(term) }
     }
 
+    @State private var showsCompactDetail = false
+
+    private var presentationSize: CGSize {
+        let window = NSApp.windows.first { $0.identifier == UnifiedMacWorkspace.workbenchWindowIdentifier }
+        let screen = window?.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? CGSize(width: 900, height: 640)
+        let available = window?.contentView?.bounds.size ?? screen
+        return CGSize(width: min(860, max(360, min(available.width, screen.width) - 32)),
+                      height: min(600, max(340, min(available.height, screen.height) - 46)))
+    }
+
     var body: some View {
         if model.isAgentMode, let workspace = model.macWorkspace?.agent {
-            VStack(spacing: 0) {
-                HStack {
-                    Text("mac.settings.title").font(.headline)
-                    Spacer()
-                    Button("Done", action: model.closeSettingsWindow)
-                        .keyboardShortcut(.cancelAction)
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                Divider()
-                HStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        TextField("mac.settings.find", text: $query)
-                            .textFieldStyle(.roundedBorder)
-                            .padding(8)
-                        if destinations.isEmpty {
-                            Text("mac.settings.noMatches").font(.caption).foregroundStyle(.secondary)
-                            Spacer()
+            let size = presentationSize
+            GeometryReader { geometry in
+                let compact = geometry.size.width < 740
+                VStack(spacing: 0) {
+                    header(compact: compact)
+                    Divider()
+                    if compact {
+                        if showsCompactDetail {
+                            detail(workspace, showsProviderBack: false)
                         } else {
-                            List(selection: Binding<BridgeAppModel.SettingsPane?>(
-                                get: { model.settingsPane },
-                                set: { if let pane = $0 { model.providerDetail = nil; model.settingsPane = pane } }
-                            )) {
-                                ForEach(destinations, id: \.self) { pane in
-                                    Label(pane.title, systemImage: pane.icon)
-                                        .tag(pane)
-                                        .accessibilityIdentifier("settings.pane." + pane.rawValue)
-                                        #if FLOE_MAC_HOST_SMOKE
-                                        .background(MacWorkbenchButtonFrameReader { model.smokeSettingsFrames[pane] = $0 })
-                                        #endif
-                                }
-                            }.listStyle(.sidebar)
+                            navigation(compact: true)
+                        }
+                    } else {
+                        HStack(spacing: 0) {
+                            navigation(compact: false)
+                                .frame(width: 196)
+                            Divider()
+                            detail(workspace, showsProviderBack: true)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
-                    .frame(width: 154)
-                    Divider()
-                    detail(workspace)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(width: min(850, (NSScreen.main?.visibleFrame.width ?? 900) - 32),
-                   height: min(580, (NSScreen.main?.visibleFrame.height ?? 640) - 64))
+            .frame(width: size.width, height: size.height)
             .background(FloeTheme.groupedSurface)
             .accessibilityIdentifier("mac.settings.sheet")
-            .onChange(of: model.settingsPane) { _, selected in
+            .onAppear { showsCompactDetail = model.settingsPane != .general || model.providerDetail != nil }
+            .onReceive(model.$settingsPane.dropFirst()) { selected in
                 if !destinations.contains(selected) { query = "" }
+                showsCompactDetail = true
             }
         } else {
             BridgeSettingsView(model: model).frame(width: 520, height: 560)
         }
     }
 
+    private func header(compact: Bool) -> some View {
+        HStack {
+            if compact && showsCompactDetail {
+                Button {
+                    if model.providerDetail != nil { model.providerDetail = nil }
+                    else { showsCompactDetail = false }
+                } label: {
+                    Label(model.providerDetail == nil ? LocalizedStringKey("more.settings") : "mac.settings.providerModels",
+                          systemImage: "chevron.backward")
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier(model.providerDetail == nil ? "settings.categories.back" : "settings.providers.back")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { model.smokeSettingsBackFrame = $0 })
+                #endif
+            } else {
+                Text("mac.settings.title").font(.headline)
+            }
+            Spacer()
+            Button(action: model.closeSettingsWindow) {
+                Text("Done").frame(minWidth: 44, minHeight: FloeTheme.minimumTarget).contentShape(Rectangle())
+            }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 46)
+    }
+
+    private func select(_ pane: BridgeAppModel.SettingsPane) {
+        model.providerDetail = nil
+        model.settingsPane = pane
+        showsCompactDetail = true
+    }
+
+    private func navigation(compact: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+                TextField("mac.settings.find", text: $query)
+                    .textFieldStyle(.plain)
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text("mac.settings.clearSearch"))
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+            .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 5)
+            if destinations.isEmpty {
+                Text("mac.settings.noMatches")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .padding()
+                Spacer()
+            } else {
+                List(selection: Binding<BridgeAppModel.SettingsPane?>(
+                    get: { compact ? nil : model.settingsPane },
+                    set: { if let pane = $0 { select(pane) } }
+                )) {
+                    ForEach(destinations.filter { $0 != .bridge }, id: \.self) { pane in
+                        navigationRow(pane, compact: compact)
+                    }
+                    if destinations.contains(.bridge) {
+                        Section { navigationRow(.bridge, compact: compact) }
+                    }
+                }
+                .listStyle(.sidebar)
+                .environment(\.defaultMinListRowHeight, FloeTheme.minimumTarget)
+                .accessibilityIdentifier("settings.sections")
+            }
+        }
+    }
+
     @ViewBuilder
-    private func detail(_ workspace: HostAgentWorkspace) -> some View {
+    private func navigationRow(_ pane: BridgeAppModel.SettingsPane, compact: Bool) -> some View {
+        let label = HStack(spacing: 10) {
+            Image(systemName: pane.icon)
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            Text(pane.title).font(.body)
+            Spacer(minLength: 0)
+            if compact {
+                Image(systemName: "chevron.forward")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(minHeight: FloeTheme.minimumTarget)
+        .contentShape(Rectangle())
+        Group {
+            if compact {
+                Button { select(pane) } label: { label }
+                    .buttonStyle(.plain)
+            } else {
+                label
+            }
+        }
+        .tag(pane)
+        .accessibilityIdentifier("settings.pane." + pane.rawValue)
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { model.smokeSettingsFrames[pane] = $0 })
+        #endif
+    }
+
+    @ViewBuilder
+    private func detail(_ workspace: HostAgentWorkspace, showsProviderBack: Bool) -> some View {
         switch model.settingsPane {
         case .general:
             HostAgentGeneralSettings(model: model, workspace: workspace)
         case .models:
             if let role = model.providerDetail {
                 VStack(alignment: .leading, spacing: 0) {
-                    Button { model.providerDetail = nil } label: {
-                        Label("mac.settings.providerModels", systemImage: "chevron.backward")
+                    if showsProviderBack {
+                        Button { model.providerDetail = nil } label: {
+                            Label("mac.settings.providerModels", systemImage: "chevron.backward")
+                                .frame(minHeight: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("settings.providers.back")
+                        .padding(.horizontal, 16).padding(.vertical, 4)
+                        Divider()
                     }
-                    .buttonStyle(.borderless)
-                    .accessibilityIdentifier("settings.providers.back")
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-                    Divider()
                     switch role {
                     case .image:
                         if let images = model.macWorkspace?.images {
@@ -607,6 +763,10 @@ private struct UnifiedMacSettingsView: View {
             }
         case .auxiliary:
             MacAuxiliaryModelsView(workspace: workspace)
+        case .usage:
+            UsageStatisticsView(loadStatistics: workspace.usageStatistics)
+        case .webSearch:
+            MacSearchSettingsView(settings: workspace.webSearch)
         case .permissions:
             MacPermissionsSettingsView(workspace: workspace, bridge: model)
         case .bridge:
@@ -681,6 +841,8 @@ private extension BridgeAppModel.SettingsPane {
         case .general: "General"
         case .models: "mac.settings.providerModels"
         case .auxiliary: "mac.aux.title"
+        case .usage: "settings.section.usage"
+        case .webSearch: "mac.settings.webSearch"
         case .permissions: "Permissions"
         case .bridge: "host.role.bridge"
         }
@@ -691,6 +853,8 @@ private extension BridgeAppModel.SettingsPane {
         case .general: "通用 外观 默认模式 排队 引导 答案核验 General appearance mode queue steer verify"
         case .models: "供应商 服务商 账户 模型 模型配置 密钥 连接 生图 绘图 图片 视频生成 图像 模型 Provider Accounts Models API key endpoints image video generation"
         case .auxiliary: "辅助模型 通用辅助 视觉 推理 审批模型 Auxiliary Models vision reasoning reviewer"
+        case .usage: "用量统计 模型 供应商 任务 Usage Statistics Tokens Models Providers"
+        case .webSearch: "网页 联网 搜索 供应商 浏览器 Web Search Providers Brave Tavily Volcengine DeepSeek"
         case .permissions: "权限 审批 自动审批 完全访问 命令 执行 屏幕录制 辅助功能 磁盘 Kimi CU Permissions approvals command access disk screen"
         case .bridge: "桥接 配对 更新 存储 Bridge pairing updates storage OTA"
         }
@@ -700,9 +864,11 @@ private extension BridgeAppModel.SettingsPane {
         switch self {
         case .general: "gearshape"
         case .models: "antenna.radiowaves.left.and.right"
-        case .auxiliary: "wand.and.stars"
-        case .permissions: "hand.raised"
-        case .bridge: "link"
+        case .auxiliary: "photo.badge.plus"
+        case .usage: "chart.bar"
+        case .webSearch: "magnifyingglass"
+        case .permissions: "checkmark.shield"
+        case .bridge: "server.rack"
         }
     }
 }

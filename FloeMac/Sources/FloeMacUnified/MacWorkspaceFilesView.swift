@@ -107,11 +107,14 @@ struct MacWorkspaceFilesView: View {
     var remembersRoot: Bool = true
     var fixedRootBookmark: Data?
     var fixedRootURL: URL? = nil
+    var managedConversationsRoot: URL? = nil
+    var recentlyDeletedDirectory: URL? = nil
     var workspaceRevision: UUID? = nil
     /// When the host composer tracks staged file URLs for the active task it
     /// injects them here; while non-nil the UI reads this set verbatim and
     /// mutations only propose candidates through `onAttachmentsChanged`.
     var taskAttachmentURLs: Set<URL>? = nil
+    var protectedDraftFiles: () -> Set<URL> = { [] }
     var onFolderPicked: ((URL) -> Void)? = nil
     var onAttachmentsChanged: (([URL]) -> Void)? = nil
     var canChangeFiles: () -> Bool = { true }
@@ -155,6 +158,29 @@ struct MacWorkspaceFilesView: View {
     @State private var showConflict = false
     @State private var showDiscard = false
     @State private var showScopeAlert = false
+    @State private var htmlSite: MacWorkspaceHTMLSite?
+    @State private var mutationRequest: FileMutationRequest?
+    @State private var mutationError: String?
+    @State private var mutationInProgress = false
+    @State private var restoreHistory: [MacWorkspaceFileOperations.TrashReceipt] = []
+    @State private var showRecentlyDeleted = false
+    @State private var recentDeletions: [MacWorkspaceTrashRecord] = []
+    @State private var unavailableDeletions: Set<UUID> = []
+    @State private var loadingDeletions = false
+    @State private var deletionLoadFailed = false
+    @State private var latestTrashID: UUID?
+    @State private var showTrashFinderNotice = false
+    @State private var trashFinderDirectory: URL?
+    @State private var trashOriginalDirectory: URL?
+
+    private struct FileMutationRequest: Identifiable, Sendable {
+        enum Action: Sendable { case create, rename, trash }
+        let id = UUID()
+        let action: Action
+        let root: URL
+        let operations: MacWorkspaceFileOperations
+        let item: MacWorkspaceFileOperations.Item?
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -201,6 +227,7 @@ struct MacWorkspaceFilesView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .disabled(mutationInProgress)
         .onAppear(perform: restoreSavedRoot)
         .task(id: reloadID) { await loadDirectory() }
         .onChange(of: hasPendingChanges, initial: true) { _, pending in onPendingChanges?(pending) }
@@ -213,6 +240,37 @@ struct MacWorkspaceFilesView: View {
                   let entry = entries.first(where: { $0.url == url }), entry.openable else { return }
             focused = url
             onArtifact?(.previewed(url))
+        }
+        .sheet(item: $htmlSite) { site in
+            MacWorkspaceHTMLPreview(site: site)
+        }
+        .onChange(of: root) { _, _ in
+            htmlSite = nil; mutationRequest = nil; restoreHistory = []; latestTrashID = nil
+            showRecentlyDeleted = false; recentDeletions = []; unavailableDeletions = []
+        }
+        .sheet(isPresented: $showRecentlyDeleted) { recentlyDeletedSheet }
+        .sheet(item: $mutationRequest) { request in
+            FileActionSheet(
+                title: mutationTitle(request.action), initial: request.action == .rename ? request.item?.name ?? "" : "",
+                trashName: request.action == .trash ? request.item?.name : nil,
+                confirm: { name in perform(request, name: name) }
+            )
+        }
+        .alert(t("文件操作未完成", "File Action Couldn’t Finish"), isPresented: Binding(
+            get: { mutationError != nil }, set: { if !$0 { mutationError = nil } }
+        )) { Button(t("好", "OK"), role: .cancel) {} } message: {
+            Text(verbatim: mutationError ?? "")
+        }
+        .alert(t("已移到废纸篓", "Moved to Trash"), isPresented: $showTrashFinderNotice) {
+            Button(t("在 Finder 中打开废纸篓", "Open Trash in Finder")) {
+                openTrashInFinder(directory: trashFinderDirectory)
+            }
+            Button(t("打开原文件夹", "Open Original Folder")) {
+                if let trashOriginalDirectory { _ = NSWorkspace.shared.open(trashOriginalDirectory) }
+            }
+            Button(t("好", "OK"), role: .cancel) {}
+        } message: {
+            Text(t("如需恢复，请将项目从 Finder 的废纸篓拖回原文件夹。", "To restore the item, drag it from the Trash in Finder to its original folder."))
         }
         .alert(t("无法读取文本", "Couldn’t Read Text"), isPresented: $showTextImportError) {
             Button(t("确定", "OK"), role: .cancel) {}
@@ -262,6 +320,43 @@ struct MacWorkspaceFilesView: View {
                     }
                 Spacer()
                 if directory != nil {
+                    Menu {
+                        Button(mutationTitle(.create), systemImage: "folder.badge.plus") { prepare(.create) }
+                            .disabled(!canManageHere)
+                        if let entry = selectedEntries.count == 1 ? selectedEntries.first : (selection.isEmpty ? focusedEntry : nil) {
+                            mutationItems(entry)
+                        }
+                        if recentlyDeletedDirectory != nil {
+                            Divider()
+                            Button(t("最近删除", "Recently Deleted"), systemImage: "trash") { showRecentlyDeleted = true }
+                                .accessibilityIdentifier("workspace.files.recentlyDeleted")
+                        }
+                        if let receipt = restoreHistory.last {
+                            Divider()
+                            Button(t("放回“\(receipt.item.name)”", "Put Back “\(receipt.item.name)”"), systemImage: "arrow.uturn.backward") {
+                                restore(receipt)
+                            }
+                            .disabled(!canChangeFiles() || hasPendingChanges)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help(t("管理文件", "Manage Files"))
+                    .accessibilityLabel(t("管理文件", "Manage Files"))
+                    .accessibilityIdentifier("workspace.files.manage")
+                    if let receipt = restoreHistory.last {
+                        Button { restore(receipt) } label: { Image(systemName: "arrow.uturn.backward") }
+                            .help(t("放回“\(receipt.item.name)”", "Put Back “\(receipt.item.name)”"))
+                            .accessibilityLabel(t("放回“\(receipt.item.name)”", "Put Back “\(receipt.item.name)”"))
+                            .accessibilityIdentifier("workspace.files.restore")
+                            .disabled(!canChangeFiles() || hasPendingChanges)
+                    }
                     Button { goUp() } label: { Image(systemName: "arrow.up") }
                         .help(t("上一级", "Enclosing Folder"))
                         .accessibilityLabel(t("上一级", "Enclosing Folder"))
@@ -509,6 +604,34 @@ struct MacWorkspaceFilesView: View {
                     open(entry)
                     return .handled
                 }
+                .onKeyPress("n", phases: .down) { key in
+                    guard key.modifiers == [.command, .shift], canManageHere else { return .ignored }
+                    prepare(.create)
+                    return .handled
+                }
+                .onKeyPress("d", phases: .down) { key in
+                    guard key.modifiers == .command, selectedEntries.count == 1,
+                          let entry = selectedEntries.first, entry.openable, !entry.folder, canManageHere else { return .ignored }
+                    transfer(entry, action: .duplicate)
+                    return .handled
+                }
+                .onKeyPress("z", phases: .down) { key in
+                    guard key.modifiers == .command, let receipt = restoreHistory.last, receipt.id == latestTrashID, !hasPendingChanges else { return .ignored }
+                    restore(receipt)
+                    return .handled
+                }
+                .onKeyPress(.return, phases: .down) { key in
+                    guard key.modifiers.isEmpty, selectedEntries.count == 1,
+                          let entry = selectedEntries.first, canManage(entry) else { return .ignored }
+                    prepare(.rename, entry)
+                    return .handled
+                }
+                .onKeyPress(.delete, phases: .down) { key in
+                    guard key.modifiers == .command, selectedEntries.count == 1,
+                          let entry = selectedEntries.first, canManage(entry) else { return .ignored }
+                    prepare(.trash, entry)
+                    return .handled
+                }
             }
             Divider()
             HStack(spacing: 10) {
@@ -592,9 +715,11 @@ struct MacWorkspaceFilesView: View {
     /// preview header.
     @ViewBuilder private func previewActions(_ entry: MacWorkspaceFileEntry) -> some View {
         if entry.openable {
-            Button { open(entry) } label: { Image(systemName: "arrow.up.forward.app") }
-                .help(t("打开", "Open"))
-                .accessibilityLabel(t("打开", "Open"))
+            let webPage = MacWorkspaceHTMLSite.isPage(entry.url)
+            let openTitle = webPage ? t("在内置浏览器中打开", "Open in Built-in Browser") : t("打开", "Open")
+            Button { open(entry) } label: { Image(systemName: webPage ? "safari" : "arrow.up.forward.app") }
+                .help(openTitle)
+                .accessibilityLabel(openTitle)
                 .accessibilityIdentifier("workspace.files.open")
             if isEditableText(entry) {
                 Button { edit(entry) } label: { Image(systemName: "pencil") }
@@ -711,7 +836,7 @@ struct MacWorkspaceFilesView: View {
     }
 
     private var hasPendingChanges: Bool {
-        editing?.dirty == true || editing?.saving == true || fileImportsInProgress > 0
+        editing?.dirty == true || editing?.saving == true || fileImportsInProgress > 0 || mutationInProgress
     }
 
     private func byteCountLabel(_ text: String) -> String {
@@ -792,6 +917,7 @@ struct MacWorkspaceFilesView: View {
                 }
             }
         }
+        mutationItems(entry)
         Button(t("在 Finder 中显示", "Show in Finder")) {
             if canAccess(entry, allowLink: true) { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
         }
@@ -816,6 +942,335 @@ struct MacWorkspaceFilesView: View {
                 let urls = selected.filter { canAccess($0, allowLink: true) }.map(\.url)
                 if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
             }
+        }
+    }
+
+    // MARK: - User-initiated file management
+
+    private var canManageHere: Bool {
+        guard canWriteInDirectory, !hasPendingChanges, let root, let directory else { return false }
+        let managed = managedConversationsRoot ?? fixedRootURL
+        return managed?.resolvingSymlinksInPath().standardizedFileURL != directory.resolvingSymlinksInPath().standardizedFileURL
+            && MacWorkspaceFolderSnapshot.containsPhysicalDirectory(directory, in: root)
+    }
+
+    private func canManage(_ entry: MacWorkspaceFileEntry) -> Bool {
+        canManageHere && (entry.openable || entry.folder) && canAccess(entry)
+            && MacWorkspaceFileOperations.canMove(entry.url, protecting: effectiveAttachments,
+                    managedConversationsRoot: managedConversationsRoot ?? fixedRootURL)
+    }
+
+    @ViewBuilder private func mutationItems(_ entry: MacWorkspaceFileEntry) -> some View {
+        Button(mutationTitle(.rename), systemImage: "pencil") { prepare(.rename, entry) }
+            .disabled(!canManage(entry))
+        if entry.folder || entry.openable {
+            Button(t("移到文件夹…", "Move to Folder…"), systemImage: "folder") { transfer(entry, action: .move) }
+                .accessibilityIdentifier("workspace.files.move")
+                .disabled(!canManage(entry))
+        }
+        if entry.openable && !entry.folder {
+            Button(t("制作副本", "Duplicate"), systemImage: "plus.square.on.square") { transfer(entry, action: .duplicate) }
+                .accessibilityIdentifier("workspace.files.duplicate")
+                .disabled(!canManageHere || !canAccess(entry))
+        }
+        Button(mutationTitle(.trash), systemImage: "trash", role: .destructive) { prepare(.trash, entry) }
+            .disabled(!canManage(entry))
+    }
+
+    private func mutationTitle(_ action: FileMutationRequest.Action) -> String {
+        switch action {
+        case .create: t("新建文件夹", "New Folder")
+        case .rename: t("重命名", "Rename")
+        case .trash: t("移到废纸篓", "Move to Trash")
+        }
+    }
+
+    private enum TransferAction { case move, duplicate }
+
+    private func transfer(_ entry: MacWorkspaceFileEntry, action: TransferAction) {
+        guard canManageHere, canAccess(entry), let root, let directory else { return }
+        let managed = managedConversationsRoot ?? fixedRootURL
+        do {
+            let source = try MacWorkspaceFileOperations(root: root, directory: directory, managedConversationsRoot: managed)
+            let item = try source.capture(entry.name)
+            let destination: MacWorkspaceFileOperations?
+            switch action {
+            case .move:
+                guard checkDraftFiles(entry.url) else { return }
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = true
+                panel.canChooseFiles = false
+                panel.canCreateDirectories = false
+                panel.allowsMultipleSelection = false
+                panel.resolvesAliases = false
+                panel.directoryURL = directory
+                panel.message = t("在当前工作区内选择目标文件夹。", "Choose a destination folder in this workspace.")
+                panel.prompt = t("移到这里", "Move Here")
+                guard panel.runModal() == .OK, let folder = panel.url else { return }
+                guard canManageHere, self.root == root, self.directory == directory, checkDraftFiles(entry.url) else { return }
+                guard MacWorkspaceFolderSnapshot.containsPhysicalDirectory(folder, in: root) else {
+                    mutationError = t("请选择当前工作区内的文件夹。", "Choose a folder inside this workspace.")
+                    return
+                }
+                destination = try MacWorkspaceFileOperations(root: root, directory: folder, managedConversationsRoot: managed)
+                guard destination?.directoryIdentity != source.directoryIdentity else {
+                    mutationError = t("项目已经在此文件夹中。", "This item is already in that folder.")
+                    return
+                }
+            case .duplicate:
+                guard entry.openable, !entry.folder else { return }
+                destination = nil
+            }
+            let protected = effectiveAttachments.union(protectedDraftFiles())
+            let suffix = t("副本", "copy")
+            mutationInProgress = true
+            Task {
+                defer { mutationInProgress = false; reloadID = UUID() }
+                do {
+                    let copiedName = try await Task.detached(priority: .userInitiated) { () -> String? in
+                        if let destination {
+                            try source.move(item, to: destination, protecting: protected, managedConversationsRoot: managed)
+                            return nil
+                        }
+                        return try source.duplicate(item, suffix: suffix)
+                    }.value
+                    guard self.root == root, self.directory == directory else { return }
+                    if let copiedName {
+                        dropImportStatus = t("已创建“\(copiedName)”", "Created “\(copiedName)”")
+                        selection = [directory.appendingPathComponent(copiedName)]
+                    } else {
+                        selection.remove(entry.url)
+                        if focused == entry.url { focused = nil }
+                        if editing?.entry.url == entry.url { editing = nil }
+                        if let destination {
+                            dropImportStatus = t("已移到“\(destination.directory.lastPathComponent)”", "Moved to “\(destination.directory.lastPathComponent)”")
+                        }
+                    }
+                } catch { reportMutationFailure(error) }
+            }
+        } catch { reportMutationFailure(error) }
+    }
+
+    private func checkDraftFiles(_ url: URL) -> Bool {
+        let protected = effectiveAttachments.union(protectedDraftFiles())
+        guard MacWorkspaceFileOperations.canMove(url, protecting: protected, managedConversationsRoot: managedConversationsRoot ?? fixedRootURL) else {
+            mutationError = t("此项目属于会话，或仍有附件在草稿中使用。", "This item belongs to a conversation or contains an attachment used by a draft.")
+            return false
+        }
+        return true
+    }
+
+    private func prepare(_ action: FileMutationRequest.Action, _ entry: MacWorkspaceFileEntry? = nil) {
+        guard canManageHere, let root, let directory else { return }
+        do {
+            let ops = try MacWorkspaceFileOperations(root: root, directory: directory, managedConversationsRoot: managedConversationsRoot ?? fixedRootURL)
+            var target: MacWorkspaceFileOperations.Item?
+            if let entry {
+                guard canManage(entry), checkDraftFiles(entry.url) else { return }
+                target = try ops.capture(entry.url.lastPathComponent)
+            }
+            mutationRequest = FileMutationRequest(action: action, root: root, operations: ops, item: target)
+        } catch { reportMutationFailure(error) }
+    }
+
+    private func perform(_ request: FileMutationRequest, name: String) {
+        guard canManageHere, request.root == root,
+              request.operations.directory.resolvingSymlinksInPath().standardizedFileURL.path == directory?.resolvingSymlinksInPath().standardizedFileURL.path else { return }
+        if let item = request.item {
+            let url = request.operations.directory.appendingPathComponent(item.name)
+            guard checkDraftFiles(url) else { return }
+        }
+        mutationInProgress = true
+        Task {
+            defer { mutationInProgress = false; reloadID = UUID() }
+            do {
+                let history = recentlyDeletedDirectory
+                let result = try await Task.detached(priority: .userInitiated) { () -> MacWorkspaceFileOperations.TrashReceipt? in
+                    switch request.action {
+                    case .create: try request.operations.createFolder(name)
+                    case .rename:
+                        guard let item = request.item else { throw CocoaError(.fileNoSuchFile) }
+                        try request.operations.rename(item, to: name)
+                    case .trash:
+                        guard let item = request.item else { throw CocoaError(.fileNoSuchFile) }
+                        return try request.operations.trash(item, recordingIn: history)
+                    }
+                    return nil
+                }.value
+                latestTrashID = result?.id
+                if let result { restoreHistory.append(result) }
+                if request.action == .trash, result == nil {
+                    trashOriginalDirectory = request.operations.directory
+                    trashFinderDirectory = try? FileManager.default.url(
+                        for: .trashDirectory, in: .userDomainMask,
+                        appropriateFor: request.operations.directory, create: false
+                    )
+                    showTrashFinderNotice = true
+                }
+                if let item = request.item {
+                    let previous = directory?.appendingPathComponent(item.name).standardizedFileURL.path
+                    if focused?.standardizedFileURL.path == previous { focused = nil }
+                    selection = selection.filter { $0.standardizedFileURL.path != previous }
+                    if editing?.entry.url.standardizedFileURL.path == previous { editing = nil }
+                }
+            } catch { reportMutationFailure(error) }
+        }
+    }
+
+    private func restore(_ receipt: MacWorkspaceFileOperations.TrashReceipt) {
+        guard canChangeFiles(), !hasPendingChanges else { return }
+        mutationInProgress = true
+        Task {
+            defer { mutationInProgress = false; reloadID = UUID() }
+            do {
+                try await Task.detached(priority: .userInitiated) { try MacWorkspaceFileOperations.restore(receipt) }.value
+                restoreHistory.removeAll { $0.id == receipt.id }
+                latestTrashID = nil
+            } catch { reportMutationFailure(error) }
+        }
+    }
+
+    private var recentlyDeletedSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(t("最近删除", "Recently Deleted")).font(.headline)
+                Spacer()
+                Button { reloadID = UUID() } label: { Image(systemName: "arrow.clockwise") }
+                    .accessibilityLabel(t("刷新", "Refresh"))
+                    .disabled(loadingDeletions || mutationInProgress)
+                Button(t("完成", "Done")) { showRecentlyDeleted = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            if loadingDeletions {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if deletionLoadFailed {
+                ContentUnavailableView(t("无法读取最近删除", "Couldn’t Read Recently Deleted"),
+                                       systemImage: "exclamationmark.triangle")
+            } else if recentDeletions.isEmpty {
+                ContentUnavailableView(t("没有最近删除的项目", "No Recently Deleted Items"), systemImage: "trash")
+            } else {
+                List(recentDeletions) { record in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: record.name).lineLimit(1)
+                            let folder = record.subdirectory.isEmpty ? root?.lastPathComponent ?? "" : record.subdirectory
+                            Text(verbatim: folder).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
+                        Spacer()
+                        if unavailableDeletions.contains(record.id) {
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Text(t("请在 Finder 中查看，或连接原磁盘。", "Check in Finder or reconnect the original disk."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Button(t("在 Finder 中查看", "Show in Finder")) {
+                                    if let item = record.finderTrashItemURL {
+                                        NSWorkspace.shared.activateFileViewerSelecting([item])
+                                    } else {
+                                        openTrashInFinder(directory: nil)
+                                    }
+                                }
+                                Button(t("打开原文件夹", "Open Original Folder")) {
+                                    openOriginalFolder(for: record)
+                                }
+                            }
+                        } else {
+                            Button(t("放回", "Put Back")) { putBack(record) }
+                                .disabled(!canChangeFiles() || hasPendingChanges)
+                                .accessibilityIdentifier("workspace.files.putBack")
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 380, idealWidth: 440, minHeight: 260)
+        .task(id: reloadID) { await loadDeletedItems() }
+    }
+
+    @MainActor private func loadDeletedItems() async {
+        guard let root, let history = recentlyDeletedDirectory else { return }
+        loadingDeletions = true
+        let managed = managedConversationsRoot ?? fixedRootURL
+        do {
+            let (entries, unavailable) = try await Task.detached(priority: .userInitiated) {
+                var entries: [MacWorkspaceTrashRecord] = []
+                var unavailable: Set<UUID> = []
+                for record in try MacWorkspaceTrashRecord.entries(for: root, in: history) {
+                    switch record.availability(root: root, history: history, managed: managed) {
+                    case .available: entries.append(record)
+                    case .unavailable:
+                        // Keep interrupted/pre-move records as well: a later
+                        // metadata save may have failed after the system move.
+                        entries.append(record); unavailable.insert(record.id)
+                    case .removed: MacWorkspaceTrashRecord.forget(record.id, in: history)
+                    }
+                }
+                return (entries, unavailable)
+            }.value
+            guard !Task.isCancelled, self.root == root else { return }
+            deletionLoadFailed = false
+            recentDeletions = entries
+            unavailableDeletions = unavailable
+            let live = Set(entries.map(\.id))
+            restoreHistory.removeAll { !live.contains($0.id) }
+        } catch {
+            guard !Task.isCancelled, self.root == root else { return }
+            deletionLoadFailed = true
+        }
+        loadingDeletions = false
+    }
+
+    private func putBack(_ record: MacWorkspaceTrashRecord) {
+        guard let root, let history = recentlyDeletedDirectory, canChangeFiles(), !hasPendingChanges else { return }
+        let managed = managedConversationsRoot ?? fixedRootURL
+        mutationInProgress = true
+        Task {
+            defer { mutationInProgress = false; reloadID = UUID() }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try record.restore(root: root, history: history, managed: managed)
+                }.value
+                restoreHistory.removeAll { $0.id == record.id }
+                if latestTrashID == record.id { latestTrashID = nil }
+            } catch {
+                showRecentlyDeleted = false
+                reportMutationFailure(error)
+            }
+        }
+    }
+
+    private func openTrashInFinder(directory: URL?) {
+        let volumeBin = root.flatMap { try? FileManager.default.url(for: .trashDirectory, in: .userDomainMask,
+                                                                     appropriateFor: $0, create: false) }
+        let bin = directory ?? volumeBin ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent(".Trash", isDirectory: true)
+        _ = NSWorkspace.shared.open(bin)
+    }
+
+    private func openOriginalFolder(for record: MacWorkspaceTrashRecord) {
+        guard let root else { return }
+        let directory = record.subdirectory.isEmpty ? root : root.appendingPathComponent(record.subdirectory, isDirectory: true)
+        guard let operations = try? MacWorkspaceFileOperations(root: root, directory: directory,
+                                                                 managedConversationsRoot: managedConversationsRoot ?? fixedRootURL)
+        else { return }
+        _ = NSWorkspace.shared.open(operations.directory)
+    }
+
+    private func reportMutationFailure(_ error: Error) {
+        if let failure = error as? MacWorkspaceTrashRecord.HistoryError {
+            switch failure {
+            case .removed:
+                mutationError = t("该项目已离开废纸篓。", "This item is no longer in the Trash.")
+            case .unavailable:
+                mutationError = t("请连接原磁盘，并确认原文件夹和废纸篓可访问。", "Connect the original disk and check access to the folder and Trash.")
+            }
+            return
+        }
+        let ns = error as NSError
+        if (ns.domain == NSPOSIXErrorDomain && ns.code == Int(EEXIST)) || (ns.domain == NSCocoaErrorDomain && ns.code == CocoaError.fileWriteFileExists.rawValue) {
+            mutationError = t("名称已被使用，或所选项目已更改。请刷新后重试。", "The name is in use or the selected item changed. Refresh and try again.")
+        } else {
+            mutationError = t("请确认文件夹可写，并且项目仍在原处。", "Check that the folder is writable and the item is still in its original location.")
         }
     }
 
@@ -955,8 +1410,14 @@ struct MacWorkspaceFilesView: View {
         guard canAccess(entry) else { return }
         if entry.folder { navigate(to: entry.url) }
         else if entry.openable {
-            NSWorkspace.shared.open(entry.url)
-            onArtifact?(.opened(entry.url))
+            if MacWorkspaceHTMLSite.isPage(entry.url), let root {
+                do {
+                    htmlSite = try MacWorkspaceHTMLSite(page: entry.url, workspace: root)
+                    onArtifact?(.previewed(entry.url))
+                } catch { showScopeAlert = true }
+            } else if NSWorkspace.shared.open(entry.url) {
+                onArtifact?(.opened(entry.url))
+            }
         }
     }
 
@@ -2012,7 +2473,7 @@ enum MacWorkspaceFileEditingSmoke {
 
 #endif
 
-private struct MacWorkspaceQuickLook: NSViewRepresentable {
+struct MacWorkspaceQuickLook: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> NSView {
@@ -2037,4 +2498,50 @@ private struct MacWorkspaceQuickLook: NSViewRepresentable {
 
 private extension String {
     var nonEmpty: String? { isEmpty ? nil : self }
+}
+
+private struct FileActionSheet: View {
+    let title: String
+    let previousName: String
+    let trashName: String?
+    let confirm: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+    @State private var name: String
+
+    init(title: String, initial: String, trashName: String?, confirm: @escaping (String) -> Void) {
+        self.title = title
+        previousName = initial
+        self.trashName = trashName
+        self.confirm = confirm
+        _name = State(initialValue: initial)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(verbatim: title).font(.headline)
+            if let trashName {
+                Text(verbatim: trashName).lineLimit(2)
+            } else {
+                TextField(MacPermissionsText.t("名称", "Name"), text: $name)
+                    .focused($focused)
+                    .accessibilityIdentifier("workspace.files.name")
+            }
+            HStack {
+                Spacer()
+                Button(MacPermissionsText.t("取消", "Cancel")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(title, role: trashName == nil ? nil : .destructive) {
+                    dismiss()
+                    confirm(name)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(trashName == nil && (!MacWorkspaceFileOperations.validName(name) || name == previousName))
+                .accessibilityIdentifier("workspace.files.confirmAction")
+            }
+        }
+        .frame(width: 320)
+        .padding(18)
+        .onAppear { focused = trashName == nil }
+    }
 }

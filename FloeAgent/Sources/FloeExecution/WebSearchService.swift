@@ -58,6 +58,43 @@ public actor WebSearchService {
         self.validateDestination = validateDestination
     }
 
+    deinit { session.invalidateAndCancel() }
+
+    /// Search returns JSON metadata and optional excerpts. Bound the decoded
+    /// body before parsing, including responses without a Content-Length.
+    static let maximumResponseBytes = 8 * 1_048_576
+
+    private func response(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let (stream, response) = try await session.bytes(for: request)
+        let limit = Self.maximumResponseBytes
+        guard response.expectedContentLength <= Int64(limit) else {
+            stream.task.cancel()
+            throw WebRetrievalError.invalidResponse("Search response exceeded the download limit.")
+        }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(Int(max(0, min(response.expectedContentLength, 65_536))))
+        for try await byte in stream {
+            guard bytes.count < limit else {
+                stream.task.cancel()
+                throw WebRetrievalError.invalidResponse("Search response exceeded the download limit.")
+            }
+            bytes.append(byte)
+        }
+        return (Data(bytes), response)
+    }
+
+    /// Includes URL-escaped values as some providers put the API key in the query string.
+    static func redact(_ message: String, credential: WebSearchCredential) -> String {
+        var text = message
+        for (key, value) in credential.values where key != "moonshotChannel" && !value.isEmpty {
+            text = text.replacingOccurrences(of: value, with: "<redacted>")
+            if let escaped = value.addingPercentEncoding(withAllowedCharacters: .alphanumerics), escaped != value {
+                text = text.replacingOccurrences(of: escaped, with: "<redacted>", options: .caseInsensitive)
+            }
+        }
+        return String(text.prefix(1_024))
+    }
+
     /// Local readiness only: no network probe, no credential value in diagnostics.
     public nonisolated static func isConfigured(_ configuration: WebSearchProviderConfiguration, credential: WebSearchCredential) -> Bool {
         guard configuration.enabled else { return false }
@@ -315,14 +352,14 @@ public actor WebSearchService {
             let allowsTransient = Self.allowsTransientTunnel(for: configuration)
                 && Self.requestURLIsCanonical(request.url, configuration: configuration)
             try validateDestination(request.url!, allowsTransient)
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await response(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 FloeLogger(category: .tools).warning(
                     "webSearchProviderFailed trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(status) responseBytes=\(data.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
                 )
                 if configuration.kind == .deepseek {
-                    return .failure(Self.deepSeekFailure(status: status, data: data))
+                    return .failure(Self.redact(Self.deepSeekFailure(status: status, data: data), credential: credential))
                 }
                 return .failure("\(configuration.kind.rawValue): HTTP \(status)")
             }
@@ -348,13 +385,7 @@ public actor WebSearchService {
             FloeLogger(category: .tools).warning(
                 "webSearchProviderError trace=\(traceID) provider=\(configuration.kind.rawValue) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
-            if configuration.kind == .moonshot {
-                let secret = credential["apiKey"] ?? ""
-                let message = secret.isEmpty ? error.localizedDescription
-                    : error.localizedDescription.replacingOccurrences(of: secret, with: "<redacted>")
-                return .failure("moonshot: " + String(message.prefix(1_024)))
-            }
-            return .failure("\(configuration.kind.rawValue): \(error.localizedDescription)")
+            return .failure("\(configuration.kind.rawValue): " + Self.redact(error.localizedDescription, credential: credential))
         }
     }
 

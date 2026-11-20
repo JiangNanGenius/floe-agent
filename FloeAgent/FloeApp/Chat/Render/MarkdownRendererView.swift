@@ -84,17 +84,22 @@ private struct MarkdownBlockView: View {
     var body: some View {
         switch block {
         case .heading(let level, let text):
-            Text(text)
-                .font(Self.headingFont(level: level))
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .accessibilityAddTraits(.isHeader)
+            Group {
+                #if FLOE_UNIFIED_MAC
+                if text.runs.contains(where: { $0.link != nil }) {
+                    MacChatLinkText(text, font: .systemFont(ofSize: NSFont.systemFontSize, weight: level < 4 ? .semibold : .medium))
+                } else {
+                    Text(text).font(Self.headingFont(level: level)).textSelection(.enabled)
+                }
+                #else
+                Text(text).font(Self.headingFont(level: level)).textSelection(.enabled)
+                #endif
+            }
+            .foregroundStyle(.primary)
+            .accessibilityAddTraits(.isHeader)
 
         case .paragraph(let text):
-            Text(text)
-                .font(FloeTheme.Typography.body)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
+            Self.bodyText(text)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case .list(let ordered, let items):
@@ -121,6 +126,18 @@ private struct MarkdownBlockView: View {
             Divider()
                 .padding(.vertical, 2)
         }
+    }
+
+    @ViewBuilder static func bodyText(_ text: AttributedString) -> some View {
+        #if FLOE_UNIFIED_MAC
+        if text.runs.contains(where: { $0.link != nil }) {
+            MacChatLinkText(text)
+        } else {
+            Text(text).font(FloeTheme.Typography.body).foregroundStyle(.primary).textSelection(.enabled)
+        }
+        #else
+        Text(text).font(FloeTheme.Typography.body).foregroundStyle(.primary).textSelection(.enabled)
+        #endif
     }
 
     /// Heading levels map onto the typography ramp: h1 ≈ title, h2 ≈
@@ -150,10 +167,7 @@ private struct MarkdownListView: View {
                             .font(FloeTheme.Typography.body)
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
-                        Text(item.content)
-                            .font(FloeTheme.Typography.body)
-                            .foregroundStyle(.primary)
-                            .textSelection(.enabled)
+                        MarkdownBlockView.bodyText(item.content)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if !item.children.isEmpty {
@@ -177,14 +191,26 @@ private struct MarkdownTableView: View {
     let header: [AttributedString]
     let rows: [[AttributedString]]
 
+    @ViewBuilder private func cellText(_ cell: AttributedString, isHeader: Bool) -> some View {
+        #if FLOE_UNIFIED_MAC
+        if cell.runs.contains(where: { $0.link != nil }) {
+            MacChatLinkText(cell, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: isHeader ? .semibold : .regular))
+        } else {
+            Text(cell).font(isHeader ? FloeTheme.Typography.metadata.weight(.semibold) : FloeTheme.Typography.metadata)
+                .foregroundStyle(isHeader ? .primary : .secondary)
+        }
+        #else
+        Text(cell).font(isHeader ? FloeTheme.Typography.metadata.weight(.semibold) : FloeTheme.Typography.metadata)
+            .foregroundStyle(isHeader ? .primary : .secondary)
+        #endif
+    }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                 GridRow {
                     ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
-                        Text(cell)
-                            .font(FloeTheme.Typography.metadata.weight(.semibold))
-                            .foregroundStyle(.primary)
+                        cellText(cell, isHeader: true)
                     }
                 }
                 Divider()
@@ -192,9 +218,7 @@ private struct MarkdownTableView: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            Text(cell)
-                                .font(FloeTheme.Typography.metadata)
-                                .foregroundStyle(.secondary)
+                            cellText(cell, isHeader: false)
                         }
                     }
                 }

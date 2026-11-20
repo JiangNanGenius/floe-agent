@@ -54,7 +54,11 @@ public struct MoonshotSearchOptions: Sendable, Equatable {
 
     public static func addClientIdentity(to request: inout URLRequest) {
         request.setValue("FloeAgent/" + clientVersion, forHTTPHeaderField: "User-Agent")
+        #if FLOE_UNIFIED_MAC
+        request.setValue("floe-agent-macos", forHTTPHeaderField: "X-Msh-Platform")
+        #else
         request.setValue("floe-agent-ios", forHTTPHeaderField: "X-Msh-Platform")
+        #endif
         request.setValue(clientVersion, forHTTPHeaderField: "X-Msh-Version")
         request.setValue(deviceID, forHTTPHeaderField: "X-Msh-Device-Id")
         request.setValue(ProcessInfo.processInfo.operatingSystemVersionString, forHTTPHeaderField: "X-Msh-Os-Version")

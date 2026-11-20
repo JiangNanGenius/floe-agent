@@ -45,6 +45,10 @@ struct HostChildSubagentSnapshot: Identifiable, Hashable {
     let endedAt: Date?
     /// Bounded terminal findings when the durable terminal row committed.
     let findings: String?
+    /// Bounded durable failure/unfinished detail for every non-completed
+    /// terminal state (the child store's `errorText`). Surfaced on reopened
+    /// tasks so a failed child shows its real reason, not only a status word.
+    let error: String?
 
     init(record: ChildRunRecord) {
         self.id = record.id
@@ -55,6 +59,7 @@ struct HostChildSubagentSnapshot: Identifiable, Hashable {
         self.startedAt = record.startedAt
         self.endedAt = record.endedAt
         self.findings = record.resultSummary
+        self.error = record.errorText
         switch record.state {
         case .registered: self.status = .preparing
         case .running: self.status = .running
@@ -142,16 +147,18 @@ final class HostChildSubagentController: ObservableObject {
     }
 
     /// Bind one project Agent/Goal parent run before its session starts. The
-    /// child runner inherits the run's exact provider binding and the
-    /// read-only projection of its project executor, itself intersected with
-    /// the explicit workspace investigation tool-name allowlist. Concurrent
-    /// parents bind independently.
+    /// child runner inherits the run's exact provider binding and the run's
+    /// own project executor — the child's discovery universe is the parent's
+    /// effective catalog, and every child call resolves per call through the
+    /// parent session runtime's canonical dispatcher (once/deny/full
+    /// approval, frozen catalog identity, mutation leases). Without that
+    /// handoff the shared runner fails closed to its read-only legacy
+    /// ceiling. Concurrent parents bind independently.
     func bind(
         runID: UUID,
         conversationID: UUID,
         provider: FloeMacSelfProviderBinding,
         projectExecutor: (any ToolExecutor)?,
-        childToolAllowlist: Set<String>,
         runtime: FloeMacSelfRuntime
     ) async throws {
         try await prepare(runtime: runtime)
@@ -168,7 +175,6 @@ final class HostChildSubagentController: ObservableObject {
             adapter: provider.adapter,
             credentials: provider.credentials,
             projectExecutor: projectExecutor,
-            childToolAllowlist: childToolAllowlist,
             onChildStateChange: { [weak self] _ in
                 Task { @MainActor [weak self] in
                     await self?.refresh(conversationID: conversationID)

@@ -553,8 +553,14 @@
 "user_question.card.submit_failed" = "回答未保存，请重试。";
 "user_question.card.title" = "请你回答";
 
-"mac.child.title" = "项目子任务";
-"mac.child.approve" = "启动只读项目子任务";
+"mac.child.title" = "子代理";
+"mac.child.approve" = "启动子代理";
+"mac.conversation.reviewSpawn" = "创建新任务";
+"mac.conversation.reviewMessage" = "向其他任务发送消息";
+"mac.conversation.reviewHistory" = "读取任务历史";
+"mac.conversation.newFolder" = "新任务独立文件夹";
+"mac.child.result" = "执行结果";
+"mac.child.outcomeDetail" = "状态说明";
 "mac.child.details" = "任务详情";
 "mac.child.cancel" = "取消";
 "mac.child.cancelFailed" = "未能取消子任务，请查看当前状态。";
@@ -686,8 +692,69 @@
 "mac.workspace.configureModel" = "配置模型…";
 "mac.workspace.sendShortcut" = "发送（⌘Return）";
 "mac.settings.providerModels" = "模型供应商";
+"mac.settings.clearSearch" = "清除搜索";
 "mac.settings.find" = "查找设置";
 "mac.settings.noMatches" = "没有匹配的设置";
 "mac.settings.runningInput" = "任务运行时发送消息";
 "mac.settings.runningInput.queue" = "排队发送";
 "mac.settings.runningInput.steer" = "引导当前运行";
+
+"mac.composer.expand" = "展开输入框";
+
+"mac.composer.editPrompt" = "编辑消息";
+
+"mac.attachment.reveal" = "在访达中显示";
+
+"mac.composer.done" = "完成";
+
+"mac.settings.webSearch" = "网页搜索";
+
+"providers.models_section" = "模型";
+"settings.diagnostics.providers" = "供应商";
+"settings.section.usage" = "用量统计";
+"settings.usage_statistics_view.all" = "全部";
+"settings.usage_statistics_view.average_generation_speed" = "平均生成速度";
+"settings.usage_statistics_view.average_response_time" = "平均响应耗时";
+"settings.usage_statistics_view.average_time_to_first_response" = "平均开始响应";
+"settings.usage_statistics_view.by_conversation" = "按会话";
+"settings.usage_statistics_view.by_model" = "按模型";
+"settings.usage_statistics_view.by_provider" = "按供应商";
+"settings.usage_statistics_view.context_reuse" = "上下文复用";
+"settings.usage_statistics_view.context_reuse_rate" = "上下文复用率";
+"settings.usage_statistics_view.context_reuse_reasoning" = "上下文复用 %@ · 思考用量 %@";
+"settings.usage_statistics_view.date" = "日期";
+"settings.usage_statistics_view.filter" = "筛选";
+"settings.usage_statistics_view.fragments_sec" = "%@ tokens/秒";
+"settings.usage_statistics_view.input_output" = "输入 %@ · 输出 %@";
+"settings.usage_statistics_view.input_usage" = "输入用量";
+"settings.usage_statistics_view.last_30_days" = "近 30 天";
+"settings.usage_statistics_view.model" = "模型";
+"settings.usage_statistics_view.no_data" = "暂无数据";
+"settings.usage_statistics_view.no_tasks_to_count_yet" = "还没有可统计的任务";
+"settings.usage_statistics_view.no_usage_data" = "暂无用量数据";
+"settings.usage_statistics_view.not_reported" = "未报告";
+"settings.usage_statistics_view.output_usage" = "输出用量";
+"settings.usage_statistics_view.overview" = "总览";
+"settings.usage_statistics_view.reasoning_usage" = "思考用量";
+"settings.usage_statistics_view.reuse_time_to_first_response" = "复用率 %@ · %@ · 开始响应 %@";
+"settings.usage_statistics_view.statistics_dimensions" = "统计维度";
+"settings.usage_statistics_view.tasks" = "%@ · %@ 任务";
+"settings.usage_statistics_view.total" = "总计";
+"settings.usage_statistics_view.total_tasks" = "总任务数";
+"settings.usage_statistics_view.total_usage" = "总用量";
+"settings.usage_statistics_view.usage_returned_by_the_model_appears" = "新任务完成后会在这里显示模型返回的用量。";
+"thread.kind.usage" = "用量";
+"settings.usage_statistics_view.tasks.one" = "%@ · %@ 个任务";
+"settings.usage_statistics_view.fragments_sec.one" = "%@ tokens/秒";
+
+"mac.web.reviewRead" = "读取公开网页";
+"mac.child.approvePeers" = "查看同一任务的子代理";
+
+"mac.media.reviewImage" = "生成图像";
+"mac.media.reviewVideo" = "生成视频";
+"mac.media.providerCharge" = "本次请求将发送给所选供应商，生成可能计费。";
+"mac.media.reviewCancel" = "取消视频生成";
+"mac.media.reviewStatus" = "查看视频状态";
+
+"mac.aux.image.routing" = "允许 Agent 选择生图模型";
+"mac.aux.image.routing.detail" = "关闭时，生图工具使用你选定的生图模型。";

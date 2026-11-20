@@ -552,8 +552,14 @@
 "user_question.card.submit_failed" = "Couldn’t save your answer. Please try again.";
 "user_question.card.title" = "A question for you";
 
-"mac.child.title" = "Project subtasks";
-"mac.child.approve" = "Start a read-only project subtask";
+"mac.child.title" = "Subagents";
+"mac.child.approve" = "Start a subagent";
+"mac.conversation.reviewSpawn" = "Create a new task";
+"mac.conversation.reviewMessage" = "Send a message to another task";
+"mac.conversation.reviewHistory" = "Read task history";
+"mac.conversation.newFolder" = "New task folder";
+"mac.child.result" = "Result";
+"mac.child.outcomeDetail" = "Outcome details";
 "mac.child.details" = "Task details";
 "mac.child.cancel" = "Cancel";
 "mac.child.cancelFailed" = "The subtask could not be cancelled. Check its current status.";
@@ -685,8 +691,69 @@
 "mac.workspace.configureModel" = "Configure Model…";
 "mac.workspace.sendShortcut" = "Send (⌘Return)";
 "mac.settings.providerModels" = "Model Providers";
+"mac.settings.clearSearch" = "Clear search";
 "mac.settings.find" = "Find a setting";
 "mac.settings.noMatches" = "No matching settings";
 "mac.settings.runningInput" = "Messages during a run";
 "mac.settings.runningInput.queue" = "Queue for later";
 "mac.settings.runningInput.steer" = "Guide the current run";
+
+"mac.composer.expand" = "Expand message editor";
+
+"mac.composer.editPrompt" = "Edit message";
+
+"mac.attachment.reveal" = "Show in Finder";
+
+"mac.composer.done" = "Done";
+
+"mac.settings.webSearch" = "Web Search";
+
+"providers.models_section" = "Models";
+"settings.diagnostics.providers" = "Providers";
+"settings.section.usage" = "Usage";
+"settings.usage_statistics_view.all" = "All";
+"settings.usage_statistics_view.average_generation_speed" = "Average generation speed";
+"settings.usage_statistics_view.average_response_time" = "Average response time";
+"settings.usage_statistics_view.average_time_to_first_response" = "Average time to first response";
+"settings.usage_statistics_view.by_conversation" = "By conversation";
+"settings.usage_statistics_view.by_model" = "By model";
+"settings.usage_statistics_view.by_provider" = "By provider";
+"settings.usage_statistics_view.context_reuse" = "Context reuse";
+"settings.usage_statistics_view.context_reuse_rate" = "Context reuse rate";
+"settings.usage_statistics_view.context_reuse_reasoning" = "Context reuse %@ · reasoning %@";
+"settings.usage_statistics_view.date" = "Date";
+"settings.usage_statistics_view.filter" = "Filter";
+"settings.usage_statistics_view.fragments_sec" = "%@ tokens/s";
+"settings.usage_statistics_view.input_output" = "Input %@ · output %@";
+"settings.usage_statistics_view.input_usage" = "Input usage";
+"settings.usage_statistics_view.last_30_days" = "Last 30 days";
+"settings.usage_statistics_view.model" = "Model";
+"settings.usage_statistics_view.no_data" = "No data";
+"settings.usage_statistics_view.no_tasks_to_count_yet" = "No tasks to count yet";
+"settings.usage_statistics_view.no_usage_data" = "No usage data";
+"settings.usage_statistics_view.not_reported" = "Not reported";
+"settings.usage_statistics_view.output_usage" = "Output usage";
+"settings.usage_statistics_view.overview" = "Overview";
+"settings.usage_statistics_view.reasoning_usage" = "Reasoning usage";
+"settings.usage_statistics_view.reuse_time_to_first_response" = "Reuse %@ · %@ · time to first response %@";
+"settings.usage_statistics_view.statistics_dimensions" = "Statistics dimensions";
+"settings.usage_statistics_view.tasks" = "%@ · %@ tasks";
+"settings.usage_statistics_view.total" = "Total";
+"settings.usage_statistics_view.total_tasks" = "Total tasks";
+"settings.usage_statistics_view.total_usage" = "Total usage";
+"settings.usage_statistics_view.usage_returned_by_the_model_appears" = "Usage returned by the model appears here after a new task completes.";
+"thread.kind.usage" = "Usage";
+"settings.usage_statistics_view.tasks.one" = "%@ · %@ task";
+"settings.usage_statistics_view.fragments_sec.one" = "%@ token/s";
+
+"mac.web.reviewRead" = "Read Public Webpage";
+"mac.child.approvePeers" = "List Sibling Subagents";
+
+"mac.media.reviewImage" = "Generate Image";
+"mac.media.reviewVideo" = "Generate Video";
+"mac.media.providerCharge" = "The selected provider receives this request and may charge for generation.";
+"mac.media.reviewCancel" = "Cancel Video Generation";
+"mac.media.reviewStatus" = "Check Video Status";
+
+"mac.aux.image.routing" = "Allow the agent to choose an image model";
+"mac.aux.image.routing.detail" = "When disabled, image tools use your selected image model.";

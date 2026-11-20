@@ -30,6 +30,18 @@ import FloeCore
 import FloeModels
 
 public actor ConversationPromoter {
+    /// Hosts which keep their model picker outside SQLite can supply the
+    /// configurations actually used by the RAM runs. Credentials never enter
+    /// this value. Existing configuration (including later edits) wins.
+    public struct ModelConfiguration: Sendable {
+        public let provider: ProviderProfile
+        public let model: ModelProfile
+
+        public init(provider: ProviderProfile, model: ModelProfile) {
+            self.provider = provider
+            self.model = model
+        }
+    }
     /// Frozen source of truth for one promotion. Built from the ephemeral
     /// stores' buffered snapshot while their gateway holds late appends in
     /// RAM; the caller completes the gateway afterwards so subsequent
@@ -246,9 +258,35 @@ public actor ConversationPromoter {
     /// Commits the snapshot as one unit. Any failure — validation, foreign
     /// key, unique constraint — rolls the whole transaction back: no
     /// conversation row, no message, no FTS entry, no run event.
-    public func promote(_ snapshot: Snapshot) async throws {
+    public func promote(_ snapshot: Snapshot, configuration: [ModelConfiguration] = [],
+                        checkCancellation: (@Sendable () throws -> Void)? = nil) async throws {
         try await database.writer { db in
+            try checkCancellation?()
             try Self.validate(snapshot, db: db)
+            var canonicalModels: [UUID: UUID] = [:]
+            for item in configuration {
+                guard item.provider.id == item.model.providerID,
+                      snapshot.runs.contains(where: { $0.providerID == item.provider.id && $0.modelID == item.model.id })
+                else { throw FloeError.invalidConfiguration("Model configuration does not belong to the promoted runs") }
+                try item.provider.validate()
+                try ConfigurationCodec.validate(item.model)
+                if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM providers WHERE id = ?)",
+                                     arguments: [item.provider.id.uuidString]) != true {
+                    try ConfigurationCodec.write(item.provider, to: db)
+                }
+                if let exact = try Row.fetchOne(db, sql: "SELECT provider_id, remote_model_id FROM models WHERE id = ?",
+                                                arguments: [item.model.id.uuidString]) {
+                    guard (exact["provider_id"] as String) == item.provider.id.uuidString,
+                          (exact["remote_model_id"] as String) == item.model.remoteModelID
+                    else { throw FloeError.invalidConfiguration("The selected model identity has changed") }
+                } else if let existing = try String.fetchOne(db, sql: "SELECT id FROM models WHERE provider_id = ? AND remote_model_id = ?",
+                                                              arguments: [item.provider.id.uuidString, item.model.remoteModelID]),
+                          let id = UUID(uuidString: existing) {
+                    canonicalModels[item.model.id] = id
+                } else {
+                    canonicalModels[item.model.id] = try ConfigurationCodec.write(item.model, to: db).id
+                }
+            }
             let conversation = snapshot.conversation
             let targetKey = conversation.id.uuidString
 
@@ -306,7 +344,7 @@ public actor ConversationPromoter {
                         run.endedAt.map(PersistenceCodec.encode),
                         run.goalID?.uuidString,
                         run.providerID?.uuidString,
-                        run.modelID?.uuidString,
+                        run.modelID.map { (canonicalModels[$0] ?? $0).uuidString },
                         run.providerName,
                         run.modelName,
                         run.conversationMode
@@ -540,6 +578,7 @@ public actor ConversationPromoter {
                 sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 arguments: [PersistenceCodec.encode(Date()), targetKey]
             )
+            try checkCancellation?()
         }
     }
 }

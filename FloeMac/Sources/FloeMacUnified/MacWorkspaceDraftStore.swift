@@ -52,6 +52,15 @@ final class MacWorkspaceDraftStore: ObservableObject {
         document.drafts[Self.key(for: conversation)]?.attachments ?? []
     }
 
+    var attachmentURLs: Set<URL> {
+        Set(document.drafts.values.flatMap(\.attachments).compactMap { attachment in
+            guard attachment.storage == .securityScopedBookmark, let bookmark = attachment.urlBookmark else { return nil }
+            var stale = false
+            return (try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting],
+                             relativeTo: nil, bookmarkDataIsStale: &stale))?.standardizedFileURL
+        })
+    }
+
     func setText(_ text: String, for conversation: UUID?) {
         update(conversation) { $0.text = text }
     }

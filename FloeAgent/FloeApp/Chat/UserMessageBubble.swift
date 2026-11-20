@@ -89,6 +89,9 @@ struct AttachmentChipRow: View {
                 .disabled(onOpen == nil)
                 .accessibilityLabel(Text("chat.attachment.open_named \(item.name)"))
                 .accessibilityIdentifier("thread.attachment.\(item.id)")
+                #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { HostAgentWorkspaceView.smokeAttachmentFrames[item.id] = $0 })
+                #endif
             }
         }
     }

@@ -107,7 +107,7 @@ final class MacImageGeneration: ObservableObject {
     private static let historyEnvelopeVersion = 1
     private static let maximumHistoryCount = 200
     private static let maximumHistoryBytes = 1_048_576
-    private static let maximumImageBytes = 32 * 1_048_576
+    nonisolated private static let maximumImageBytes = 32 * 1_048_576
     /// One reference image stays within the iPad Files staging bound.
     private static let maximumReferenceImageBytes = 12 * 1_048_576
 
@@ -503,6 +503,62 @@ final class MacImageGeneration: ObservableObject {
         return (profile, model)
     }
 
+    /// Captures the selected account and endpoint without retaining a key or borrowing workbench history.
+    func taskTools(conversationID: UUID, autonomous: Bool = false) -> MacTaskImageTools? {
+        var configurations = [configuration].compactMap { $0 }
+        for choice in modelChoices {
+            guard let c = configuration(for: choice.id), !configurations.contains(c) else { continue }
+            configurations.append(c)
+        }
+        let routes = configurations.compactMap { config -> MacTaskImageTools.Route? in
+            guard let pair = route(for: config), keyForRequest(config) != nil,
+                  ImageGenerationPresetResolver.isEligible(provider: pair.profile, model: pair.model, operation: .generate),
+                  pair.model.capabilities.contains(.imageGeneration) else { return nil }
+            var model = pair.model
+            var profile = pair.profile
+            if config.providerSelection == nil {
+                // The standalone workbench constructs transient profiles. Stable public model IDs
+                // allow a saved conversation to select the same standalone model after restart.
+                profile.id = Self.toolIdentity("provider|" + config.presetID.rawValue + "|" + config.endpoint)
+                model.id = Self.toolIdentity("model|" + profile.id.uuidString + "|" + config.modelID)
+                model.providerID = profile.id
+            }
+            return .init(configuration: config, profile: profile, model: model)
+        }
+        let preferred = routes.first { $0.configuration == configuration }?.model.id
+        guard !routes.isEmpty, autonomous || preferred != nil else { return nil }
+        return MacTaskImageTools(conversationID: conversationID, autonomous: autonomous, preferredID: preferred, routes: routes, available: { [weak self] route in
+            self?.keyForRequest(route.configuration) != nil
+        }, request: { [weak self] route, input in
+            guard let self else { throw CancellationError() }
+            return try await self.performTaskImage(route: route, input: input)
+        })
+    }
+
+    private func performTaskImage(route: MacTaskImageTools.Route, input: RemoteImageRequest) async throws -> RemoteImageResult {
+        try Task.checkCancellation()
+        guard let key = keyForRequest(route.configuration),
+              let adapter = ImageProviderAdapterFactory().adapter(for: route.profile), adapter.supports(.generate, for: route.profile)
+        else { throw MacImageGenerationError.keyRequired }
+        let release = try admitWork()
+        defer { release() }
+        return try await adapter.perform(input, provider: route.profile, credentials: ProviderCredentials(apiKey: key))
+    }
+
+    private static func toolIdentity(_ value: String) -> UUID {
+        let hex = Array(FloeDigest.sha256Hex(Data(value.utf8)).prefix(32))
+        return UUID(uuidString: [0..<8, 8..<12, 12..<16, 16..<20, 20..<32].map { String(hex[$0]) }.joined(separator: "-"))!
+    }
+
+    nonisolated static func taskImageFormat(_ data: Data) throws -> ImageGenerationImageFormat {
+        guard data.count <= maximumImageBytes, let checked = verifiedImageFormat(data) else {
+            throw MacImageGenerationError.unsupportedResult
+        }
+        let type = try ImageGenerationImageFormatResolver.resolve(data)
+        guard checked.fileExtension == type.fileExtension else { throw MacImageGenerationError.unsupportedResult }
+        return type
+    }
+
     // MARK: - Verified image bytes
 
     private enum VerifiedImageFormat: String, CaseIterable {
@@ -514,7 +570,7 @@ final class MacImageGeneration: ObservableObject {
         VerifiedImageFormat.allCases.contains { item.filename == "\(item.id.uuidString).\($0.fileExtension)" }
     }
 
-    private static func verifiedImageFormat(_ data: Data) -> VerifiedImageFormat? {
+    nonisolated private static func verifiedImageFormat(_ data: Data) -> VerifiedImageFormat? {
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, options),
               let type = CGImageSourceGetType(source) as String?,

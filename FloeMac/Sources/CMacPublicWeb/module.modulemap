@@ -1,0 +1,5 @@
+module CMacPublicWeb [system] {
+    header "MacPublicWeb.h"
+    link "curl"
+    export *
+}

@@ -187,6 +187,36 @@ public struct ConversationMessagePage: Sendable, Hashable {
     }
 }
 
+/// Workspace ownership bound atomically when one user/model-spawned visible
+/// task is published. The binding commits in the SAME transaction as the
+/// conversation row and its initial user message, so a crash can never leave
+/// a spawned task without its durable owner.
+public enum ConversationSpawnWorkspace: Sendable, Hashable {
+    /// Link the task to an explicit user-selected project. The caller has
+    /// verified the row exists and is a `.project` workspace; a private or
+    /// unknown row is rejected here as well (fail-closed, in-transaction).
+    case project(UUID)
+    /// Create-or-reuse the canonical per-task private owner
+    /// (`PrivateTasks/<task UUID>`) in the same transaction and link it.
+    /// This is the fresh-owner default: a spawned task never stays
+    /// ownerless and never silently inherits a parent project.
+    case canonicalPrivateTask
+}
+
+/// Durable result of one atomic visible-task spawn.
+public struct ConversationSpawnPublishOutcome: Sendable, Hashable {
+    /// True when this call created the conversation row; false for an
+    /// idempotent retry of the exact same deterministic identity.
+    public var wasCreated: Bool
+    /// The workspace the task is durably linked to (never nil on success).
+    public var workspaceID: UUID
+
+    public init(wasCreated: Bool, workspaceID: UUID) {
+        self.wasCreated = wasCreated
+        self.workspaceID = workspaceID
+    }
+}
+
 /// Durable conversation, message, content-part and attachment access.
 /// Deterministic ordering throughout; writes are cancellation-safe because
 /// GRDB serialises writers.
@@ -194,6 +224,19 @@ public protocol ConversationStore: Sendable {
     func saveConversation(_ conversation: ConversationRecord) async throws
     /// Atomically saves an ordinary conversation with its canonical task workspace.
     func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws
+    /// Atomically publishes one user/model-spawned visible task: the
+    /// conversation row, its initial user message and its durable workspace
+    /// owner commit in ONE transaction. On an idempotent retry of the exact
+    /// same deterministic identities the existing task, its history and its
+    /// ownership are compared and preserved — never modified or erased; a
+    /// mismatched retry throws and the transaction rolls back, leaving the
+    /// existing task untouched. Non-durable stores must not approximate this
+    /// with independent writes.
+    func applyVisibleTaskSpawn(
+        conversation: ConversationRecord,
+        initialMessage: PersistedMessage,
+        workspace: ConversationSpawnWorkspace
+    ) async throws -> ConversationSpawnPublishOutcome
     /// Optional App-owned purpose commits before the ordinary row is visible.
     func saveConversationWithCanonicalWorkspace(
         _ conversation: ConversationRecord, cleanupProfile: LinuxCacheCleanupTaskProfile?
@@ -263,6 +306,15 @@ public extension ConversationStore {
     /// Non-durable stores must not approximate this with two independent writes.
     func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws {
         throw FloeError.storageCorrupted("Atomic conversation/workspace creation is unavailable for this store")
+    }
+
+    /// Non-durable stores must not approximate this with independent writes.
+    func applyVisibleTaskSpawn(
+        conversation: ConversationRecord,
+        initialMessage: PersistedMessage,
+        workspace: ConversationSpawnWorkspace
+    ) async throws -> ConversationSpawnPublishOutcome {
+        throw FloeError.storageCorrupted("Atomic visible task spawn is unavailable for this store")
     }
 
     func saveConversationWithCanonicalWorkspace(
@@ -369,13 +421,12 @@ public actor SQLiteConversationStore: ConversationStore {
     }
 
     private static func writeConversation(_ conversation: ConversationRecord, in db: Database) throws {
-        // Establish archive and pin state on first insert. Later saves can
-        // carry stale presentation state, so only their dedicated setters
-        // update these two fields on an existing conversation.
+        // Later saves may carry stale presentation state. Preserve title
+        // origin, archive and pin state after insertion for their dedicated setters.
         try db.execute(
             sql: """
-                INSERT INTO conversations (id, title, created_at, updated_at, purpose, visibility, pinned_at, archived_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO conversations (id, title, created_at, updated_at, purpose, visibility, pinned_at, archived_at, title_origin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     updated_at = excluded.updated_at
@@ -388,7 +439,8 @@ public actor SQLiteConversationStore: ConversationStore {
                 conversation.purpose.rawValue,
                 conversation.visibility.rawValue,
                 conversation.pinnedAt.map { PersistenceCodec.encode($0) },
-                conversation.archivedAt.map { PersistenceCodec.encode($0) }
+                conversation.archivedAt.map { PersistenceCodec.encode($0) },
+                conversation.titleOrigin.rawValue
             ]
         )
         if let owner = conversation.editorOwnership {
@@ -599,6 +651,135 @@ public actor SQLiteConversationStore: ConversationStore {
                 arguments: [conversationID]
             )
             return db.changesCount > 0
+        }
+    }
+
+    /// Atomic visible-task spawn, all in ONE writer transaction:
+    ///
+    /// 1. Conversation row: INSERT on first creation. On an idempotent retry
+    ///    of the exact same deterministic identity the existing row is
+    ///    COMPARED and preserved — its title, timestamps, archive/pin state
+    ///    and history are never modified, and the task is never erased.
+    ///    A mismatched retry throws and the whole transaction rolls back.
+    /// 2. Initial user message: INSERT, or compare-and-preserve on retry; a
+    ///    different message bound to the same identity is a conflict.
+    /// 3. Workspace owner: `.canonicalPrivateTask` creates-or-reuses the
+    ///    canonical `PrivateTasks/<task UUID>` row and links it; `.project`
+    ///    links the caller-verified explicit project and rejects any
+    ///    non-project or unknown row fail-closed. A task therefore never
+    ///    stays ownerless and never inherits a parent workspace silently.
+    public func applyVisibleTaskSpawn(
+        conversation: ConversationRecord,
+        initialMessage: PersistedMessage,
+        workspace: ConversationSpawnWorkspace
+    ) async throws -> ConversationSpawnPublishOutcome {
+        try await database.writer { db in
+            let conversationID = conversation.id.uuidString
+            let wasCreated: Bool
+            if let existing = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT title, purpose, visibility, archived_at,
+                           editor_owner_kind, editor_document_id, editor_container_id
+                    FROM conversations WHERE id = ?
+                    """,
+                arguments: [conversationID]
+            ) {
+                let existingTitle: String = existing["title"]
+                let existingPurpose: String = existing["purpose"] ?? ConversationPurpose.ordinary.rawValue
+                let existingVisibility: String = existing["visibility"] ?? ConversationVisibility.normal.rawValue
+                let identityMatches = existingTitle == conversation.title
+                    && existingPurpose == conversation.purpose.rawValue
+                    && existingVisibility == conversation.visibility.rawValue
+                    && (existing["archived_at"] as String?) == nil
+                    && (existing["editor_owner_kind"] as String?) == nil
+                    && (existing["editor_document_id"] as String?) == nil
+                    && (existing["editor_container_id"] as String?) == nil
+                guard identityMatches else {
+                    throw FloeError.validationFailed(
+                        "A different task is already bound to this spawn identity; the existing task was preserved"
+                    )
+                }
+                wasCreated = false
+            } else {
+                try Self.writeConversation(conversation, in: db)
+                wasCreated = true
+            }
+
+            if let existingMessage = try Row.fetchOne(
+                db,
+                sql: "SELECT role, content, conversation_id FROM messages WHERE id = ?",
+                arguments: [initialMessage.id.uuidString]
+            ) {
+                let role: String = existingMessage["role"]
+                let content: String = existingMessage["content"]
+                let messageConversation: String = existingMessage["conversation_id"]
+                guard role == initialMessage.role,
+                      content == initialMessage.content,
+                      messageConversation == initialMessage.conversationID.uuidString else {
+                    throw FloeError.validationFailed(
+                        "A different message is already bound to this spawn identity; the existing task was preserved"
+                    )
+                }
+                // Exact idempotent retry: keep the original row untouched.
+            } else {
+                try db.execute(
+                    sql: """
+                        INSERT INTO messages (id, conversation_id, role, content, created_at, run_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        initialMessage.id.uuidString,
+                        initialMessage.conversationID.uuidString,
+                        initialMessage.role,
+                        initialMessage.content,
+                        PersistenceCodec.encode(initialMessage.createdAt),
+                        initialMessage.runID?.uuidString,
+                    ]
+                )
+            }
+
+            let workspaceID: UUID
+            switch workspace {
+            case .canonicalPrivateTask:
+                let owner = try SQLiteWorkspaceStore.ensureWorkspace(
+                    conversationID: conversation.id,
+                    title: conversation.title,
+                    db: db
+                )
+                workspaceID = owner.id
+            case .project(let id):
+                let projectExists = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND kind = 'project')",
+                    arguments: [id.uuidString]
+                ) == true
+                guard projectExists else {
+                    throw FloeError.notFound("project workspace \(id.uuidString)")
+                }
+                if let current = try String.fetchOne(
+                    db,
+                    sql: "SELECT workspace_id FROM conversation_workspace_ownership WHERE conversation_id = ?",
+                    arguments: [conversationID]
+                ) {
+                    guard current == id.uuidString else {
+                        throw FloeError.validationFailed(
+                            "The existing task is owned by a different workspace; it was preserved"
+                        )
+                    }
+                } else {
+                    try db.execute(
+                        sql: """
+                            INSERT INTO conversation_workspace_ownership
+                                (conversation_id, workspace_id, assigned_at)
+                            VALUES (?, ?, ?)
+                            """,
+                        arguments: [conversationID, id.uuidString, PersistenceCodec.encode(Date())]
+                    )
+                }
+                workspaceID = id
+            }
+            return ConversationSpawnPublishOutcome(wasCreated: wasCreated, workspaceID: workspaceID)
         }
     }
 

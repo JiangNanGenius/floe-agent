@@ -457,6 +457,12 @@ struct ConversationToolsTests {
         #expect(ConversationSpawnAuthority.isExplicitRequest("请新建任务处理发布说明"))
         #expect(ConversationSpawnAuthority.isExplicitRequest("Create a new task for the audit"))
         #expect(!ConversationSpawnAuthority.isExplicitRequest("这个也许可以以后单独处理"))
+        #expect(ConversationSpawnAuthority.isExplicitRequest("Could you please start a separate conversation?"))
+        #expect(ConversationSpawnAuthority.isExplicitRequest("请帮我新建一个会话查资料"))
+        #expect(!ConversationSpawnAuthority.isExplicitRequest("Do not create a new task."))
+        #expect(!ConversationSpawnAuthority.isExplicitRequest("解释一下「新建会话」这个按钮"))
+        #expect(!ConversationSpawnAuthority.isExplicitRequest("Summarize this note: 'create a new task'"))
+
     }
 
     @Test("loop-read cursor delivers every long item exactly once and truly ends (budget-honoring reader)")

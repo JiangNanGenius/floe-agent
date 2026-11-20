@@ -116,12 +116,13 @@ enum FloeTheme {
 
     // MARK: - Accessibility helpers
 
+    static let minimumTarget: CGFloat = 44
+
     #if os(macOS)
-    static let minimumTarget: CGFloat = 28
     static let welcomeSpacing: CGFloat = 9
     static let welcomeCorner: CGFloat = 12
     static let welcomeIconSize: CGFloat = 48
-    static let composerRadius: CGFloat = 12
+    static let composerRadius: CGFloat = 18
     static let sendButtonSize: CGFloat = 26
     #else
     static let welcomeSpacing: CGFloat = 16
@@ -129,8 +130,6 @@ enum FloeTheme {
     static let welcomeIconSize: CGFloat = 76
     static let composerRadius: CGFloat = 22
     static let sendButtonSize: CGFloat = 34
-    static let minimumTarget: CGFloat = 44
-
     #endif
 
     /// Apply the platform control target.
@@ -348,9 +347,10 @@ struct FloeComposerAttachmentChip: View {
             }
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel(removeLabel + " " + name)
         }
         .font(FloeTheme.Typography.metadata)

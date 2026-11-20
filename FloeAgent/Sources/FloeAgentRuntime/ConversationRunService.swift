@@ -135,6 +135,7 @@ public actor ConversationRunService {
     private let conversationStore: any ConversationStore
     private let runStore: any RunStore
     private let receiptWorkspaceID: UUID?
+    private let workspaceArtifactTools: Set<String>
     private let runningInputStore: (any RunningInputStore)?
     private let intelligenceStore: SQLiteIntelligenceStore?
     private let secretForRedaction: String?
@@ -408,6 +409,7 @@ public actor ConversationRunService {
         runningInputStore: (any RunningInputStore)? = nil,
         runID: UUID = UUID(),
         receiptWorkspace: (id: UUID, root: URL)? = nil,
+        workspaceArtifactTools: Set<String> = [],
         conversationHistory: [ConversationMessage] = [],
         currentUserImages: [ConversationImagePart] = [],
         runContext: RunContext? = nil,
@@ -420,6 +422,7 @@ public actor ConversationRunService {
         self.primaryModel = configuration.model
         self.conversationStore = conversationStore
         self.runStore = runStore
+        self.workspaceArtifactTools = workspaceArtifactTools
         if let receiptWorkspace, !configuration.temporaryReadOnly, receiptWorkspace.root.isFileURL,
            let runRoot = configuration.workspaceRootURL, runRoot.isFileURL,
            runRoot.standardizedFileURL.path == receiptWorkspace.root.standardizedFileURL.path {
@@ -1401,7 +1404,10 @@ public actor ConversationRunService {
     /// here: subscribers already received `.requested(call)` with the full
     /// call, and a synthetic partial event would corrupt their state.
     private func handleToolDispatch(_ call: ToolCall, at stamp: ToolTimingStamp) {
-        let workspaceID = receiptWorkspaceID.flatMap { Self.targetsLeasedWorkspace(call) ? $0 : nil }
+        let isBoundArtifact: Bool
+        if case .local = call.scope { isBoundArtifact = workspaceArtifactTools.contains(call.toolName) }
+        else { isBoundArtifact = false }
+        let workspaceID = Self.targetsLeasedWorkspace(call) || isBoundArtifact ? receiptWorkspaceID : nil
         toolDispatches[call.id] = (stamp.monotonic, call.toolName, workspaceID)
     }
 

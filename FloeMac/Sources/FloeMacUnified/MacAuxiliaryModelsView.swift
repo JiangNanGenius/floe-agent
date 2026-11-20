@@ -44,6 +44,10 @@ struct MacAuxiliaryModelsView: View {
                     .disabled(workspace.selectedAuxiliary(.vision) == nil)
             } footer: { Text("mac.aux.vision.detail") }
             Section {
+                Toggle("mac.aux.image.routing", isOn: Binding(get: { workspace.auxiliaryPreferences.autonomousImageRouting == true },
+                                                            set: workspace.setAutonomousImageRouting))
+            } footer: { Text("mac.aux.image.routing.detail") }
+            Section {
                 Picker("mac.aux.reviewer", selection: Binding(get: { workspace.approvalModelID },
                        set: workspace.setApprovalModelID)) {
                     Text("mac.aux.none").tag(UUID?.none)

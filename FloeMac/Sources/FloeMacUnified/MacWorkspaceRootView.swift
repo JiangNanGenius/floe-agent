@@ -2,6 +2,7 @@
 
 import AppKit
 import FloeMacSelfCore
+import FloeMacToolbox
 import FloePersistence
 import SwiftUI
 import UniformTypeIdentifiers
@@ -11,13 +12,16 @@ enum MacSpacePage: Hashable {
 }
 
 private enum MacWorkspaceDestination: Hashable {
-    case newTask(UUID?)
-    case taskCenter, space(MacSpacePage), creative, images, conversation(UUID)
+    case temporary, newTask(UUID?)
+    case taskCenter, space(MacSpacePage), creative, images, browser, conversation(UUID)
 }
 
 struct MacWorkspaceRootView: View {
     #if FLOE_MAC_HOST_SMOKE
     static var smokeTaskCenterFrame: CGRect?
+    static var smokeTemporaryFrame: CGRect?
+    static var smokeSidebarFrames: [String: CGRect] = [:]
+    static let smokeRevealProjectRow = Notification.Name("FloeWorkbenchSmokeRevealProjectRow")
     #endif
     @ObservedObject var workspace: HostAgentWorkspace
     let openSettings: () -> Void
@@ -29,14 +33,27 @@ struct MacWorkspaceRootView: View {
     let creativeContent: () -> AnyView
     var remembersFileRoot = true
     @ObservedObject var draftStore: MacWorkspaceDraftStore
+    @ObservedObject var browserWorkbench: MacBrowserWorkbenchController
+    let temporaryChat: MacTemporaryChatModel
     @AppStorage("floe.mac.workspace.lastConversation") private var lastConversation = ""
     @AppStorage("floe.mac.workspace.spaceProject") private var lastSpaceProject = ""
     @AppStorage("floe.mac.workspace.spaceFilesRoot") private var spaceFilesRootRaw = ""
 
-    @State private var destination: MacWorkspaceDestination? = .newTask(nil)
+    @State private var selectedDestination: MacWorkspaceDestination? = .newTask(nil)
+    private var destination: MacWorkspaceDestination? {
+        get { selectedDestination }
+        nonmutating set {
+            guard newValue != selectedDestination else { return }
+            if selectedDestination == .temporary { temporaryChat.discard() }
+            if newValue == .temporary { temporaryChat.begin() }
+            selectedDestination = newValue
+        }
+    }
     @State private var requestedConversation: UUID?
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
     @State private var imageReturnDestination: MacWorkspaceDestination = .space(.toolbox)
+    @State private var browserReturnDestination: MacWorkspaceDestination?
+    @State private var browserOwner: UUID?
     @State private var restoredInitialDestination = false
     @State private var showInspector = false
     @State private var compactDetail = false
@@ -70,11 +87,24 @@ struct MacWorkspaceRootView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarVisibility) {
             sidebar
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    HStack(spacing: 0) {
+                        Spacer()
+                        sidebarToggle(show: false)
+                    }
+                    .padding(.trailing, 8)
+                    .frame(minHeight: FloeTheme.minimumTarget + 8)
+                    .background { titlebarDragArea }
+                }
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 320)
+                .ignoresSafeArea(.container, edges: .top)
         } detail: {
             workspacePanes
+                .ignoresSafeArea(.container, edges: .top)
         }
         .navigationSplitViewStyle(.balanced)
+        .coordinateSpace(name: "floe.workbench.window")
+        .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $workspace.isSettingsPresented, content: settingsContent)
         .onChange(of: workspace.windowCommand?.id, initial: true) {
             guard let command = workspace.windowCommand else { return }
@@ -127,6 +157,8 @@ struct MacWorkspaceRootView: View {
                 destination = .conversation(id)
             }
         }
+        .modifier(BrowserWorkbenchNavigation(browser: browserWorkbench, openURL: openInWorkbenchBrowser,
+                                             show: showWorkbenchBrowser, returnToTask: returnFromWorkbenchBrowser))
         .onChange(of: destination) { _, newDestination in
             draftStore.flush()
             if newDestination != searchResultTarget.map({ .conversation($0.conversation) }) { searchResultTarget = nil }
@@ -138,6 +170,7 @@ struct MacWorkspaceRootView: View {
             else { requestedConversation = nil }
             #if FLOE_MAC_HOST_SMOKE
             workspace.smokeSpacePage = activeSpacePage
+            browserWorkbench.isPresented = newDestination == .browser
             #endif
             if newDestination == nil { destination = .taskCenter }
             if !showsTask { showInspector = false }
@@ -200,7 +233,8 @@ struct MacWorkspaceRootView: View {
             let split = filesVisible && !fullFiles
             let fileWidth = fullFiles ? width : (split ? clampedInspectorWidth(inspectorWidth - dividerTranslation, in: width) : 0)
             VStack(spacing: 0) {
-                header
+                // The native window controls stay at the leading edge when the split collapses.
+                header(leadingWindowInset: max(0, 84 - geometry.frame(in: .named("floe.workbench.window")).minX))
                 Divider()
                 HStack(spacing: 0) {
                     detail
@@ -266,8 +300,11 @@ struct MacWorkspaceRootView: View {
             remembersRoot: remembersFileRoot,
             fixedRootBookmark: displayedFileRootBookmark,
             fixedRootURL: spaceFilesFixedURL,
+            managedConversationsRoot: workspace.defaultConversationsDirectory,
+            recentlyDeletedDirectory: workspace.personalTaskLeaseBase.appendingPathComponent("RecentlyDeleted", isDirectory: true),
             workspaceRevision: workspace.workspaceRevision,
             taskAttachmentURLs: Set(workspace.stagedAttachments.map(\.url)),
+            protectedDraftFiles: { draftStore.attachmentURLs.union(workspace.stagedAttachments.map(\.url)) },
             onFolderPicked: registerPickedFolder,
             onAttachmentsChanged: { files in
                 guard selectionID == workspace.draftSelectionID, rootID == displayedFileRoot?.id else { return }
@@ -293,96 +330,128 @@ struct MacWorkspaceRootView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 4) {
-                HStack(spacing: 6) {
-                    if showHistorySearch {
-                        TextField("mac.workspace.findTask", text: $historySearch)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($historySearchFocused)
-                            .accessibilityIdentifier("workspace.taskSearch")
-                            .onAppear {
-                                historySearchFocused = true
-                                #if FLOE_MAC_HOST_SMOKE
-                                workspace.smokeTaskSearchMounted = true
-                                #endif
-                            }
-                            #if FLOE_MAC_HOST_SMOKE
-                            .onDisappear { workspace.smokeTaskSearchMounted = false }
-                            #endif
-                            .onSubmit {
-                                guard !historySearchQuery.isEmpty else { return }
-                                if let result = filteredConversations.first { openTask(result.id) }
-                                else { searchConversationContent() }
-                            }
-                            .onExitCommand(perform: closeTaskSearch)
-                        Button(action: closeTaskSearch) {
-                            Label("host.chat.cancel", systemImage: "xmark.circle.fill")
-                        }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                    } else {
-                        Button(action: focusTaskSearch) {
-                            Label("mac.workspace.findTask", systemImage: "magnifyingglass")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .font(.subheadline)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.secondary)
-                        .help("mac.workspace.findTask")
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        sidebarNavigation.id("sidebar.navigation")
+                        Divider().padding(.horizontal, 14)
+                        sidebarHistory
                     }
                 }
-                .padding(.horizontal, 9)
-                .frame(height: 28)
-                sidebarLink(.newTask(nil), title: "workbench.new_task", icon: "square.and.pencil")
-                    .disabled(!canSelectTask)
-                sidebarLink(.taskCenter, title: "app.floe_agent_app.task_center", icon: "checklist")
-                    .accessibilityIdentifier("workspace.taskCenter")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(MacWorkbenchButtonFrameReader { Self.smokeTaskCenterFrame = $0 })
-                    #endif
-                sidebarLink(.space(.files), title: "space.title", icon: "square.stack.3d.up")
-                    .accessibilityIdentifier("workspace.space")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(MacWorkbenchButtonFrameReader { workspace.smokeSpaceFrame = $0 })
-                    #endif
-                sidebarLink(.creative, title: "mac.creative.title", icon: "paintpalette")
-                    .accessibilityIdentifier("workspace.creative")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(MacWorkbenchButtonFrameReader { workspace.smokeCreativeFrame = $0 })
-                    #endif
-            }
-            .padding(8)
-            Divider().padding(.horizontal, 14)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    if historySearchQuery.isEmpty {
-                        projectSidebar
-                        personalHistory
-                    } else {
-                        Button(action: searchConversationContent) {
-                            Label("mac.workspace.searchConversationContent", systemImage: "text.magnifyingglass")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.callout)
-                        .padding(6)
-                        ForEach(filteredConversations) { conversationSidebarRow($0) }
-                    }
+                .onChange(of: showHistorySearch) { _, shown in
+                    if shown { proxy.scrollTo("sidebar.navigation", anchor: .top) }
                 }
-                .padding(8)
+                #if FLOE_MAC_HOST_SMOKE
+                .onReceive(NotificationCenter.default.publisher(for: Self.smokeRevealProjectRow)) { note in
+                    guard note.object as? HostAgentWorkspace === workspace,
+                          let id = note.userInfo?["project"] as? UUID else { return }
+                    proxy.scrollTo(id, anchor: .top)
+                }
+                #endif
             }
             Divider()
-            HStack {
-                Button(action: openSettings) {
-                    Label("more.settings", systemImage: "gearshape")
+            Button(action: openSettings) {
+                Label("more.settings", systemImage: "gearshape")
+                    .labelStyle(MacWorkspaceLabelStyle())
+                    .font(.body)
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("sidebar.settings")
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+        }
+    }
+
+    private var sidebarNavigation: some View {
+        VStack(spacing: 1) {
+            HStack(spacing: 6) {
+                if showHistorySearch {
+                    TextField("mac.workspace.findTask", text: $historySearch)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($historySearchFocused)
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(TapGesture().onEnded { historySearchFocused = true })
+                        .accessibilityIdentifier("workspace.taskSearch")
+                        .onAppear {
+                            historySearchFocused = true
+                            #if FLOE_MAC_HOST_SMOKE
+                            workspace.smokeTaskSearchMounted = true
+                            #endif
+                        }
+                        #if FLOE_MAC_HOST_SMOKE
+                        .onDisappear { workspace.smokeTaskSearchMounted = false }
+                        #endif
+                        .onSubmit {
+                            guard !historySearchQuery.isEmpty else { return }
+                            if let result = filteredConversations.first { openTask(result.id) }
+                            else { searchConversationContent() }
+                        }
+                        .onExitCommand(perform: closeTaskSearch)
+                    Button(action: closeTaskSearch) {
+                        Label("host.chat.cancel", systemImage: "xmark.circle.fill")
+                            .labelStyle(.iconOnly)
+                            .macWorkspaceIconTarget()
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Button(action: focusTaskSearch) {
+                        Label("mac.workspace.findTask", systemImage: "magnifyingglass")
+                            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .font(.callout)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("mac.workspace.findTask")
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            sidebarLink(.newTask(nil), title: "workbench.new_task", icon: "square.and.pencil")
+                .disabled(!canSelectTask)
+            sidebarLink(.taskCenter, title: "app.floe_agent_app.task_center", icon: "checklist")
+                .accessibilityIdentifier("workspace.taskCenter")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { Self.smokeTaskCenterFrame = $0 })
+                #endif
+            sidebarLink(.space(.files), title: "space.title", icon: "square.stack.3d.up")
+                .accessibilityIdentifier("workspace.space")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { workspace.smokeSpaceFrame = $0 })
+                #endif
+            sidebarLink(.creative, title: "mac.creative.title", icon: "paintpalette")
+                .accessibilityIdentifier("workspace.creative")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { workspace.smokeCreativeFrame = $0 })
+                #endif
+            sidebarLink(.browser, verbatimTitle: workspaceText("浏览器", "Browser"), icon: "globe")
+                .accessibilityIdentifier("workspace.browser")
+        }
+        .padding(8)
+    }
+
+    private var sidebarHistory: some View {
+        LazyVStack(alignment: .leading, spacing: 1) {
+            if historySearchQuery.isEmpty {
+                projectSidebar
+                personalHistory
+            } else {
+                Button(action: searchConversationContent) {
+                    Label("mac.workspace.searchConversationContent", systemImage: "text.magnifyingglass")
+                        .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
-                .accessibilityIdentifier("sidebar.settings")
-                Spacer()
+                .font(.callout)
+                .padding(.horizontal, 8)
+                ForEach(filteredConversations) { conversationSidebarRow($0) }
             }
-            .padding(.horizontal, 15)
-            .frame(height: 36)
         }
+        .padding(8)
     }
 
     @ViewBuilder
@@ -392,26 +461,35 @@ struct MacWorkspaceRootView: View {
             Spacer(minLength: 4)
             Button(action: chooseProjectFolder) {
                 Label("mac.workspace.addProject", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+                    .macWorkspaceIconTarget()
             }
-            .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .help("mac.workspace.addProject")
             .accessibilityIdentifier("workspace.addProject")
             .disabled(!canChooseProject)
         }
-        .padding(.trailing, 9)
+        .padding(.trailing, 2)
         if workspace.projectTasksUnavailable {
             HStack {
                 Text("mac.workspace.projectTasksUnavailable").foregroundStyle(.secondary)
-                Button("host.chat.tryAgain") { Task { await workspace.retryProjectTasks() } }
+                Button { Task { await workspace.retryProjectTasks() } } label: {
+                    Text("host.chat.tryAgain")
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
             }
             .font(.caption)
             .padding(.leading, 9)
         }
         ForEach(projects) { project in
             projectRow(project)
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 2)
                 .disabled(!canSelectTask)
+                #if FLOE_MAC_HOST_SMOKE
+                .id(project.id)
+                #endif
         }
     }
 
@@ -430,8 +508,10 @@ struct MacWorkspaceRootView: View {
         ) {
             Button { startNewTask(in: project.id) } label: {
                 Image(systemName: "plus")
+                    .macWorkspaceIconTarget()
             }
             .buttonStyle(.borderless)
+            .help(workspaceText("在\(project.name)新建任务", "New Task in \(project.name)"))
             .accessibilityLabel(workspaceText("在\(project.name)新建任务", "New Task in \(project.name)"))
             .accessibilityIdentifier("sidebar.workspace.new.\(project.id.uuidString)")
             #if FLOE_MAC_HOST_SMOKE
@@ -446,6 +526,7 @@ struct MacWorkspaceRootView: View {
         }
         #if FLOE_MAC_HOST_SMOKE
         var instrumented = row
+        instrumented.onDisclosureFrame = { frame in Self.smokeSidebarFrames["sidebar.workspace.disclosure." + project.id.uuidString] = frame }
         instrumented.onOpenFrame = { frame in workspace.smokeProjectNameFrames[project.id] = frame }
         return instrumented.contextMenu { projectActions(project) }
         #else
@@ -479,54 +560,98 @@ struct MacWorkspaceRootView: View {
             .foregroundStyle(.secondary)
             .padding(.leading, 9)
             .padding(.vertical, 5)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private func conversationSidebarRow(_ conversation: ConversationRecord) -> some View {
-        let changing = !canSelectTask || workspace.isTaskRunning(conversation.id)
-        return sidebarLink(.conversation(conversation.id), title: LocalizedStringKey(conversation.workbenchDisplayTitle),
-                           icon: conversation.isPinned ? "pin" : "bubble.left", conversationTitle: conversation.workbenchDisplayTitle)
-            .disabled(!canSelectTask && workspace.selectedID != conversation.id)
-            .contextMenu {
-                if workspace.isTaskRunning(conversation.id) {
-                    Button("host.chat.stop", systemImage: "stop.circle") { workspace.stopTask(conversation.id) }
-                }
-                Button(LocalizedStringKey(conversation.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
-                       systemImage: conversation.isPinned ? "pin.slash" : "pin") {
-                    updateTask(id: conversation.id, change: .pin(!conversation.isPinned))
-                }
-                .disabled(changing)
-                Button("mac.workspace.rename", systemImage: "pencil") {
-                    taskToRename = conversation
-                    taskTitle = conversation.title
-                    showRename = true
-                }
-                .disabled(changing)
-                Button("mac.workspace.moveTask", systemImage: "folder") { chooseTaskWorkspace(conversation) }
-                    .disabled(changing)
-                Button("mac.workspace.archiveTask", systemImage: "archivebox") {
-                    updateTask(id: conversation.id, change: .archive(true))
-                }
-                .disabled(changing)
-                Button(workspaceText("删除任务…", "Delete Task…"), systemImage: "trash", role: .destructive) {
-                    confirmDelete(conversation)
-                }
-                .disabled(changing)
+        HStack(spacing: 2) {
+            sidebarLink(.conversation(conversation.id), title: LocalizedStringKey(conversation.workbenchDisplayTitle),
+                        icon: conversation.isPinned ? "pin" : "bubble.left", conversationTitle: conversation.workbenchDisplayTitle)
+                .disabled(!canSelectTask && workspace.selectedID != conversation.id)
+                .help(conversation.workbenchDisplayTitle)
+            Menu {
+                conversationActions(conversation)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.secondary)
+                    .macWorkspaceIconTarget()
             }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel(workspaceText("\(conversation.workbenchDisplayTitle)的操作", "Actions for \(conversation.workbenchDisplayTitle)"))
+            .help(workspaceText("任务操作", "Task Actions"))
+            .accessibilityIdentifier("sidebar.task.actions.\(conversation.id.uuidString)")
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { frame in
+                Self.smokeSidebarFrames["sidebar.task.actions." + conversation.id.uuidString] = frame
+            })
+            #endif
+        }
+        .contextMenu { conversationActions(conversation) }
+    }
+
+    @ViewBuilder private func conversationActions(_ conversation: ConversationRecord) -> some View {
+        let changing = !canSelectTask || workspace.isTaskRunning(conversation.id)
+        if workspace.isTaskRunning(conversation.id) {
+            Button("host.chat.stop", systemImage: "stop.circle") { workspace.stopTask(conversation.id) }
+        }
+        Button(LocalizedStringKey(conversation.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
+               systemImage: conversation.isPinned ? "pin.slash" : "pin") {
+            updateTask(id: conversation.id, change: .pin(!conversation.isPinned))
+        }
+        .disabled(changing)
+        Button("mac.workspace.rename", systemImage: "pencil") {
+            taskToRename = conversation
+            taskTitle = conversation.title
+            showRename = true
+        }
+        .disabled(changing)
+        Button("mac.workspace.moveTask", systemImage: "folder") { chooseTaskWorkspace(conversation) }
+            .disabled(changing)
+        Button("mac.workspace.archiveTask", systemImage: "archivebox") {
+            updateTask(id: conversation.id, change: .archive(true))
+        }
+        .disabled(changing)
+        Button(workspaceText("删除任务…", "Delete Task…"), systemImage: "trash", role: .destructive) {
+            confirmDelete(conversation)
+        }
+        .disabled(changing)
     }
 
     private func sidebarLink(_ route: MacWorkspaceDestination, title: LocalizedStringKey, icon: String,
                              conversationTitle: String? = nil) -> some View {
+        sidebarLinkButton(route) {
+            if let conversationTitle {
+                Label { Text(verbatim: conversationTitle) } icon: { Image(systemName: icon) }
+            } else {
+                FloeWorkbenchSidebarItem(title: title, systemImage: icon)
+            }
+        }
+    }
+
+    /// Verbatim-label variant for entries whose copy is owned by the workbench
+    /// rather than the shared strings tables.
+    private func sidebarLink(_ route: MacWorkspaceDestination, verbatimTitle: String, icon: String) -> some View {
+        sidebarLinkButton(route) {
+            Label { Text(verbatim: verbatimTitle) } icon: { Image(systemName: icon) }
+        }
+    }
+
+    private func sidebarLinkButton<Label: View>(_ route: MacWorkspaceDestination,
+                                                @ViewBuilder label: @escaping () -> Label) -> some View {
         let selected = destination == route || (route == .space(.files) && isInSpace)
+        let font: Font = if case .conversation = route { .callout } else { .body }
         return Button {
+            // The sidebar entry is the general browser: it never inherits a
+            // task binding or a remembered return from a previous visit.
+            if route == .browser { browserReturnDestination = nil; browserOwner = nil }
             if case .newTask(let projectID) = route { startNewTask(in: projectID) }
             else { destination = route }
         } label: {
             HStack(spacing: 6) {
-                if let conversationTitle {
-                    Label { Text(verbatim: conversationTitle) } icon: { Image(systemName: icon) }
-                } else {
-                    FloeWorkbenchSidebarItem(title: title, systemImage: icon)
-                }
+                label()
                 if case .conversation(let id) = route, workspace.isTaskRunning(id) {
                     Spacer(minLength: 0)
                     let approval = workspace.hasPendingApproval(in: id)
@@ -541,8 +666,8 @@ struct MacWorkspaceRootView: View {
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
-            .font(.callout)
-            .frame(minHeight: 25)
+            .font(font.weight(selected ? .medium : .regular))
+            .frame(minHeight: FloeTheme.minimumTarget)
             .background(selected ? Color.accentColor.opacity(0.14) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
@@ -689,12 +814,37 @@ struct MacWorkspaceRootView: View {
         case .space: String(localized: "space.title")
         case .creative: String(localized: "mac.creative.title")
         case .images: String(localized: "mac.settings.images")
+        case .temporary: workspaceText("临时聊天", "Temporary Chat")
+        case .browser: workspaceText("浏览器", "Browser")
         default: String(localized: "mac.workspace.taskCenter")
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
+    private var titlebarDragArea: some View {
+        Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture())
+            .accessibilityHidden(true)
+    }
+
+    private func sidebarToggle(show: Bool) -> some View {
+        let label = show ? workspaceText("显示侧边栏", "Show Sidebar") : workspaceText("隐藏侧边栏", "Hide Sidebar")
+        return Button {
+            withAnimation { sidebarVisibility = show ? .all : .detailOnly }
+        } label: {
+            FloeWorkbenchControlIcon(systemImage: "sidebar.left")
+                .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .help(label)
+        .accessibilityIdentifier("workspace.sidebar.toggle")
+    }
+
+    private func header(leadingWindowInset: CGFloat) -> some View {
+        HStack(spacing: 8) {
+            if leadingWindowInset > 0 {
+                sidebarToggle(show: true)
+            }
             if destination == .images || (showsTask && filesTakeDetail) {
                 Button {
                     if destination == .images { destination = imageReturnDestination }
@@ -702,6 +852,8 @@ struct MacWorkspaceRootView: View {
                 } label: {
                     Label(LocalizedStringKey(showsTask ? "mac.workspace.backToTask" : "mac.workspace.back"),
                           systemImage: "chevron.left")
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("workspace.detail.back")
@@ -712,6 +864,7 @@ struct MacWorkspaceRootView: View {
                     Text("mac.workspace.toolbox").tag(MacSpacePage.toolbox)
                 }
                 .pickerStyle(.segmented)
+                .controlSize(.large)
                 .labelsHidden()
                 .frame(width: 168)
                 .accessibilityIdentifier("workspace.space.section")
@@ -721,7 +874,7 @@ struct MacWorkspaceRootView: View {
                 if showsSpaceFiles { spaceProjectControl }
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: title).font(.body.weight(.semibold)).lineLimit(1)
+                    Text(verbatim: title).font(.headline).lineLimit(1)
                         .truncationMode(.tail)
                         .help(title)
                     if showsTask, !filesTakeDetail, destinationConversationID == workspace.selectedID,
@@ -734,8 +887,10 @@ struct MacWorkspaceRootView: View {
             Spacer(minLength: 0)
             headerActions
         }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 37)
+        .padding(.leading, leadingWindowInset > 0 ? leadingWindowInset : 16)
+        .padding(.trailing, 12)
+        .frame(minHeight: FloeTheme.minimumTarget + 8)
+        .background { titlebarDragArea }
         .background(FloeTheme.chromeMaterial)
     }
 
@@ -762,10 +917,25 @@ struct MacWorkspaceRootView: View {
     }
 
     private var headerActions: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: compactDetail ? 2 : 6) {
+            if case .newTask = destination {
+                Button { destination = .temporary } label: {
+                    FloeWorkbenchControlIcon(systemImage: "bubble.left")
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                }
+                .disabled(!canSelectTask || workspace.composerProvider == nil)
+                .accessibilityLabel(workspaceText("临时聊天", "Temporary Chat"))
+                .help(workspaceText("临时聊天", "Temporary Chat"))
+                .accessibilityIdentifier("home.temporary.toggle")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { Self.smokeTemporaryFrame = $0 })
+                #endif
+            }
             if activeSpacePage == .toolbox {
                 Button(action: openImageWorkbench) {
                     Label("mac.settings.images", systemImage: "photo.badge.plus")
+                        .frame(minHeight: FloeTheme.minimumTarget).contentShape(Rectangle())
                 }
                 .accessibilityIdentifier("workspace.toolbox.images")
             }
@@ -793,38 +963,66 @@ struct MacWorkspaceRootView: View {
                 } label: {
                     Label("mac.workspace.backgroundTasks", systemImage: "square.stack")
                         .labelStyle(.iconOnly)
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .help("mac.workspace.backgroundTasks")
             }
             if showsTask && !filesTakeDetail {
                 Button(action: toggleInspector) {
                     FloeWorkbenchControlIcon(systemImage: "sidebar.trailing")
-                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
                 .help("mac.workspace.files")
                 .accessibilityLabel("mac.workspace.files")
                 .accessibilityIdentifier("workspace.files.toggle")
                 .accessibilityAddTraits(showInspector ? .isSelected : [])
+                Button(action: showWorkbenchBrowser) {
+                    FloeWorkbenchControlIcon(systemImage: "globe")
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                }
+                .help(workspaceText("在浏览器中打开", "Open Browser"))
+                .accessibilityLabel(workspaceText("在浏览器中打开", "Open Browser"))
+                .accessibilityIdentifier("workspace.browser.open")
             }
             if case .conversation = destination, !filesTakeDetail {
                 Button(action: findInActiveView) {
                     FloeWorkbenchControlIcon(systemImage: "magnifyingglass")
-                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
                 .help("mac.workspace.findConversation")
                 .accessibilityLabel("mac.workspace.findConversation")
                 .disabled(workspace.isLoadingHistory || destinationConversationID != workspace.selectedID)
-                Button(action: exportConversation) {
+                Menu {
+                    Button(workspaceText("完整任务（含工具记录）", "Full Task with Tool Records"), systemImage: "doc.badge.gearshape") {
+                        exportConversation(.structured)
+                    }
+                    Button(workspaceText("对话文本", "Conversation Text"), systemImage: "doc.plaintext") {
+                        exportConversation(.plainText)
+                    }
+                    Button(workspaceText("对话 Markdown", "Conversation Markdown"), systemImage: "doc.richtext") {
+                        exportConversation(.markdown)
+                    }
+                } label: {
                     FloeWorkbenchControlIcon(systemImage: "square.and.arrow.up")
-                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
                 }
+                .menuStyle(.button)
                 .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityIdentifier("workspace.conversation.export")
                 .help("mac.workspace.exportChat")
                 .accessibilityLabel("mac.workspace.exportChat")
-                .disabled(!canSelectTask || isExportingConversation || workspace.messages.isEmpty
+                .disabled(!canSelectTask || isExportingConversation || workspace.isLoadingHistory || workspace.isSending
                           || destinationConversationID != workspace.selectedID)
             }
         }
@@ -866,15 +1064,40 @@ struct MacWorkspaceRootView: View {
                                            findConversationID: destinationConversationID,
                                            requestedMessageID: searchResultTarget?.conversation == destinationConversationID ? searchResultTarget?.message : nil,
                                            didHandleSearchResult: { conversation, message in
-                                               if searchResultTarget?.conversation == conversation, searchResultTarget?.message == message {
-                                                   searchResultTarget = nil
-                                               }
-                                           })
+                                                if searchResultTarget?.conversation == conversation, searchResultTarget?.message == message {
+                                                    searchResultTarget = nil
+                                                }
+                                            })
                         .id(destinationConversationID)
+                        .environment(\.openURL, OpenURLAction { url in
+                            // Chat content is untrusted model output. http(s)
+                            // links open inside the guarded workbench browser;
+                            // only explicit safe system schemes keep system
+                            // behavior; every other scheme (file, custom,
+                            // credential-bearing) is discarded.
+                            if MacBrowserAddress.allows(url) {
+                                openInWorkbenchBrowser(url)
+                                return .handled
+                            }
+                            if let scheme = url.scheme?.lowercased(), scheme == "mailto" || scheme == "tel" {
+                                return .systemAction
+                            }
+                            return .handled
+                        })
                 }
             } else {
                 ProgressView("host.chat.opening")
             }
+        case .temporary:
+            MacTemporaryChatView(model: temporaryChat, provider: workspace.composerProvider, search: workspace.webSearch.access,
+                                 save: workspace.keepTemporaryConversation,
+                                 didKeep: { id in
+                                     guard destination == .temporary else { return }
+                                     if !temporaryChat.draft.isEmpty { draftStore.setText(temporaryChat.draft, for: id) }
+                                     destination = .conversation(id)
+                                 })
+        case .browser:
+            browserDetail
         case .space(.toolbox):
             MacWorkspaceToolboxView(findRequest: toolboxFindRequest, openToolbox: openToolbox)
         case .space(.files): EmptyView()
@@ -906,6 +1129,21 @@ struct MacWorkspaceRootView: View {
         default:
             imageContent(nil)
         }
+    }
+
+    private var browserDetail: some View {
+        let onReturn: (() -> Void)? = browserReturnDestination == nil ? nil : { [self] in
+            returnFromWorkbenchBrowser()
+        }
+        // The page representable returns the session's existing WKWebView, so
+        // the owner identity forces a remount when the binding changes; this
+        // is what keeps a task's page from lingering under another owner.
+        return MacBrowserWorkbenchView(
+            session: browserWorkbench.session(for: browserOwner),
+            onReturn: onReturn,
+            onOpenExternal: { NSWorkspace.shared.open($0) }
+        )
+        .id(browserOwner)
     }
 
     private func startNewTask() {
@@ -991,6 +1229,54 @@ struct MacWorkspaceRootView: View {
         guard let destination, destination != .images else { return }
         imageReturnDestination = destination
         self.destination = .images
+    }
+
+    /// In-app route for http(s) links tapped in chat. The shared scheme guard
+    /// is the single authority here; unsafe URLs never reach this method
+    /// because the chat openURL action discards them first.
+    private func openInWorkbenchBrowser(_ url: URL) {
+        guard MacBrowserAddress.allows(url) else { return }
+        let owner = rememberBrowserReturnDestination()
+        browserWorkbench.session(for: owner).open(url)
+        destination = .browser
+    }
+
+    private func showWorkbenchBrowser() {
+        guard destination != .browser else { return }
+        let owner = rememberBrowserReturnDestination()
+        _ = browserWorkbench.session(for: owner)
+        destination = .browser
+    }
+
+    /// Bind the browser to the visible task on every open and remember where
+    /// to return. Saved tasks bind to the conversation; an unsent New Task
+    /// binds to its stable draft identity (the same owner the composer
+    /// attachments use) so it keeps its own page across trips; anything else
+    /// uses the general session with no remembered return.
+    @discardableResult
+    private func rememberBrowserReturnDestination() -> UUID? {
+        switch destination {
+        case .conversation(let id) where id == workspace.selectedID:
+            browserReturnDestination = destination
+            browserOwner = id
+            return id
+        case .newTask:
+            browserReturnDestination = destination
+            let owner = workspace.attachmentOwnerID
+            browserOwner = owner
+            return owner
+        default:
+            browserReturnDestination = nil
+            browserOwner = nil
+            return nil
+        }
+    }
+
+    private func returnFromWorkbenchBrowser() {
+        let target = browserReturnDestination ?? .taskCenter
+        browserReturnDestination = nil
+        browserOwner = nil
+        destination = target
     }
 
     private func attachGeneratedImage(_ url: URL) -> Bool {
@@ -1087,6 +1373,11 @@ struct MacWorkspaceRootView: View {
                 switch change {
                 case .delete:
                     draftStore.clear(for: id)
+                    browserWorkbench.discard(owner: id)
+                    if browserReturnDestination == .conversation(id) {
+                        browserReturnDestination = nil
+                        browserOwner = nil
+                    }
                     fallthrough
                 case .archive(true):
                     if remembersFileRoot, lastConversation == id.uuidString { lastConversation = "" }
@@ -1125,20 +1416,30 @@ struct MacWorkspaceRootView: View {
         Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese : english
     }
 
-    private func exportConversation() {
+    private enum ExportFormat: String {
+        case structured = "jsonl"
+        case plainText = "txt"
+        case markdown = "md"
+    }
+
+    private func exportConversation(_ format: ExportFormat) {
         guard canSelectTask, !isExportingConversation, let id = destinationConversationID,
               id == workspace.selectedID else { return }
         let name = workspace.conversations.first { $0.id == id }?.title ?? String(localized: "mac.workspace.task")
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.nameFieldStringValue = "Floe Conversation.md"
+        panel.allowedContentTypes = [UTType(filenameExtension: format.rawValue) ?? .plainText]
+        panel.nameFieldStringValue = "Floe Conversation.\(format.rawValue)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         isExportingConversation = true
         Task {
             defer { isExportingConversation = false }
             do {
+                if format == .structured {
+                    try await workspace.exportStructuredConversation(conversationID: id, to: url)
+                    return
+                }
                 let messages = try await workspace.transcript(conversationID: id)
-                let output = Self.markdownTranscript(name: name, messages: messages)
+                let output = Self.readableTranscript(name: name, messages: messages, markdown: format == .markdown)
                 try await Task.detached(priority: .utility) {
                     try Data(output.utf8).write(to: url, options: .atomic)
                 }.value
@@ -1149,7 +1450,11 @@ struct MacWorkspaceRootView: View {
     }
 
     static func markdownTranscript(name: String, messages: [PersistedMessage]) -> String {
-        var sections = ["# \(name)"]
+        readableTranscript(name: name, messages: messages, markdown: true)
+    }
+
+    static func readableTranscript(name: String, messages: [PersistedMessage], markdown: Bool) -> String {
+        var sections = [markdown ? "# \(name)" : name]
         sections += messages.compactMap { message in
             let role: String
             switch message.role {
@@ -1159,10 +1464,10 @@ struct MacWorkspaceRootView: View {
             }
             let text = CredentialMessagePart.clipboardText(message.content)
             let files = AttachmentChipItem.items(in: message.parts).map(\.name)
-            let paragraphs = [text].compactMap { $0 } + files.map { "- \($0)" }
+            let paragraphs = [text].compactMap { $0 } + files.map { markdown ? "- \($0)" : $0 }
             guard !paragraphs.isEmpty else { return nil }
             let body = paragraphs.joined(separator: "\n\n")
-            return "## \(role)\n\n\(body)"
+            return markdown ? "## \(role)\n\n\(body)" : "\(role): \(body)"
         }
         return sections.joined(separator: "\n\n") + "\n"
     }
@@ -1176,6 +1481,12 @@ extension ConversationRecord {
     }
 }
 
+private extension View {
+    func macWorkspaceIconTarget() -> some View {
+        frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget).contentShape(Rectangle())
+    }
+}
+
 private struct MacWorkspaceLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 9) {
@@ -1185,5 +1496,30 @@ private struct MacWorkspaceLabelStyle: LabelStyle {
             configuration.title
                 .foregroundStyle(.primary)
         }
+    }
+}
+
+/// Browser presentation and return requests, kept out of the root body chain
+/// so the window expression stays within the type-check limit. Nonce-tagged
+/// requests are observed on every publish, even when values repeat.
+private struct BrowserWorkbenchNavigation: ViewModifier {
+    @ObservedObject var browser: MacBrowserWorkbenchController
+    let openURL: (URL) -> Void
+    let show: () -> Void
+    let returnToTask: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: browser.presentRequest) { _, request in
+                guard let request else { return }
+                switch request.presentation {
+                case .url(let url): openURL(url)
+                case .empty: show()
+                }
+            }
+            .onChange(of: browser.returnRequest) { _, request in
+                guard request != nil else { return }
+                returnToTask()
+            }
     }
 }

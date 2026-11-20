@@ -46,6 +46,7 @@
 // - The task approval policy and runtime gates govern every mutation.
 
 import Foundation
+import CryptoKit
 import Darwin
 import UniformTypeIdentifiers
 import FloeAgentRuntime
@@ -215,7 +216,7 @@ public enum MacAgentWorkspaceTools {
     ///     only; never chat/plan), the binding additionally advertises the
     ///     delegation tools (`delegate`, `delegate.wait`) as private
     ///     instances bound to that child-subagent registry, so the task can
-    ///     hand read-only investigation subtasks to owned background
+    ///     hand independently authorized subtasks to owned foreground or background
     ///     children. No global registry/catalog entry is created or replaced.
     /// - Returns: A binding ready for `FloeMacSelfRuntime.startSession`.
     public static func binding(
@@ -224,6 +225,9 @@ public enum MacAgentWorkspaceTools {
         readOnly: Bool,
         chatOnly: Bool = false,
         delegationRegistry: SubagentRunnerRegistry? = nil,
+        search: MacSearchAccess? = nil,
+        conversations: FloeMacConversationToolCapability? = nil,
+        imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [],
         approvalPolicy: ((URL, [String: String]) -> any ApprovalPolicy)? = nil
     ) throws -> FloeMacSelfToolBinding {
         let root: URL
@@ -243,10 +247,14 @@ public enum MacAgentWorkspaceTools {
 
         let baseExecutor = MacAgentWorkspaceToolExecutor(
             workspaceRootURL: root,
-            readOnly: readOnly || chatOnly
+            readOnly: readOnly || chatOnly,
+            search: search,
+            conversations: chatOnly ? nil : conversations,
+            imageTools: imageTools, videoTools: videoTools
         )
-        var allowed = chatOnly ? readToolNames.intersection(ConversationToolAccess.chatNames)
-            : (readOnly ? readToolNames : readToolNames.union(writeToolNames))
+        let taskReadTools = Set(baseExecutor.allDescriptors.filter { ConversationToolAccess.plan.allows($0) }.map(\.name))
+        var allowed = chatOnly ? taskReadTools.intersection(ConversationToolAccess.chatNames)
+            : (readOnly ? taskReadTools : taskReadTools.union(writeToolNames))
         if !readOnly && !chatOnly { allowed.formUnion(baseExecutor.allDescriptors.map(\.name)) }
         let executor: any ToolExecutor
         if let delegationRegistry, !chatOnly {
@@ -377,7 +385,7 @@ public enum MacAgentWorkspaceTools {
     /// bookmark (or, for a personal task row, the verified per-task root)
     /// and the verified descriptor are held.
     static func withWorkspaceFile(_ workspace: WorkspaceRecord, privateTaskRootBase: URL,
-                                  path: String, use: (URL) -> Void) throws {
+                                  path: String, artifact: ToolArtifactReference? = nil, use: (URL) -> Void) throws {
         let url: URL
         var scopedURL: URL?
         defer { scopedURL?.stopAccessingSecurityScopedResource() }
@@ -402,9 +410,36 @@ public enum MacAgentWorkspaceTools {
         try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physical, relative: relative, root: root) { pin in
             let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(pin, physicalRoot: physical, displayPath: path)
             defer { Darwin.close(descriptor) }
+            if let artifact {
+                guard artifact.relativePath == relative, artifact.byteCount > 0 else { throw MacAgentWorkspaceToolsError.revisionChanged }
+                var before = stat()
+                guard fstat(descriptor, &before) == 0, before.st_size == artifact.byteCount else {
+                    throw MacAgentWorkspaceToolsError.revisionChanged
+                }
+                let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+                var digest = SHA256(), count = 0
+                while let chunk = try file.read(upToCount: 262_144), !chunk.isEmpty {
+                    try Task.checkCancellation()
+                    guard chunk.count <= artifact.byteCount - count else { throw MacAgentWorkspaceToolsError.revisionChanged }
+                    digest.update(data: chunk)
+                    count += chunk.count
+                }
+                try Task.checkCancellation()
+                var after = stat(), named = stat()
+                guard count == artifact.byteCount, digest.finalize().map({ String(format: "%02x", $0) }).joined() == artifact.sha256,
+                      fstat(descriptor, &after) == 0, after.st_size == before.st_size, after.st_nlink == 1,
+                      after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec, after.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec,
+                      after.st_ctimespec.tv_sec == before.st_ctimespec.tv_sec, after.st_ctimespec.tv_nsec == before.st_ctimespec.tv_nsec,
+                      fstatat(pin.parentFileDescriptor, pin.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                      named.st_dev == before.st_dev, named.st_ino == before.st_ino else {
+                    throw MacAgentWorkspaceToolsError.revisionChanged
+                }
+            }
             var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
             guard fcntl(descriptor, F_GETPATH, &buffer) == 0 else { throw MacAgentWorkspaceToolsError.notFound(path) }
-            use(URL(fileURLWithFileSystemRepresentation: buffer, isDirectory: false, relativeTo: nil))
+            let fileURL = URL(fileURLWithFileSystemRepresentation: buffer, isDirectory: false, relativeTo: nil)
+            if artifact != nil, fileURL.path != physical + "/" + relative { throw MacAgentWorkspaceToolsError.revisionChanged }
+            use(fileURL)
         }
     }
 
@@ -805,16 +840,23 @@ enum MacAgentWorkspacePinSupport {
 /// `descriptor` is a static catalog fact; the constrained extension binds it
 /// to the instance requirement.
 protocol MacAgentWorkspaceExecutable: Sendable {
-    static var descriptor: ToolCatalog.Descriptor { get }
     var executionDescriptor: ToolCatalog.Descriptor { get }
     func run(argumentsJSON: Data, context: ToolContext) async throws -> ToolExecutionOutput
+}
+
+extension AnyAgentTool: MacAgentWorkspaceExecutable {
+    var executionDescriptor: ToolCatalog.Descriptor { descriptor }
+
+    func run(argumentsJSON: Data, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await run(argumentsJSON, context)
+    }
 }
 
 extension MacAgentWorkspaceExecutable where Self: AgentTool {
     static var descriptor: ToolCatalog.Descriptor {
         .init(name: name, toolDescription: toolDescription, parametersJSON: parametersJSON,
-              riskLabels: riskLabels, isSideEffecting: isSideEffecting, requiresHostScope: requiresHostScope,
-              executionBoundary: executionBoundary)
+              riskLabels: riskLabels, isSideEffecting: isSideEffecting, effect: toolEffect, requiresHostScope: requiresHostScope,
+              prerequisites: prerequisites, executionBoundary: executionBoundary, supportsConcurrentBatchDispatch: supportsConcurrentBatchDispatch)
     }
 
     var executionDescriptor: ToolCatalog.Descriptor { Self.descriptor }
@@ -2132,17 +2174,29 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
         tools.values.map(\.executionDescriptor).sorted { $0.name < $1.name }
     }
 
-    public init(workspaceRootURL: URL, readOnly: Bool = false) {
+    public init(workspaceRootURL: URL, readOnly: Bool = false, search: MacSearchAccess? = nil,
+                conversations: FloeMacConversationToolCapability? = nil,
+                imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = []) {
         let root = workspaceRootURL.resolvingSymlinksInPath().standardizedFileURL
         self.workspaceRootURL = root
         var table: [String: any MacAgentWorkspaceExecutable] = [
+            MacPublicWebFetch.name: MacPublicWebFetch(),
             MacAgentWorkspaceTools.listDirectoryToolName: MacAgentWorkspaceListDirectoryTool(rootURL: root),
             MacAgentWorkspaceTools.readFileToolName: MacAgentWorkspaceReadFileTool(rootURL: root),
             MacAgentWorkspaceTools.inspectFileMetadataToolName: MacAgentWorkspaceInspectMetadataTool(rootURL: root),
             MacAgentWorkspaceTools.searchFilesToolName: MacAgentWorkspaceSearchFilesTool(rootURL: root),
             MacAgentWorkspaceTools.readDocumentToolName: MacAgentWorkspaceReadDocumentTool(rootURL: root),
         ]
+        if let search, search.isConfigured { table[MacSearchTool.name] = MacSearchTool(access: search) }
+        for tool in conversations?.tools ?? [] where !readOnly || ConversationToolAccess.plan.allows(tool.descriptor) {
+            table[tool.descriptor.name] = tool
+        }
         if !readOnly {
+            if let imageTools {
+                table[MacTaskImageModelsTool.name] = MacTaskImageModelsTool(access: imageTools)
+                table[MacTaskImageGenerateTool.name] = MacTaskImageGenerateTool(access: imageTools, rootURL: root)
+            }
+            for tool in videoTools { table[tool.descriptor.name] = tool }
             if FileManager.default.isExecutableFile(atPath: MacNativeShellTool.sandbox) {
                 table[MacNativeShellTool.name] = MacNativeShellTool(root: MacAgentWorkspaceRoot(root))
             }
@@ -2166,11 +2220,6 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
         expectedAuthorizationIdentity: String?,
         context: ToolContext
     ) async throws -> ToolResult {
-        if context.callOrigin?.kind == .delegatedChild,
-           !MacAgentWorkspaceTools.readToolNames.contains(call.toolName) {
-            return ToolResult(callID: call.id, status: .denied,
-                              outputSummary: "Project subtasks have read-only access.", outputDigest: "")
-        }
         guard let tool = tools[call.toolName] else {
             return ToolResult(
                 callID: call.id,
@@ -2178,6 +2227,15 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
                 outputSummary: "No runner registered for tool '\(call.toolName)'",
                 outputDigest: ""
             )
+        }
+        if context.callOrigin?.kind == .delegatedChild || context.childExecution != nil {
+            do {
+                guard tool.executionDescriptor.executionBoundary != .mainRunOnly else { throw CancellationError() }
+                try MacTaskWebAccess.validate(tool.executionDescriptor, context: context)
+            } catch {
+                return ToolResult(callID: call.id, status: .denied,
+                                  outputSummary: "The parent task did not authorize this child call.", outputDigest: "")
+            }
         }
         if let expectedAuthorizationIdentity,
            tool.executionDescriptor.authorizationIdentity != expectedAuthorizationIdentity {
@@ -2194,8 +2252,10 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
                 ? .cancelled
                 : ((output.exitStatus ?? 0) == 0 ? .ok : .failed)
             // Match the runtime's page-size treatment for bounded JSON pages.
-            let longReads = [MacAgentWorkspaceTools.readFileToolName, MacAgentWorkspaceTools.readDocumentToolName]
-            let summaryCap = longReads.contains(call.toolName) ? 196_608
+            let longReads = [MacAgentWorkspaceTools.readFileToolName, MacAgentWorkspaceTools.readDocumentToolName, MacPublicWebFetch.name]
+            let summaryCap = FloeMacConversationTools.readToolNames.contains(call.toolName) ? ConversationEnvelope.maximumEnvelopeCharacters
+                : call.toolName == MacTaskImageModelsTool.name ? 262_144
+                : longReads.contains(call.toolName) ? 196_608
                 : (call.toolName == MacAgentWorkspaceTools.searchFilesToolName ? 32_768 : 4096)
             return ToolResult(
                 callID: call.id,

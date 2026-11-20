@@ -3,7 +3,9 @@
 import Combine
 import Darwin
 import FloeCore
+import FloeModels
 import FloeProviders
+import FloeTools
 import FloeSecurity
 import Foundation
 
@@ -38,6 +40,8 @@ final class MacVideoGeneration: ObservableObject {
         /// otherwise identical requests with different first frames; the
         /// inline bytes themselves are never persisted.
         let referenceFingerprint: String?
+        var taskOwner: MacTaskVideoOwner?
+        var artifact: ToolArtifactReference?
         var progress: Double?
         var providerTaskID: String?
         var filename: String?
@@ -81,7 +85,10 @@ final class MacVideoGeneration: ObservableObject {
 
     @Published private(set) var configuration: Configuration?
     @Published private(set) var hasCredential = false
-    @Published private(set) var history: [JobItem] = []
+    @Published private var jobs: [JobItem] = []
+    /// The manual workbench only selects its own jobs. Task-owned prompts and
+    /// pending operations are queried through the conversation-bound tools.
+    var history: [JobItem] { jobs.filter { $0.taskOwner == nil } }
     @Published private(set) var isGenerating = false
     @Published private(set) var notice: String?
 
@@ -268,8 +275,8 @@ final class MacVideoGeneration: ObservableObject {
         // attaches to its durable job instead of paying for a second
         // submission; a still-unresolved submission is reported but never
         // replayed.
-        if let existing = history.first(where: {
-            !$0.state.isTerminal && $0.prompt == text && $0.options == normalized
+        if let existing = jobs.first(where: {
+            $0.taskOwner == nil && !$0.state.isTerminal && $0.prompt == text && $0.options == normalized
                 && $0.configuration == config && $0.referenceFingerprint == reference?.fingerprint
         }) {
             guard existing.providerTaskID != nil else {
@@ -295,13 +302,8 @@ final class MacVideoGeneration: ObservableObject {
         let item = JobItem(id: UUID(), prompt: text, state: .preparing, createdAt: Date(),
                            options: normalized, configuration: config,
                            referenceFingerprint: reference?.fingerprint)
-        var next = [item] + history
-        while next.count > Self.maximumHistoryCount,
-              let index = next.lastIndex(where: { $0.state.isTerminal }) { next.remove(at: index) }
         do {
-            guard next.count <= Self.maximumHistoryCount else { throw MacVideoGenerationError.busy }
-            try persistHistory(next)
-            history = next
+            try insert(item)
         } catch {
             isGenerating = false
             release()
@@ -357,7 +359,7 @@ final class MacVideoGeneration: ObservableObject {
     }
 
     func resume(_ chosenID: UUID? = nil) {
-        for item in history where !item.state.isTerminal && (chosenID == nil || chosenID == item.id) {
+        for item in jobs where !item.state.isTerminal && (chosenID == nil || chosenID == item.id) {
             guard item.providerTaskID != nil, resumedTasks[item.id] == nil,
                   foregroundJobID != item.id, canResume(item), let route = route(for: item.configuration),
                   let release = try? admitWork() else { continue }
@@ -409,7 +411,7 @@ final class MacVideoGeneration: ObservableObject {
                                      foreground: foreground)
         } catch MacVideoGenerationError.keyRequired {
             // Preserve a submitted job until the original account becomes available again.
-            if let item = history.first(where: { $0.id == itemID }), item.providerTaskID == nil {
+            if let item = jobs.first(where: { $0.id == itemID }), item.providerTaskID == nil {
                 failJob(itemID: itemID, error: MacVideoGenerationError.keyRequired, foreground: foreground)
             } else if foreground { notice = String(localized: "mac.videos.keyUnavailable") }
         } catch let uncertain as SubmitOutcomeUncertain {
@@ -419,7 +421,7 @@ final class MacVideoGeneration: ObservableObject {
             try? updateItem(itemID) { $0.error = uncertain.detail }
             if foreground { notice = String(localized: "mac.videos.submitUncertain") }
         } catch {
-            if let item = history.first(where: { $0.id == itemID }), item.state == .downloading,
+            if let item = jobs.first(where: { $0.id == itemID }), item.state == .downloading,
                (error is URLError || error is CocoaError) {
                 try? updateItem(itemID) { $0.error = error.localizedDescription }
                 if foreground { notice = String(localized: "mac.videos.retryDownload") }
@@ -432,7 +434,7 @@ final class MacVideoGeneration: ObservableObject {
     private func submitIfNeeded(itemID: UUID, adapter: any VideoProviderAdapter,
                                 profile: ProviderProfile,
                                 reference: URL?) async throws -> RemoteVideoSubmission? {
-        guard let item = history.first(where: { $0.id == itemID }),
+        guard let item = jobs.first(where: { $0.id == itemID }),
               item.providerTaskID == nil else { return nil }
         guard let key = key(for: item) else { throw MacVideoGenerationError.keyRequired }
         let request = RemoteVideoRequest(
@@ -471,7 +473,7 @@ final class MacVideoGeneration: ObservableObject {
         var consecutiveErrors = 0
         while true {
             try Task.checkCancellation()
-            guard let item = history.first(where: { $0.id == itemID }) else { return }
+            guard let item = jobs.first(where: { $0.id == itemID }) else { return }
             // Settings changed: stop polling without claiming a terminal
             // state. The persisted state resumes if the settings return.
             guard let key = key(for: item), let taskID = item.providerTaskID else { throw MacVideoGenerationError.keyRequired }
@@ -537,7 +539,7 @@ final class MacVideoGeneration: ObservableObject {
     /// origin must be HTTPS, or the exact debug loopback fixture origin.
     private func downloadResult(itemID: UUID, url: URL, expiresAt: Date?,
                                 profile: ProviderProfile) async throws {
-        guard let item = history.first(where: { $0.id == itemID }), let key = key(for: item) else {
+        guard let item = jobs.first(where: { $0.id == itemID }), let key = key(for: item) else {
             throw MacVideoGenerationError.keyRequired
         }
         guard Self.allowsResultDownload(url: url, profile: profile,
@@ -565,7 +567,9 @@ final class MacVideoGeneration: ObservableObject {
         var request = URLRequest(url: url)
         for (header, value) in headers { request.setValue(value, forHTTPHeaderField: header) }
         let file = try await MacVideoDownload.fetch(request: request, directory: directory, jobID: itemID, byteLimit: Self.maximumVideoBytes)
+        let artifact = try await publishTaskVideo(file, item: item)
         try updateItem(itemID) {
+            $0.artifact = artifact
             $0.filename = file.lastPathComponent
             $0.state = .ready
             $0.error = nil
@@ -595,7 +599,7 @@ final class MacVideoGeneration: ObservableObject {
     private func handleCancellation(itemID: UUID, adapter: any VideoProviderAdapter,
                                     profile: ProviderProfile,
                                     foreground: Bool) async {
-        guard let item = history.first(where: { $0.id == itemID }) else { return }
+        guard let item = jobs.first(where: { $0.id == itemID }) else { return }
         // URLSession inherits cancellation. Finish the remote cancel before releasing the job lease.
         await Task { @MainActor in
             await settleCancellation(item: item, adapter: adapter, profile: profile, foreground: foreground)
@@ -718,7 +722,7 @@ final class MacVideoGeneration: ObservableObject {
                                          limit: Self.maximumHistoryBytes),
            let envelope = try? JSONDecoder().decode(HistoryEnvelope.self, from: data),
            envelope.version == Self.historyEnvelopeVersion {
-            history = Array(envelope.results.lazy.filter(Self.isCanonical).prefix(Self.maximumHistoryCount))
+            jobs = Array(envelope.results.lazy.filter(Self.isCanonical).prefix(Self.maximumHistoryCount))
         }
     }
 
@@ -736,16 +740,16 @@ final class MacVideoGeneration: ObservableObject {
 
     @discardableResult
     private func updateItem(_ id: UUID, _ mutate: (inout JobItem) -> Void) throws -> JobItem {
-        guard let index = history.firstIndex(where: { $0.id == id }) else {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else {
             throw MacVideoGenerationError.storageFailed
         }
-        var next = history
+        var next = jobs
         mutate(&next[index])
         if let detail = next[index].error {
             next[index].error = String(SecretRedactor.redact(detail, secret: key(for: next[index])).prefix(500))
         }
         do { try persistHistory(next) } catch { throw MacVideoGenerationError.storageFailed }
-        history = next
+        jobs = next
         return next[index]
     }
 
@@ -815,13 +819,14 @@ final class MacVideoGeneration: ObservableObject {
                                   allowLoopbackHTTP: Bool) -> Route {
         let endpoint = URL(string: configuration.endpoint) ?? URL(string: "https://example.invalid")!
         let preset = ProviderPreset.imagePresets.first { $0.id == configuration.presetID } ?? .custom
-        var profile = ProviderProfile(kind: preset.kind, wireProtocol: preset.defaultProtocol,
+        let accountKey = "video:" + preset.id.rawValue + ":" + endpoint.absoluteString
+        var profile = ProviderProfile(id: MacTaskVideoOwner.stableID(accountKey), kind: preset.kind, wireProtocol: preset.defaultProtocol,
                                       baseURL: endpoint, displayName: preset.displayName,
                                       presetID: preset.id.rawValue)
         if allowLoopbackHTTP, endpoint.host == "127.0.0.1" {
             profile.allowsPlainHTTP = true
         }
-        let model = ModelProfile(providerID: profile.id, remoteModelID: configuration.modelID,
+        let model = ModelProfile(id: MacTaskVideoOwner.stableID(accountKey + ":" + configuration.modelID), providerID: profile.id, remoteModelID: configuration.modelID,
                                  displayName: configuration.modelID,
                                  limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0),
                                  capabilities: [.videoGeneration])
@@ -939,5 +944,154 @@ extension MacVideoGeneration.MacVideoGenerationError: LocalizedError {
         case .downloadFailed(let code):
             String(localized: "mac.videos.providerFailed \(code)")
         }
+    }
+}
+
+extension MacVideoGeneration {
+    var taskRoutes: [(VideoModelRoute, Configuration)] {
+        var configurations = modelChoices.compactMap { configuration(for: $0.id) }
+        if let standaloneConfiguration { configurations.append(standaloneConfiguration) }
+        return configurations.compactMap { config -> (VideoModelRoute, Configuration)? in
+            guard key(for: config) != nil, let resolved = route(for: config),
+                  let entry = VideoModelRegistry.routes(models: [resolved.model], providers: [resolved.profile],
+                      preferredModelID: config == configuration ? resolved.model.id : nil).first else { return nil }
+            return (entry, config)
+        }.sorted {
+            if $0.0.preferred != $1.0.preferred { return $0.0.preferred }
+            return ($0.0.displayName, $0.0.id.uuidString) < ($1.0.displayName, $1.0.id.uuidString)
+        }
+    }
+
+    func ownedTaskJob(_ id: UUID, conversationID: UUID) throws -> JobItem {
+        guard let item = try taskJob(id, conversationID: conversationID), item.taskOwner?.conversationID == conversationID else {
+            throw FloeError.notFound("Video job in this conversation")
+        }
+        return item
+    }
+
+    func hasTaskJobs(_ conversationID: UUID) -> Bool {
+        jobs.contains { $0.taskOwner?.conversationID == conversationID }
+            || FileManager.default.fileExists(atPath: archiveDirectory(conversationID).path)
+    }
+
+    private func archiveDirectory(_ owner: UUID) -> URL {
+        directory.appendingPathComponent("TaskJobs", isDirectory: true).appendingPathComponent(owner.uuidString, isDirectory: true)
+    }
+
+    private func archivedJobURL(_ id: UUID, conversationID: UUID) -> URL {
+        archiveDirectory(conversationID).appendingPathComponent(id.uuidString + ".json")
+    }
+
+    func replayedTaskJob(_ id: UUID, conversationID: UUID, requestDigest: String) throws -> JobItem? {
+        guard let item = try taskJob(id, conversationID: conversationID) else { return nil }
+        guard item.taskOwner?.conversationID == conversationID, item.taskOwner?.requestDigest == requestDigest else {
+            throw FloeError.validationFailed("This video call already exists with different parameters.")
+        }
+        return item
+    }
+
+    private func taskJob(_ id: UUID, conversationID: UUID) throws -> JobItem? {
+        if let item = jobs.first(where: { $0.id == id }) { return item }
+        guard let data = try Self.readFile(archivedJobURL(id, conversationID: conversationID), limit: Self.maximumHistoryBytes) else { return nil }
+        let item = try JSONDecoder().decode(JobItem.self, from: data)
+        guard item.id == id, item.taskOwner != nil, item.state.isTerminal, Self.isCanonical(item) else {
+            throw MacVideoGenerationError.storageFailed
+        }
+        return item
+    }
+
+    private func insert(_ item: JobItem) throws {
+        var next = [item] + jobs
+        while next.count > Self.maximumHistoryCount {
+            guard let index = next.lastIndex(where: { $0.state.isTerminal }) else { throw MacVideoGenerationError.busy }
+            let old = next.remove(at: index)
+            if let owner = old.taskOwner {
+                try Self.writeFile(JSONEncoder().encode(old), to: archivedJobURL(old.id, conversationID: owner.conversationID))
+            }
+        }
+        try persistHistory(next)
+        jobs = next
+    }
+
+    func startTaskVideo(prompt: String, options: VideoGenerationOptions, config: Configuration,
+                        reference: Data?, owner: MacTaskVideoOwner) throws -> JobItem {
+        if let existing = try taskJob(owner.jobID, conversationID: owner.conversationID) {
+            guard existing.taskOwner?.conversationID == owner.conversationID,
+                  existing.taskOwner?.requestDigest == owner.requestDigest else {
+                throw FloeError.validationFailed("This video call already exists with different parameters.")
+            }
+            return existing
+        }
+        guard key(for: config) != nil, let resolved = route(for: config),
+              let adapter = VideoProviderAdapterFactory().adapter(for: resolved.profile) else {
+            throw MacVideoGenerationError.invalidConfiguration
+        }
+        let options = try VideoRequestValidator.validate(options,
+            contract: VideoModelRegistry.contract(model: resolved.model, provider: resolved.profile), modelRemoteID: config.modelID)
+        var inline: URL?
+        if let reference {
+            guard VideoReferenceImagePolicy.supportsReferenceImages(providerKind: resolved.profile.kind,
+                    modelRemoteID: resolved.model.remoteModelID, baseURL: resolved.profile.baseURL),
+                  resolved.profile.kind != .googleGemini || resolved.model.remoteModelID.hasPrefix("gemini-omni-")
+                    || options.durationSeconds == nil || options.durationSeconds == 8 else {
+                throw MacVideoGenerationError.referenceUnsupported
+            }
+            inline = try VideoReferenceImagePolicy.inlineDataURL(data: reference)
+        }
+        let item = JobItem(id: owner.jobID, prompt: prompt, state: .preparing, createdAt: Date(),
+            options: options, configuration: config, referenceFingerprint: reference.map { FloeDigest.sha256Hex($0) },
+            taskOwner: owner)
+        let release = try admitWork()
+        do { try insert(item) } catch { release(); throw error }
+        resumedTasks[item.id] = Task {
+            defer { resumedTasks.removeValue(forKey: item.id); release() }
+            await runJob(itemID: item.id, adapter: adapter, profile: resolved.profile, reference: inline, foreground: false)
+        }
+        return item
+    }
+
+    private func publishTaskVideo(_ file: URL, item: JobItem) async throws -> ToolArtifactReference? {
+        guard let owner = item.taskOwner else { return nil }
+        let base = directory.deletingLastPathComponent()
+        let maximum = Self.maximumVideoBytes
+        return try await Task.detached(priority: .utility) {
+            try owner.publish(file: file, privateTaskRootBase: base, maximumBytes: maximum)
+        }.value
+    }
+
+    func cancelTaskVideo(_ id: UUID, conversationID: UUID) async throws -> JobItem {
+        let item = try ownedTaskJob(id, conversationID: conversationID)
+        guard !item.state.isTerminal else { throw FloeError.validationFailed("This video job has already finished.") }
+        if let task = resumedTasks[id] {
+            task.cancel()
+            await task.value
+        } else {
+            guard item.providerTaskID != nil else {
+                throw FloeError.validationFailed("The provider submission is unconfirmed and cannot be cancelled remotely.")
+            }
+            guard key(for: item) != nil, let resolved = route(for: item.configuration),
+                  let adapter = VideoProviderAdapterFactory().adapter(for: resolved.profile) else {
+                throw MacVideoGenerationError.keyRequired
+            }
+            let release = try admitWork()
+            let task = Task {
+                defer { resumedTasks.removeValue(forKey: id); release() }
+                await settleCancellation(item: item, adapter: adapter, profile: resolved.profile, foreground: false)
+            }
+            resumedTasks[id] = task
+            await task.value
+        }
+        return try ownedTaskJob(id, conversationID: conversationID)
+    }
+
+    func refreshTaskVideo(_ item: JobItem) async throws -> RemoteVideoStatus? {
+        guard !item.state.isTerminal, let taskID = item.providerTaskID else { return nil }
+        guard let key = key(for: item), let resolved = route(for: item.configuration),
+              let adapter = VideoProviderAdapterFactory().adapter(for: resolved.profile) else {
+            throw MacVideoGenerationError.keyRequired
+        }
+        if !isWorking(on: item.id) { resume(item.id) }
+        return try await adapter.status(taskID: taskID, modelRemoteID: item.configuration.modelID,
+            provider: resolved.profile, credentials: .init(apiKey: key))
     }
 }

@@ -14,13 +14,26 @@
 //   catastrophic gate, approval policy and grants) for every child call.
 //
 // Mac-specific policy encoded here:
-// - A delegated Mac project child runs under a READ-ONLY project
-//   investigation ceiling, enforced two ways: an explicit allowlist of the
-//   workspace investigation tool names AND the structural descriptor check
-//   (`effect == .readOnly`, no host scope, not main-run-only, not
-//   child-only). There is deliberately no shell, no network and no write
-//   path for children; peer-collaboration tools and nested delegation stay
-//   out of the Mac child universe for this stage.
+// - A delegated Mac project child runs under the parent task's EFFECTIVE
+//   runtime authority, exactly like iPad. The shared session runtime mints
+//   the canonical `ChildExecutionHandoff` on the `delegate` call, so every
+//   child tool call resolves through the parent runtime's canonical
+//   dispatcher — the SAME catalog, effective ceiling, frozen catalog
+//   identity, catastrophic gate, approval policy (once / deny / full) and
+//   grants that govern the main run — before it executes. Workspace edits,
+//   native local execution and public web fetch/search are available to a
+//   child exactly when the parent task holds them; a denied call stays
+//   denied; a child can never delegate further (main-run-only boundary).
+// - Missing parent authority fails closed: without the canonical handoff the
+//   shared `SubagentRunner` keeps its fail-closed read-only legacy ceiling
+//   (only read-only descriptors inside the parent's effective set execute;
+//   everything else is denied). The Mac layer never substitutes a raw
+//   registry path for a missing dispatcher.
+// - The child runner's executor is the parent task's own project executor,
+//   so the child's discovery universe IS the parent's effective catalog. The
+//   runner intersects it with the delegate call's `allowedToolNames` and
+//   frozen catalog identity and hides main-run-only descriptors; per-call
+//   authority still comes only from the parent's dispatcher.
 // - The parent task owns the child lifecycle: one runner is bound per parent
 //   run before its session can dispatch and released when that task ends.
 //   Concurrent visible/background parents bind independently; selection is
@@ -41,96 +54,6 @@ import FloeProviders
 import FloeTools
 import FloePersistence
 import FloeAgentRuntime
-
-// MARK: - Read-only child tool ceiling
-
-/// The child-facing tool surface of one Mac project task.
-///
-/// It exposes ONLY the intersection of:
-/// 1. the explicit investigation tool-name allowlist the host supplies (the
-///    actual workspace read tool names), and
-/// 2. the read-only descriptors of the wrapped host executor (descriptor
-///    `effect == .readOnly`, no host scope, not main-run-only, not
-///    child-only).
-///
-/// Everything else — workspace writes, the delegation envelope itself, peer
-/// tools, anything a future catalog adds — is invisible to discovery and
-/// denied at the fail-closed execution path. This bounds the child's own
-/// catalog; the parent runtime's canonical dispatcher still resolves every
-/// child call against the parent task's effective ceiling and approval
-/// policy.
-public struct FloeMacChildReadOnlyToolExecutor: ToolExecutor {
-    private let wrapped: any ToolExecutor
-    private let exposedNames: Set<String>
-
-    /// - Parameters:
-    ///   - wrapped: The parent task's project executor (or any executor whose
-    ///     read-only descriptors are the child's ceiling).
-    ///   - allowedNames: Explicit investigation tool-name allowlist (for the
-    ///     Mac host, `MacAgentWorkspaceTools.readToolNames`). Only names in
-    ///     this set can ever reach the child.
-    public init(wrapping wrapped: any ToolExecutor, allowedNames: Set<String>) {
-        self.wrapped = wrapped
-        self.exposedNames = Set(wrapped.allDescriptors.filter { descriptor in
-            allowedNames.contains(descriptor.name) && Self.isReadOnlyInvestigation(descriptor)
-        }.map(\.name))
-    }
-
-    static func isReadOnlyInvestigation(_ descriptor: ToolCatalog.Descriptor) -> Bool {
-        descriptor.effect == .readOnly
-            && !descriptor.requiresHostScope
-            && descriptor.executionBoundary != .mainRunOnly
-            && descriptor.executionBoundary != .childOnly
-    }
-
-    /// The exact names a child of this executor may see. Host-side tests pin
-    /// this set against the explicit workspace read allowlist.
-    public var exposedToolNames: Set<String> { exposedNames }
-
-    public var allDescriptors: [ToolCatalog.Descriptor] {
-        wrapped.allDescriptors.filter { exposedNames.contains($0.name) }
-    }
-
-    public func descriptor(named name: String) -> ToolCatalog.Descriptor? {
-        guard exposedNames.contains(name) else { return nil }
-        return wrapped.descriptor(named: name)
-    }
-
-    public func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
-        try await execute(call, expectedAuthorizationIdentity: nil, context: context)
-    }
-
-    public func execute(
-        _ call: ToolCall,
-        expectedAuthorizationIdentity: String?,
-        context: ToolContext
-    ) async throws -> ToolResult {
-        guard exposedNames.contains(call.toolName),
-              let descriptor = wrapped.descriptor(named: call.toolName) else {
-            return ToolResult(
-                callID: call.id,
-                status: .denied,
-                outputSummary: "Denied: a delegated Mac project child may only use read-only project investigation tools",
-                outputDigest: ""
-            )
-        }
-        if let expectedAuthorizationIdentity,
-           descriptor.authorizationIdentity != expectedAuthorizationIdentity {
-            return ToolResult(
-                callID: call.id,
-                status: .denied,
-                outputSummary: "Tool authority changed after approval; review the updated tool before retrying",
-                outputDigest: ""
-            )
-        }
-        try context.cancellation.throwIfCancelled()
-        return try await wrapped.execute(
-            call,
-            expectedAuthorizationIdentity: expectedAuthorizationIdentity,
-            context: context
-        )
-    }
-}
 
 // MARK: - Parent session executor with per-runtime delegation
 
@@ -267,10 +190,12 @@ public struct FloeMacChildSessionLifecycle: Sendable {
 /// The shared Mac child-subagent runtime. One instance per
 /// `FloeMacSelfRuntime` database owner; it owns the real
 /// `SubagentRunnerRegistry`, binds one `SubagentRunner` per live parent run
-/// (same selected provider, durable child persistence, read-only child
-/// ceiling, background delegation enabled) and releases it when that parent
-/// task ends. Concurrent parents bind independently; there is no global
-/// handler state.
+/// (same selected provider, durable child persistence, the parent's
+/// effective tool universe, background delegation enabled) and releases it
+/// when that parent task ends. Concurrent parents bind independently; there
+/// is no global handler state. Per-call authority always comes from the
+/// parent runtime's canonical dispatcher; without it the shared runner's
+/// fail-closed read-only legacy ceiling applies.
 public actor FloeMacChildSubagentRuntime {
     public nonisolated let registry: SubagentRunnerRegistry
     private let childStore: any ChildRunStoring
@@ -288,10 +213,15 @@ public actor FloeMacChildSubagentRuntime {
 
     /// Bind one live parent run before its session can dispatch. The child
     /// runner receives the session's own provider/model/adapter/credentials
-    /// verbatim and the read-only projection of the session's project
-    /// executor, itself intersected with the explicit investigation tool-name
-    /// allowlist. Durable child identity/transcript/checkpoint storage is the
-    /// existing `SQLiteChildRunStore` over the runtime's single writer.
+    /// verbatim and the session's own project executor — the child's
+    /// discovery universe is exactly the parent's effective catalog, and
+    /// every child call is resolved per call by the parent runtime's
+    /// canonical dispatcher (minted on the `delegate` call by the shared
+    /// session runtime). When that handoff is absent the shared runner fails
+    /// closed to its read-only legacy ceiling; there is deliberately no Mac
+    /// write/exec path around the dispatcher. Durable child
+    /// identity/transcript/checkpoint storage is the existing
+    /// `SQLiteChildRunStore` over the runtime's single writer.
     public func bindParentRun(
         runID: UUID,
         provider: ProviderProfile,
@@ -299,7 +229,6 @@ public actor FloeMacChildSubagentRuntime {
         adapter: any ProviderAdapter,
         credentials: ProviderCredentials,
         projectExecutor: any ToolExecutor,
-        childToolAllowlist: Set<String>,
         onChildStateChange: (@Sendable (ChildRunSnapshot) async -> Void)? = nil
     ) async {
         let runner = SubagentRunner(
@@ -307,10 +236,7 @@ public actor FloeMacChildSubagentRuntime {
             model: model,
             adapter: adapter,
             credentials: credentials,
-            executor: FloeMacChildReadOnlyToolExecutor(
-                wrapping: projectExecutor,
-                allowedNames: childToolAllowlist
-            ),
+            executor: projectExecutor,
             childRunStore: childStore,
             checkpointStore: childStore as? any ChildRunCheckpointStoring,
             onChildStateChange: onChildStateChange

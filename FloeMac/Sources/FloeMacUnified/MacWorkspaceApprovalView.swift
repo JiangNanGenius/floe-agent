@@ -56,6 +56,7 @@ struct MacWorkspaceApprovalView: View {
             return review.risk.title + " · " + target
         }
         if approval.toolName == DelegateTool.name { return String(localized: "mac.child.approve") }
+        if let action = MacTaskActionPreview(approval.toolCall) { return action.title }
         if approval.previousText != nil { return String(localized: "mac.agent.replaceTextApproval") }
         if approval.path != nil { return String(localized: "mac.agent.createFileApproval") }
         return String(localized: "mac.agent.approvalRequired")
@@ -71,6 +72,8 @@ struct MacWorkspaceApprovalView: View {
         }
         if let detail = MacNativeCommandPolicy.preview(approval.toolCall) {
             ScrollView { preview(detail) }.frame(maxHeight: 135)
+        } else if let action = MacTaskActionPreview(approval.toolCall) {
+            ScrollView { preview(action.detail) }.frame(maxHeight: 135)
         } else if approval.toolName == DelegateTool.name, let task = approval.text {
             Text(verbatim: task).font(.callout).lineLimit(6).textSelection(.enabled)
             DisclosureGroup("mac.child.details") {
@@ -120,11 +123,13 @@ struct MacWorkspaceApprovalView: View {
 
 #if FLOE_MAC_HOST_SMOKE
 struct MacWorkbenchButtonFrameReader: NSViewRepresentable {
+    var marker: String? = nil
     let record: (CGRect) -> Void
 
     func makeNSView(context: Context) -> Anchor { Anchor() }
 
     func updateNSView(_ view: Anchor, context: Context) {
+        view.identifier = marker.map { NSUserInterfaceItemIdentifier($0) }
         view.record = record
         view.recordFrame()
     }

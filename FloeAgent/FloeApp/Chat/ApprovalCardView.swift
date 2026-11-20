@@ -294,10 +294,10 @@ struct ApprovalCardView: View {
                 onResolve(.deny(reason: "user denied"))
             } label: {
                 Text("action.deny")
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.bordered)
-            .frame(minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("action.deny")
             .accessibilityIdentifier("approval.deny")
             #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
@@ -308,11 +308,11 @@ struct ApprovalCardView: View {
                 onResolve(.allow(scope: approvalScope, expiresAt: nil))
             } label: {
                 Text(approveTitle)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.borderedProminent)
             .tint(approval.isSideEffecting ? FloeTheme.destructive : FloeTheme.primary)
-            .frame(minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel(Text(approveTitle))
             .accessibilityIdentifier("approval.approve")
             .disabled(!canApprove)

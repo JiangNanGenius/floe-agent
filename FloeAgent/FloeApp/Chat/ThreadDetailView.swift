@@ -1835,30 +1835,6 @@ private struct ContextUsageDetails: View {
     }
 }
 
-enum TokenUnitFormatter {
-    static func string(_ value: Int) -> String {
-        let magnitude = abs(value)
-        if magnitude >= 1_000_000_000 {
-            return scaled(value, divisor: 1_000_000_000, suffix: "B")
-        }
-        if magnitude >= 1_000_000 {
-            return scaled(value, divisor: 1_000_000, suffix: "M")
-        }
-        if magnitude >= 1_000 {
-            return scaled(value, divisor: 1_000, suffix: "K")
-        }
-        return value.formatted()
-    }
-
-    private static func scaled(_ value: Int, divisor: Int, suffix: String) -> String {
-        let quotient = Double(value) / Double(divisor)
-        let number = quotient.rounded() == quotient
-            ? String(Int(quotient))
-            : String(format: "%.1f", quotient).replacingOccurrences(of: ".0", with: "")
-        return number + suffix
-    }
-}
-
 private struct PendingInputQueueView: View {
     let inputs: [PendingUserInput]
     let canSteer: Bool

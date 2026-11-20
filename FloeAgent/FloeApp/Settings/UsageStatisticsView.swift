@@ -3,7 +3,7 @@
 // Shows token consumption across all runs: total input/output tokens,
 // daily breakdown. Uses system Charts (iOS 16+) for visualization.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || FLOE_UNIFIED_MAC)
 import SwiftUI
 import Charts
 import FloeCore
@@ -23,7 +23,11 @@ struct UsageStatisticsView: View {
         }
     }
 
+    #if FLOE_UNIFIED_MAC
+    let loadStatistics: @MainActor () async throws -> UsageStatistics
+    #else
     @EnvironmentObject private var environment: AppEnvironment
+    #endif
     @State private var stats: UsageStatistics?
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -96,7 +100,7 @@ struct UsageStatisticsView: View {
                     }
                     ForEach(stats.byDay) { day in
                         LabeledContent(day.date) {
-                            Text(FloeL10n.plural("settings.usage_statistics_view.tasks", count: day.runs, TokenUnitFormatter.string(day.totalTokens)))
+                            Text(runTotal(tokens: day.totalTokens, runs: day.runs))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -160,7 +164,7 @@ struct UsageStatisticsView: View {
                         HStack {
                             Text(FloeL10n.l("settings.usage_statistics_view.input_output", TokenUnitFormatter.string(row.inputTokens), TokenUnitFormatter.string(row.outputTokens)))
                             Spacer()
-                            Text(FloeL10n.plural("settings.usage_statistics_view.tasks", count: row.runs, TokenUnitFormatter.string(row.totalTokens)))
+                            Text(runTotal(tokens: row.totalTokens, runs: row.runs))
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -195,8 +199,16 @@ struct UsageStatisticsView: View {
             .formatted(.percent.precision(.fractionLength(1)))
     }
 
+    private func runTotal(tokens: Int, runs: Int) -> String {
+        let key = runs == 1 ? "settings.usage_statistics_view.tasks.one" : "settings.usage_statistics_view.tasks"
+        return FloeL10n.l(key, TokenUnitFormatter.string(tokens), runs.formatted())
+    }
+
     private func speed(_ value: Double?) -> String {
-        value.map { FloeL10n.plural("settings.usage_statistics_view.fragments_sec", count: Int($0.rounded()), $0.formatted(.number.precision(.fractionLength(1)))) }
+        value.map { speed in
+            let key = speed == 1 ? "settings.usage_statistics_view.fragments_sec.one" : "settings.usage_statistics_view.fragments_sec"
+            return FloeL10n.l(key, speed.formatted(.number.precision(.fractionLength(1))))
+        }
             ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 
@@ -209,7 +221,11 @@ struct UsageStatisticsView: View {
         isLoading = true
         defer { isLoading = false }
         do {
+            #if FLOE_UNIFIED_MAC
+            stats = try await loadStatistics()
+            #else
             stats = try await environment.runStore.usageStatistics()
+            #endif
             errorMessage = nil
         } catch {
             stats = nil
@@ -217,4 +233,29 @@ struct UsageStatisticsView: View {
         }
     }
 }
+
+enum TokenUnitFormatter {
+    static func string(_ value: Int) -> String {
+        let magnitude = abs(value)
+        if magnitude >= 1_000_000_000 {
+            return scaled(value, divisor: 1_000_000_000, suffix: "B")
+        }
+        if magnitude >= 1_000_000 {
+            return scaled(value, divisor: 1_000_000, suffix: "M")
+        }
+        if magnitude >= 1_000 {
+            return scaled(value, divisor: 1_000, suffix: "K")
+        }
+        return value.formatted()
+    }
+
+    private static func scaled(_ value: Int, divisor: Int, suffix: String) -> String {
+        let quotient = Double(value) / Double(divisor)
+        let number = quotient.rounded() == quotient
+            ? String(Int(quotient))
+            : String(format: "%.1f", quotient).replacingOccurrences(of: ".0", with: "")
+        return number + suffix
+    }
+}
+
 #endif

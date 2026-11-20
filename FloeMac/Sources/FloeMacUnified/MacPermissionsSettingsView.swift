@@ -49,8 +49,8 @@ struct MacPermissionsSettingsView: View {
                 .disabled(workspace.savingApprovalMode)
             } footer: {
                 Text(MacPermissionsText.t(
-                    "只影响之后创建的任务。已有任务可在输入栏更改。",
-                    "Applies to new tasks. Change an existing task in its composer."))
+                    "适用于新任务。已有任务可在输入栏更改审批模式，子代理跟随所属任务。",
+                    "Applies to new tasks. Change an existing task in its composer. Its subagents follow the same approval mode."))
             }
 
             Section {
@@ -60,7 +60,7 @@ struct MacPermissionsSettingsView: View {
                     .background(MacWorkbenchButtonFrameReader { Self.smokeActionsFrame = $0 })
                     #endif
             } footer: {
-                Text(MacPermissionsText.t("关闭后，新运行只能读取工作区文件。命令、文件修改和窗口操作均会停用。", "Turn off to make future runs read-only. Commands, file edits and window control will be unavailable."))
+                Text(MacPermissionsText.t("关闭后，新的运行和子代理保留只读工具。命令、文件修改和窗口操作均会停用。", "Turn off to limit new runs and their subagents to read-only tools. Commands, file edits and window control will be unavailable."))
             }
 
             Section {

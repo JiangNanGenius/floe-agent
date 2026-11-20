@@ -23,7 +23,6 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
     """#
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .writesFiles]
     static let isSideEffecting = true
-    static let executionBoundary: ToolExecutionBoundary = .mainRunOnly
     static let sandbox = "/usr/bin/sandbox-exec"
     let root: MacAgentWorkspaceRoot
 

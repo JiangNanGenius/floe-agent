@@ -27,6 +27,7 @@ targets:
       - path: Sources/FloeMacHost/HostAgentWorkspaceView.swift
       - path: Sources/FloeMacUnified
       - path: ../FloeAgent/Sources/FloeWorkspace/CanvasBackupPackage.swift
+      - path: ../FloeAgent/FloeApp/Settings/UsageStatisticsView.swift
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
@@ -42,6 +43,14 @@ targets:
       - path: ../FloeAgent/FloeApp/Chat/UserMessageBubble.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/CodeBlockView.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/MarkdownRendererView.swift
+      - path: ../FloeAgent/Sources/FloeExecution/WebSearchService.swift
+      - path: ../FloeAgent/Sources/FloeExecution/WebRetrievalModels.swift
+      - path: ../FloeAgent/Sources/FloeExecution/SearchProviderCatalog.swift
+      - path: ../FloeAgent/Sources/FloeExecution/MoonshotSearchOptions.swift
+      - path: ../FloeAgent/Sources/FloeExecution/HTTPRequestService.swift
+      - path: ../FloeAgent/Sources/FloeExecution/HTTPCookieContext.swift
+      - path: ../FloeAgent/Sources/FloeExecution/Tools/WebSearchTool.swift
+      - path: ../FloeAgent/FloeApp/Resources/SearchProviderCatalog.json
       - path: ../FloeAgent/FloeApp/Resources/ProviderCatalog.json
       - path: Resources/Licenses/ZIPFoundation.txt
       - path: Resources/en.lproj/Localizable.strings
@@ -66,7 +75,9 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Resources/FloeMacHost-OTA.entitlements
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FLOE_UNIFIED_MAC"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/../FloeMacBridge/Sources/CBridgePTY/include"
-        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Sources/CBridgePTYModule"
+        SWIFT_INCLUDE_PATHS:
+          - "$(SRCROOT)/Sources/CBridgePTYModule"
+          - "$(SRCROOT)/Sources/CMacPublicWeb"
         OTHER_LDFLAGS: "-lutil"
       configs:
         Debug:

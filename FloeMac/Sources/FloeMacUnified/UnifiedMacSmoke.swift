@@ -14,6 +14,9 @@ import FloeModels
 import FloeProviders
 import FloeTools
 import Foundation
+import Quartz
+import Vision
+import WebKit
 
 @MainActor
 final class UnifiedMacSmoke {
@@ -25,6 +28,8 @@ final class UnifiedMacSmoke {
     let serverKey = Curve25519.Signing.PrivateKey()
     private let clientKey = Curve25519.Signing.PrivateKey()
     private var settingsDiagnostics: [String] = []
+    private var browserOpenedFromMessageLink = false
+    private var browserReturnButtonPressed = false
 
     static func configured() -> UnifiedMacSmoke? {
         let args = CommandLine.arguments
@@ -116,11 +121,175 @@ final class UnifiedMacSmoke {
             await exerciseNativeCommands(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--touch-layout-only") {
+            model.openAgentWorkspace()
+            if CommandLine.arguments.contains("--touch-dark") {
+                NSApp.appearance = NSAppearance(named: .darkAqua)
+            }
+            guard let agent = model.macWorkspace?.agent, let window = visibleWorkbench,
+                  let content = window.contentView else { finish(["opened": false]); return }
+            await agent.prepare()
+            let deadline = ContinuousClock.now + .seconds(6)
+            while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+            var checks: [String: Bool] = [:]
+            var heights: [String: Double] = [:]
+            for (label, size) in [("wide", NSSize(width: 1150, height: 750)), ("narrow", NSSize(width: 720, height: 560))] {
+                window.setContentSize(size)
+                try? await Task.sleep(for: .milliseconds(350))
+                content.layoutSubtreeIfNeeded()
+                refreshButtonFrames(in: content)
+                capture(content, extension: label + ".png")
+                captureWindow(window, suffix: label + "-window.png")
+                if let frame = HostAgentWorkspaceView.smokeExpandFrame {
+                    heights[label + "Expand"] = frame.height
+                    let point = NSPoint(x: frame.minX + 5, y: frame.minY + 6)
+                    let clicked = clickWindowLocation(point, in: window)
+                    let until = ContinuousClock.now + .seconds(2)
+                    while window.attachedSheet == nil && ContinuousClock.now < until { try? await Task.sleep(for: .milliseconds(30)) }
+                    if let sheet = window.attachedSheet {
+                        let closed = await closeFixtureSheet(sheet, id: "thread.composer.expanded.done")
+                        checks[label + "Expand"] = clicked && frame.width >= 44 && frame.height >= 44 && closed
+                    } else { checks[label + "Expand"] = false }
+                } else { checks[label + "Expand"] = false }
+                model.openSettings(.general)
+                let opened = ContinuousClock.now + .seconds(3)
+                while model.smokeAgentSettingsSheet?.contentView == nil && ContinuousClock.now < opened { try? await Task.sleep(for: .milliseconds(30)) }
+                if let sheet = model.smokeAgentSettingsSheet, let body = sheet.contentView {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    body.layoutSubtreeIfNeeded()
+                    refreshButtonFrames(in: body)
+                    capture(body, extension: label + "-settings.png")
+                    heights[label + "SheetWidth"] = body.bounds.width
+                    let row = model.smokeSettingsFrames[.permissions]
+                    heights[label + "SettingsRow"] = row?.height ?? 0
+                    let pressed = clickSettingsPane(.permissions, model: model, in: sheet)
+                    try? await Task.sleep(for: .milliseconds(220))
+                    checks[label + "Settings"] = (row?.height ?? 0) >= 44 && pressed && model.settingsPane == .permissions
+                    if label == "narrow" {
+                        let hit = pressAccessibilityButton(body, id: "settings.categories.back") || model.smokeSettingsBackFrame.map {
+                            clickWindowLocation(NSPoint(x: $0.midX, y: $0.midY), in: sheet)
+                        } == true
+                        try? await Task.sleep(for: .milliseconds(200))
+                        checks["narrowBack"] = hit && clickSettingsPane(.general, model: model, in: sheet) && model.settingsPane == .general
+                    }
+                } else { checks[label + "Settings"] = false }
+                model.closeSettingsWindow()
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+            finish(["checks": checks, "heights": heights])
+            return
+        }
+        if CommandLine.arguments.contains("--task-media-workbench-only") {
+            model.openAgentWorkspace()
+            guard let agent = model.macWorkspace?.agent, let endpoint = projectTaskFixtureEndpoint else {
+                finish(["media": false]); return
+            }
+            await agent.prepare()
+            let deadline = ContinuousClock.now + .seconds(6)
+            while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
+            finish(await MacTaskMediaWorkbenchSmoke.verify(in: agent, endpoint: endpoint, root: root) {
+                self.clickApproval(in: agent, allow: true, screenshot: "task-media-approval.png")
+            })
+            return
+        }
+        if CommandLine.arguments.contains("--peer-workbench-only") {
+            model.openAgentWorkspace()
+            guard let agent = model.macWorkspace?.agent, let endpoint = projectTaskFixtureEndpoint else {
+                finish(["peers": false]); return
+            }
+            await agent.prepare()
+            let deadline = ContinuousClock.now + .seconds(6)
+            while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
+            finish(await MacPeerWorkbenchSmoke.verify(in: agent, endpoint: endpoint, root: root))
+            return
+        }
+        if CommandLine.arguments.contains("--workbench-basics-only") {
+            model.openAgentWorkspace()
+            guard let mac = model.macWorkspace, let agent = mac.agent, let temporary = mac.temporaryChat
+            else { finish(["opened": false]); return }
+            await agent.prepare()
+            let ready = ContinuousClock.now + .seconds(6)
+            while !agent.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(40)) }
+            var checks = ["settings": await exerciseUnifiedSettings(model: model)]
+            checks["files"] = await MacWorkspaceFileOperationsSmoke.verify(in: root)
+            checks["temporaryLifecycle"] = await MacTemporaryChatModel.verify(in: agent)
+            _ = agent.addProvider(name: "Workbench fixture", endpoint: "https://example.invalid/v1",
+                                  protocolKind: .openAIChatCompletions, modelID: "workbench-fixture", key: "")
+            await Task.yield()
+            let clicked = clickWorkbenchButton(ids: ["home.temporary.toggle"], frame: MacWorkspaceRootView.smokeTemporaryFrame,
+                                               screenshot: nil)
+            let entered = ContinuousClock.now + .seconds(2)
+            while temporary.session == nil && ContinuousClock.now < entered { try? await Task.sleep(for: .milliseconds(40)) }
+            checks["temporaryOpened"] = clicked && temporary.session != nil
+            temporary.draft = "unsaved temporary fixture"
+            if let content = visibleWorkbench?.contentView { capture(content, extension: "temporary.png") }
+            let closed = await openNewTaskFromMenu(workspace: agent)
+            let left = ContinuousClock.now + .seconds(2)
+            while temporary.session != nil && ContinuousClock.now < left { try? await Task.sleep(for: .milliseconds(40)) }
+            checks["temporaryNewTaskCleared"] = closed && temporary.session == nil && temporary.draft.isEmpty
+            finish(["checks": checks, "diagnostics": settingsDiagnostics])
+            return
+        }
+        if CommandLine.arguments.contains("--thread-ownership-only"), let endpoint = projectTaskFixtureEndpoint {
+            model.openAgentWorkspace()
+            guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+            await agent.prepare()
+            let deadline = ContinuousClock.now + .seconds(6)
+            while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
+            await verifyThreadOwnership(agent, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--child-execution-only"), let endpoint = projectTaskFixtureEndpoint {
+            model.openAgentWorkspace()
+            guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+            await agent.prepare()
+            let deadline = ContinuousClock.now + .seconds(6)
+            while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
+            await verifyChildExecution(agent, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--browser-only"), let endpoint = projectTaskFixtureEndpoint {
+            model.openAgentWorkspace()
+            guard let workspace = model.macWorkspace, let agent = workspace.agent else { finish(["opened": false]); return }
+            await agent.prepare()
+            let deadline = ContinuousClock.now + .seconds(6)
+            while (!agent.isReady || HostAgentWorkspaceView.smokeExpandFrame == nil) && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(60))
+            }
+            let link = endpoint.appendingPathComponent("workbench-page")
+            guard await agent.verifyChatSmoke(reply: "Project check completed. [Preview website](\(link.absoluteString))") else {
+                finish(["chat": false]); return
+            }
+            let ok = await verifyTaskBrowser(workspace, agent: agent, endpoint: endpoint)
+            finish(["browser": ok, "link": browserOpenedFromMessageLink, "return": browserReturnButtonPressed, "details": settingsDiagnostics])
+            return
+        }
+        if CommandLine.arguments.contains("--conversation-sheets-only") {
+            model.openAgentWorkspace()
+            guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+            await agent.prepare()
+            let deadline = ContinuousClock.now + .seconds(4)
+            while (!agent.isReady || HostAgentWorkspaceView.smokeExpandFrame == nil) && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(60))
+            }
+            let expanded = await verifyExpandedComposer(agent)
+            let chat = await agent.verifyChatSmoke { true }
+            var preview = false
+            if chat, let pdf = try? writePDFTextAttachment(), await agent.verifyConversationHistorySmoke(reference: pdf) {
+                preview = await verifyAttachmentPreview(agent, expected: pdf)
+            }
+            finish(["expandedComposer": expanded, "attachmentPreview": preview, "details": settingsDiagnostics])
+            return
+        }
         if CommandLine.arguments.contains("--creative-only") {
             model.openAgentWorkspace()
             guard let agent = model.macWorkspace?.agent else { finish(["creative": false, "details": ["Agent did not open"]]); return }
             await agent.prepare()
-            guard agent.isReady else { finish(["creative": false, "details": ["Task database did not open"]]); return }
+            let deadline = ContinuousClock.now + .seconds(6)
+            while agent.isPreparing && !agent.isReady && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            guard agent.isReady else { finish(["images": false, "creative": false, "details": ["Task database did not open"]]); return }
             let images = await verifyImageGeneration()
             let creative = images ? await verifyCreative(model) : false
             finish(["images": images, "creative": creative, "details": settingsDiagnostics])
@@ -161,6 +330,12 @@ final class UnifiedMacSmoke {
         var taskMoveVerified = false
         var archivedTaskRestored = false
         var deletedFixtureTask = false
+        var searchChecks: [String: Bool] = [:]
+        var publicWebRead = false
+        var localWebsite = false
+        var expandedComposer = false
+        var attachmentPreview = false
+        let fileOperations = await MacWorkspaceFileOperationsSmoke.verify(in: root)
         var workspaceAndAttachmentStaging = false
         var desktopFilesLayout = false
         var conversationHistoryVerified = false
@@ -169,6 +344,8 @@ final class UnifiedMacSmoke {
         var taskPermissionsVerified = false
         var workspaceTextEditsVerified = false
         var workspaceModelReadTools = false
+        var childDetails = false
+        var taskBrowser = false
         var projectWorkflow = false
         var concurrentTasks = false
         var catalog = false
@@ -192,6 +369,7 @@ final class UnifiedMacSmoke {
                     && ContinuousClock.now < prepareDeadline {
                 try? await Task.sleep(for: .milliseconds(50))
             }
+            expandedComposer = await verifyExpandedComposer(agent)
             workspaceAndAttachmentStaging = await verifyWorkspaceAndAttachmentStaging(agent)
             if let window = visibleWorkbench, let content = window.contentView {
                 capture(content, extension: "png")
@@ -200,6 +378,7 @@ final class UnifiedMacSmoke {
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
             if nativeChat, workspaceAndAttachmentStaging, let pdf = try? writePDFTextAttachment() {
                 conversationHistoryVerified = await agent.verifyConversationHistorySmoke(reference: pdf)
+                if conversationHistoryVerified { attachmentPreview = await verifyAttachmentPreview(agent, expected: pdf) }
             }
             await agent.loadTaskRuns()
             let historyDeadline = ContinuousClock.now + .seconds(3)
@@ -226,6 +405,19 @@ final class UnifiedMacSmoke {
                 capture(content, extension: "task.png")
             }
             if let project = agent.workspaces.first(where: { $0.name == "Fixture Project" }) {
+                if let binding = try? MacAgentWorkspaceTools.binding(workspace: project, readOnly: true, chatOnly: true),
+                   let normalChatID {
+                    publicWebRead = await MacPublicWebFetch.verify(binding: binding, conversationID: normalChatID,
+                        readPublicPage: CommandLine.arguments.contains("--check-public-page"))
+                }
+                do {
+                    searchChecks = try await MacSearchSmoke.verify(discover: { access in
+                        let binding = try MacAgentWorkspaceTools.binding(workspace: project, readOnly: true, chatOnly: true, search: access)
+                        return binding.allowedToolNames.contains(MacSearchTool.name) &&
+                            binding.executor.descriptor(named: MacSearchTool.name) != nil
+                    })
+                } catch { settingsDiagnostics.append("Public search fixture: " + error.localizedDescription) }
+                localWebsite = await MacWorkspaceHTMLPreviewSmoke.verify(in: root)
                 let folder = root.appendingPathComponent("Fixture Project", isDirectory: true)
                 if let normalChatID {
                     taskMoveVerified = await agent.verifyTaskMoveSmoke(normalChatID, project: project)
@@ -255,7 +447,7 @@ final class UnifiedMacSmoke {
                                 await selectComposerMode(mode, workspace: agent)
                             }, answerQuestion: {
                                 guard CommandLine.arguments.contains("--project-question-fixture") else { return true }
-                                return await self.answerProjectQuestion()
+                                return await self.answerProjectQuestion(in: agent)
                             }) {
                                 guard clickWorkbenchButton(ids: ["thread.plan.close"], frame: agent.smokeClosePlanFrame,
                                                            screenshot: "project-task-plan.png") else { return false }
@@ -274,6 +466,10 @@ final class UnifiedMacSmoke {
                                 try? await Task.sleep(for: .milliseconds(160))
                                 return clickApproval(in: agent, allow: true, screenshot: "project-subtask-approval.png")
                             }
+                        if CommandLine.arguments.contains("--task-browser-fixture"), let workspace = model.macWorkspace {
+                            childDetails = await verifyChildDetail(agent)
+                            taskBrowser = await verifyTaskBrowser(workspace, agent: agent, endpoint: endpoint)
+                        }
                     }
                 }
                 let otherFolder = root.appendingPathComponent("Second Fixture Project", isDirectory: true)
@@ -354,6 +550,13 @@ final class UnifiedMacSmoke {
             "auxiliaryPanelVerified": auxiliaryPanelVerified,
             "providerConnectionVerified": providerConnectionVerified,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
+            "fileOperationsVerified": fileOperations,
+            "publicWebReadVerified": publicWebRead,
+            "webSearchVerified": !searchChecks.isEmpty && searchChecks.values.allSatisfy { $0 },
+            "webSearchChecks": searchChecks,
+            "localWebsiteVerified": localWebsite,
+            "expandedComposerVerified": expandedComposer,
+            "attachmentPreviewVerified": attachmentPreview,
             "desktopFilesLayoutVerified": desktopFilesLayout,
             "approvalReviewerVerified": approvalReviewerVerified,
             "savedFilePermissionVerified": filePermissionsVerified,
@@ -363,6 +566,10 @@ final class UnifiedMacSmoke {
             "fileEditorFailures": fileEditorFailures,
             "workspaceModelReadToolsVerified": workspaceModelReadTools,
             "projectTaskWorkflowVerified": projectWorkflow,
+            "taskBrowserVerified": taskBrowser,
+            "browserMessageLinkPressed": browserOpenedFromMessageLink,
+            "browserReturnButtonPressed": browserReturnButtonPressed,
+            "childDetailsVerified": childDetails,
             "concurrentTasksIsolated": concurrentTasks,
             "conversationHistoryVerified": conversationHistoryVerified,
             "agentApprovedFileCreated": agentApproval.allowed,
@@ -565,7 +772,16 @@ final class UnifiedMacSmoke {
         if let bytes = try? JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted, .sortedKeys]) {
             try? bytes.write(to: report, options: .atomic)
         }
-        DispatchQueue.main.async { NSApp.terminate(nil) }
+        Task { @MainActor in
+            // Closing a parent run joins its child workers before releasing the OTA activity lease.
+            // The App correctly refuses Quit until that asynchronous cleanup finishes.
+            let deadline = ContinuousClock.now + .seconds(8)
+            while let model = BridgeApplicationDelegate.model,
+                  model.updates.installation.activity.activityCount != 0, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            NSApp.terminate(nil)
+        }
     }
 
     func cleanup() {
@@ -869,6 +1085,13 @@ final class UnifiedMacSmoke {
                                                      useKeychain: false, admitWork: { {} })
             guard reopenedVideos.history.first?.id == item.id, reopenedVideos.videoURL(for: item) == url else { return false }
             guard try await verifyVideoRecovery(in: videoDirectory, workspace: agent, accountID: videoAccount.id, modelID: videoModel.id, savedID: item.id) else { return false }
+            try await MacTaskVideoSmoke.verify(service: videos, modelID: videoModel.id, base: agent.personalTaskLeaseBase,
+                                               referenceImage: batch.imageURL(for: candidates[0]))
+            let imageChecks = try await MacTaskImageToolSmoke.verify(endpoint: endpoint, directory: root)
+            guard imageChecks.values.allSatisfy({ $0 }) else {
+                settingsDiagnostics.append("Task image checks failed: " + imageChecks.filter { !$0.value }.keys.sorted().joined(separator: ", "))
+                return false
+            }
             let imageDirectory = root.appendingPathComponent("Generated Images Fixture", isDirectory: true)
             let images = MacImageGeneration(directory: imageDirectory, namespace: "fixture.no-keychain", useKeychain: false, admitWork: { {} })
             guard let image = images.history.first else { return false }
@@ -984,14 +1207,24 @@ final class UnifiedMacSmoke {
             }
             try batch.bindProvider(accountID: imageRef.accountID, modelID: imageRef.modelID)
             try videos.bindProvider(accountID: videoRef.accountID, modelID: videoRef.modelID)
-            guard visibleWorkbench?.isKeyWindow == true, model.smokeAgentSettingsSheet == nil,
-                  agent.setAccountEnabled(id: imageAccount.id, enabled: false),
-                  agent.removeProvider(id: videoAccount.id) else { return false }
+            guard visibleWorkbench?.isKeyWindow == true, model.smokeAgentSettingsSheet == nil else {
+                settingsDiagnostics.append("Closing the provider editor did not return focus to the workbench.")
+                return false
+            }
+            guard agent.setAccountEnabled(id: imageAccount.id, enabled: false),
+                  agent.removeProvider(id: videoAccount.id) else {
+                settingsDiagnostics.append("The image or video account change failed.")
+                return false
+            }
             let invalidated = ContinuousClock.now + .seconds(2)
             while (batch.hasCredential || videos.hasCredential) && ContinuousClock.now < invalidated {
                 try await Task.sleep(for: .milliseconds(40))
             }
-            return !batch.hasCredential && !videos.hasCredential && agent.selectedModelID == primary
+            guard !batch.hasCredential && !videos.hasCredential && agent.selectedModelID == primary else {
+                settingsDiagnostics.append("Media credential invalidation failed (image=\(batch.hasCredential), video=\(videos.hasCredential), primaryChanged=\(agent.selectedModelID != primary)).")
+                return false
+            }
+            return true
         } catch {
             settingsDiagnostics.append("Creative fixture: " + error.localizedDescription)
             return false
@@ -1058,12 +1291,12 @@ final class UnifiedMacSmoke {
         }
         let findTitle = String(localized: "mac.workspace.find")
         guard await openNewTaskFromMenu(workspace: workspace),
-              performMenuShortcut("f", title: findTitle) else { return false }
+              await performMenuShortcut("f", title: findTitle) else { return false }
         let deadline = ContinuousClock.now + .seconds(2)
         while !workspace.smokeTaskSearchMounted && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        guard workspace.smokeTaskSearchMounted, performMenuShortcut("f", title: findTitle) else {
+        guard workspace.smokeTaskSearchMounted, await performMenuShortcut("f", title: findTitle) else {
             settingsDiagnostics.append("Find did not show the task search field.")
             return false
         }
@@ -1072,13 +1305,13 @@ final class UnifiedMacSmoke {
         }
         guard workspace.smokeTaskSearchMounted, workspace.smokeTaskFindInvocations == 2,
               await workspace.verifyChatSmoke(admissionIsClosedToInstall: { true }),
-              performMenuShortcut("f", title: findTitle) else { return false }
+              await performMenuShortcut("f", title: findTitle) else { return false }
         let conversationDeadline = ContinuousClock.now + .seconds(2)
         while !workspace.smokeConversationSearchMounted && ContinuousClock.now < conversationDeadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
         guard workspace.smokeConversationSearchMounted, workspace.smokeTaskFindInvocations == 2,
-              performMenuShortcut("f", title: String(localized: "mac.workspace.findTask"), modifiers: [.command, .shift]) else {
+              await performMenuShortcut("f", title: String(localized: "mac.workspace.findTask"), modifiers: [.command, .shift]) else {
             return false
         }
         let taskSearchDeadline = ContinuousClock.now + .seconds(2)
@@ -1111,7 +1344,7 @@ final class UnifiedMacSmoke {
             }
             return false
         }
-        guard performMenuShortcut("0", title: title, modifiers: modifiers),
+        guard await performMenuShortcut("0", title: title, modifiers: modifiers),
               await waitForState(shown: true, inDetail: false) else {
             settingsDiagnostics.append("The desktop Files command did not open the inspector.")
             return false
@@ -1123,14 +1356,14 @@ final class UnifiedMacSmoke {
             return false
         }
         capture(content, extension: "narrow-files.png")
-        guard performMenuShortcut("0", title: title, modifiers: modifiers),
+        guard await performMenuShortcut("0", title: title, modifiers: modifiers),
               await waitForState(shown: false, inDetail: false) else { return false }
         capture(content, extension: "narrow-composer.png")
         return true
     }
 
     private func openNewTaskFromMenu(workspace: HostAgentWorkspace) async -> Bool {
-        guard performMenuShortcut("n", title: String(localized: "workbench.new_task")) else { return false }
+        guard await performMenuShortcut("n", title: String(localized: "workbench.new_task")) else { return false }
         let newTaskDeadline = ContinuousClock.now + .seconds(2)
         while workspace.selectedID != nil && ContinuousClock.now < newTaskDeadline {
             try? await Task.sleep(for: .milliseconds(30))
@@ -1140,11 +1373,42 @@ final class UnifiedMacSmoke {
 
     private func openNewProjectTask(workspace: HostAgentWorkspace, projectID: UUID,
                                     screenshot: String? = "project-task-start.png", fromName: Bool = false) async -> Bool {
-        let action = fromName ? "open" : "new"
-        guard clickWorkbenchButton(ids: ["sidebar.workspace.\(action).\(projectID.uuidString)"],
-                                   frame: (fromName ? workspace.smokeProjectNameFrames : workspace.smokeProjectNewTaskFrames)[projectID],
-                                   screenshot: nil) else {
-            settingsDiagnostics.append("The sidebar’s project control was unavailable.")
+        guard let window = visibleWorkbench, let content = window.contentView, window.attachedSheet == nil else {
+            settingsDiagnostics.append("The project sidebar was not interactive.")
+            return false
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        func targetFrame() -> CGRect? {
+            (fromName ? workspace.smokeProjectNameFrames : workspace.smokeProjectNewTaskFrames)[projectID]
+        }
+        func visibleAnchor(in view: NSView, matching frame: CGRect) -> NSView? {
+            if view is MacWorkbenchButtonFrameReader.Anchor, !view.isHiddenOrHasHiddenAncestor,
+               view.convert(view.bounds, to: nil).equalTo(frame),
+               content.visibleRect.contains(content.convert(NSPoint(x: frame.midX, y: frame.midY), from: nil)),
+               view.visibleRect.contains(NSPoint(x: view.bounds.midX, y: view.bounds.midY)) { return view }
+            for child in view.subviews {
+                if let match = visibleAnchor(in: child, matching: frame) { return match }
+            }
+            return nil
+        }
+        let revealDeadline = ContinuousClock.now + .seconds(3)
+        var button: NSView?
+        while ContinuousClock.now < revealDeadline {
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            if window.isKeyWindow, let frame = targetFrame(), !frame.isEmpty,
+               let visible = visibleAnchor(in: content, matching: frame) {
+                button = visible
+                break
+            }
+            NotificationCenter.default.post(name: MacWorkspaceRootView.smokeRevealProjectRow,
+                                            object: workspace, userInfo: ["project": projectID])
+            try? await Task.sleep(for: .milliseconds(75))
+        }
+        guard let button, click(button, at: NSPoint(x: button.bounds.midX, y: button.bounds.midY), in: window) else {
+            let action = fromName ? "open" : "new"
+            settingsDiagnostics.append("The sidebar’s \(action) control for \(projectID) was not visible after scrolling.")
             return false
         }
         let deadline = ContinuousClock.now + .seconds(3)
@@ -1164,20 +1428,52 @@ final class UnifiedMacSmoke {
         return false
     }
 
-    private func performMenuShortcut(_ key: String, title: String, modifiers: NSEvent.ModifierFlags = .command) -> Bool {
-        for root in NSApp.mainMenu?.items ?? [] {
-            guard let menu = root.submenu else { continue }
-            menu.update()
-            if let index = menu.items.firstIndex(where: {
-                $0.keyEquivalent == key && $0.keyEquivalentModifierMask == modifiers && $0.title == title && $0.isEnabled
-            }) {
-                menu.performActionForItem(at: index)
-                return true
+    private func performMenuShortcut(_ key: String, title: String, modifiers: NSEvent.ModifierFlags = .command) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(4)
+        let rootTitle = key == "0" ? String(localized: "space.title") : String(localized: "Tasks")
+        var requestedFocus = false
+        repeat {
+            if let workbench = visibleWorkbench, workbench.attachedSheet == nil, NSApp.modalWindow == nil {
+                // Accessibility presses can select a row in an inactive test process.
+                // A real keyboard equivalent is delivered to the active, key window only.
+                if (!NSApp.isActive || !workbench.isKeyWindow) && !requestedFocus {
+                    requestedFocus = true
+                    NSApp.activate(ignoringOtherApps: true)
+                    workbench.makeKeyAndOrderFront(nil)
+                }
             }
+            if NSApp.isActive, let workbench = visibleWorkbench, workbench.isKeyWindow, workbench.attachedSheet == nil {
+                NSApp.mainMenu?.update()
+                for root in NSApp.mainMenu?.items ?? [] where root.title == rootTitle {
+                    guard let menu = root.submenu else { continue }
+                    // CommandMenu can defer building its children until AppKit requests the menu.
+                    if menu.numberOfItems == 0 { menu.delegate?.menuNeedsUpdate?(menu) }
+                    menu.update()
+                    if let index = menu.items.firstIndex(where: {
+                        $0.keyEquivalent == key && $0.keyEquivalentModifierMask == modifiers && $0.title == title && $0.isEnabled
+                    }) {
+                        menu.performActionForItem(at: index)
+                        return true
+                    }
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        } while ContinuousClock.now < deadline
+        func windowSummary(_ window: NSWindow?) -> String {
+            guard let window else { return "nil" }
+            return "\(type(of: window))#\(window.windowNumber) id=\(window.identifier?.rawValue ?? "-") " +
+                "key=\(window.isKeyWindow) main=\(window.isMainWindow) visible=\(window.isVisible) sheet=\(window.attachedSheet?.windowNumber ?? -1)"
         }
-        let bound = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items)
-            .filter { $0.keyEquivalent == key }.map(\.title) ?? []
-        settingsDiagnostics.append("Command-\(key) could not find \(title). Matching keys: \(bound)")
+        let menuSummary = NSApp.mainMenu?.items.map { item in
+            let keys = item.submenu?.items.filter { !$0.keyEquivalent.isEmpty || item.title == String(localized: "Tasks")
+                || item.title == String(localized: "space.title") }.map {
+                    "\($0.title) [\($0.keyEquivalent),\($0.keyEquivalentModifierMask.rawValue),enabled=\($0.isEnabled),hidden=\($0.isHidden)]"
+                } ?? []
+            return "\(item.title){\(keys.joined(separator: ", "))}"
+        }.joined(separator: " ") ?? "nil"
+        settingsDiagnostics.append("Missing menu command \(title) [\(key),\(modifiers.rawValue)]. " +
+            "active=\(NSApp.isActive), policy=\(NSApp.activationPolicy().rawValue), key=\(windowSummary(NSApp.keyWindow)), " +
+            "main=\(windowSummary(NSApp.mainWindow)), workbench=\(windowSummary(visibleWorkbench)), menus=\(menuSummary)")
         return false
     }
 
@@ -1215,6 +1511,14 @@ final class UnifiedMacSmoke {
         }
     }
 
+    private func captureWindow(_ window: NSWindow, suffix: String) {
+        let capture = Process()
+        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        capture.arguments = ["-x", "-o", "-l", String(window.windowNumber), report.appendingPathExtension(suffix).path]
+        guard (try? capture.run()) != nil else { return }
+        capture.waitUntilExit()
+    }
+
     private func capture(_ view: NSView, extension suffix: String) {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -1244,17 +1548,53 @@ final class UnifiedMacSmoke {
         return true
     }
 
-    private func answerProjectQuestion() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(8)
+    private func answerProjectQuestion(in agent: HostAgentWorkspace) async -> Bool {
+        guard let window = visibleWorkbench, let content = window.contentView, window.attachedSheet == nil else { return false }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+
+        func marker(_ name: String, in view: NSView) -> NSView? {
+            guard !view.isHiddenOrHasHiddenAncestor, view.window === window else { return nil }
+            if view.identifier?.rawValue == name { return view }
+            for child in view.subviews {
+                if let found = marker(name, in: child) { return found }
+            }
+            return nil
+        }
+        func press(_ action: String, card: UserQuestionCardModel) -> Bool {
+            guard let id = UserQuestionCardView.smokeMarker(action, target: card.currentTarget),
+                  let anchor = marker(id, in: content), window.isKeyWindow else { return false }
+            _ = anchor.scrollToVisible(anchor.bounds)
+            content.layoutSubtreeIfNeeded()
+            let point = NSPoint(x: anchor.bounds.midX, y: anchor.bounds.midY)
+            guard !anchor.bounds.isEmpty, anchor.visibleRect.contains(point),
+                  content.visibleRect.contains(anchor.convert(point, to: content)) else { return false }
+            return click(anchor, at: point, in: window)
+        }
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        var requestID: String?
+        var optionClicked = false
+        var optionSelected = false
+        var submitClicked = false
         while ContinuousClock.now < deadline {
-            if UserQuestionCardView.smokeActionFrames["user_question.option.report"] != nil,
-               clickWorkbenchButton(ids: ["user_question.option.report"], frame: UserQuestionCardView.smokeActionFrames["user_question.option.report"], screenshot: nil) {
-                try? await Task.sleep(for: .milliseconds(160))
-                return clickWorkbenchButton(ids: ["user_question.continue"], frame: UserQuestionCardView.smokeActionFrames["user_question.continue"], screenshot: "project-question.png")
+            if submitClicked, agent.pendingQuestion?.requestID != requestID { return true }
+            if let question = agent.pendingQuestion, let card = UserQuestionCardView.smokeModel,
+               card.currentTarget?.requestID == question.requestID,
+               requestID == nil || requestID == question.requestID {
+                requestID = question.requestID
+                optionSelected = card.isSelected("report")
+                if !optionSelected && !optionClicked {
+                    optionClicked = press("option.report", card: card)
+                } else if optionSelected, card.canContinue, !card.isSubmitting, !submitClicked {
+                    capture(content, extension: "project-question.png")
+                    submitClicked = press("continue", card: card)
+                }
             }
             try? await Task.sleep(for: .milliseconds(80))
         }
-        settingsDiagnostics.append("The project question did not expose its report option.")
+        capture(content, extension: "project-question-failed.png")
+        settingsDiagnostics.append("The project question did not finish (card=\(requestID != nil), optionClick=\(optionClicked), selected=\(optionSelected), submitClick=\(submitClicked)).")
         return false
     }
 
@@ -1464,6 +1804,324 @@ final class UnifiedMacSmoke {
         for subview in view.subviews { refreshButtonFrames(in: subview) }
     }
 
+    private func descendant<T: NSView>(_ type: T.Type, in root: NSView) -> T? {
+        if let view = root as? T { return view }
+        for child in root.subviews {
+            if let view = descendant(type, in: child) { return view }
+        }
+        return nil
+    }
+
+    private func closeFixtureSheet(_ sheet: NSWindow, id: String) async -> Bool {
+        let parent = sheet.sheetParent
+        sheet.makeKey()
+        if let content = sheet.contentView, !pressAccessibilityButton(content, id: id) {
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: sheet.windowNumber, context: nil, characters: "\u{1B}",
+                charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: 53) else { return false }
+            sheet.sendEvent(event)
+        }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while (sheet.isVisible || parent?.attachedSheet === sheet) && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard !sheet.isVisible, parent?.attachedSheet !== sheet else { return false }
+        // In-process AX presses do not get the window-server activation of a physical click.
+        if let parent, parent.isVisible, parent.attachedSheet == nil {
+            parent.makeKeyAndOrderFront(nil)
+        }
+        return true
+    }
+
+    private func verifyThreadOwnership(_ agent: HostAgentWorkspace, endpoint: URL) async {
+        let folder = root.appendingPathComponent("Source project", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil,
+              let project = await agent.addWorkspace(name: folder.lastPathComponent, rootURL: folder) else { finish(["project": false]); return }
+        var checks: [String: Bool] = [:]
+        var approvals: [String] = []
+        func run(_ prompt: String, projectID: UUID?) async -> Bool {
+            guard agent.startNamedAgentFixture(prompt, modelID: "thread-tools-fixture", endpoint: endpoint, projectID: projectID) else { return false }
+            let limit = ContinuousClock.now + .seconds(25)
+            var reviewed = Set<String>()
+            while agent.isSending, ContinuousClock.now < limit {
+                if let card = agent.pendingApproval, !reviewed.contains(card.callID) {
+                    guard MacTaskActionPreview(card.toolCall) != nil && card.canAllow else { break }
+                    await agent.resolveApproval(card, allow: true)
+                    reviewed.insert(card.callID)
+                    approvals.append(card.toolName)
+                }
+                try? await Task.sleep(for: .milliseconds(60))
+            }
+            return !agent.isSending
+        }
+        guard await openNewProjectTask(workspace: agent, projectID: project.id),
+              await run("Create a new task named Reference notebook. The source marker is Floe-Origin-34.", projectID: project.id),
+              let owner = agent.selectedID,
+              let spawned = agent.conversations.first(where: { $0.title == "Reference notebook" && $0.id != owner }) else {
+            finish(["spawn": false, "reviews": approvals, "diagnostics": agent.smokeRunDiagnostics]); return
+        }
+        checks["sourceStayedSelected"] = owner != spawned.id && agent.selectedConversationWorkspace?.id == project.id
+        await agent.select(spawned.id)
+        checks["separateInitialMessage"] = agent.messages.map(\.content) == ["Prepare the separate notebook."]
+        checks["independentPermissionsAndFolder"] = agent.taskApprovalMode == .ask && agent.fileWorkspaceForCurrentTask?.kind == .privateTask
+        let history = await run("Find the task whose messages contain the source marker and read its original request.", projectID: nil)
+        checks["readSource"] = history && agent.messages.contains { $0.role == "assistant" && $0.content.contains("History confirmed: Floe-Origin-34") }
+        let prior = Set(agent.conversations.map(\.id))
+        let settled = await run("Do not create a new task. Summarize the notebook.", projectID: nil)
+        checks["noImplicitSpawn"] = settled && prior == Set(agent.conversations.map(\.id))
+        finish(["checks": checks, "reviews": approvals, "diagnostics": agent.smokeRunDiagnostics])
+    }
+
+    private func verifyChildExecution(_ agent: HostAgentWorkspace, endpoint: URL) async {
+        let folder = root.appendingPathComponent("Child execution project", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil,
+              let project = await agent.addWorkspace(name: folder.lastPathComponent, rootURL: folder) else {
+            finish(["project": false]); return
+        }
+        var checks: [String: Bool] = [:]
+        var events: [String] = []
+        agent.allowsWorkspaceWrites = true
+        for (label, allow) in [("accepted", true), ("denied", false)] {
+            guard await openNewProjectTask(workspace: agent, projectID: project.id),
+                  await agent.setApprovalMode(.ask, asDefault: false),
+                  agent.startNamedAgentFixture("Delegate the \(label) independent command check.", modelID: "child-execution-fixture",
+                                               endpoint: endpoint, projectID: project.id) else { break }
+            let limit = ContinuousClock.now + .seconds(40)
+            var decisions = Set<String>()
+            while agent.isSending, ContinuousClock.now < limit {
+                if let approval = agent.pendingApproval, !decisions.contains(approval.callID) {
+                    let startsChild = approval.toolName == "delegate"
+                    guard startsChild || (approval.toolName == MacNativeShellTool.name && approval.text?.contains("child-\(label).txt") == true) else {
+                        events.append("Unexpected approval: " + approval.toolName); break
+                    }
+                    try? await Task.sleep(for: .milliseconds(120))
+                    let choice = startsChild || allow
+                    if clickApproval(in: agent, allow: choice, screenshot: "child-\(label)-\(startsChild ? "delegate" : "command").png") {
+                        decisions.insert(approval.callID)
+                        events.append("\(label) \(approval.toolName) \(choice)")
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(60))
+            }
+            let path = folder.appendingPathComponent("child-\(label).txt")
+            let changed = (try? String(contentsOf: path, encoding: .utf8)) == "child-verified\n"
+            let matched = allow ? changed : !FileManager.default.fileExists(atPath: path.path)
+            if let owner = agent.selectedID {
+                let children = await agent.childSubagents(of: owner)
+                checks[label] = !agent.isSending && decisions.count == 2 && matched
+                    && children.count == 1 && children[0].conversationID == owner
+                    && (children[0].findings?.contains(label) == true || (!allow && children[0].status != .completed))
+            }
+            if agent.isSending { agent.stop(); break }
+        }
+        finish(["checks": checks, "reviews": events, "diagnostics": agent.smokeRunDiagnostics])
+    }
+
+    private func verifyChildDetail(_ agent: HostAgentWorkspace) async -> Bool {
+        guard let window = visibleWorkbench, let owner = agent.selectedID else { return false }
+        let limit = ContinuousClock.now + .seconds(4)
+        while agent.childSubagents.presentedChildren.first?.conversationID != owner, ContinuousClock.now < limit {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard let child = agent.childSubagents.presentedChildren.first, child.conversationID == owner,
+              child.findings?.contains("Acceptance") == true, child.status == .completed,
+              clickWorkbenchButton(ids: ["mac.child.disclosure"], frame: MacChildTasksView.smokeDisclosureFrame, screenshot: nil) else {
+            settingsDiagnostics.append("Could not expand the completed child"); return false
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+        guard clickWorkbenchButton(ids: ["mac.child.details." + child.id.uuidString], frame: MacChildTasksView.smokeDetailFrame, screenshot: nil) else {
+            settingsDiagnostics.append("Missing child details button"); return false
+        }
+        while window.attachedSheet?.contentView == nil, ContinuousClock.now < limit {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard let sheet = window.attachedSheet, let content = sheet.contentView else {
+            settingsDiagnostics.append("Child details did not open"); return false
+        }
+        capture(content, extension: "project-child-details.png")
+        let closed = await closeFixtureSheet(sheet, id: "mac.child.details.done")
+        return closed && agent.selectedID == owner
+    }
+
+    /// Click the actual displayed text when the SwiftUI accessibility tree does
+    /// not publish a separate element for an inline Markdown link.
+    private func clickRenderedText(_ terms: [String], in view: NSView, window: NSWindow) -> Bool {
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return false }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let image = bitmap.cgImage else { return false }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLanguages = ["en-US", "zh-Hans"]
+        guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil else { return false }
+        for observation in request.results ?? [] {
+            guard let candidate = observation.topCandidates(1).first else { continue }
+            for term in terms {
+                guard let range = candidate.string.range(of: term, options: [.caseInsensitive]),
+                      let box = try? candidate.boundingBox(for: range) else { continue }
+                let point = CGPoint(x: view.bounds.minX + box.boundingBox.midX * view.bounds.width,
+                                    y: view.bounds.minY + (view.isFlipped ? 1 - box.boundingBox.midY : box.boundingBox.midY) * view.bounds.height)
+                return clickWindowLocation(view.convert(point, to: nil), in: window)
+            }
+        }
+        return false
+    }
+
+    private func verifyTaskBrowser(_ workspace: UnifiedMacWorkspace, agent: HostAgentWorkspace, endpoint: URL) async -> Bool {
+        guard let window = visibleWorkbench, let content = window.contentView, let owner = agent.selectedID,
+              let browser = workspace.browser else { return false }
+        let url = endpoint.appendingPathComponent("workbench-page")
+        let marker = "Draft before opening the browser"
+        func waitUntil(_ condition: () -> Bool) async -> Bool {
+            let limit = ContinuousClock.now + .seconds(5)
+            while !condition(), ContinuousClock.now < limit { try? await Task.sleep(for: .milliseconds(50)) }
+            return condition()
+        }
+        func draftEditor() async -> NSTextView? {
+            guard window.attachedSheet == nil else { return nil }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            guard await waitUntil({ window.isKeyWindow }),
+                  clickWorkbenchButton(ids: ["thread.composer.expand"], frame: HostAgentWorkspaceView.smokeExpandFrame, screenshot: nil),
+                  await waitUntil({ window.attachedSheet?.contentView.flatMap { descendant(NSTextView.self, in: $0) } != nil }),
+                  let body = window.attachedSheet?.contentView else { return nil }
+            return descendant(NSTextView.self, in: body)
+        }
+        var foundLinkRun = false
+        func renderedLink(in view: NSView) -> (NSTextView, NSPoint)? {
+            guard !view.isHiddenOrHasHiddenAncestor, view.window === window else { return nil }
+            if let text = view as? NSTextView, text.delegate is MacChatLinkText.Coordinator,
+               let layout = text.layoutManager, let container = text.textContainer {
+                let content = text.attributedString()
+                var linkRange: NSRange?
+                content.enumerateAttribute(.link, in: NSRange(location: 0, length: content.length)) { target, range, stop in
+                    if (target as? URL) == url || (target as? String) == url.absoluteString {
+                        linkRange = range
+                        stop.pointee = true
+                    }
+                }
+                if let linkRange {
+                    foundLinkRun = true
+                    layout.ensureLayout(for: container)
+                    let glyphs = layout.glyphRange(forCharacterRange: linkRange, actualCharacterRange: nil)
+                    for glyph in glyphs.location..<NSMaxRange(glyphs) {
+                        let bounds = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+                            .offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+                            .intersection(text.visibleRect)
+                        guard bounds.width >= 1, bounds.height >= 1 else { continue }
+                        let point = NSPoint(x: bounds.midX, y: bounds.midY)
+                        if NSLocationInRange(text.characterIndexForInsertion(at: point), linkRange) {
+                            return (text, point)
+                        }
+                    }
+                }
+            }
+            for child in view.subviews {
+                if let link = renderedLink(in: child) { return link }
+            }
+            return nil
+        }
+        func failed(_ reason: String) -> Bool { settingsDiagnostics.append("Task browser: " + reason); return false }
+        guard let editor = await draftEditor(), let sheet = window.attachedSheet else { return failed("draft editor missing") }
+        editor.insertText(marker, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        guard await closeFixtureSheet(sheet, id: "thread.composer.expanded.done") else { return failed("draft editor did not close") }
+        guard await waitUntil({ window.attachedSheet == nil }) else { return failed("another sheet still covers the chat") }
+        window.makeKeyAndOrderFront(nil)
+        guard await waitUntil({ window.isKeyWindow }) else { return failed("chat window did not regain focus") }
+        content.layoutSubtreeIfNeeded()
+        capture(content, extension: "chat-link.png")
+        guard await waitUntil({ renderedLink(in: content) != nil }),
+              let (text, point) = renderedLink(in: content) else {
+            return failed(foundLinkRun ? "link has no visible glyph in the chat" : "chat has no rendered link to the fixture page")
+        }
+        // Post down and up together. NSTextView tracks a physical click until
+        // mouseUp, so synchronously sending down before enqueuing up can stall.
+        guard click(text, at: point, in: window) else { return failed("could not click the chat link") }
+        browserOpenedFromMessageLink = await waitUntil { browser.isPresented }
+        guard browserOpenedFromMessageLink else { return failed("the clicked Markdown link did not open the browser") }
+        guard await waitUntil({ browser.existingTaskSession(for: owner)?.page.title == "Floe browser fixture" }),
+              let session = browser.existingTaskSession(for: owner), session.page.url == url,
+              session.page.window === window else {
+            return failed("page did not load in the owning task window")
+        }
+        capture(content, extension: "browser-task.png")
+        // Click WebKit content with a window event so target=_blank follows the same route as a user's link.
+        let location = try? await session.page.evaluateJavaScript("(()=>{const r=document.getElementById('next').getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()") as? [Double]
+        guard let location, location.count == 2 else { return failed("fixture link missing") }
+        let y = session.page.isFlipped ? location[1] : session.page.bounds.height - location[1]
+        _ = clickWindowLocation(session.page.convert(NSPoint(x: location[0], y: y), to: nil), in: window)
+        guard await waitUntil({ session.page.title == "Floe second page" }), session.page.canGoBack else { return failed("user link did not navigate in place") }
+        session.page.goBack()
+        guard await waitUntil({ session.page.title == "Floe browser fixture" }) else { return failed("back history missing") }
+        browserReturnButtonPressed = pressAccessibilityButton(content, id: "workspace.browser.backToTask")
+        if !browserReturnButtonPressed {
+            func findAnchor(_ view: NSView) -> NSView? {
+                if view.identifier?.rawValue == "workspace.browser.returnAnchor" { return view }
+                return view.subviews.lazy.compactMap(findAnchor).first
+            }
+            if let anchor = findAnchor(content) {
+                let center = NSPoint(x: anchor.bounds.midX, y: anchor.bounds.midY)
+                browserReturnButtonPressed = clickWindowLocation(anchor.convert(center, to: nil), in: window)
+            }
+        }
+        guard browserReturnButtonPressed else { return failed("could not press the return button") }
+        guard await waitUntil({ !browser.isPresented && agent.windowShowsTask }), agent.selectedID == owner,
+              let reopened = await draftEditor(), let reopenedSheet = window.attachedSheet else { return failed("could not return to task") }
+        let keptDraft = reopened.string == marker
+        reopened.insertText("", replacementRange: NSRange(location: 0, length: (reopened.string as NSString).length))
+        guard await closeFixtureSheet(reopenedSheet, id: "thread.composer.expanded.done"), keptDraft else { return failed("draft was lost") }
+        let other = browser.session(for: UUID())
+        return other !== session && other.currentURL == nil && other.page.configuration.websiteDataStore !== session.page.configuration.websiteDataStore
+    }
+
+    private func verifyExpandedComposer(_ agent: HostAgentWorkspace) async -> Bool {
+        let owner = agent.selectedID
+        let messageCount = agent.messages.count
+        let sample = Array(repeating: "原生草稿 Mixed text", count: 12).joined(separator: "\n")
+        let windowReady = ContinuousClock.now + .seconds(3)
+        while (visibleWorkbench?.isKeyWindow != true || visibleWorkbench?.attachedSheet != nil) && ContinuousClock.now < windowReady {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        var sheet: NSWindow?
+        defer { if let sheet, sheet.isVisible { sheet.performClose(nil) } }
+        for first in [true, false] {
+            guard clickWorkbenchButton(ids: ["thread.composer.expand"], frame: HostAgentWorkspaceView.smokeExpandFrame, screenshot: nil) else { settingsDiagnostics.append("Expand button missing"); return false }
+            let deadline = ContinuousClock.now + .seconds(3)
+            var editor: NSTextView?
+            while editor == nil && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(50))
+                sheet = visibleWorkbench?.attachedSheet
+                if let root = sheet?.contentView { editor = descendant(NSTextView.self, in: root) }
+            }
+            guard let editor, let active = sheet else { settingsDiagnostics.append("Expand button did not present editor; first=\(first), sheet=\(sheet != nil)"); return false }
+            if first {
+                editor.insertText(sample, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+                editor.setSelectedRange(NSRange(location: 4, length: 2))
+                if let content = active.contentView { capture(content, extension: "expanded-composer.png") }
+            } else {
+                guard editor.string == sample, editor.selectedRange() == NSRange(location: 4, length: 2) else { settingsDiagnostics.append("Editor reopen text=\(editor.string == sample) selection=\(editor.selectedRange())"); return false }
+                editor.insertText("", replacementRange: NSRange(location: 0, length: (sample as NSString).length))
+            }
+            guard await closeFixtureSheet(active, id: "thread.composer.expanded.done") else { settingsDiagnostics.append("Editor Done failed"); return false }
+        }
+        return agent.selectedID == owner && !agent.isSending && agent.messages.count == messageCount
+    }
+
+    private func verifyAttachmentPreview(_ agent: HostAgentWorkspace, expected: URL) async -> Bool {
+        guard let owner = agent.selectedID, let item = agent.messages.flatMap({ AttachmentChipItem.items(in: $0.parts) }).last,
+              visibleWorkbench != nil else { settingsDiagnostics.append("Attachment fixture unavailable"); return false }
+        let limit = ContinuousClock.now + .seconds(3)
+        while visibleWorkbench?.attachedSheet == nil && ContinuousClock.now < limit {
+            _ = clickWorkbenchButton(ids: ["thread.attachment." + item.id], frame: HostAgentWorkspaceView.smokeAttachmentFrames[item.id], screenshot: nil)
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard let sheet = visibleWorkbench?.attachedSheet, let body = sheet.contentView else { settingsDiagnostics.append("Attachment chip did not open sheet"); return false }
+        defer { if sheet.isVisible { sheet.performClose(nil) } }
+        let opened = descendant(QLPreviewView.self, in: body)?.previewItem?.previewItemURL
+        guard opened?.standardizedFileURL == expected.standardizedFileURL else { settingsDiagnostics.append("Quick Look did not receive the saved attachment"); return false }
+        capture(body, extension: "attachment-preview.png")
+        let closed = await closeFixtureSheet(sheet, id: "thread.attachment.preview.done")
+        return closed && agent.selectedID == owner
+    }
+
     private func verifyWorkspaceAndAttachmentStaging(_ agent: HostAgentWorkspace) async -> Bool {
         let project = root.appendingPathComponent("Fixture Project", isDirectory: true)
         let reference = project.appendingPathComponent("fixture.md")
@@ -1614,6 +2272,17 @@ final class UnifiedMacSmoke {
             }
             workspace.allowsWorkspaceWrites = true
         } else { return false }
+        for pane in [BridgeAppModel.SettingsPane.webSearch, .usage] {
+            guard clickSettingsPane(pane, model: model, in: window) else { return false }
+            let selectedDeadline = ContinuousClock.now + .seconds(2)
+            while model.settingsPane != pane && ContinuousClock.now < selectedDeadline {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            guard model.settingsPane == pane, let content = window.contentView else { return false }
+            try? await Task.sleep(for: .milliseconds(160))
+            capture(content, extension: "settings-\(pane.rawValue).png")
+        }
+        guard (try? await workspace.usageStatistics()) != nil else { return false }
         model.openSettings(.models)
         while model.settingsPane != .models && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))

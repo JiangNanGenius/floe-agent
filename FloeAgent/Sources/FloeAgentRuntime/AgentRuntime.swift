@@ -1503,7 +1503,13 @@ public actor FloeAgentRuntime {
     private func transition(to newState: AgentState) async {
         if case .preparing = newState { acceptingChildResumes = true }
 
-        guard state.name != newState.name else { return }
+        if state.name == newState.name {
+            // Batch approvals are collected before dispatch. Publish each
+            // distinct card even while the overarching phase stays the same.
+            guard case .waitingApproval(let previous) = state,
+                  case .waitingApproval(let next) = newState,
+                  previous.toolCall.id != next.toolCall.id else { return }
+        }
         guard Self.isLegalTransition(from: state, to: newState) else {
             await sink?.agentRuntime(self, didEmit: .error(.init(
                 kind: .malformed,
@@ -1549,6 +1555,7 @@ public actor FloeAgentRuntime {
              ("executingTool", "cancelling"),
              ("executingTool", "completed"),
              ("executingTool", "failed"),
+             ("waitingApproval", "waitingApproval"),
              ("waitingApproval", "executingTool"),
              ("waitingApproval", "streamingModel"),
              ("waitingApproval", "cancelling"),

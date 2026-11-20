@@ -27,6 +27,8 @@ struct HostAgentWorkspaceView: View {
     @State private var standaloneDraft = ""
     #if FLOE_UNIFIED_MAC
     #if FLOE_MAC_HOST_SMOKE
+    static var smokeAttachmentFrames: [String: CGRect] = [:]
+    static var smokeExpandFrame: CGRect?
     static var smokeLocatedMessageID: UUID?
     #endif
     @StateObject private var search: MacConversationSearchModel
@@ -35,6 +37,9 @@ struct HostAgentWorkspaceView: View {
     @State private var resultUnavailable = false
     @State private var searchRetry: UUID?
     @FocusState private var promptFocused: Bool
+    @State private var editingPrompt = false
+    @State private var promptSelection = NSRange(location: 0, length: 0)
+    @State private var attachmentPreview: MacConversationAttachmentPreview?
     @State private var attachmentSelection: UUID?
     @State private var choosingAttachments = false
     @State private var choosingPhoto = false
@@ -246,6 +251,19 @@ struct HostAgentWorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
                 }
                 conversation
+                if let run = workspace.continuableRun {
+                    Button {
+                        Task { await workspace.continueFromHistory(run) }
+                    } label: {
+                        Label(MacPermissionsText.t("从历史继续", "Continue from History"), systemImage: "play")
+                            .padding(.horizontal, 6)
+                            .frame(minHeight: FloeTheme.minimumTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("mac.agent.run.continue")
+                    .padding(.horizontal, 16)
+                }
                 if let failed = workspace.failedUserMessage,
                    CredentialMessagePart.clipboardText(failed.content) != nil, !workspace.isSending {
                     Button("mac.agent.editFailedPrompt") {
@@ -306,6 +324,18 @@ struct HostAgentWorkspaceView: View {
             attachmentImport?.cancel()
             attachmentImport = nil
             attachmentImportID = nil
+        }
+        .sheet(isPresented: $editingPrompt, onDismiss: { promptFocused = true }) {
+            MacExpandedComposer(text: draft, selection: $promptSelection, canSend: canSubmitComposer,
+                                sendLabel: composerSubmitLabel, submit: submitComposer)
+        }
+        .sheet(item: $attachmentPreview) { preview in
+            MacConversationAttachmentSheet(preview: preview)
+        }
+        .onChange(of: workspace.draftSelectionID) {
+            editingPrompt = false
+            attachmentPreview = nil
+            promptSelection = NSRange(location: 0, length: 0)
         }
         .photosPicker(isPresented: $choosingPhoto, selection: $photo, matching: .images)
         .onChange(of: photo) { _, item in
@@ -384,8 +414,37 @@ struct HostAgentWorkspaceView: View {
     }
 
     #if FLOE_UNIFIED_MAC
+    private var composerSubmitLabel: LocalizedStringKey {
+        if !workspace.isSending { return "host.chat.send" }
+        return workspace.runningInputMode == .steer ? "chat.thread_composer_view.steer_the_current_run"
+                                                    : "chat.thread_composer_view.add_to_message_queue"
+    }
+
+    private var canSubmitComposer: Bool {
+        guard attachmentImport == nil, !workspace.isTerminating, workspace.selectedID == findConversationID,
+              !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if workspace.isSending { return workspace.canSteer }
+        let compatible = mode == .chat || workspace.composerProvider?.model.capabilities.contains(.tools) == true
+        return workspace.composerProvider != nil && compatible && !workspace.isAcceptingPlan
+    }
+
+    private func submitComposer() {
+        guard canSubmitComposer else { return }
+        if workspace.isSending {
+            let binding = draft
+            let text = binding.wrappedValue
+            let clear = { if binding.wrappedValue == text { binding.wrappedValue = "" } }
+            if workspace.runningInputMode == .steer { workspace.steer(text, onAccepted: clear) }
+            else { workspace.enqueue(text, onAccepted: clear) }
+        } else {
+            let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
+            let isNewGoal = mode == .goal && workspace.goal?.status.isTerminal != false
+            submitDraft(workspaceID: project, mode: mode, criterion: isNewGoal ? criterion : "")
+        }
+    }
+
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 2) {
             if !workspace.isSending, mode != .chat, let provider = workspace.composerProvider,
                !provider.model.capabilities.contains(.tools) {
                 HStack {
@@ -422,7 +481,7 @@ struct HostAgentWorkspaceView: View {
                     .accessibilityIdentifier("mac.agent.goalCriterion")
                     .disabled(workspace.isSending || workspace.isTerminating)
             }
-            ComposerResponsiveRow {
+            ComposerResponsiveRow(spacing: 4, stackedSpacing: 2) {
                 composerAttachments
                     .composerResponsiveLeadingControl()
                 TextField(LocalizedStringKey(workspace.isSending ? (workspace.runningInputMode == .steer ? "mac.agent.steerPrompt" : "mac.agent.queuePrompt") : "host.chat.prompt"), text: draft, axis: .vertical)
@@ -443,21 +502,27 @@ struct HostAgentWorkspaceView: View {
                     #endif
                     .disabled(workspace.isTerminating || (workspace.isSending && workspace.selectedID == nil))
                     .composerResponsiveFieldSlot()
+                Button { editingPrompt = true } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                }
+                .buttonStyle(ComposerButtonStyle())
+                .help("mac.composer.expand")
+                .accessibilityLabel("mac.composer.expand")
+                .accessibilityIdentifier("thread.composer.expand")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { Self.smokeExpandFrame = $0 })
+                #endif
+                .disabled(workspace.isTerminating || (workspace.isSending && workspace.selectedID == nil))
                 if workspace.isSending {
-                    Button {
-                        let binding = draft
-                        let text = binding.wrappedValue
-                        let clear = { if binding.wrappedValue == text { binding.wrappedValue = "" } }
-                        if workspace.runningInputMode == .steer { workspace.steer(text, onAccepted: clear) }
-                        else { workspace.enqueue(text, onAccepted: clear) }
-                    } label: {
+                    Button(action: submitComposer) {
                         let steering = workspace.runningInputMode == .steer
-                        Label(LocalizedStringKey(steering ? "chat.thread_composer_view.steer_the_current_run" : "chat.thread_composer_view.add_to_message_queue"),
+                        Label(composerSubmitLabel,
                               systemImage: steering ? "arrow.turn.up.right" : "text.badge.plus")
                             .labelStyle(.iconOnly)
                     }
-                    .controlSize(.small)
-                    .disabled(!workspace.canSteer || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .buttonStyle(ComposerButtonStyle())
+                    .help(Text(composerSubmitLabel))
+                    .disabled(!canSubmitComposer)
                     .keyboardShortcut(.return, modifiers: .command)
                     .accessibilityIdentifier("composer.running.send")
                     #if FLOE_MAC_HOST_SMOKE
@@ -466,45 +531,34 @@ struct HostAgentWorkspaceView: View {
                     Button(action: workspace.stop) {
                         FloeComposerActionGlyph(systemImage: "stop.fill", enabled: workspace.canStop, destructive: true)
                     }
-                    .buttonStyle(.plain)
-                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .buttonStyle(ComposerButtonStyle())
                     .accessibilityLabel("host.chat.stop")
                     .disabled(!workspace.canStop)
                 } else {
-                    let isNewGoal = mode == .goal && workspace.goal?.status.isTerminal != false
-                    let compatible = mode == .chat || workspace.composerProvider?.model.capabilities.contains(.tools) == true
-                    let canSend = attachmentImport == nil && workspace.composerProvider != nil && compatible && !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        && !workspace.isTerminating && !workspace.isAcceptingPlan
-                    Button {
-                        let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
-                        submitDraft(workspaceID: project, mode: mode, criterion: isNewGoal ? criterion : "")
-                    } label: {
-                        FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSend)
+                    Button(action: submitComposer) {
+                        FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSubmitComposer)
                     }
-                    .buttonStyle(.plain)
-                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .buttonStyle(ComposerButtonStyle())
                     .accessibilityLabel("host.chat.send")
                     .accessibilityIdentifier("composer.send")
                     .help(workspace.composerProvider == nil ? Text("host.chat.configureFirst") : Text("mac.workspace.sendShortcut"))
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!canSend)
+                    .disabled(!canSubmitComposer)
                 }
             }
             if let openModelSettings {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        composerContext(openModelSettings)
-                        modeControl.disabled(workspace.isSending)
-                        permissionControl.disabled(workspace.isStopping || workspace.isResolvingApproval || (workspace.isSending && workspace.runPhase == nil))
-                        if let provider = workspace.composerProvider { reasoningMenu(provider.model) }
-                        if workspace.isSending { runningInputControl }
-                    }
+                ComposerContextLayout {
+                    composerContext(openModelSettings)
+                    modeControl.disabled(workspace.isSending)
+                    permissionControl.disabled(workspace.isStopping || workspace.isResolvingApproval || (workspace.isSending && workspace.runPhase == nil))
+                    if let provider = workspace.composerProvider { reasoningMenu(provider.model) }
+                    if workspace.isSending { runningInputControl }
                 }
-                .padding(.leading, 4)
                 .disabled(workspace.isTerminating || workspace.isAcceptingPlan)
             }
         }
-        .padding(8)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
         .modifier(FloeThreadComposerChrome())
         .dropDestination(for: URL.self) { urls, _ in
             guard acceptsAttachmentImport else { return false }
@@ -521,28 +575,84 @@ struct HostAgentWorkspaceView: View {
     private var runningInputControl: some View {
         FloeComposerRunningInputMenu(queue: Binding(get: { workspace.runningInputMode == .queue },
                                                    set: { workspace.runningInputMode = $0 ? .queue : .steer }))
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(ComposerButtonStyle())
         .menuIndicator(.hidden)
-        .fixedSize()
         .accessibilityIdentifier("composer.runningInputMode")
         #if FLOE_MAC_HOST_SMOKE
         .background(MacWorkbenchButtonFrameReader { workspace.smokeRunningModeFrame = $0 })
         #endif
     }
 
-    private func composerContext(_ openModelSettings: @escaping () -> Void) -> some View {
-        HStack(spacing: 6) {
-            modelControl(openSettings: openModelSettings).fixedSize().disabled(workspace.isSending)
-            if let openFiles {
-                if let owner = workspace.selectedConversationWorkspace {
-                    Button(action: openFiles) {
-                        FloeThreadComposerChip(title: owner.kind == .project ? Text(verbatim: owner.name) : Text("mac.workspace.conversationFolder"), systemImage: "folder")
-                    }
-                    .buttonStyle(.plain)
-                    .help("mac.workspace.browseFiles")
-                } else if workspace.selectedID == nil {
-                    projectControl(openFiles: openFiles).disabled(workspace.isSending)
+    @ViewBuilder private func composerContext(_ openModelSettings: @escaping () -> Void) -> some View {
+        modelControl(openSettings: openModelSettings).disabled(workspace.isSending)
+        if let openFiles {
+            if let owner = workspace.selectedConversationWorkspace {
+                Button(action: openFiles) {
+                    FloeThreadComposerChip(title: owner.kind == .project ? Text(verbatim: owner.name) : Text("mac.workspace.conversationFolder"),
+                                           systemImage: "folder", maximumWidth: 148)
                 }
+                .buttonStyle(ComposerButtonStyle())
+                .help("mac.workspace.browseFiles")
+            } else if workspace.selectedID == nil {
+                projectControl(openFiles: openFiles).disabled(workspace.isSending)
+            }
+        }
+    }
+
+    /// Keep compact desktop labels while giving the button itself a touch target.
+    private struct ComposerButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            FloeTheme.minimumTargetFrame(configuration.label)
+                .contentShape(Rectangle())
+                .opacity(configuration.isPressed ? 0.65 : 1)
+        }
+    }
+
+    /// Keep each native menu in place as the window changes width, wrapping
+    /// in reading order so the last menu is accessible without a trackpad.
+    private struct ComposerContextLayout: Layout {
+        private let spacing: CGFloat = 4
+
+        private func positions(for sizes: [CGSize], width: CGFloat) -> (origins: [CGPoint], height: CGFloat) {
+            var origins: [CGPoint] = []
+            var x: CGFloat = 0
+            var y: CGFloat = 0
+            var rowHeight: CGFloat = 0
+            for size in sizes {
+                if x > 0, x + size.width > width {
+                    x = 0
+                    y += rowHeight
+                    rowHeight = 0
+                }
+                origins.append(CGPoint(x: x, y: y))
+                x += size.width + spacing
+                rowHeight = max(rowHeight, size.height)
+            }
+            return (origins, y + rowHeight)
+        }
+
+        private func sizes(of subviews: Subviews, width: CGFloat?) -> [CGSize] {
+            subviews.map { view in
+                let ideal = view.sizeThatFits(.unspecified)
+                guard let width, ideal.width > width else { return ideal }
+                return view.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            }
+        }
+
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            let sizes = sizes(of: subviews, width: proposal.width)
+            let ideal = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(sizes.count - 1, 0))
+            let width = min(ideal, proposal.width ?? ideal)
+            return CGSize(width: width, height: positions(for: sizes, width: width).height)
+        }
+
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+            let sizes = sizes(of: subviews, width: bounds.width)
+            let origins = positions(for: sizes, width: bounds.width).origins
+            for (index, view) in subviews.enumerated() {
+                view.place(at: CGPoint(x: bounds.minX + origins[index].x, y: bounds.minY + origins[index].y),
+                           anchor: .topLeading, proposal: ProposedViewSize(sizes[index]))
             }
         }
     }
@@ -621,11 +731,11 @@ struct HostAgentWorkspaceView: View {
         } label: {
             FloeWorkbenchControlIcon(systemImage: "paperclip")
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(ComposerButtonStyle())
         .menuIndicator(.hidden)
         .help("mac.workspace.attachFiles")
         .accessibilityLabel("mac.workspace.attachFiles")
-        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
         .disabled(!acceptsAttachmentImport)
     }
 
@@ -745,7 +855,9 @@ struct HostAgentWorkspaceView: View {
             FloeThreadComposerChip(title: Text(LocalizedStringKey("mac.reasoning." + current)),
                                    systemImage: "brain.head.profile")
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .menuStyle(.button)
+        .buttonStyle(ComposerButtonStyle())
+        .menuIndicator(.hidden)
         .disabled(workspace.isSending || workspace.isLoadingHistory || workspace.savingChatReasoning)
         .accessibilityIdentifier("composer.reasoning")
         .accessibilityLabel("mac.reasoning.label")
@@ -764,9 +876,9 @@ struct HostAgentWorkspaceView: View {
                              title: { $0.title }, symbol: { $0.symbol },
                              editGoalTitle: String(localized: "mac.agent.editGoal"),
                              editGoal: editableGoal.map { goal in { goalToEdit = goal } }, goal: .goal)
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(ComposerButtonStyle())
         .menuIndicator(.hidden)
-        .fixedSize()
         .accessibilityIdentifier("mac.composer.mode")
         #if FLOE_MAC_HOST_SMOKE
         .background(MacWorkbenchButtonFrameReader { workspace.smokeModeFrame = $0 })
@@ -802,9 +914,9 @@ struct HostAgentWorkspaceView: View {
             guard approvalSelection == workspace.draftSelectionID else { return }
             Task { await workspace.setApprovalMode(.fullAccess, asDefault: false) }
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(ComposerButtonStyle())
         .menuIndicator(.hidden)
-        .fixedSize()
         .disabled(workspace.savingApprovalMode)
         .accessibilityIdentifier("composer.approvalMode")
         .accessibilityLabel(MacPermissionsText.t("审批模式", "Approval mode"))
@@ -826,6 +938,22 @@ struct HostAgentWorkspaceView: View {
                                 workspace.withOutputFile(step) { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
                             } label: { Label(path, systemImage: "doc") }
                             .help("mac.run.revealFile")
+                        }
+                        if step.outputWorkspaceID == workspace.selectedConversationWorkspace?.id {
+                            ForEach(step.mediaArtifacts) { artifact in
+                                Button {
+                                    Task {
+                                        await workspace.withOutputFile(step, artifact: artifact) { url in
+                                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                                        }
+                                    }
+                                } label: {
+                                    Label((artifact.relativePath as NSString).lastPathComponent,
+                                          systemImage: artifact.mimeType.hasPrefix("video/") ? "film" : "photo")
+                                }
+                                .help("mac.run.revealFile")
+                                .accessibilityIdentifier("mac.run.artifact." + artifact.id.uuidString)
+                            }
                         }
                         if let summary = step.summary, !summary.isEmpty {
                             Text(summary).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -899,11 +1027,11 @@ struct HostAgentWorkspaceView: View {
             Button("mac.workspace.browseFiles", action: openFiles)
         } label: {
             FloeThreadComposerChip(title: Text(verbatim: project?.name ?? String(localized: "mac.workspace.conversationFolder")),
-                                   systemImage: "folder")
+                                   systemImage: "folder", maximumWidth: 148)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(ComposerButtonStyle())
         .menuIndicator(.hidden)
-        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder private func modelControl(openSettings: @escaping () -> Void) -> some View {
@@ -914,7 +1042,7 @@ struct HostAgentWorkspaceView: View {
             Button(action: openSettings) {
                 FloeThreadComposerChip(title: Text("mac.workspace.configureModel"), systemImage: "cpu")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ComposerButtonStyle())
         } else {
             Menu {
                 let groups = Dictionary(grouping: chatModels, by: { $0.profile.id })
@@ -933,6 +1061,7 @@ struct HostAgentWorkspaceView: View {
                                     Text(verbatim: record.model.displayName)
                                 }
                             }
+                            .disabled(workspace.isSending || workspace.isLoadingHistory || workspace.isTerminating)
                         }
                     } header: { Text(verbatim: providerGroupTitle(records)) }
                 }
@@ -941,12 +1070,12 @@ struct HostAgentWorkspaceView: View {
             } label: {
                 FloeThreadComposerChip(
                     title: Text(verbatim: composerModelTitle),
-                    systemImage: "cpu"
+                    systemImage: "cpu", maximumWidth: 205
                 )
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(ComposerButtonStyle())
             .menuIndicator(.hidden)
-            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -996,7 +1125,7 @@ struct HostAgentWorkspaceView: View {
                                             guard let id = item.attachmentID else { return }
                                             Task {
                                                 await workspace.withSavedAttachment(id: id, conversationID: message.conversationID) {
-                                                    NSWorkspace.shared.activateFileViewerSelecting([$0])
+                                                    attachmentPreview = MacConversationAttachmentPreview(id: id, url: $0)
                                                 }
                                             }
                                         })

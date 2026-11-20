@@ -72,6 +72,16 @@ public actor FloeMacSelfRuntime {
     private var shutdownTask: Task<FloeMacSelfShutdownReceipt, Error>?
     // The durable runtime, not a transient UI handle, owns live sessions.
     private var sessions: [UUID: FloeMacSelfSession] = [:]
+    // Conversation-coordination scope (coordinator-allocated): live
+    // ConversationRunService owners by runID, populated only while the same
+    // run is present in `sessions`. conversation.message resolves sender and
+    // recipient exclusively through this map, so a finished, closed or
+    // replaced owner is never addressed and no second service registry
+    // exists. Every mutation point mirrors the `sessions` map.
+    private var liveConversationServices: [UUID: ConversationRunService] = [:]
+    // The single per-database conversation capability, bound at bootstrap to
+    // this runtime's stores and live-service map.
+    private var conversationCapability: FloeMacConversationToolCapability?
     private var activeAdmissions: Set<UUID> = []
     private var workspaceRegistrations: [URL: Task<WorkspaceRecord, any Error>] = [:]
     private var closingSessions: Set<UUID> = []
@@ -714,12 +724,6 @@ public actor FloeMacSelfRuntime {
                 launchStatusPayloads.append(String(decoding: payload, as: UTF8.self))
             }
             let questionOnlyChat = !resolvedTools.enabled && questionEligible
-            let baseExecutor: any ToolExecutor = questionEligible
-                ? FloeMacSelfQuestionToolExecutor(
-                    wrapping: resolvedTools.executor,
-                    coordinator: questionCenter.coordinator
-                )
-                : resolvedTools.executor
             let availableToolNames: Set<String> = {
                 guard questionEligible else { return resolvedTools.allowedToolNames }
                 if questionOnlyChat { return [UserAskTool.name] }
@@ -727,6 +731,43 @@ public actor FloeMacSelfRuntime {
                 return resolvedTools.allowedToolNames.union([UserAskTool.name])
             }()
             let runtimeToolsEnabled = resolvedTools.enabled || questionOnlyChat
+            // Sibling collaboration tools (`delegate.peers` / `delegate.message`)
+            // are delegated-child-only. They join the runtime ceiling — the
+            // frozen catalog identity, the child offer filter and the task
+            // fence — but NEVER the model-visible capability list: the shared
+            // runtime excludes childOnly descriptors from the main-run schema
+            // set, and a main-run call that hallucinates the name fails closed
+            // inside the shared tool itself. The self-core composition keeps
+            // no temporary read-only surface, so only ordinary task access
+            // admits them, exactly like iPad.
+            let admitsPeerTools = FloeMacSubagentPeerSupport.admitsPeerTools(
+                runtimeToolsEnabled: runtimeToolsEnabled,
+                conversationMode: request.mode,
+                chatFastMode: effectiveChatFastMode,
+                temporaryReadOnly: false
+            )
+            let runtimeCeilingNames = admitsPeerTools
+                ? availableToolNames.union(FloeMacSubagentPeerSupport.toolNames)
+                : availableToolNames
+            // The parent surface resolves the two compiled child-only sibling
+            // collaboration descriptors only for sessions whose ceiling
+            // actually admits the delegation envelope — an enabled, owned
+            // child runtime (the private `delegate`/`delegate.wait` names
+            // travel in `availableToolNames` only in that composition). Chat,
+            // Plan and tool-free sessions never carry the wrap: no delegated
+            // child can exist there and the main-run catalog stays exactly
+            // the host's. The wrap adds descriptors and routes execution; it
+            // grants no authority of its own.
+            let peerAwareParentExecutor: any ToolExecutor = (admitsPeerTools
+                && availableToolNames.contains(DelegateTool.name))
+                ? FloeMacPeerAwareToolExecutor(wrapping: resolvedTools.executor)
+                : resolvedTools.executor
+            let baseExecutor: any ToolExecutor = questionEligible
+                ? FloeMacSelfQuestionToolExecutor(
+                    wrapping: peerAwareParentExecutor,
+                    coordinator: questionCenter.coordinator
+                )
+                : peerAwareParentExecutor
             let runContext = ConversationRunService.RunContext(
                 workspaceName: request.context.workspaceName ?? prepared.workspace.name,
                 selectedRelativePath: request.context.selectedRelativePath,
@@ -769,7 +810,7 @@ public actor FloeMacSelfRuntime {
                 provider: resolvedProvider.provider,
                 model: turnModel,
                 conversationMode: request.mode,
-                allowedToolNames: availableToolNames,
+                allowedToolNames: runtimeCeilingNames,
                 workspaceRootURL: resolvedWorkspaceRoot,
                 allowedWorkspacePaths: resolvedTools.boundary?.allowedWorkspacePaths ?? [],
                 toolsEnabled: runtimeToolsEnabled,
@@ -808,7 +849,7 @@ public actor FloeMacSelfRuntime {
             if runtimeToolsEnabled {
                 let fenced = FloeMacSelfFencedToolExecutor(
                     wrapping: baseExecutor,
-                    allowedToolNames: availableToolNames,
+                    allowedToolNames: runtimeCeilingNames,
                     fence: fence,
                     epoch: taskEpoch
                 )
@@ -885,6 +926,7 @@ public actor FloeMacSelfRuntime {
                 receiptWorkspace: resolvedWorkspaceRoot.map {
                     (id: prepared.workspace.id, root: $0)
                 },
+                workspaceArtifactTools: availableToolNames.intersection(["image.generate", "video.generate", "video.status", "video.cancel"]),
                 conversationHistory: conversationHistory,
                 currentUserImages: needsVision ? [] : currentUserImages,
                 runContext: runContext
@@ -940,6 +982,7 @@ public actor FloeMacSelfRuntime {
                 afterCancellationAttempt: cancellationAttemptTestHook
             )
             sessions[prepared.run.id] = session
+            liveConversationServices[prepared.run.id] = service
             sessionOwnsClaim = true
             await session.launch()
             return FloeMacSelfSessionHandle(runtime: self, session: session, identity: identity)
@@ -953,6 +996,19 @@ public actor FloeMacSelfRuntime {
             }
             throw error
         }
+    }
+
+    public func keepTemporaryConversation(_ snapshot: ConversationPromoter.Snapshot,
+                                          configuration: [ConversationPromoter.ModelConfiguration],
+                                          checkCancellation: @escaping @Sendable () throws -> Void) async throws {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        try checkCancellation()
+        let operation = UUID()
+        activeAdmissions.insert(operation)
+        defer { activeAdmissions.remove(operation) }
+        try await ConversationPromoter(database: database).promote(snapshot, configuration: configuration,
+                                                                   checkCancellation: checkCancellation)
     }
 
     // MARK: - Goal pause and continue (user controls)
@@ -1348,6 +1404,7 @@ public actor FloeMacSelfRuntime {
         defer { closingSessions.remove(runID) }
         let receipt = try await session.close(allowUnconfirmed: allowUnconfirmed)
         sessions[runID] = nil
+        liveConversationServices[runID] = nil
         claims.release(conversationID: receipt.conversationID, runID: runID)
         return receipt
     }
@@ -1447,6 +1504,7 @@ public actor FloeMacSelfRuntime {
                     preserved.append(receipt.runID)
                 }
                 sessions[receipt.runID] = nil
+                liveConversationServices[receipt.runID] = nil
                 claims.release(conversationID: receipt.conversationID, runID: receipt.runID)
                 closedCount += 1
             } catch {
@@ -1482,6 +1540,8 @@ public actor FloeMacSelfRuntime {
         stores = nil
         admissions = nil
         sessions.removeAll()
+        liveConversationServices.removeAll()
+        conversationCapability = nil
         activeAdmissions.removeAll()
         closingSessions.removeAll()
         closed = true
@@ -1545,6 +1605,51 @@ public actor FloeMacSelfRuntime {
         try ensureOpen()
         guard let questionCenter else { throw FloeMacSelfCoreError.notBootstrapped }
         return questionCenter
+    }
+
+    // MARK: - Conversation tools (conversation-coordination scope)
+
+    /// The single per-database conversation capability
+    /// (`conversation.list/search/read/spawn/message`), bound to this
+    /// runtime's stores and live-session map with iPad-equal authority:
+    /// quoted untrusted history reads, explicit-request-only visible task
+    /// spawning with deterministic identities and no silent workspace
+    /// inheritance, and shared coordination delivery. Throws
+    /// `notBootstrapped` before `bootstrap()` and `runtimeClosed` after
+    /// shutdown.
+    public func conversationToolCapability() async throws -> FloeMacConversationToolCapability {
+        try ensureOpen()
+        let stores = try requireStores()
+        if let conversationCapability {
+            return conversationCapability
+        }
+        let capability = FloeMacConversationTools.makeCapability(
+            reader: stores.intelligence,
+            runStore: stores.runs,
+            conversationStore: stores.conversations,
+            runningInputStore: stores.runningInputs,
+            resolveWorkspace: { workspaceID in
+                try await stores.workspaces.workspace(id: workspaceID)
+            },
+            liveService: { [weak self] runID in
+                await self?.liveConversationServices[runID]
+            }
+        )
+        conversationCapability = capability
+        return capability
+    }
+
+    /// Native ingress for `conversation.message`, mirroring the iPad
+    /// `ConversationCenter.sendTaskCoordination` seam: delivers one bounded
+    /// coordination message to another currently live task owned by this
+    /// runtime. Receipts never grant authority; a finished task is never
+    /// restarted.
+    public func sendTaskCoordination(
+        _ request: ConversationCoordinationRequest,
+        cancellation: CancellationToken
+    ) async throws -> ConversationCoordinationReceipt {
+        let capability = try await conversationToolCapability()
+        return try await capability.coordination.deliver(request, cancellation: cancellation)
     }
 
     /// Every durable workspace in deterministic name order. This is the
@@ -2306,6 +2411,38 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    /// Publish only a complete export. The replacement directory is on the
+    /// destination volume, so publishing is one atomic rename even on an
+    /// external drive. A failed or cancelled export leaves the prior file intact.
+    public func exportStructuredConversation(conversationID: UUID, to destination: URL) async throws {
+        let stores = try requireStores()
+        guard destination.isFileURL,
+              try await stores.conversations.conversation(id: conversationID)?.isVisibleInOrdinaryList == true else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        let manager = FileManager.default
+        let staging = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                      appropriateFor: destination, create: true)
+        defer { try? manager.removeItem(at: staging) }
+        let pending = staging.appendingPathComponent("transcript.jsonl")
+        try Data().write(to: pending, options: .withoutOverwriting)
+        let handle = try FileHandle(forWritingTo: pending)
+        do {
+            try await ConversationTranscriptExport.writeStructured(
+                conversationID: conversationID, conversations: stores.conversations, runStore: stores.runs,
+                to: handle, eventChangedMessage: "The event record changed during export."
+            )
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
+        }
+        try Task.checkCancellation()
+        guard rename(pending.path, destination.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
     public func conversationAttachment(id: UUID, conversationID: UUID) async throws -> AttachmentRef? {
         let stores = try requireStores()
         do {
@@ -2333,6 +2470,10 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    public func usageStatistics() async throws -> UsageStatistics {
+        try await requireStores().runs.usageStatistics()
+    }
+
     public func runUsage(runID: UUID) async throws -> [RunUsageRecord] {
         let stores = try requireStores()
         do {
@@ -2345,6 +2486,39 @@ public actor FloeMacSelfRuntime {
     public func recentRunEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
         let stores = try requireStores()
         return try await stores.runs.recentEvents(runID: runID, limit: min(500, max(1, limit)))
+    }
+
+    /// A history continuation starts a separate turn. Never adopt a live call,
+    /// transfer an old approval, or raise a historical chat/plan tool ceiling.
+    public func historyContinuationAccess(after runID: UUID, in conversationID: UUID) async throws -> ConversationToolAccess? {
+        let stores = try requireStores()
+        guard let conversation = try await stores.conversations.conversation(id: conversationID),
+              conversation.isVisibleInOrdinaryList,
+              try await stores.workspaces.workspaceID(conversationID: conversationID) != nil,
+              let run = try await stores.runs.recentRuns(conversationID: conversationID, limit: 1).first,
+              run.id == runID, run.goalID == nil, run.conversationMode != ConversationMode.goal.rawValue,
+              ["failed", "interrupted", "checkpointed"].contains(run.state) else { return nil }
+        if let admission = try await admissionRecord(conversationID: conversationID) {
+            guard admission.runID == runID, !admission.phase.isUnresolved, admission.stopRequestedAt == nil else { return nil }
+        }
+        let checkpoint = try await stores.checkpoints.load(runID: runID)
+        if let checkpoint {
+            guard checkpoint.runID == runID, checkpoint.conversationID == conversationID,
+                  checkpoint.conversationMode != .goal else { return nil }
+            if case .checkpointed(let ref) = checkpoint.state,
+               ref.reason?.hasPrefix(FloeAgentRuntime.dependencyWaitReasonPrefix) == true { return nil }
+            let committed = Set(checkpoint.pendingToolResults.map(\.callID))
+            let lifecycle = checkpoint.toolLifecycleEntries ?? []
+            let uncertainWrite = lifecycle.contains { $0.phase == .dispatched && $0.isSideEffecting != false && !committed.contains($0.callID) }
+            let untrackedCall = checkpoint.pendingToolCalls.contains { call in
+                !committed.contains(call.id) && !lifecycle.contains { $0.callID == call.id }
+            }
+            if uncertainWrite || untrackedCall { return .chat }
+        } else if run.state == "checkpointed" {
+            return nil
+        }
+        if run.conversationMode == ConversationMode.plan.rawValue || checkpoint?.toolAccess == .plan { return .plan }
+        return checkpoint?.toolAccess == .task && run.conversationMode == ConversationMode.chat.rawValue ? .task : .chat
     }
 
     /// Read-only recovery point. This stage does not resume it automatically;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import Combine
 import FloeMacToolbox
 import SwiftUI
 
@@ -8,7 +9,7 @@ import SwiftUI
 /// The shared activity ledger prevents an installation from racing an
 /// admitted conversation or the shutdown of an open toolbox.
 @MainActor
-final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidation {
+final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     static let workbenchWindowIdentifier = NSUserInterfaceItemIdentifier("floe.agent.workbench")
 
     enum CloseError: LocalizedError {
@@ -32,18 +33,31 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
     private(set) var videos: MacVideoGeneration?
     private(set) var creativeLibrary: MacCreativeLibrary?
     private var agentWindow: NSWindow?
-    private var taskMenuItem: NSMenuItem?
-    private var spaceMenuItem: NSMenuItem?
+    struct MenuAvailability: Equatable {
+        var openSpace = false
+        var newTask = false
+        var find = false
+        var stop = false
+        var toggleFiles = false
+    }
+    @Published private(set) var menuAvailability = MenuAvailability()
+    private var commandObservation: AnyCancellable?
+    private var presentingSheet = false
     private var draftStore: MacWorkspaceDraftStore?
+    private(set) var temporaryChat: MacTemporaryChatModel?
     private var agentLeases = Set<BridgeUpdateActivity.Lease>()
     private(set) var toolbox: MacToolboxWindowController?
     private var toolboxLease: BridgeUpdateActivity.Lease?
     private var drainingToolbox = false
+    /// Workbench browser controller; created with the Agent window so the
+    /// isolated sessions outlive individual destinations.
+    private(set) var browser: MacBrowserWorkbenchController?
 
     init(activity: BridgeUpdateActivity, testSupport: URL? = nil, preferences: UserDefaults = .standard) {
         self.activity = activity
         self.testSupport = testSupport
         self.preferences = preferences
+        super.init()
     }
 
     func openAgent(openSettings: @escaping () -> Void, openImageSettings: @escaping () -> Void,
@@ -73,6 +87,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                 MacImageGeneration(directory: $0.appendingPathComponent("Images", isDirectory: true), namespace: namespace,
                                    useKeychain: testSupport == nil, workspace: workspace, preferences: preferences, admitWork: admitWork)
             }
+            workspace.taskImages = images
             self.images = images
             let videos = directory.map {
                 MacVideoGeneration(directory: $0.appendingPathComponent("Videos", isDirectory: true), namespace: namespace,
@@ -81,11 +96,16 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
             let library = directory.map {
                 MacCreativeLibrary(directory: $0.appendingPathComponent("Canvases", isDirectory: true), preferences: preferences, admitWork: admitWork)
             }
+            workspace.taskVideos = videos
             self.videos = videos
             self.creativeLibrary = library
             videos?.resume()
             workspace.loadAttachmentDraft = { [weak drafts] in drafts?.attachments(for: $0) ?? [] }
             workspace.saveAttachmentDraft = { [weak drafts] id, attachments in drafts?.setAttachments(attachments, for: id) }
+            let browser = MacBrowserWorkbenchController()
+            self.browser = browser
+            let temporary = MacTemporaryChatModel()
+            temporaryChat = temporary
             let host = NSHostingController(rootView: MacWorkspaceRootView(
                 workspace: workspace, openSettings: openSettings,
                 openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
@@ -105,12 +125,18 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                     return AnyView(MacCreativeWorkbenchView(library: library, images: images, videos: videos,
                                                             imageSettings: openImageSettings, videoSettings: openVideoSettings))
                 },
-                remembersFileRoot: testSupport == nil, draftStore: drafts
+                remembersFileRoot: testSupport == nil, draftStore: drafts, browserWorkbench: browser, temporaryChat: temporary
             ))
+            // The split-view header reserves the traffic lights itself; a second
+            // host titlebar inset would leave an empty row above both columns.
+            host.safeAreaRegions = []
             let window = NSWindow(contentViewController: host)
             window.identifier = Self.workbenchWindowIdentifier
             window.title = String(localized: "host.role.agent")
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
             window.setContentSize(NSSize(width: 1150, height: 750))
             window.contentMinSize = NSSize(width: 720, height: 480)
             if testSupport == nil {
@@ -123,105 +149,74 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
             window.isReleasedWhenClosed = false
             agentWindow = window
             window.delegate = self
+            commandObservation = workspace.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in
+                self?.refreshMenuAvailability()
+            }
         }
         agentWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        installWorkbenchMenus()
+        refreshMenuAvailability()
     }
 
-    private func performWindowAction(_ action: HostAgentWorkspace.WindowAction) {
-        guard let agent, let agentWindow, agentWindow === NSApp.keyWindow,
-              !agent.isSettingsPresented, agentWindow.attachedSheet == nil else { return }
+    private var currentMenuAvailability: MenuAvailability {
+        guard let agent, let window = agentWindow, !agent.isTerminating, !agent.isSettingsPresented,
+              !presentingSheet, window.attachedSheet == nil, NSApp.modalWindow == nil,
+              NSApp.keyWindow?.sheetParent == nil else { return .init() }
+        let key = window === NSApp.keyWindow && window.isKeyWindow
+        return .init(openSpace: true, newTask: agent.isReady && !agent.isAcceptingPlan,
+                     find: key, stop: key && agent.canStop, toggleFiles: key && agent.windowShowsTask)
+    }
+
+    private func refreshMenuAvailability() {
+        let latest = currentMenuAvailability
+        if latest != menuAvailability { menuAvailability = latest }
+    }
+
+    func performMenuAction(_ action: HostAgentWorkspace.WindowAction) {
+        guard let agent, let window = agentWindow else { return }
+        let allowed = currentMenuAvailability
+        switch action {
+        case .newTask:
+            guard allowed.newTask else { return }
+            window.makeKeyAndOrderFront(nil)
+        case .findTask, .findTaskTitles:
+            guard allowed.find else { return }
+        case .stopTask:
+            guard allowed.stop else { return }
+        case .toggleFiles:
+            guard allowed.toggleFiles else { return }
+        case .openSpace(let page):
+            guard allowed.openSpace else { return }
+            openSpace(page)
+            return
+        }
         agent.windowCommand = .init(action: action)
     }
 
-    private func installWorkbenchMenus() {
-        guard let mainMenu = NSApp.mainMenu,
-              taskMenuItem?.menu !== mainMenu || spaceMenuItem?.menu !== mainMenu else { return }
-        if let taskMenuItem { taskMenuItem.menu?.removeItem(taskMenuItem) }
-        if let spaceMenuItem { spaceMenuItem.menu?.removeItem(spaceMenuItem) }
-        let title = String(localized: "Tasks")
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        let menu = NSMenu(title: title)
-        let newTask = menu.addItem(withTitle: String(localized: "workbench.new_task"),
-                                   action: #selector(newTaskFromMenu(_:)), keyEquivalent: "n")
-        newTask.target = self
-        let findTask = menu.addItem(withTitle: String(localized: "mac.workspace.find"),
-                                    action: #selector(findTaskFromMenu(_:)), keyEquivalent: "f")
-        findTask.target = self
-        let findTitles = menu.addItem(withTitle: String(localized: "mac.workspace.findTask"),
-                                     action: #selector(findTaskTitlesFromMenu(_:)), keyEquivalent: "f")
-        findTitles.keyEquivalentModifierMask = [.command, .shift]
-        findTitles.target = self
-        menu.addItem(.separator())
-        let stopTask = menu.addItem(withTitle: String(localized: "host.chat.stop"),
-                                    action: #selector(stopTaskFromMenu(_:)), keyEquivalent: ".")
-        stopTask.target = self
-        item.submenu = menu
-        mainMenu.insertItem(item, at: min(2, mainMenu.items.count))
-        taskMenuItem = item
-
-        let spaceTitle = String(localized: "space.title")
-        let spaceItem = NSMenuItem(title: spaceTitle, action: nil, keyEquivalent: "")
-        let spaceMenu = NSMenu(title: spaceTitle)
-        let files = spaceMenu.addItem(withTitle: String(localized: "mac.workspace.spaceFiles"),
-                                      action: #selector(openSpaceFromMenu(_:)), keyEquivalent: "")
-        files.target = self
-        files.representedObject = MacSpacePage.files
-        let toolbox = spaceMenu.addItem(withTitle: String(localized: "mac.workspace.toolbox"),
-                                        action: #selector(openSpaceFromMenu(_:)), keyEquivalent: "")
-        toolbox.target = self
-        toolbox.representedObject = MacSpacePage.toolbox
-        spaceMenu.addItem(.separator())
-        let toggleFiles = spaceMenu.addItem(withTitle: String(localized: "mac.workspace.toggleFiles"),
-                                           action: #selector(toggleFilesFromMenu(_:)), keyEquivalent: "0")
-        toggleFiles.keyEquivalentModifierMask = [.command, .option]
-        toggleFiles.target = self
-        spaceItem.submenu = spaceMenu
-        mainMenu.insertItem(spaceItem, at: mainMenu.index(of: item) + 1)
-        spaceMenuItem = spaceItem
-    }
-
-    @objc private func newTaskFromMenu(_ sender: NSMenuItem) {
+    func openBrowserFromMenu() {
+        guard currentMenuAvailability.openSpace else { return }
+        browser?.present()
         agentWindow?.makeKeyAndOrderFront(nil)
-        performWindowAction(.newTask)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func findTaskFromMenu(_ sender: NSMenuItem) {
-        performWindowAction(.findTask)
+    func windowDidBecomeKey(_ notification: Notification) { refreshMenuAvailability() }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // AppKit assigns the next key window after the resign callback.
+        DispatchQueue.main.async { [weak self] in self?.refreshMenuAvailability() }
     }
 
-    @objc private func findTaskTitlesFromMenu(_ sender: NSMenuItem) {
-        performWindowAction(.findTaskTitles)
+    func windowWillBeginSheet(_ notification: Notification) {
+        guard notification.object as? NSWindow === agentWindow else { return }
+        presentingSheet = true
+        refreshMenuAvailability()
     }
 
-    @objc private func toggleFilesFromMenu(_ sender: NSMenuItem) {
-        performWindowAction(.toggleFiles)
-    }
-
-    @objc private func stopTaskFromMenu(_ sender: NSMenuItem) {
-        performWindowAction(.stopTask)
-    }
-
-    @objc private func openSpaceFromMenu(_ sender: NSMenuItem) {
-        guard let page = sender.representedObject as? MacSpacePage else { return }
-        openSpace(page)
-    }
-
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        guard let agent, !agent.isTerminating, !agent.isSettingsPresented else { return false }
-        if menuItem.action == #selector(newTaskFromMenu(_:)) {
-            return agent.isReady && !agent.isAcceptingPlan
-        }
-        if menuItem.action == #selector(openSpaceFromMenu(_:)) { return true }
-        guard agentWindow === NSApp.keyWindow, agentWindow?.attachedSheet == nil else { return false }
-        if menuItem.action == #selector(stopTaskFromMenu(_:)) { return agent.canStop }
-        if menuItem.action == #selector(toggleFilesFromMenu(_:)) { return agent.windowShowsTask }
-        return true
-    }
-
-    func windowDidBecomeKey(_ notification: Notification) {
-        if notification.object as? NSWindow === agentWindow { installWorkbenchMenus() }
+    func windowDidEndSheet(_ notification: Notification) {
+        guard notification.object as? NSWindow === agentWindow else { return }
+        presentingSheet = false
+        DispatchQueue.main.async { [weak self] in self?.refreshMenuAvailability() }
     }
 
     #if FLOE_MAC_HOST_SMOKE
@@ -240,10 +235,9 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         catch { throw CloseError.runtimeCloseFailed }
         agent.isSettingsPresented = false
         if let sheet = agentWindow?.attachedSheet { agentWindow?.endSheet(sheet) }
-        if let item = taskMenuItem { item.menu?.removeItem(item) }
-        taskMenuItem = nil
-        if let item = spaceMenuItem { item.menu?.removeItem(item) }
-        spaceMenuItem = nil
+        commandObservation = nil
+        menuAvailability = .init()
+        presentingSheet = false
         agentWindow?.close()
         agentWindow?.contentViewController = nil
         agentWindow = nil
@@ -251,6 +245,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         images = nil
         videos = nil
         creativeLibrary = nil
+        temporaryChat?.discard()
+        temporaryChat = nil
+        browser?.reset()
+        browser = nil
         self.agent = nil
         return true
     }

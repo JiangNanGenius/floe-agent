@@ -124,6 +124,48 @@ struct ApprovalResolutionRaceTests {
         #expect(await runtime.state.name == "completed")
     }
 
+    @Test("Every approval in one batch publishes its own card before either tool runs")
+    func approvalsInOneBatchPublishBothCards() async throws {
+        let first = try TestFixtures.toolCall(id: "alpha", arguments: #"{"text":"alpha"}"#)
+        let second = try TestFixtures.toolCall(id: "beta", arguments: #"{"text":"beta"}"#)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(first), .toolRequest(second)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerSideEffectingEcho(in: executor)
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+        let finished = AsyncLock(false)
+        let task = startFlagged(runtime, finished: finished)
+        defer { task.cancel() }
+
+        for call in [first, second] {
+            guard await waitUntil({
+                guard case .waitingApproval(let card) = await runtime.state else { return false }
+                return card.toolCall.id == call.id
+            }) else {
+                Issue.record("No approval card appeared for \(call.id)")
+                return
+            }
+            #expect(executor.executedCalls.isEmpty)
+            if call.id == second.id {
+                let stale = await runtime.resolveApproval(allowDecision(), for: first.id)
+                #expect(!stale)
+            }
+            let accepted = await runtime.resolveApproval(allowDecision(), for: call.id)
+            #expect(accepted)
+        }
+        guard await waitUntil({ finished.withLock { $0 } }) else {
+            Issue.record("Approved batch did not settle")
+            return
+        }
+        try await task.value
+        #expect(sink.transitions.filter { $0 == "waitingApproval" }.count == 2)
+        #expect(executor.executedCalls.map(\.id).sorted() == [first.id, second.id])
+    }
+
     @Test("A decision arriving after the run left waitingApproval executes nothing")
     func lateDecisionAfterTerminalStateDoesNotExecute() async throws {
         let adapter = MockAdapter()
