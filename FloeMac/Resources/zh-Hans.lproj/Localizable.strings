@@ -674,3 +674,20 @@
 "mac.videos.retryDownload" = "视频下载中断。选择这条记录，点“继续”可重新下载。";
 "mac.creative.useImageReference" = "用作生图参考";
 "mac.creative.useFirstFrame" = "用作视频首帧";
+
+"mac.workspace.conversationFolder" = "会话文件夹";
+"mac.workspace.searchResultUnavailable" = "未能在已加载的历史中定位这条消息。";
+"mac.workspace.reuseMessage" = "用作草稿";
+"mac.workspace.appendMessage" = "追加到草稿";
+"mac.workspace.readOnlyActions" = "文件为只读，命令和窗口操作已关闭。";
+"mac.workspace.continueSearch" = "继续定位";
+"mac.workspace.searchConversationContent" = "搜索会话正文";
+"mac.workspace.dismissSearchNotice" = "关闭";
+"mac.workspace.configureModel" = "配置模型…";
+"mac.workspace.sendShortcut" = "发送（⌘Return）";
+"mac.settings.providerModels" = "供应商与模型";
+"mac.settings.find" = "查找设置";
+"mac.settings.noMatches" = "没有匹配的设置";
+"mac.settings.runningInput" = "任务运行时发送消息";
+"mac.settings.runningInput.queue" = "排队发送";
+"mac.settings.runningInput.steer" = "引导当前运行";

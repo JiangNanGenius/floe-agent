@@ -14,14 +14,23 @@ struct HostAgentWorkspaceView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     var workspaceDraft: Binding<String>? = nil
     var openModelSettings: (() -> Void)? = nil
+    var openPermissionSettings: (() -> Void)? = nil
     var openFiles: (() -> Void)? = nil
     var openImageWorkbench: (() -> Void)? = nil
     var findRequest: UUID? = nil
     var findConversationID: UUID? = nil
+    var requestedMessageID: UUID? = nil
+    var didHandleSearchResult: ((UUID, UUID) -> Void)?
     @State private var standaloneDraft = ""
     #if FLOE_UNIFIED_MAC
+    #if FLOE_MAC_HOST_SMOKE
+    static var smokeLocatedMessageID: UUID?
+    #endif
     @StateObject private var search: MacConversationSearchModel
     @State private var awayFromLatest = false
+    @State private var highlightedResult: UUID?
+    @State private var resultUnavailable = false
+    @State private var searchRetry: UUID?
     @FocusState private var promptFocused: Bool
     @State private var attachmentSelection: UUID?
     @State private var choosingAttachments = false
@@ -41,14 +50,18 @@ struct HostAgentWorkspaceView: View {
     #endif
 
     init(workspace: HostAgentWorkspace, workspaceDraft: Binding<String>? = nil,
-         openModelSettings: (() -> Void)? = nil, openFiles: (() -> Void)? = nil,
+         openModelSettings: (() -> Void)? = nil, openPermissionSettings: (() -> Void)? = nil, openFiles: (() -> Void)? = nil,
          openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
-         findConversationID: UUID? = nil) {
+         findConversationID: UUID? = nil, requestedMessageID: UUID? = nil,
+         didHandleSearchResult: ((UUID, UUID) -> Void)? = nil) {
         self.workspace = workspace
         self.workspaceDraft = workspaceDraft
         self.openModelSettings = openModelSettings
+        self.openPermissionSettings = openPermissionSettings
         self.openFiles = openFiles
         self.openImageWorkbench = openImageWorkbench
+        self.didHandleSearchResult = didHandleSearchResult
+        self.requestedMessageID = requestedMessageID
         self.findRequest = findRequest
         self.findConversationID = findConversationID
         #if FLOE_UNIFIED_MAC
@@ -351,10 +364,21 @@ struct HostAgentWorkspaceView: View {
         VStack(alignment: .leading, spacing: 5) {
             if !workspace.isSending, mode != .chat, let provider = workspace.composerProvider,
                !provider.model.capabilities.contains(.tools) {
-                // Projects stay optional — every conversation owns a personal
-                // safe-files root — so the only model gate left is an honest
-                // tools-capability notice for Agent/Plan/Goal modes.
-                Text("mac.agent.toolsModelRequired").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("mac.agent.toolsModelRequired").font(.caption).foregroundStyle(.secondary)
+                    if let openModelSettings {
+                        Button("mac.settings.models", action: openModelSettings).controlSize(.small)
+                    }
+                }
+            }
+            if !workspace.isSending, (mode == .agent || mode == .goal), !workspace.allowsWorkspaceWrites,
+               let openPermissionSettings {
+                HStack {
+                    Label("mac.workspace.readOnlyActions", systemImage: "lock")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Permissions", action: openPermissionSettings).controlSize(.small)
+                        .accessibilityIdentifier("composer.openPermissions")
+                }
             }
             if !workspace.stagedAttachments.isEmpty {
                 attachmentStrip
@@ -426,6 +450,7 @@ struct HostAgentWorkspaceView: View {
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityLabel("host.chat.send")
                     .accessibilityIdentifier("composer.send")
+                    .help(workspace.composerProvider == nil ? Text("host.chat.configureFirst") : Text("mac.workspace.sendShortcut"))
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(!canSend)
                 }
@@ -433,9 +458,9 @@ struct HostAgentWorkspaceView: View {
             if let openModelSettings {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        composerContext(openModelSettings).disabled(workspace.isSending)
+                        composerContext(openModelSettings)
                         modeControl.disabled(workspace.isSending)
-                        permissionControl.disabled(workspace.isSending)
+                        permissionControl.disabled(workspace.isStopping || workspace.isResolvingApproval || (workspace.isSending && workspace.runPhase == nil))
                         if let provider = workspace.composerProvider { reasoningMenu(provider.model) }
                         if workspace.isSending { runningInputControl }
                     }
@@ -471,16 +496,16 @@ struct HostAgentWorkspaceView: View {
 
     private func composerContext(_ openModelSettings: @escaping () -> Void) -> some View {
         HStack(spacing: 6) {
-            modelControl(openSettings: openModelSettings).fixedSize()
-            if mode != .chat, let openFiles {
-                if let owner = workspace.selectedConversationWorkspace, owner.kind == .project {
+            modelControl(openSettings: openModelSettings).fixedSize().disabled(workspace.isSending)
+            if let openFiles {
+                if let owner = workspace.selectedConversationWorkspace {
                     Button(action: openFiles) {
-                        FloeThreadComposerChip(title: Text(verbatim: owner.name), systemImage: "folder")
+                        FloeThreadComposerChip(title: owner.kind == .project ? Text(verbatim: owner.name) : Text("mac.workspace.conversationFolder"), systemImage: "folder")
                     }
                     .buttonStyle(.plain)
                     .help("mac.workspace.browseFiles")
                 } else if workspace.selectedID == nil {
-                    projectControl(openFiles: openFiles)
+                    projectControl(openFiles: openFiles).disabled(workspace.isSending)
                 }
             }
         }
@@ -757,7 +782,10 @@ struct HostAgentWorkspaceView: View {
         let projects = workspace.workspaces.filter { $0.kind == .project }
         let project = projects.first { $0.id == workspace.selectedWorkspaceID }
         return Menu {
-            Button("mac.workspace.noProject") { workspace.selectWorkspace(nil) }
+            Button { workspace.selectWorkspace(nil) } label: {
+                if project == nil { Label("mac.workspace.conversationFolder", systemImage: "checkmark") }
+                else { Text("mac.workspace.conversationFolder") }
+            }
             ForEach(projects, id: \.id) { option in
                 Button {
                     workspace.selectWorkspace(option.id)
@@ -772,7 +800,7 @@ struct HostAgentWorkspaceView: View {
             Divider()
             Button("mac.workspace.browseFiles", action: openFiles)
         } label: {
-            FloeThreadComposerChip(title: Text(verbatim: project?.name ?? String(localized: "mac.workspace.noProject")),
+            FloeThreadComposerChip(title: Text(verbatim: project?.name ?? String(localized: "mac.workspace.conversationFolder")),
                                    systemImage: "folder")
         }
         .menuStyle(.borderlessButton)
@@ -786,7 +814,7 @@ struct HostAgentWorkspaceView: View {
         }
         if chatModels.isEmpty {
             Button(action: openSettings) {
-                FloeThreadComposerChip(title: Text("host.chat.provider"), systemImage: "cpu")
+                FloeThreadComposerChip(title: Text("mac.workspace.configureModel"), systemImage: "cpu")
             }
             .buttonStyle(.plain)
         } else {
@@ -882,11 +910,18 @@ struct HostAgentWorkspaceView: View {
                                     } else {
                                         Text(verbatim: message.content).foregroundStyle(.secondary)
                                     }
-                                    ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
-                                                      userText: message.role == "user" ? message.content : nil)
+                                    HStack(spacing: 10) {
+                                        ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
+                                                          userText: message.role == "user" ? message.content : nil)
+                                        if message.role == "assistant", let text = CredentialMessagePart.clipboardText(message.content) {
+                                            ChatMessageCopyButton(text: text)
+                                                .accessibilityIdentifier("thread.assistant.copy." + message.id.uuidString)
+                                        }
+                                    }
                                 }
                                 .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
-                                .background(search.isActive && search.focusedMessageID == message.id
+                                .id(message.id)
+                                .background((search.isActive ? search.focusedMessageID : highlightedResult) == message.id
                                             ? Color.accentColor.opacity(0.12) : Color.clear,
                                             in: RoundedRectangle(cornerRadius: 8))
                                 .contextMenu {
@@ -894,6 +929,16 @@ struct HostAgentWorkspaceView: View {
                                         Button("action.copy") {
                                             NSPasteboard.general.clearContents()
                                             NSPasteboard.general.setString(text, forType: .string)
+                                        }
+                                        if message.role == "user", PlanConfirmationSnapshot.from(message: message) == nil {
+                                            Button(draft.wrappedValue.isEmpty ? "mac.workspace.reuseMessage" : "mac.workspace.appendMessage") {
+                                                guard !workspace.isSending, !workspace.isTerminating,
+                                                      workspace.selectedID == message.conversationID else { return }
+                                                let current = draft.wrappedValue
+                                                draft.wrappedValue = current.isEmpty ? text : current + "\n\n" + text
+                                                promptFocused = true
+                                            }
+                                            .disabled(workspace.isSending || workspace.isTerminating)
                                         }
                                     }
                                 }
@@ -975,8 +1020,46 @@ struct HostAgentWorkspaceView: View {
                 .onChange(of: workspace.pendingQuestion?.cardIdentity) { _, identity in
                     if let identity { scroll.scrollTo(identity, anchor: .bottom) }
                 }
+                .task(id: [requestedMessageID, searchRetry]) {
+                    guard let requestedMessageID, let findConversationID else { return }
+                    highlightedResult = nil
+                    resultUnavailable = false
+                    let found = await workspace.revealMessage(requestedMessageID, in: findConversationID)
+                    guard !Task.isCancelled, workspace.selectedID == findConversationID else { return }
+                    if found {
+                        highlightedResult = requestedMessageID
+                        await Task.yield()
+                        guard !Task.isCancelled else { return }
+                        scroll.scrollTo(requestedMessageID, anchor: .center)
+                        #if FLOE_MAC_HOST_SMOKE
+                        Self.smokeLocatedMessageID = requestedMessageID
+                        #endif
+                        didHandleSearchResult?(findConversationID, requestedMessageID)
+                    } else {
+                        resultUnavailable = true
+                    }
+                }
+                .overlay(alignment: .top) {
+                    if resultUnavailable, let requestedMessageID, let findConversationID {
+                        HStack {
+                            Text("mac.workspace.searchResultUnavailable")
+                            if workspace.hasEarlierMessages {
+                                Button("mac.workspace.continueSearch") { searchRetry = UUID() }
+                                    .disabled(workspace.isLoadingEarlierMessages)
+                            }
+                            Button {
+                                resultUnavailable = false
+                                didHandleSearchResult?(findConversationID, requestedMessageID)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .accessibilityLabel(Text("mac.workspace.dismissSearchNotice"))
+                        }
+                        .font(.caption).padding(6).background(.regularMaterial, in: Capsule())
+                    }
+                }
                 .onChange(of: search.focusedMessageID) { _, id in
-                    if let id { scroll.scrollTo(id, anchor: .center) }
+                    if let id { highlightedResult = nil; resultUnavailable = false; scroll.scrollTo(id, anchor: .center) }
                 }
             }
         }

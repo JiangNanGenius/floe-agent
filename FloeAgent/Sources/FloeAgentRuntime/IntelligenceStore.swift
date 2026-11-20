@@ -1585,11 +1585,15 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     /// re-check below is a final projection guard, not a second search.
     public func conversationSearchMatches(
         _ rawQuery: String,
-        limit: Int = 40
+        limit: Int = 40,
+        scope: ConversationSearchScope = .all
     ) async throws -> [ConversationSearchMatch] {
         let query = ConversationSearchQuery(raw: rawQuery)
         guard !query.isEmpty else { return [] }
         let bounded = min(50, max(1, limit))
+        // The scope predicate is part of the SQL WHERE (before LIMIT) so a
+        // different archive/ownership scope can never consume result slots.
+        let scopeFilter = scope.sqlFilter
         return try await database.reader { db in
             try Task.checkCancellation()
             db.add(function: ConversationSearchQuery.visibleMatchFunction)
@@ -1604,7 +1608,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                        m.created_at, c.title
                 FROM conversations c
                 CROSS JOIN messages m ON m.conversation_id = c.id
-                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'\(scopeFilter)
                   AND m.role IN ('user', 'assistant')
                   AND floe_conversation_search_match(m.role, m.content, ?) = 1
                 ORDER BY m.created_at DESC, m.id DESC
@@ -1639,7 +1643,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             let titleRows = try Row.fetchAll(db, sql: """
                 SELECT c.id AS conversation_id, c.title, c.updated_at
                 FROM conversations c
-                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'\(scopeFilter)
                   AND floe_conversation_search_match('title', c.title, ?) = 1
                 ORDER BY c.updated_at DESC
                 LIMIT ?
@@ -2608,6 +2612,39 @@ public struct ConversationSearchQuery: Sendable, Equatable {
             if result.count >= 512 { break }
         }
         return result
+    }
+}
+
+/// Conversation-library scope for `conversationSearchMatches`. The default
+/// `.all` preserves the historical global-search behavior (every searchable
+/// ordinary conversation, including archived rows); scoped callers address
+/// one archive surface at a time. The scope predicate is applied in SQL
+/// before `LIMIT` so another scope can never starve these results.
+public enum ConversationSearchScope: String, Sendable, Codable {
+    /// Every searchable ordinary conversation (historical behavior).
+    case all
+    /// Ordinary conversations in the user's current list: normal visibility,
+    /// no editor-assistant owner, not archived.
+    case visible
+    /// Archived ordinary conversations (the restore workflow's surface).
+    case archived
+
+    /// Extra WHERE fragment for both the body and title queries. Empty for
+    /// `.all` so the default call keeps its exact original SQL. The owner
+    /// filter matches `ConversationStore` exactly: all three editor-ownership
+    /// columns must be NULL, then the archive predicate.
+    var sqlFilter: String {
+        let ownerFilter = " AND c.visibility = 'normal'"
+            + " AND c.editor_owner_kind IS NULL AND c.editor_document_id IS NULL"
+            + " AND c.editor_container_id IS NULL"
+        switch self {
+        case .all:
+            return ""
+        case .visible:
+            return ownerFilter + " AND c.archived_at IS NULL"
+        case .archived:
+            return ownerFilter + " AND c.archived_at IS NOT NULL"
+        }
     }
 }
 

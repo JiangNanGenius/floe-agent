@@ -2,6 +2,9 @@
 import SwiftUI
 import AppKit
 import FloeMacBridgeProtocol
+#if FLOE_UNIFIED_MAC
+import FloeCore
+#endif
 
 @main
 struct FloeMacBridgeApp: App {
@@ -89,7 +92,7 @@ private struct BridgeMenuView: View {
 
 @MainActor
 final class BridgeAppModel: ObservableObject {
-    enum SettingsPane: String, CaseIterable { case general, models, permissions, bridge }
+    enum SettingsPane: String, CaseIterable { case general, models, auxiliary, image, video, permissions, bridge }
 
     @Published var error: String?
     @Published var clients: [(String, String)] = []
@@ -104,7 +107,6 @@ final class BridgeAppModel: ObservableObject {
     #if FLOE_UNIFIED_MAC
     @Published private(set) var macWorkspace: UnifiedMacWorkspace?
     @Published var settingsPane: SettingsPane = .general
-    @Published var mediaSettings: MediaSettings?
     enum Appearance: String, CaseIterable { case system, light, dark }
     @Published var appearance: Appearance = .system {
         didSet {
@@ -136,6 +138,7 @@ final class BridgeAppModel: ObservableObject {
     #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
     private let smoke = UnifiedMacSmoke.configured()
     var smokePort: UInt16? { server?.boundPort }
+    var smokeSettingsFrames: [SettingsPane: CGRect] = [:]
     var smokeSettingsWindow: NSWindow? { settingsWindow }
     var smokeAgentSettingsSheet: NSWindow? { macWorkspace?.settingsSheet }
     private(set) var smokeSwitchFrame: CGRect?
@@ -323,7 +326,10 @@ final class BridgeAppModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             pendingSettingsPresentation = nil
             #if FLOE_UNIFIED_MAC
-            if pane == .models { mediaSettings = media }
+            if pane == .models, let media {
+                presentSettingsWindow(media == .image ? .image : .video)
+                return
+            }
             #endif
             presentSettingsWindow(pane)
         }
@@ -351,9 +357,10 @@ final class BridgeAppModel: ObservableObject {
         }
         NSApp.setActivationPolicy(.regular)
         macWorkspace?.openAgent(openSettings: { [weak self] in self?.openSettings() },
-                                openImageSettings: { [weak self] in self?.openSettings(.models, media: .image) },
-                                openVideoSettings: { [weak self] in self?.openSettings(.models, media: .video) },
+                                openImageSettings: { [weak self] in self?.openSettings(.image) },
+                                openVideoSettings: { [weak self] in self?.openSettings(.video) },
                                 openModelSettings: { [weak self] in self?.openSettings(.models) },
+                                openPermissionSettings: { [weak self] in self?.openSettings(.permissions) },
                                 settingsContent: { [weak self] in
             guard let self else { return AnyView(EmptyView()) }
             return AnyView(UnifiedMacSettingsView(model: self))
@@ -498,79 +505,87 @@ private struct BridgeBrandMark: View {
 private struct UnifiedMacSettingsView: View {
     @ObservedObject var model: BridgeAppModel
 
+    @State private var providerEditor = MacProviderEditorState()
+    @State private var query = ""
+
+    private var destinations: [BridgeAppModel.SettingsPane] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return BridgeAppModel.SettingsPane.allCases.filter { term.isEmpty || $0.searchTerms.localizedStandardContains(term) }
+    }
+
     var body: some View {
         if model.isAgentMode, let workspace = model.macWorkspace?.agent {
             VStack(spacing: 0) {
                 HStack {
-                    Text("mac.settings.title").font(.title3.weight(.semibold))
+                    Text("mac.settings.title").font(.headline)
                     Spacer()
                     Button("Done", action: model.closeSettingsWindow)
                         .keyboardShortcut(.cancelAction)
                 }
-                .padding(16)
+                .padding(.horizontal, 16).padding(.vertical, 10)
                 Divider()
                 HStack(spacing: 0) {
-                    List(selection: Binding<BridgeAppModel.SettingsPane?>(
-                        get: { model.settingsPane },
-                        set: { if let pane = $0 {
-                            model.settingsPane = pane
-                            model.mediaSettings = nil
-                        } }
-                    )) {
-                        ForEach(BridgeAppModel.SettingsPane.allCases, id: \.self) { pane in
-                            Label(pane.title, systemImage: pane.icon).tag(pane)
+                    VStack(spacing: 0) {
+                        TextField("mac.settings.find", text: $query)
+                            .textFieldStyle(.roundedBorder)
+                            .padding(8)
+                        if destinations.isEmpty {
+                            Text("mac.settings.noMatches").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                        } else {
+                            List(selection: Binding<BridgeAppModel.SettingsPane?>(
+                                get: { model.settingsPane },
+                                set: { if let pane = $0 { model.settingsPane = pane } }
+                            )) {
+                                ForEach(destinations, id: \.self) { pane in
+                                    Label(pane.title, systemImage: pane.icon)
+                                        .tag(pane)
+                                        .accessibilityIdentifier("settings.pane." + pane.rawValue)
+                                        #if FLOE_MAC_HOST_SMOKE
+                                        .background(MacWorkbenchButtonFrameReader { model.smokeSettingsFrames[pane] = $0 })
+                                        #endif
+                                }
+                            }.listStyle(.sidebar)
                         }
                     }
-                    .listStyle(.sidebar)
-                    .frame(width: 142)
+                    .frame(width: 154)
                     Divider()
-                    pane(workspace)
+                    detail(workspace)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .frame(width: 880, height: 585)
+            .frame(width: min(850, (NSScreen.main?.visibleFrame.width ?? 900) - 32),
+                   height: min(580, (NSScreen.main?.visibleFrame.height ?? 640) - 64))
             .background(FloeTheme.groupedSurface)
             .accessibilityIdentifier("mac.settings.sheet")
+            .onChange(of: model.settingsPane) { _, selected in
+                if !destinations.contains(selected) { query = "" }
+            }
         } else {
             BridgeSettingsView(model: model).frame(width: 520, height: 560)
         }
     }
 
     @ViewBuilder
-    private func pane(_ workspace: HostAgentWorkspace) -> some View {
+    private func detail(_ workspace: HostAgentWorkspace) -> some View {
         switch model.settingsPane {
         case .general:
             HostAgentGeneralSettings(model: model, workspace: workspace)
         case .models:
-            if let media = model.mediaSettings, let owner = model.macWorkspace {
-                VStack(alignment: .leading, spacing: 0) {
-                    Button { model.mediaSettings = nil } label: {
-                        Label("mac.provider.backToProviders", systemImage: "chevron.left")
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 14)
-                    switch media {
-                    case .image:
-                        if let images = owner.images {
-                            MacMediaAccountSettings(workspace: workspace, role: .image, apply: { preset, endpoint, modelID, key in
-                                try images.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
-                            }) { MacImageSettingsView(images: images) }
-                        }
-                    case .video:
-                        if let videos = owner.videos {
-                            MacMediaAccountSettings(workspace: workspace, role: .video, apply: { preset, endpoint, modelID, key in
-                                try videos.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
-                            }) { MacVideoSettingsView(videos: videos) }
-                        }
-                    }
-                }
-            } else {
-                MacProviderSettingsView(workspace: workspace, openImageModelSettings: {
-                    model.mediaSettings = .image
-                }, openVideoModelSettings: {
-                    model.mediaSettings = .video
-                })
+            MacProviderSettingsView(workspace: workspace, editing: $providerEditor)
+        case .auxiliary:
+            MacAuxiliaryModelsView(workspace: workspace)
+        case .image:
+            if let images = model.macWorkspace?.images {
+                MacMediaAccountSettings(workspace: workspace, role: .image, apply: { preset, endpoint, modelID, key in
+                    try images.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
+                }) { MacImageSettingsView(images: images) }
+            }
+        case .video:
+            if let videos = model.macWorkspace?.videos {
+                MacMediaAccountSettings(workspace: workspace, role: .video, apply: { preset, endpoint, modelID, key in
+                    try videos.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
+                }) { MacVideoSettingsView(videos: videos) }
             }
         case .permissions:
             MacPermissionsSettingsView(workspace: workspace, bridge: model)
@@ -596,6 +611,12 @@ private struct HostAgentGeneralSettings: View {
                     Label(mode.title, systemImage: mode.symbol).tag(mode)
                 }
             }
+            Picker("mac.settings.runningInput", selection: $workspace.runningInputMode) {
+                Text("mac.settings.runningInput.queue").tag(RunningInputMode.queue)
+                Text("mac.settings.runningInput.steer").tag(RunningInputMode.steer)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("settings.general.runningInput")
             Toggle("mac.settings.verifyAnswers", isOn: $workspace.verifyAgentAnswers)
         }
         .formStyle(.grouped)
@@ -606,16 +627,34 @@ private extension BridgeAppModel.SettingsPane {
     var title: LocalizedStringKey {
         switch self {
         case .general: "General"
-        case .models: "mac.settings.models"
+        case .models: "mac.settings.providerModels"
+        case .auxiliary: "mac.aux.title"
+        case .image: "mac.provider.imageModel"
+        case .video: "mac.creative.videoModel"
         case .permissions: "Permissions"
         case .bridge: "host.role.bridge"
+        }
+    }
+
+    var searchTerms: String {
+        switch self {
+        case .general: "通用 外观 默认模式 排队 引导 答案核验 General appearance mode queue steer verify"
+        case .models: "供应商 服务商 账户 模型 模型配置 密钥 连接 Provider Accounts Models API key endpoints"
+        case .auxiliary: "辅助模型 通用辅助 视觉 推理 审批模型 Auxiliary Models vision reasoning reviewer"
+        case .image: "图像模型 图片 生图 绘图 Image model generation"
+        case .video: "视频模型 生视频 Video model generation"
+        case .permissions: "权限 审批 自动审批 完全访问 命令 执行 屏幕录制 辅助功能 磁盘 Kimi CU Permissions approvals command access disk screen"
+        case .bridge: "桥接 配对 更新 存储 Bridge pairing updates storage OTA"
         }
     }
 
     var icon: String {
         switch self {
         case .general: "gearshape"
-        case .models: "slider.horizontal.3"
+        case .models: "antenna.radiowaves.left.and.right"
+        case .auxiliary: "wand.and.stars"
+        case .image: "photo"
+        case .video: "film"
         case .permissions: "hand.raised"
         case .bridge: "link"
         }

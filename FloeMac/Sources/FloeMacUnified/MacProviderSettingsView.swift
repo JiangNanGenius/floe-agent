@@ -17,17 +17,22 @@ import SwiftUI
 /// owned by the root lane.
 struct MacProviderSettingsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    let openImageModelSettings: () -> Void
-    let openVideoModelSettings: () -> Void
+    @Binding private var editingID: UUID?
+    @Binding private var showsEditor: Bool
+    @Binding private var draft: MacProviderDraft
+    @Binding private var manualModelID: String
 
-    @State private var editingID: UUID?
-    @State private var showsEditor = false
-    @State private var draft = MacProviderDraft()
-    @State private var manualModelID = ""
+    init(workspace: HostAgentWorkspace, editing: Binding<MacProviderEditorState>) {
+        self.workspace = workspace
+        _editingID = editing.editingID
+        _showsEditor = editing.showsEditor
+        _draft = editing.draft
+        _manualModelID = editing.manualModelID
+    }
+
     @State private var removalCandidate: UUID?
     @State private var modelRemovalCandidate: UUID?
     @State private var showingICloud = false
-    @State private var showsAuxiliary = false
     @State private var optionsRecord: HostAgentProvider?
     @State private var connectionCheck: Task<Void, Never>?
     @State private var connectionCheckID = UUID()
@@ -102,10 +107,6 @@ struct MacProviderSettingsView: View {
                 if let record = workspace.providers.first(where: { $0.model.id == id }) { beginEditing(record) }
             }
         }
-        .sheet(isPresented: $showsAuxiliary) {
-            MacAuxiliaryModelsView(workspace: workspace, openImageModelSettings: openImageModelSettings,
-                                   openVideoModelSettings: openVideoModelSettings)
-        }
         .sheet(isPresented: Binding(
             get: { optionsRecord != nil },
             set: { if !$0 { optionsRecord = nil } }
@@ -163,7 +164,7 @@ struct MacProviderSettingsView: View {
     private var providerList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("mac.settings.models").font(.title2.weight(.semibold))
+                Text("mac.settings.providerModels").font(.headline)
                 Spacer()
                 Button { showingICloud = true } label: {
                     Label("mac.icloud.models", systemImage: "icloud")
@@ -180,28 +181,6 @@ struct MacProviderSettingsView: View {
             }
             .padding(20)
             Divider()
-            Button(action: openImageModelSettings) {
-                Label("mac.provider.imageModel", systemImage: "photo")
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 8)
-            Button(action: openVideoModelSettings) {
-                Label("mac.creative.videoModel", systemImage: "film")
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
-            Button { showsAuxiliary = true } label: {
-                Label(MacProviderText.t("辅助模型", "Auxiliary Models"), systemImage: "wand.and.stars")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityIdentifier("settings.openAuxiliaryModels")
-            #if FLOE_MAC_HOST_SMOKE
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { workspace.smokeAuxiliaryButtonFrame = $0 }
-            #endif
-            .padding(.horizontal, 20)
-            .padding(.vertical, 8)
             if groups.isEmpty {
                 ContentUnavailableView("mac.provider.noProviders", systemImage: "antenna.radiowaves.left.and.right")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -940,7 +919,14 @@ struct MacProviderSettingsView: View {
 
 // MARK: - Draft
 
-private struct MacProviderDraft: Equatable {
+struct MacProviderEditorState {
+    var editingID: UUID?
+    var showsEditor = false
+    var draft = MacProviderDraft()
+    var manualModelID = ""
+}
+
+struct MacProviderDraft: Equatable {
     struct CatalogSelection: Equatable {
         let model: ModelProfile
         let endpoint: String

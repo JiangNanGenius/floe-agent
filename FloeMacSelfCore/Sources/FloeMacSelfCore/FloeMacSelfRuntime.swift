@@ -2262,6 +2262,26 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    /// Cross-conversation message-text search over this database's ordinary
+    /// conversations, reusing the iPad `SQLiteIntelligenceStore` contract
+    /// verbatim (shared visible-text matcher and projected snippets).
+    /// `archived: false` addresses the current visible list; `archived: true`
+    /// addresses the archived scope. Local SQLite only — no network, no
+    /// per-conversation message loading.
+    public func taskContentMatches(
+        _ query: String,
+        archived: Bool = false,
+        limit: Int = 40
+    ) async throws -> [ConversationSearchMatch] {
+        let stores = try requireStores()
+        do {
+            return try await stores.intelligence.conversationSearchMatches(
+                query, limit: limit, scope: archived ? .archived : .visible)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
     public func conversationMessagePage(
         conversationID: UUID,
         before cursor: ConversationMessageCursor? = nil,

@@ -11,8 +11,10 @@ import SwiftUI
 /// History management mirrors the iPad Chat list on the same durable
 /// commands: pin/unpin and rename (metadata changes), move/archive/delete,
 /// an archived scope with the archived date, restore and a confirmed
-/// clear-archive, plus title/goal search that shows a small content snippet
-/// when the match came from the run goal rather than the title.
+/// clear-archive, plus cross-conversation search that combines title/goal
+/// matches with durable message-text matches. A message hit shows its
+/// projected snippet and opens the conversation at that exact message; the
+/// archived scope keeps the restore workflow instead of opening.
 struct MacWorkspaceTaskCenter: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let onOpen: (UUID) -> Void
@@ -20,13 +22,14 @@ struct MacWorkspaceTaskCenter: View {
     let onArchive: (UUID, Bool) -> Void
     let onMove: (ConversationRecord) -> Void
     let onDelete: (ConversationRecord) -> Void
+    /// Optional owner hook for a verified content hit
+    /// `(conversationID, messageID)`; nil falls back to plain `onOpen`.
+    let onOpenMatch: ((UUID, UUID) -> Void)?
 
     @Environment(\.locale) private var locale
     let findRequest: UUID?
     let didDeleteArchived: (UUID) -> Void
     @FocusState private var searchFocused: Bool
-    @State private var query = ""
-    @State private var showsArchived = false
     @State private var renameTarget: ConversationRecord?
     @State private var renameDraft = ""
     @State private var renameError: String?
@@ -38,9 +41,16 @@ struct MacWorkspaceTaskCenter: View {
     @State private var clearingArchive = false
     private let relativeFormatter: RelativeDateTimeFormatter
 
+    #if FLOE_MAC_HOST_SMOKE
+    /// Live geometry of each result's open button, recorded by the smoke
+    /// frame reader; memory-only and never persisted.
+    static var smokeResultFrames: [UUID: CGRect] = [:]
+    #endif
+
     init(workspace: HostAgentWorkspace, findRequest: UUID? = nil, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
          onArchive: @escaping (UUID, Bool) -> Void, onMove: @escaping (ConversationRecord) -> Void,
-         onDelete: @escaping (ConversationRecord) -> Void, didDeleteArchived: @escaping (UUID) -> Void) {
+         onDelete: @escaping (ConversationRecord) -> Void, didDeleteArchived: @escaping (UUID) -> Void,
+         onOpenMatch: ((UUID, UUID) -> Void)? = nil) {
         self.didDeleteArchived = didDeleteArchived
         self.findRequest = findRequest
         self.workspace = workspace
@@ -49,6 +59,7 @@ struct MacWorkspaceTaskCenter: View {
         self.onArchive = onArchive
         self.onMove = onMove
         self.onDelete = onDelete
+        self.onOpenMatch = onOpenMatch
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         self.relativeFormatter = formatter
@@ -79,13 +90,32 @@ struct MacWorkspaceTaskCenter: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Re-read run states when storage becomes ready, when the conversation
         // set changes, and when a send finishes (the id array alone does not
-        // change when an existing conversation is updated by a run).
-        .task(id: workspace.isReady) { await workspace.loadTaskRuns() }
-        .onChange(of: workspace.conversations.map(\.id)) { _, _ in
+        // change when an existing conversation is updated by a run). The same
+        // moments re-arm the debounced content search so results track the
+        // durable store; the latest query owns every publish.
+        .task(id: workspace.isReady) {
+            await workspace.loadTaskRuns()
+            workspace.scheduleTaskContentSearch(
+                query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
+        }
+        .onChange(of: workspace.conversations) { _, _ in
             Task { await workspace.loadTaskRuns() }
+            workspace.scheduleTaskContentSearch(
+                query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
+        }
+        .onChange(of: workspace.taskCenterQuery) { _, value in
+            workspace.scheduleTaskContentSearch(
+                query: value, archived: workspace.taskCenterShowsArchived)
+        }
+        .onChange(of: workspace.taskCenterShowsArchived) { _, value in
+            workspace.scheduleTaskContentSearch(
+                query: workspace.taskCenterQuery, archived: value)
         }
         .onChange(of: workspace.activeRunCount) { previous, count in
-            if count < previous { Task { await workspace.loadTaskRuns() } }
+            if count < previous {
+                Task { await workspace.loadTaskRuns() }
+                workspace.scheduleTaskContentSearch(query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
+            }
         }
         .popover(item: $renameTarget, arrowEdge: .trailing) { record in
             renamePopover(for: record)
@@ -105,7 +135,7 @@ struct MacWorkspaceTaskCenter: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 taskFilters
-                if showsArchived && !tasks.isEmpty {
+                if workspace.taskCenterShowsArchived && !tasks.isEmpty {
                     Spacer(minLength: 8)
                     Button(t("清空归档…", "Clear Archive…")) {
                         archiveDeletionIDs = tasks.map(\.id)
@@ -127,6 +157,23 @@ struct MacWorkspaceTaskCenter: View {
                     Button(t("重试", "Retry")) { Task { await workspace.loadTaskRuns() } }
                         .accessibilityIdentifier("workspace.task.retry.runs")
                 }
+            }
+            if workspace.taskContentSearchFailed {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(t("消息内容搜索失败。", "Couldn’t search message content."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(t("重试", "Retry")) {
+                        workspace.scheduleTaskContentSearch(
+                            query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
+                    }
+                    .accessibilityIdentifier("workspace.task.retry.contentSearch")
+                }
+                .accessibilityIdentifier("workspace.task.contentSearchError")
             }
             if let actionError {
                 HStack(spacing: 8) {
@@ -151,7 +198,7 @@ struct MacWorkspaceTaskCenter: View {
     }
 
     @ViewBuilder private var taskFilters: some View {
-        Picker(t("任务列表", "Task List"), selection: $showsArchived) {
+        Picker(t("任务列表", "Task List"), selection: $workspace.taskCenterShowsArchived) {
             Text(t("当前任务", "Current")).tag(false)
             Text(t("已归档", "Archived")).tag(true)
         }
@@ -160,7 +207,7 @@ struct MacWorkspaceTaskCenter: View {
         .fixedSize()
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(t("搜索任务", "Search Tasks"), text: $query)
+            TextField(t("搜索任务或消息", "Search tasks or messages"), text: $workspace.taskCenterQuery)
                 .textFieldStyle(.plain)
                 .focused($searchFocused)
                 .accessibilityIdentifier("workspace.task.search")
@@ -171,7 +218,7 @@ struct MacWorkspaceTaskCenter: View {
     }
 
     @ViewBuilder private var content: some View {
-        if tasks.isEmpty && showsArchived {
+        if tasks.isEmpty && workspace.taskCenterShowsArchived {
             ContentUnavailableView(t("暂无已归档任务", "No Archived Tasks"), systemImage: "archivebox")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if tasks.isEmpty {
@@ -201,32 +248,38 @@ struct MacWorkspaceTaskCenter: View {
     }
 
     private var tasks: [ConversationRecord] {
-        if !showsArchived { return workspace.conversations.filter(\.isVisibleInOrdinaryList) }
+        if !workspace.taskCenterShowsArchived { return workspace.conversations.filter(\.isVisibleInOrdinaryList) }
         return workspace.conversations.filter {
             $0.purpose == .ordinary && $0.visibility == .normal && $0.editorOwnership == nil && $0.archivedAt != nil
         }
     }
 
+    /// A conversation stays listed when its title, its latest run goal, or a
+    /// persisted message body matches the query. Content matches come from
+    /// the scoped durable search; title/goal matching stays client-side.
     private var visible: [ConversationRecord] {
         let ordered = ConversationListOrdering.sorted(tasks)
         let trimmed = searchQuery
         guard !trimmed.isEmpty else { return ordered }
         return ordered.filter { record in
             if record.title.localizedStandardContains(trimmed) { return true }
+            if workspace.taskContentMatchesByID[record.id] != nil { return true }
             guard let run = workspace.recentTaskRuns[record.id] else { return false }
             return run.goal.localizedStandardContains(trimmed)
         }
     }
 
-    private var searchQuery: String { query.trimmingCharacters(in: .whitespaces) }
+    private var searchQuery: String { workspace.taskCenterQuery.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    /// iPad list parity: when the query matched persisted run content rather
-    /// than the title, surface a small window around the first hit so the
-    /// match is explainable (the iPad row shows the same kind of snippet).
+    /// iPad list parity: a durable message hit shows its projected snippet;
+    /// otherwise, when the query matched persisted run content rather than
+    /// the title, surface a small window around the first hit so the match
+    /// is explainable (the iPad row shows the same kind of snippet).
     private func matchSnippet(for record: ConversationRecord) -> String? {
         let trimmed = searchQuery
-        guard !trimmed.isEmpty,
-              !record.title.localizedStandardContains(trimmed),
+        guard !trimmed.isEmpty else { return nil }
+        if let match = workspace.taskContentMatchesByID[record.id] { return match.snippet }
+        guard !record.title.localizedStandardContains(trimmed),
               let run = workspace.recentTaskRuns[record.id],
               run.goal.localizedStandardContains(trimmed) else { return nil }
         return Self.matchSnippet(goal: run.goal, query: trimmed)
@@ -235,7 +288,7 @@ struct MacWorkspaceTaskCenter: View {
     /// Pure snippet helper: a bounded window around the first
     /// case/diacritic-insensitive occurrence, honest ellipses when clipped.
     static func matchSnippet(goal: String, query: String, limit: Int = 120) -> String? {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let range = goal.range(of: trimmed, options: [.caseInsensitive, .diacriticInsensitive])
         else { return nil }
@@ -257,7 +310,16 @@ struct MacWorkspaceTaskCenter: View {
         let sendingHere = workspace.isTaskRunning(record.id)
         return HStack {
             Button {
-                if !showsArchived { onOpen(record.id) }
+                guard !workspace.taskCenterShowsArchived else { return }
+                // A verified durable content hit opens at its exact message;
+                // anything else opens the conversation as before.
+                if let match = workspace.taskContentMatchesByID[record.id],
+                   let messageID = match.messageID,
+                   let onOpenMatch {
+                    onOpenMatch(match.conversationID, messageID)
+                } else {
+                    onOpen(record.id)
+                }
             } label: {
                 HStack(alignment: .center, spacing: 10) {
                     if workspace.hasPendingApproval(in: record.id) {
@@ -306,8 +368,14 @@ struct MacWorkspaceTaskCenter: View {
                 .padding(.vertical, 2)
             }
             .buttonStyle(.plain)
-            .disabled(showsArchived)
-            if showsArchived {
+            .disabled(workspace.taskCenterShowsArchived)
+            .accessibilityIdentifier("workspace.task.open.\(record.id.uuidString)")
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader {
+                Self.smokeResultFrames[record.id] = $0
+            })
+            #endif
+            if workspace.taskCenterShowsArchived {
                 Button(t("恢复", "Restore")) { onArchive(record.id, false) }
                     .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
             }
@@ -316,7 +384,7 @@ struct MacWorkspaceTaskCenter: View {
             if sendingHere {
                 Button("host.chat.stop", systemImage: "stop.circle") { workspace.stopTask(record.id) }
             }
-            if !showsArchived {
+            if !workspace.taskCenterShowsArchived {
                 Button(LocalizedStringKey(record.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
                        systemImage: record.isPinned ? "pin.slash" : "pin") {
                     Task { await setPinned(!record.isPinned, for: record.id) }
@@ -347,7 +415,7 @@ struct MacWorkspaceTaskCenter: View {
     /// Archived rows answer "when was it archived" (iPad archive parity);
     /// current rows keep the run/activity recency date.
     private func rowDate(record: ConversationRecord, run: RunRecord?) -> Date {
-        if showsArchived { return record.archivedAt ?? record.updatedAt }
+        if workspace.taskCenterShowsArchived { return record.archivedAt ?? record.updatedAt }
         return run?.startedAt ?? record.updatedAt
     }
 

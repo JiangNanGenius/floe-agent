@@ -673,3 +673,20 @@
 "mac.videos.retryDownload" = "The download was interrupted. Select the video and choose Resume to try again.";
 "mac.creative.useImageReference" = "Use as image reference";
 "mac.creative.useFirstFrame" = "Use as video first frame";
+
+"mac.workspace.conversationFolder" = "Conversation Folder";
+"mac.workspace.searchResultUnavailable" = "This message could not be located in the loaded history.";
+"mac.workspace.reuseMessage" = "Use as Draft";
+"mac.workspace.appendMessage" = "Append to Draft";
+"mac.workspace.readOnlyActions" = "Files are read-only. Commands and window control are turned off.";
+"mac.workspace.continueSearch" = "Continue locating";
+"mac.workspace.searchConversationContent" = "Search conversation text";
+"mac.workspace.dismissSearchNotice" = "Dismiss";
+"mac.workspace.configureModel" = "Configure Model…";
+"mac.workspace.sendShortcut" = "Send (⌘Return)";
+"mac.settings.providerModels" = "Providers & Models";
+"mac.settings.find" = "Find a setting";
+"mac.settings.noMatches" = "No matching settings";
+"mac.settings.runningInput" = "Messages during a run";
+"mac.settings.runningInput.queue" = "Queue for later";
+"mac.settings.runningInput.steer" = "Guide the current run";

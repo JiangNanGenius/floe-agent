@@ -22,19 +22,9 @@ enum MacAuxiliaryRole: CaseIterable {
 
 struct MacAuxiliaryModelsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    let openImageModelSettings: () -> Void
-    let openVideoModelSettings: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("mac.aux.title").font(.headline)
-                Spacer()
-                Button("mac.aux.done") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityIdentifier("settings.closeAuxiliaryModels")
-            }.padding()
+            Text("mac.aux.title").font(.headline).padding()
             controls
         }.frame(minWidth: 440, minHeight: 340)
         #if FLOE_MAC_HOST_SMOKE
@@ -62,16 +52,7 @@ struct MacAuxiliaryModelsView: View {
                     }
                 }.disabled(workspace.savingApprovalMode)
             } footer: { Text("mac.aux.reviewer.detail") }
-            Section {
-                Button("mac.aux.image") {
-                    dismiss()
-                    openImageModelSettings()
-                }
-                Button("mac.creative.videoModel") {
-                    dismiss()
-                    openVideoModelSettings()
-                }
-            }
+
         }
         .formStyle(.grouped)
         .accessibilityIdentifier("settings.auxiliaryModels")

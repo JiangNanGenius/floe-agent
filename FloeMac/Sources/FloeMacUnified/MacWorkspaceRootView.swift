@@ -16,9 +16,13 @@ private enum MacWorkspaceDestination: Hashable {
 }
 
 struct MacWorkspaceRootView: View {
+    #if FLOE_MAC_HOST_SMOKE
+    static var smokeTaskCenterFrame: CGRect?
+    #endif
     @ObservedObject var workspace: HostAgentWorkspace
     let openSettings: () -> Void
     let openModelSettings: () -> Void
+    let openPermissionSettings: () -> Void
     let openToolbox: (String) -> Void
     let settingsContent: () -> AnyView
     let imageContent: (((URL) -> Bool)?) -> AnyView
@@ -41,6 +45,7 @@ struct MacWorkspaceRootView: View {
     @State private var showHistorySearch = false
     @FocusState private var historySearchFocused: Bool
     @State private var historySearch = ""
+    @State private var searchResultTarget: (conversation: UUID, message: UUID)?
     @State private var conversationFindRequest: UUID?
     @State private var fileFindRequest: UUID?
     @State private var taskCenterFindRequest: UUID?
@@ -124,12 +129,13 @@ struct MacWorkspaceRootView: View {
         }
         .onChange(of: destination) { _, newDestination in
             draftStore.flush()
+            if newDestination != searchResultTarget.map({ .conversation($0.conversation) }) { searchResultTarget = nil }
             conversationFindRequest = nil
             fileFindRequest = nil
             toolboxFindRequest = nil
             taskCenterFindRequest = nil
             if case .conversation(let id) = newDestination { requestedConversation = id }
-            if case .newTask = newDestination { requestedConversation = nil }
+            else { requestedConversation = nil }
             #if FLOE_MAC_HOST_SMOKE
             workspace.smokeSpacePage = activeSpacePage
             #endif
@@ -304,9 +310,9 @@ struct MacWorkspaceRootView: View {
                             .onDisappear { workspace.smokeTaskSearchMounted = false }
                             #endif
                             .onSubmit {
-                                if let result = filteredConversations.first, !historySearchQuery.isEmpty {
-                                    openTask(result.id)
-                                }
+                                guard !historySearchQuery.isEmpty else { return }
+                                if let result = filteredConversations.first { openTask(result.id) }
+                                else { searchConversationContent() }
                             }
                             .onExitCommand(perform: closeTaskSearch)
                         Button(action: closeTaskSearch) {
@@ -330,6 +336,10 @@ struct MacWorkspaceRootView: View {
                 sidebarLink(.newTask(nil), title: "workbench.new_task", icon: "square.and.pencil")
                     .disabled(!canSelectTask)
                 sidebarLink(.taskCenter, title: "app.floe_agent_app.task_center", icon: "checklist")
+                    .accessibilityIdentifier("workspace.taskCenter")
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { Self.smokeTaskCenterFrame = $0 })
+                    #endif
                 sidebarLink(.space(.files), title: "space.title", icon: "square.stack.3d.up")
                     .accessibilityIdentifier("workspace.space")
                     #if FLOE_MAC_HOST_SMOKE
@@ -348,12 +358,14 @@ struct MacWorkspaceRootView: View {
                     if historySearchQuery.isEmpty {
                         projectSidebar
                         personalHistory
-                    } else if filteredConversations.isEmpty {
-                        Text("mac.workspace.noTasksFound")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .padding(10)
                     } else {
+                        Button(action: searchConversationContent) {
+                            Label("mac.workspace.searchConversationContent", systemImage: "text.magnifyingglass")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.callout)
+                        .padding(6)
                         ForEach(filteredConversations) { conversationSidebarRow($0) }
                     }
                 }
@@ -847,11 +859,17 @@ struct MacWorkspaceRootView: View {
                             .padding(.horizontal)
                     }
                     HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
-                                           openModelSettings: openModelSettings,
+                                           openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
                                            openFiles: { showInspector = true },
                                            openImageWorkbench: openImageWorkbench,
                                            findRequest: conversationFindRequest,
-                                           findConversationID: destinationConversationID)
+                                           findConversationID: destinationConversationID,
+                                           requestedMessageID: searchResultTarget?.conversation == destinationConversationID ? searchResultTarget?.message : nil,
+                                           didHandleSearchResult: { conversation, message in
+                                               if searchResultTarget?.conversation == conversation, searchResultTarget?.message == message {
+                                                   searchResultTarget = nil
+                                               }
+                                           })
                         .id(destinationConversationID)
                 }
             } else {
@@ -872,7 +890,12 @@ struct MacWorkspaceRootView: View {
             MacWorkspaceTaskCenter(workspace: workspace, findRequest: taskCenterFindRequest, onOpen: openTask, onNew: startNewTask,
                                    onArchive: { updateTask(id: $0, change: .archive($1)) },
                                    onMove: chooseTaskWorkspace, onDelete: confirmDelete,
-                                   didDeleteArchived: { draftStore.clear(for: $0) })
+                                   didDeleteArchived: { draftStore.clear(for: $0) },
+                                   onOpenMatch: { conversation, message in
+                                       guard canSelectTask || workspace.selectedID == conversation else { return }
+                                       searchResultTarget = (conversation, message)
+                                       openTask(conversation)
+                                   })
         }
     }
 
@@ -992,6 +1015,13 @@ struct MacWorkspaceRootView: View {
         #if FLOE_MAC_HOST_SMOKE
         workspace.smokeTaskFindInvocations += 1
         #endif
+    }
+
+    private func searchConversationContent() {
+        workspace.taskCenterShowsArchived = false
+        workspace.taskCenterQuery = historySearchQuery
+        closeTaskSearch()
+        destination = .taskCenter
     }
 
     private func closeTaskSearch() {

@@ -304,7 +304,6 @@ final class HostAgentWorkspace: ObservableObject {
     #if FLOE_MAC_HOST_SMOKE
     var smokeOwnerAuthentication: (() -> Bool)?
     var smokeAuxiliaryModelsMounted = false
-    var smokeAuxiliaryButtonFrame: CGRect?
     var smokeTaskSearchMounted = false
     var smokeTaskFindInvocations = 0
     var smokeConversationSearchMounted = false
@@ -601,6 +600,13 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var conversations: [ConversationRecord] = []
     @Published private(set) var recentTaskRuns: [UUID: RunRecord] = [:]
     @Published private(set) var taskRunLookupFailed = false
+    // Task Center cross-conversation content search. Query/scope are host
+    // in-memory state only (never persisted), so returning from an opened
+    // match restores the exact search without keeping any user query log.
+    @Published var taskCenterQuery = ""
+    @Published var taskCenterShowsArchived = false
+    @Published private(set) var taskContentMatchesByID: [UUID: ConversationSearchMatch] = [:]
+    @Published private(set) var taskContentSearchFailed = false
     @Published private(set) var selectedID: UUID?
     #if FLOE_UNIFIED_MAC
     @Published private(set) var admittedDraftID: UUID?
@@ -707,6 +713,12 @@ final class HostAgentWorkspace: ObservableObject {
     private(set) var smokeRunDiagnostics: [String] = []
     #endif
     private var taskRunLookup = UUID()
+    private var taskContentLookup = UUID()
+    private var taskContentSearchTask: Task<Void, Never>?
+    /// Debounce for typing-driven Task Center content search (mirrors the
+    /// in-conversation find model). Restoration (on appear / scope change)
+    /// reschedules and is covered by the same latest-query-wins fence.
+    private static let taskContentSearchDebounce: Duration = .milliseconds(180)
     private var historySelection = UUID()
     private var earlierMessageCursor: ConversationMessageCursor?
     /// Durable user-question event subscription (one per runtime lifetime).
@@ -1500,6 +1512,53 @@ final class HostAgentWorkspace: ObservableObject {
             taskRunLookupFailed = false
         } catch {
             if !Task.isCancelled, lookup == taskRunLookup { taskRunLookupFailed = true }
+        }
+    }
+
+    // MARK: - Task Center cross-conversation content search
+
+    /// Durable message-text search across the user's ordinary conversations,
+    /// reusing the shared `SQLiteIntelligenceStore.conversationSearchMatches`
+    /// contract (visible-text matcher, projected snippets). `archived: false`
+    /// addresses the current visible list; `archived: true` addresses the
+    /// archived scope. Local SQLite only; results are bounded by the store.
+    func taskContentMatches(_ query: String, archived: Bool) async throws -> [ConversationSearchMatch] {
+        guard let runtime, isReady, !isTerminating, let release = admit() else { throw CancellationError() }
+        defer { release() }
+        return try await runtime.taskContentMatches(query, archived: archived)
+    }
+
+    /// Debounced, latest-query-wins search scheduling. A newer query cancels
+    /// the pending lookup and invalidates any in-flight publish, so a stale
+    /// or cancelled search never touches the published matches (and the UI
+    /// selection is never yanked by an old query). An empty query clears
+    /// results immediately without a store round trip.
+    func scheduleTaskContentSearch(query: String, archived: Bool) {
+        taskContentSearchTask?.cancel()
+        taskContentLookup = UUID()
+        let lookup = taskContentLookup
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        taskContentMatchesByID = [:]
+        taskContentSearchFailed = false
+        guard !trimmed.isEmpty, !isTerminating else { return }
+        taskContentSearchTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: Self.taskContentSearchDebounce)
+            guard !Task.isCancelled, lookup == self.taskContentLookup, self.isReady else { return }
+            do {
+                let results = try await self.taskContentMatches(trimmed, archived: archived)
+                guard !Task.isCancelled, lookup == self.taskContentLookup else { return }
+                var byID: [UUID: ConversationSearchMatch] = [:]
+                for match in results where byID[match.conversationID] == nil {
+                    byID[match.conversationID] = match
+                }
+                self.taskContentMatchesByID = byID
+                self.taskContentSearchFailed = false
+            } catch {
+                guard !Task.isCancelled, lookup == self.taskContentLookup else { return }
+                self.taskContentMatchesByID = [:]
+                self.taskContentSearchFailed = true
+            }
         }
     }
 
@@ -2593,6 +2652,9 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func finishTermination() async throws {
+        taskContentSearchTask?.cancel()
+        await taskContentSearchTask?.value
+        taskContentSearchTask = nil
         #if FLOE_UNIFIED_MAC
         let background = Array(namingTasks.values)
         for task in background { task.cancel() }

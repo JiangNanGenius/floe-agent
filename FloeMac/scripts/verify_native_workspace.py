@@ -93,8 +93,15 @@ def main():
         data.update(modelErrors=Model.errors, toolResults=sorted(Model.returned))
         if opts.report:
             opts.report.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            for suffix in ("content-search.png", "content-search-open.png"):
+                screenshot = report.with_suffix(".json." + suffix)
+                if screenshot.is_file():
+                    opts.report.with_suffix("." + suffix).write_bytes(screenshot.read_bytes())
         print(json.dumps(data, ensure_ascii=False))
-        assert data.get("checks") and all(data["checks"].values()) and not Model.errors
+        checks = data["checks"]
+        required = {"changeApprovalWhileWaiting", "messageContentSearch", "archivedSearchScope", "revealSearchMessage", "openSearchResultFromTaskCenter"}
+        assert required <= checks.keys(), required - checks.keys()
+        assert all(checks.values()) and not Model.errors
         assert Model.returned == {"native", "write", "deny", "approve", "confine", "confineRead", "full", "second"}
 
 

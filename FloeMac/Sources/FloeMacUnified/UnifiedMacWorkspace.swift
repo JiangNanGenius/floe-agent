@@ -47,7 +47,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
     }
 
     func openAgent(openSettings: @escaping () -> Void, openImageSettings: @escaping () -> Void,
-                   openVideoSettings: @escaping () -> Void, openModelSettings: @escaping () -> Void, settingsContent: @escaping () -> AnyView) {
+                   openVideoSettings: @escaping () -> Void, openModelSettings: @escaping () -> Void,
+                   openPermissionSettings: @escaping () -> Void, settingsContent: @escaping () -> AnyView) {
         if agentWindow == nil {
             guard let root = testSupport ?? FileManager.default.urls(for: .applicationSupportDirectory,
                                                                       in: .userDomainMask).first,
@@ -87,7 +88,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
             workspace.saveAttachmentDraft = { [weak drafts] id, attachments in drafts?.setAttachments(attachments, for: id) }
             let host = NSHostingController(rootView: MacWorkspaceRootView(
                 workspace: workspace, openSettings: openSettings,
-                openModelSettings: openModelSettings,
+                openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
                 openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) },
                 settingsContent: settingsContent,
                 imageContent: { attach in

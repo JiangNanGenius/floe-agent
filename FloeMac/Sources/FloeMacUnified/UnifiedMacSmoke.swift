@@ -91,14 +91,17 @@ final class UnifiedMacSmoke {
                             && model.macWorkspace == nil, "pid": getpid()])
                 return
             }
+            var defaultsRestored = false
             if let agent = model.macWorkspace?.agent {
                 await agent.prepare()
+                defaultsRestored = agent.defaultMode == .plan && agent.runningInputMode == .steer
+                    && !agent.allowsWorkspaceWrites && agent.verifyAgentAnswers
                 while model.updates.installation.activity.activityCount != 0 && ContinuousClock.now < deadline {
                     try? await Task.sleep(for: .milliseconds(30))
                 }
                 if agent.beginTermination() { try? await agent.finishTermination() }
             }
-            finish(["agentModeRestoredOnRelaunch": startedInAgent, "pid": getpid()])
+            finish(["agentModeRestoredOnRelaunch": startedInAgent, "settingsRestoredOnRelaunch": defaultsRestored, "pid": getpid()])
             return
         }
         if let flag = CommandLine.arguments.firstIndex(of: "--background-window-fixture"),
@@ -300,26 +303,13 @@ final class UnifiedMacSmoke {
                     try? await Task.sleep(for: .milliseconds(220))
                     guard let window = model.smokeAgentSettingsSheet, let body = window.contentView else { return }
                     capture(body, extension: "settings-provider-accounts.png")
-                    if !pressAccessibilityButton(body, id: "settings.openAuxiliaryModels"), let frame = agent.smokeAuxiliaryButtonFrame {
-                        let point = NSPoint(x: frame.midX, y: body.isFlipped ? frame.midY : body.bounds.height - frame.midY)
-                        _ = click(body, at: point, in: window)
-                    }
+                    guard clickSettingsPane(.auxiliary, model: model, in: window) else { return }
                     let deadline = ContinuousClock.now + .seconds(3)
                     while !agent.smokeAuxiliaryModelsMounted && ContinuousClock.now < deadline {
                         try? await Task.sleep(for: .milliseconds(40))
                     }
-                    auxiliaryPanelVerified = agent.smokeAuxiliaryModelsMounted
-                    if auxiliaryPanelVerified {
-                        try? await Task.sleep(for: .milliseconds(240))
-                        let sheet = window.attachedSheet ?? NSApp.keyWindow ?? window
-                        if let content = sheet.contentView {
-                            capture(content, extension: "settings-auxiliary.png")
-                            if !pressAccessibilityButton(content, id: "settings.closeAuxiliaryModels") && sheet !== window {
-                                sheet.performClose(nil)
-                            }
-                        }
-                        try? await Task.sleep(for: .milliseconds(180))
-                    }
+                    auxiliaryPanelVerified = agent.smokeAuxiliaryModelsMounted && model.settingsPane == .auxiliary && window.attachedSheet == nil
+                    if auxiliaryPanelVerified { capture(body, extension: "settings-auxiliary.png") }
                 }
             }
             standardTaskMenus = await verifyTaskMenus(model: model, workspace: agent)
@@ -329,7 +319,13 @@ final class UnifiedMacSmoke {
         let spaceNavigation = await exerciseSpaceNavigation(model: model)
         let toolbox = await exerciseToolbox(model: model)
         let fileEditorFailures = MacWorkspaceFileEditingSmoke.runSyntheticChecks()
-        if let agent = model.macWorkspace?.agent, agent.beginTermination() { try? await agent.finishTermination() }
+        if let agent = model.macWorkspace?.agent {
+            agent.defaultMode = .plan
+            agent.runningInputMode = .steer
+            agent.allowsWorkspaceWrites = false
+            agent.verifyAgentAnswers = true
+            if agent.beginTermination() { try? await agent.finishTermination() }
+        }
         let output: [String: Any] = [
             "sameProcessBridgeReady": model.listenerReady,
             "bridgeOnlyStartupVerified": bridgeOnlyStartup,
@@ -458,6 +454,11 @@ final class UnifiedMacSmoke {
             while agent.isSending && ContinuousClock.now < end {
                 if let approval = agent.pendingApproval, approvedCalls.insert(approval.callID).inserted {
                     guard let decide, approval.toolName == "exec.shell" else { agent.stop(); return false }
+                    if scenario == "deny" {
+                        let changed = await agent.setApprovalMode(.ask, asDefault: false)
+                        checks["changeApprovalWhileWaiting"] = changed && agent.taskApprovalMode == .ask
+                            && agent.pendingApproval == approval && !FileManager.default.fileExists(atPath: outside.path)
+                    }
                     await agent.resolveApproval(approval, allow: decide)
                 }
                 try? await Task.sleep(for: .milliseconds(30))
@@ -502,10 +503,61 @@ final class UnifiedMacSmoke {
         checks["separateFolders"] = agent.selectedID != firstID && firstRoot != nil && secondRoot != nil
             && firstRoot?.standardizedFileURL != secondRoot?.standardizedFileURL
             && secondRoot.map { !FileManager.default.fileExists(atPath: $0.appendingPathComponent("result.txt").path) } == true
-        if let firstID { await agent.select(firstID) }
+        if let firstID {
+            let query = "finished-write"
+            do {
+                let active = try await agent.taskContentMatches(query, archived: false)
+                let hit = active.first { $0.conversationID == firstID && $0.messageID != nil && $0.snippet.contains(query) }
+                checks["messageContentSearch"] = hit != nil && !active.contains { $0.conversationID == agent.selectedID }
+                let moved = await agent.changeConversationMetadata(id: firstID, change: .archive(true))
+                let hidden = try await agent.taskContentMatches(query, archived: false)
+                let archived = try await agent.taskContentMatches(query, archived: true)
+                checks["archivedSearchScope"] = moved && !hidden.contains { $0.conversationID == firstID }
+                    && archived.contains { $0.conversationID == firstID && $0.messageID == hit?.messageID }
+                let restored = await agent.changeConversationMetadata(id: firstID, change: .archive(false))
+                if let id = hit?.messageID, restored {
+                    checks["openSearchResultFromTaskCenter"] = await openSearchResult(
+                        query: query, conversationID: firstID, messageID: id, workspace: agent)
+                }
+                await agent.select(firstID)
+                if let id = hit?.messageID {
+                    let revealed = await agent.revealMessage(id, in: firstID)
+                    checks["revealSearchMessage"] = restored && revealed && agent.messages.contains { $0.id == id && $0.content.contains(query) }
+                } else { checks["revealSearchMessage"] = false }
+            } catch {
+                checks["messageContentSearch"] = false
+            }
+        }
         checks["reopen"] = firstRoot != nil && taskRoot()?.standardizedFileURL == firstRoot?.standardizedFileURL
         if agent.beginTermination() { try? await agent.finishTermination() }
-        finish(["checks": checks, "diagnostics": agent.smokeRunDiagnostics, "notice": agent.notice ?? ""])
+        finish(["checks": checks, "diagnostics": agent.smokeRunDiagnostics + settingsDiagnostics, "notice": agent.notice ?? ""])
+    }
+
+    private func openSearchResult(query: String, conversationID: UUID, messageID: UUID, workspace: HostAgentWorkspace) async -> Bool {
+        HostAgentWorkspaceView.smokeLocatedMessageID = nil
+        guard clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame,
+                                   screenshot: nil) else { return false }
+        workspace.taskCenterQuery = query
+        let deadline = ContinuousClock.now + .seconds(4)
+        while (workspace.taskContentMatchesByID[conversationID]?.messageID != messageID ||
+               MacWorkspaceTaskCenter.smokeResultFrames[conversationID] == nil) && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard workspace.taskContentMatchesByID[conversationID]?.messageID == messageID,
+              clickWorkbenchButton(ids: ["workspace.task.open." + conversationID.uuidString],
+                                   frame: MacWorkspaceTaskCenter.smokeResultFrames[conversationID],
+                                   screenshot: "content-search.png") else { return false }
+        let until = ContinuousClock.now + .seconds(4)
+        while HostAgentWorkspaceView.smokeLocatedMessageID != messageID && ContinuousClock.now < until {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        if let content = visibleWorkbench?.contentView { capture(content, extension: "content-search-open.png") }
+        let selected = workspace.selectedID == conversationID
+        let located = HostAgentWorkspaceView.smokeLocatedMessageID == messageID
+        if !selected || !located {
+            settingsDiagnostics.append("Search result selected=\(selected) located=\(located) ready=\(workspace.isReady) loading=\(workspace.isLoadingHistory)")
+        }
+        return selected && located
     }
 
     private func finish(_ output: [String: Any]) {
@@ -1412,6 +1464,15 @@ final class UnifiedMacSmoke {
             && visibleWorkbench != nil
     }
 
+    private func clickSettingsPane(_ pane: BridgeAppModel.SettingsPane, model: BridgeAppModel, in window: NSWindow) -> Bool {
+        guard let content = window.contentView else { return false }
+        content.layoutSubtreeIfNeeded()
+        refreshButtonFrames(in: content)
+        if pressAccessibilityButton(content, id: "settings.pane." + pane.rawValue) { return true }
+        guard let frame = model.smokeSettingsFrames[pane], !frame.isEmpty else { return false }
+        return clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: window)
+    }
+
     private func exerciseUnifiedSettings(model: BridgeAppModel) async -> Bool {
         guard model.isAgentMode else { return false }
         let appMenu = NSApp.mainMenu?.items.first?.submenu
@@ -1442,10 +1503,27 @@ final class UnifiedMacSmoke {
         workspace.verifyAgentAnswers = false
         workspace.allowsWorkspaceWrites = true
         guard preferencesSaved else { return false }
-        model.openSettings(.permissions)
+        guard clickSettingsPane(.permissions, model: model, in: window) else { return false }
         try? await Task.sleep(for: .milliseconds(180))
         guard model.settingsPane == .permissions, model.smokeAgentSettingsSheet === window else { return false }
-        if let content = window.contentView { capture(content, extension: "settings-permissions.png") }
+        if let content = window.contentView {
+            capture(content, extension: "settings-permissions.png")
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            if !pressAccessibilityButton(content, id: "settings.permissions.allowActions"),
+               let frame = MacPermissionsSettingsView.smokeActionsFrame {
+                _ = clickWindowLocation(NSPoint(x: frame.maxX - 15, y: frame.midY), in: window)
+            }
+            let toggleDeadline = ContinuousClock.now + .seconds(2)
+            while workspace.allowsWorkspaceWrites && ContinuousClock.now < toggleDeadline {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            guard !workspace.allowsWorkspaceWrites && !preferences.bool(forKey: "floe.mac.workspace.allowWrites") else {
+                settingsDiagnostics.append("The permission switch did not change the saved action setting.")
+                return false
+            }
+            workspace.allowsWorkspaceWrites = true
+        } else { return false }
         model.openSettings(.models)
         while model.settingsPane != .models && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
