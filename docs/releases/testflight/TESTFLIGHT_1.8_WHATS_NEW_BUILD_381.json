@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "打开已有游戏工程，进入 IDE 后运行，再退出并重新打开。在浏览器预览中接管页面，试试直接关闭和带备注交还。请在 CAM 工程中计算一个圆形型腔，再通过界面和工程助手分别导出 G-code，检查每个深度的沿壁走刀。 从工作区打开已切片的 3MF，拖动层滑块，再打开只有模型的 3MF 比较预览。长对话中观察工具状态更新。打开化学工程的分子三维视图，关闭后重开。",
+  "en-US": "Reopen an existing game project and run it from the IDE. Take over a browser preview, then close it directly or return it with a comment. Calculate a circular CAM pocket, export G-code from the editor and project assistant, and check the wall pass at each depth. In the workspace, open a sliced 3MF and move between layers. Compare it with a model-only 3MF. Check tool-call updates in a long chat and reopen a chemistry project after viewing its 3D molecule."
+}
