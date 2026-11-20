@@ -10,16 +10,13 @@ import ImageIO
 
 /// Durable local image generation for the unified Mac workspace.
 ///
-/// Keeps the provider selection and its key in one device-bound Keychain item.
+/// Resolves the selected model through its provider account. Existing standalone
+/// settings keep their original device-bound Keychain item.
 /// Verified images and generation history live in the app's private directory.
 @MainActor
 final class MacImageGeneration: ObservableObject {
 
-    struct Configuration: Codable, Equatable {
-        var presetID: ProviderTemplateID
-        var endpoint: String
-        var modelID: String
-    }
+    typealias Configuration = MacMediaProviderConfiguration
 
     struct ResultItem: Codable, Equatable, Identifiable {
         let id: UUID
@@ -85,6 +82,18 @@ final class MacImageGeneration: ObservableObject {
     @Published private(set) var isGenerating = false
     @Published private(set) var notice: String?
 
+    private let providerLink: MacMediaProviderLink
+    var providerSelection: MacMediaProviderSelection? { providerLink.selection }
+    var modelChoices: [MacMediaProviderSelection.Choice] { providerLink.choices }
+
+    func configuration(for providerOverride: MacMediaProviderSelection?) -> Configuration? {
+        if let providerOverride { return providerLink.configuration(for: providerOverride) }
+        return configuration
+    }
+
+    var hasStandaloneConfiguration: Bool { standaloneConfiguration != nil }
+    private var standaloneConfiguration: Configuration?
+
     private let directory: URL
     private let vault: KeychainStore?
     private let admitWork: HostAgentWorkspace.AdmitWork
@@ -103,7 +112,9 @@ final class MacImageGeneration: ObservableObject {
     private static let maximumReferenceImageBytes = 12 * 1_048_576
 
     init(directory: URL, namespace: String, useKeychain: Bool,
+         workspace: HostAgentWorkspace? = nil, preferences: UserDefaults = .standard,
          admitWork: @escaping HostAgentWorkspace.AdmitWork) {
+        self.providerLink = MacMediaProviderLink(workspace: workspace, preferences: preferences, role: .image)
         self.directory = directory
         self.vault = useKeychain
             ? KeychainStore(service: namespace + ".image", synchronizable: false,
@@ -111,46 +122,35 @@ final class MacImageGeneration: ObservableObject {
             : nil
         self.admitWork = admitWork
         loadPersistedState()
+        standaloneConfiguration = configuration
         hasCredential = currentKey() != nil
+        providerLink.didChange = { [weak self] resolved in
+            guard let self else { return }
+            configuration = providerLink.selection == nil ? standaloneConfiguration : resolved.map(Configuration.init)
+            hasCredential = resolved != nil || (providerLink.selection == nil && currentKey() != nil)
+        }
+        providerLink.observe { [weak self] in self?.hasStandaloneConfiguration ?? true }
     }
 
     // MARK: - Shared workbench controls
 
-    /// Parameter contract of the configured generate route, derived from the
-    /// shared iPad resolver. Nil when the route cannot generate; the
-    /// workbench hides the manual controls instead of offering dead pickers.
-    var parameterContract: ImageGenerationPresetResolver.ParameterContract? {
-        routeContracts()?.generate
-    }
-
-    /// How many reference images the configured route accepts for editing.
-    /// Zero means references are unsupported and the workbench hides the
-    /// reference input.
-    var maximumReferenceImages: Int {
-        max(0, routeContracts()?.edit.maximumReferenceImages ?? 0)
-    }
-
-    private struct RouteContracts {
-        let generate: ImageGenerationPresetResolver.ParameterContract
-        let edit: ImageGenerationPresetResolver.ParameterContract
-    }
-
-    /// One validated route plus both operation contracts. Building this is
-    /// cheap (catalog lookups only) and keeps every control honest.
-    private func routeContracts() -> RouteContracts? {
-        guard let config = configuration,
-              let endpointURL = URL(string: config.endpoint) else { return nil }
-        let route = Self.makeRoute(presetID: config.presetID, endpoint: endpointURL, modelID: config.modelID,
-                                   allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault))
-        let adapter = ImageProviderAdapterFactory().adapter(for: route.profile)
-        guard let adapter, adapter.supports(.generate, for: route.profile),
+    func parameterContract(for providerOverride: MacMediaProviderSelection?, operation: RemoteImageOperation = .generate)
+        -> ImageGenerationPresetResolver.ParameterContract? {
+        guard let config = configuration(for: providerOverride), let route = route(for: config),
+              let adapter = ImageProviderAdapterFactory().adapter(for: route.profile),
+              adapter.supports(operation, for: route.profile),
+              route.model.capabilities.contains(operation == .edit ? .imageEditing : .imageGeneration),
               ProviderConfigurationValidation.issues(for: route.profile).isEmpty,
               ProviderConfigurationValidation.issues(for: route.model).isEmpty else { return nil }
-        return RouteContracts(
-            generate: ImageGenerationPresetResolver.parameterContract(
-                provider: route.profile, model: route.model, operation: .generate),
-            edit: ImageGenerationPresetResolver.parameterContract(
-                provider: route.profile, model: route.model, operation: .edit))
+        let contract = ImageGenerationPresetResolver.parameterContract(
+            provider: route.profile, model: route.model, operation: operation)
+        return contract.countStrategy == .unsupported ? nil : contract
+    }
+
+    var maximumReferenceImages: Int { maximumReferenceImages(for: nil) }
+
+    func maximumReferenceImages(for providerOverride: MacMediaProviderSelection?) -> Int {
+        max(0, parameterContract(for: providerOverride, operation: .edit)?.maximumReferenceImages ?? 0)
     }
 
     /// Loads one verified reference image from a local file (for example a
@@ -164,8 +164,23 @@ final class MacImageGeneration: ObservableObject {
 
     // MARK: - Configuration
 
+    func bindProvider(accountID: UUID, modelID: UUID) throws {
+        try selectProvider(.init(accountID: accountID, modelID: modelID))
+    }
+
+    func useStandaloneConfiguration() throws { try selectProvider(nil) }
+
+    private func selectProvider(_ selection: MacMediaProviderSelection?) throws {
+        guard !isGenerating else { throw MacImageGenerationError.busy }
+        guard let release = admit() else { throw MacImageGenerationError.admissionRefused }
+        defer { release() }
+        try providerLink.choose(selection)
+        notice = nil
+    }
+
     /// Changing the endpoint or preset requires a key for the new connection.
     func save(_ config: Configuration, apiKey: String?) throws {
+        guard providerSelection == nil, config.providerSelection == nil else { throw MacImageGenerationError.invalidConfiguration }
         let endpoint = config.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelID = config.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !modelID.isEmpty else { throw MacImageGenerationError.invalidConfiguration }
@@ -215,6 +230,7 @@ final class MacImageGeneration: ObservableObject {
             do { try persistConfiguration(prepared) } catch { throw MacImageGenerationError.storageFailed }
             sessionKey = key
         }
+        standaloneConfiguration = prepared
         configuration = prepared
         hasCredential = true
         notice = nil
@@ -222,40 +238,27 @@ final class MacImageGeneration: ObservableObject {
 
     // MARK: - Generation
 
-    /// Single-image generation with provider defaults; unchanged behavior for
-    /// existing callers and the packaged smoke fixture.
-    func generate(prompt: String) {
-        generate(prompt: prompt, options: GenerationOptions())
-    }
-
     /// Bounded candidate batch through the shared iPad batch runner. The
     /// runner never replays a successful request, so a partial provider
     /// failure cannot produce duplicate billable submits.
-    func generate(prompt: String, options: GenerationOptions) {
+    func generate(prompt: String, options: GenerationOptions = .init(), providerOverride: MacMediaProviderSelection? = nil) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isGenerating else { return }
-        guard let config = configuration, let apiKey = currentKey() else {
-            hasCredential = false
+        guard let config = configuration(for: providerOverride), keyForRequest(config) != nil else {
+            if providerOverride == nil { hasCredential = false }
             notice = String(localized: "mac.images.keyUnavailable")
             return
         }
-        guard let endpointURL = URL(string: config.endpoint) else {
+        guard let route = route(for: config) else {
             notice = String(localized: "mac.images.invalidConfiguration")
             return
         }
-        let route = Self.makeRoute(presetID: config.presetID, endpoint: endpointURL, modelID: config.modelID,
-                                   allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault))
+        let operation: RemoteImageOperation = options.referenceImages.isEmpty ? .generate : .edit
         let adapter = ImageProviderAdapterFactory().adapter(for: route.profile)
-        guard let adapter, adapter.supports(.generate, for: route.profile),
+        guard let adapter, adapter.supports(operation, for: route.profile),
+              route.model.capabilities.contains(operation == .edit ? .imageEditing : .imageGeneration),
               ProviderConfigurationValidation.issues(for: route.profile).isEmpty,
               ProviderConfigurationValidation.issues(for: route.model).isEmpty else {
-            notice = String(localized: "mac.images.invalidConfiguration")
-            return
-        }
-        // References turn the run into an edit operation; the shared contract
-        // decides whether the route accepts them at all.
-        let operation: RemoteImageOperation = options.referenceImages.isEmpty ? .generate : .edit
-        guard operation == .generate || adapter.supports(.edit, for: route.profile) else {
             notice = String(localized: "mac.images.invalidConfiguration")
             return
         }
@@ -288,6 +291,7 @@ final class MacImageGeneration: ObservableObject {
                 let plan = try ImageGenerationBatchPlan(contract: contract, requestedCount: count)
                 let outcome = try await ImageGenerationBatchRunner.run(plan: plan) { requestCount in
                     try Task.checkCancellation()
+                    guard let apiKey = await self.keyForRequest(config) else { throw MacImageGenerationError.keyRequired }
                     let result = try await adapter.perform(RemoteImageRequest(
                         operation: operation, prompt: text, sourceImages: options.referenceImages,
                         selection: selection, count: requestCount, modelRemoteID: modelID),
@@ -435,8 +439,15 @@ final class MacImageGeneration: ObservableObject {
     }
 
     private func currentKey() -> String? {
+        guard let configuration else { return nil }
+        return keyForRequest(configuration)
+    }
+
+    private func keyForRequest(_ config: Configuration) -> String? {
+        if config.providerSelection != nil { return providerLink.resolve(config)?.apiKey }
+        guard config == standaloneConfiguration else { return nil }
         if let vault {
-            guard let stored = Self.readStoredSettings(vault), stored.configuration == configuration,
+            guard let stored = Self.readStoredSettings(vault), stored.configuration == config,
                   !stored.apiKey.isEmpty else { return nil }
             return stored.apiKey
         }
@@ -462,6 +473,16 @@ final class MacImageGeneration: ObservableObject {
         #else
         return false
         #endif
+    }
+
+    private func route(for config: Configuration) -> (profile: ProviderProfile, model: ModelProfile)? {
+        if config.providerSelection != nil {
+            guard let route = providerLink.resolve(config) else { return nil }
+            return (route.profile, route.model)
+        }
+        guard let endpoint = URL(string: config.endpoint) else { return nil }
+        return Self.makeRoute(presetID: config.presetID, endpoint: endpoint, modelID: config.modelID,
+                              allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault))
     }
 
     private static func makeRoute(presetID: ProviderTemplateID, endpoint: URL, modelID: String,

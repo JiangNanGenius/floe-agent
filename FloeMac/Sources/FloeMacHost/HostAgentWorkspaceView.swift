@@ -7,6 +7,9 @@ import FloePersistence
 import SwiftUI
 #if FLOE_UNIFIED_MAC
 import AppKit
+import CoreTransferable
+import ImageIO
+import PhotosUI
 import UniformTypeIdentifiers
 #endif
 
@@ -34,6 +37,12 @@ struct HostAgentWorkspaceView: View {
     @FocusState private var promptFocused: Bool
     @State private var attachmentSelection: UUID?
     @State private var choosingAttachments = false
+    @State private var choosingPhoto = false
+    @State private var photo: PhotosPickerItem?
+    @State private var photoOrigin: UUID?
+    @State private var photoProject: UUID?
+    @State private var attachmentImport: Task<Void, Never>?
+    @State private var attachmentImportID: UUID?
     @State private var showAttachmentError = false
     #if FLOE_UNIFIED_MAC
     @State private var confirmsTaskFullAccess = false
@@ -292,7 +301,19 @@ struct HostAgentWorkspaceView: View {
             search.bind(conversationID: id)
             search.begin()
         }
-        .onDisappear { search.end() }
+        .onDisappear {
+            search.end()
+            attachmentImport?.cancel()
+            attachmentImport = nil
+            attachmentImportID = nil
+        }
+        .photosPicker(isPresented: $choosingPhoto, selection: $photo, matching: .images)
+        .onChange(of: photo) { _, item in
+            guard let item else { return }
+            photo = nil
+            guard photoOrigin == workspace.draftSelectionID, photoProject == workspace.selectedWorkspaceID else { return }
+            importAttachments([.photo(item)])
+        }
         .onChange(of: workspace.rejectedPrompt) { _, text in
             if let text, draft.wrappedValue.isEmpty { draft.wrappedValue = text }
         }
@@ -310,6 +331,9 @@ struct HostAgentWorkspaceView: View {
         }
         .alert("mac.workspace.attachFailed", isPresented: $showAttachmentError) {
             Button("OK", role: .cancel) {}
+        } message: {
+            Text(verbatim: MacPermissionsText.t("每次最多添加 8 个附件。请选择可读取的本机文件或图片，单个文件上限 32 MiB，图片可缩小后重试。",
+                                                "Attach up to 8 items. Choose readable local files up to 32 MiB each, or try a smaller image."))
         }
         .sheet(item: $goalToEdit) { goal in
             GoalBuilderSheet(goal: goal, errorMessage: workspace.notice) { objective, criteria, blockers, stops in
@@ -383,6 +407,14 @@ struct HostAgentWorkspaceView: View {
             if !workspace.stagedAttachments.isEmpty {
                 attachmentStrip
             }
+            if attachmentImport != nil {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(verbatim: MacPermissionsText.t("正在添加附件…", "Adding attachments…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if mode == .goal, workspace.goal?.status.isTerminal != false {
                 TextField("mac.agent.goalCriterionHint", text: $criterion, axis: .vertical)
                     .lineLimit(1...3)
@@ -402,6 +434,9 @@ struct HostAgentWorkspaceView: View {
                     }
                     .lineLimit(1...7)
                     .frame(minHeight: FloeTheme.minimumTarget)
+                    .onPasteCommand(of: acceptsAttachmentImport ? [.fileURL, .image] : []) { _ in
+                        pasteAttachments()
+                    }
                     .accessibilityIdentifier("thread.composer.input")
                     #if FLOE_MAC_HOST_SMOKE
                     .background(MacWorkbenchButtonFrameReader { workspace.smokePromptFrame = $0 })
@@ -438,7 +473,7 @@ struct HostAgentWorkspaceView: View {
                 } else {
                     let isNewGoal = mode == .goal && workspace.goal?.status.isTerminal != false
                     let compatible = mode == .chat || workspace.composerProvider?.model.capabilities.contains(.tools) == true
-                    let canSend = workspace.composerProvider != nil && compatible && !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let canSend = attachmentImport == nil && workspace.composerProvider != nil && compatible && !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         && !workspace.isTerminating && !workspace.isAcceptingPlan
                     Button {
                         let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
@@ -472,9 +507,10 @@ struct HostAgentWorkspaceView: View {
         .padding(8)
         .modifier(FloeThreadComposerChrome())
         .dropDestination(for: URL.self) { urls, _ in
-            guard workspace.selectedID == findConversationID, !workspace.isSending,
-                  !workspace.isTerminating, !workspace.isLoadingHistory else { return false }
-            return !workspace.stageAttachments(urls.filter(\.isFileURL)).isEmpty
+            guard acceptsAttachmentImport else { return false }
+            let staged = workspace.stageAttachments(urls.filter(\.isFileURL))
+            showAttachmentError = staged.count < urls.count
+            return !staged.isEmpty
         }
         .frame(maxWidth: 824)
         .padding(.horizontal, 6)
@@ -511,13 +547,75 @@ struct HostAgentWorkspaceView: View {
         }
     }
 
+    private var acceptsAttachmentImport: Bool {
+        workspace.isReady && workspace.selectedID == findConversationID && !workspace.isSending
+            && !workspace.isTerminating && !workspace.isLoadingHistory && attachmentImport == nil
+    }
+
+    private func pasteAttachments() {
+        guard acceptsAttachmentImport else { return }
+        let remaining = HostAgentWorkspace.maximumStagedAttachmentCount - workspace.stagedAttachments.count
+        let inputs = MacComposerImport.read(.general, limit: remaining)
+        guard !inputs.isEmpty else { showAttachmentError = true; return }
+        importAttachments(inputs)
+    }
+
+    private func importAttachments(_ inputs: [MacComposerImport.Input]) {
+        guard acceptsAttachmentImport else { return }
+        let selection = workspace.draftSelectionID
+        let owner = workspace.attachmentOwnerID
+        let project = workspace.selectedWorkspaceID
+        let importID = UUID()
+        attachmentImportID = importID
+        attachmentImport = Task { @MainActor in
+            defer {
+                if attachmentImportID == importID { attachmentImport = nil; attachmentImportID = nil }
+            }
+            @MainActor func originIsCurrent() -> Bool {
+                !Task.isCancelled && workspace.isReady && workspace.draftSelectionID == selection
+                    && workspace.attachmentOwnerID == owner && workspace.selectedWorkspaceID == project
+                    && !workspace.isSending && !workspace.isTerminating && !workspace.isLoadingHistory
+            }
+            var failed = false
+            for input in inputs {
+                guard originIsCurrent() else { return }
+                guard workspace.stagedAttachments.count < HostAgentWorkspace.maximumStagedAttachmentCount else {
+                    failed = true
+                    break
+                }
+                do {
+                    switch input {
+                    case .file(let url):
+                        if workspace.stageAttachments([url]).isEmpty { failed = true }
+                    case .invalid:
+                        failed = true
+                    case .image, .photo:
+                        let image = try await MacComposerImport.prepare(input)
+                        guard originIsCurrent() else { return }
+                        if !MacComposerImport.stage(image, in: workspace, owner: owner) { failed = true }
+                    }
+                } catch { failed = true }
+            }
+            if originIsCurrent() { showAttachmentError = failed }
+        }
+    }
+
     private var composerAttachments: some View {
         Menu {
-            Button("mac.workspace.attachFiles", systemImage: "paperclip") {
+            Button(MacPermissionsText.t("照片图库…", "Photo Library…"), systemImage: "photo.on.rectangle") {
+                photoOrigin = workspace.draftSelectionID
+                photoProject = workspace.selectedWorkspaceID
+                choosingPhoto = true
+            }
+            Button("mac.workspace.attachFiles", systemImage: "folder") {
                 attachmentSelection = workspace.draftSelectionID
                 choosingAttachments = true
             }
+            Button(MacPermissionsText.t("粘贴附件", "Paste Attachment"), systemImage: "document.on.clipboard") {
+                pasteAttachments()
+            }
             if let openImageWorkbench {
+                Divider()
                 Button("mac.settings.images", systemImage: "photo.badge.plus", action: openImageWorkbench)
             }
         } label: {
@@ -528,7 +626,7 @@ struct HostAgentWorkspaceView: View {
         .help("mac.workspace.attachFiles")
         .accessibilityLabel("mac.workspace.attachFiles")
         .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-        .disabled(workspace.isSending || workspace.isTerminating)
+        .disabled(!acceptsAttachmentImport)
     }
 
     @ViewBuilder
@@ -1299,5 +1397,143 @@ private struct MacQueuedInputEditor: View {
         .padding(16)
         .frame(minWidth: 420)
     }
+}
+#endif
+
+#if FLOE_UNIFIED_MAC
+enum MacComposerImport {
+    enum Input {
+        case file(URL), image(NSPasteboardItem, NSPasteboard.PasteboardType), photo(PhotosPickerItem), invalid
+    }
+
+    struct ImageBytes: Sendable {
+        let data: Data
+        let fileExtension: String
+    }
+
+    /// Only invoked by a user-initiated paste. A Finder item may also offer
+    /// an icon or thumbnail; its file URL always wins.
+    @MainActor static func read(_ board: NSPasteboard, limit: Int) -> [Input] {
+        var result: [Input] = []
+        for item in board.pasteboardItems ?? [] {
+            if result.count >= limit { result.append(.invalid); break }
+            if let value = item.string(forType: .fileURL), let url = URL(string: value), url.isFileURL {
+                result.append(.file(url))
+            } else if let type = item.types.first(where: { UTType($0.rawValue)?.conforms(to: .image) == true }) {
+                result.append(.image(item, type))
+            }
+        }
+        return result
+    }
+
+    @MainActor static func prepare(_ input: Input) async throws -> ImageBytes {
+        let bytes: Data
+        switch input {
+        case .image(let item, let type):
+            guard let data = item.data(forType: type), !data.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+            guard data.count <= HostAgentWorkspace.maximumAttachmentBytes else { throw CocoaError(.fileReadTooLarge) }
+            bytes = data
+        case .photo(let item):
+            guard let transfer = try await item.loadTransferable(type: PhotoTransfer.self) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            bytes = transfer.data
+        default: throw CocoaError(.fileReadUnsupportedScheme)
+        }
+        try Task.checkCancellation()
+        let inlineLimit = HostAgentWorkspace.maximumInlineImageBytes
+        return try await Task.detached(priority: .userInitiated) {
+            try normalize(bytes, inlineLimit: inlineLimit)
+        }.value
+    }
+
+    private struct PhotoTransfer: Transferable {
+        let data: Data
+        static var transferRepresentation: some TransferRepresentation {
+            FileRepresentation(importedContentType: .image) { file in
+                let limit = await MainActor.run { HostAgentWorkspace.maximumAttachmentBytes }
+                let handle = try FileHandle(forReadingFrom: file.file)
+                defer { try? handle.close() }
+                guard let data = try handle.read(upToCount: limit + 1), !data.isEmpty, data.count <= limit else {
+                    throw CocoaError(.fileReadTooLarge)
+                }
+                return Self(data: data)
+            }
+        }
+    }
+
+    private static func normalize(_ bytes: Data, inlineLimit: Int) throws -> ImageBytes {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, options),
+              CGImageSourceGetStatus(source) == .statusComplete,
+              let type = CGImageSourceGetType(source) as String?,
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int,
+              w > 0, h > 0, w <= 100_000_000 / h else { throw CocoaError(.fileReadCorruptFile) }
+        let native = [UTType.png.identifier: "png", UTType.jpeg.identifier: "jpg",
+                      UTType.gif.identifier: "gif", UTType.webP.identifier: "webp"]
+        if bytes.count <= inlineLimit, let ext = native[type] {
+            return ImageBytes(data: bytes, fileExtension: ext)
+        }
+        // TIFF screenshots and HEIC photos need a provider-readable raster;
+        // downsample in the decoder rather than allocating a full-size bitmap.
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2_560
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary)
+        else { throw CocoaError(.fileReadCorruptFile) }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil)
+        else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.88] as CFDictionary)
+        guard CGImageDestinationFinalize(destination), data.length > 0, data.length <= inlineLimit
+        else { throw CocoaError(.fileReadTooLarge) }
+        return ImageBytes(data: data as Data, fileExtension: "jpg")
+    }
+
+    @MainActor static func stage(_ image: ImageBytes, in workspace: HostAgentWorkspace, owner: UUID) -> Bool {
+        guard workspace.attachmentOwnerID == owner else { return false }
+        let id = UUID()
+        do {
+            let base = workspace.personalTaskLeaseBase
+            let url = try HostAgentDatabase.saveComposerImage(image.data, fileExtension: image.fileExtension,
+                                                               id: id, owner: owner, runtimeDirectory: base)
+            if workspace.stageAttachments([url], importedImageID: id).first?.id == id { return true }
+            HostAgentDatabase.discardComposerImage(url, id: id, owner: owner, runtimeDirectory: base)
+        } catch {}
+        return false
+    }
+
+    #if FLOE_MAC_HOST_SMOKE
+    /// Runs with an isolated workspace and a private pasteboard. The user's
+    /// pasteboard and Photos library are never touched.
+    @MainActor static func verify(in workspace: HostAgentWorkspace, file: URL) async -> Bool {
+        guard workspace.stagedAttachments.isEmpty else { return false }
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.setString("ordinary text", forType: .string)
+        guard read(board, limit: 8).isEmpty else { return false }
+        board.clearContents()
+        guard board.writeObjects([file as NSURL]), case .file(let url) = read(board, limit: 8).first,
+              let external = workspace.stageAttachments([url]).first else { return false }
+        workspace.unstageAttachment(external.id)
+        guard FileManager.default.fileExists(atPath: file.path),
+              let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC") else { return false }
+        board.clearContents()
+        board.setData(png, forType: .png)
+        guard let input = read(board, limit: 8).first, let image = try? await prepare(input),
+              stage(image, in: workspace, owner: workspace.attachmentOwnerID),
+              let original = workspace.stagedAttachments.first, original.kind == .image,
+              original.sha256 == FloeDigest.sha256Hex(png) else { return false }
+        // A draft reconstructed from a sent attachment has a new draft ID.
+        HostAgentDatabase.discardComposerImage(original.url, id: UUID(), owner: workspace.attachmentOwnerID,
+                                              runtimeDirectory: workspace.personalTaskLeaseBase)
+        guard FileManager.default.fileExists(atPath: original.url.path) else { return false }
+        workspace.unstageAttachment(original.id)
+        return !FileManager.default.fileExists(atPath: original.url.path) && workspace.stagedAttachments.isEmpty
+    }
+    #endif
 }
 #endif

@@ -120,6 +120,7 @@
 		AF9E0EAADFB92646D0B33951 /* BridgeServiceLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DE6A7CADD393CF549D6F393 /* BridgeServiceLifecycleTests.swift */; };
 		B2F2530196A230216F227569 /* BridgeConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A583838B33A00947EEDB8092 /* BridgeConfiguration.swift */; };
 		B72C8B672D2615E4016E8475 /* MacTaskApprovalPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC6C74CB1E84F92B3C8DC614 /* MacTaskApprovalPolicy.swift */; };
+		B9F6D6BE4847C02A870A6E3A /* ProviderCatalog.json in Resources */ = {isa = PBXBuildFile; fileRef = DBC9CE1FB39BF46617415C05 /* ProviderCatalog.json */; };
 		BBD073E7E8B1158572913495 /* BridgePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8DE76D3EBE56F86A1BA84A6 /* BridgePaths.swift */; };
 		BE20BAF1001DD88605D73598 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 5CCDAFD7A9B69CEABFF9566C /* Localizable.strings */; };
 		BED66A2B4FEEF0A4F4E85090 /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C09FA9AA45BDAEAD397761 /* FloeTheme.swift */; };
@@ -274,6 +275,7 @@
 		DABBF43ED2B50172B30E414C /* UnifiedMacSmoke.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedMacSmoke.swift; sourceTree = "<group>"; };
 		DB0943DDDDB3932F2377E0CC /* FloeMacHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FloeMacHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DB1D86F60F44E86D9CAC37E1 /* BridgeStoreLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeStoreLock.swift; sourceTree = "<group>"; };
+		DBC9CE1FB39BF46617415C05 /* ProviderCatalog.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ProviderCatalog.json; sourceTree = "<group>"; };
 		DCF3D4CFA5C2FBD9EA17E2CB /* UserQuestionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserQuestionCardView.swift; sourceTree = "<group>"; };
 		DD24B6E2B20C6C8879CF2C4E /* BridgeWorkspaceTransferPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeWorkspaceTransferPolicy.swift; sourceTree = "<group>"; };
 		DD485150DC81FD32B40CBA8E /* MacKimiComputerUse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacKimiComputerUse.swift; sourceTree = "<group>"; };
@@ -386,6 +388,14 @@
 				2B5842C4847706B398C095FA /* UserBridgeGuard.swift */,
 			);
 			path = FloeMacHost;
+			sourceTree = "<group>";
+		};
+		1FD9A3CCDF1A00E20B100296 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				DBC9CE1FB39BF46617415C05 /* ProviderCatalog.json */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 		20CA68ECBC4C30B6F360CD97 /* zh-Hans.lproj */ = {
@@ -673,6 +683,7 @@
 				09B1A4091E63A4BEA6773E58 /* Chat */,
 				6CD25FD04BABE5A250BFA56F /* Design */,
 				06DC6066958ACEA1006999FF /* Remote */,
+				1FD9A3CCDF1A00E20B100296 /* Resources */,
 			);
 			path = FloeApp;
 			sourceTree = "<group>";
@@ -860,6 +871,7 @@
 				56AE69180768D2B17A96D516 /* InfoPlist.strings in Resources */,
 				BE20BAF1001DD88605D73598 /* Localizable.strings in Resources */,
 				5A87FBF51BF3E69808341B44 /* Localizable.strings in Resources */,
+				B9F6D6BE4847C02A870A6E3A /* ProviderCatalog.json in Resources */,
 				226041EF1D731E29940F7E1A /* ZIPFoundation.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

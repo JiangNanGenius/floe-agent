@@ -685,7 +685,7 @@
 "mac.workspace.dismissSearchNotice" = "关闭";
 "mac.workspace.configureModel" = "配置模型…";
 "mac.workspace.sendShortcut" = "发送（⌘Return）";
-"mac.settings.providerModels" = "供应商与模型";
+"mac.settings.providerModels" = "模型供应商";
 "mac.settings.find" = "查找设置";
 "mac.settings.noMatches" = "没有匹配的设置";
 "mac.settings.runningInput" = "任务运行时发送消息";

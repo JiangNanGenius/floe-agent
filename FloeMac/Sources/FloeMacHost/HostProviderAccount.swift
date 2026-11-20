@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 import FloeMacSelfCore
+import FloeProviders
 
 struct HostProviderAccount: Codable, Identifiable {
+    static let providerCatalog = ProviderCatalogIndex.loadBundled()
     var profile: ProviderProfile
     var apiKey: String
     var presetID: String?
+    var initialRole: ProviderCatalogServiceRole?
     var models: [ModelProfile]
     var id: UUID { profile.id }
     var name: String { profile.displayName ?? profile.baseURL.host ?? profile.kind.rawValue }
@@ -29,8 +32,11 @@ struct HostProviderAccount: Codable, Identifiable {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.rangeOfCharacter(from: .controlCharacters) == nil else { throw FloeError.invalidConfiguration("Invalid API key") }
         let label = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        var profile = ProviderProfile(kind: .custom, wireProtocol: protocolKind, baseURL: url,
+        let entry = presetID.flatMap { providerCatalog?.entry(presetID: $0) }
+        let kind = ProviderPreset.all.first { $0.id.rawValue == presetID }?.kind ?? entry?.kind ?? .custom
+        var profile = ProviderProfile(kind: kind, wireProtocol: protocolKind, baseURL: url,
                                       displayName: label?.isEmpty == false ? label : nil, presetID: presetID)
+        profile.toolNameCompatibility = entry?.toolNameCompatibility == true || presetID == "deepseek"
         profile.allowsPlainHTTP = allowsPlainHTTP
         try ProviderConfigurationValidation.validate(profile)
         return Self(profile: profile, apiKey: key, presetID: presetID)
@@ -40,6 +46,7 @@ struct HostProviderAccount: Codable, Identifiable {
         var edited = draft
         if profile.baseURL == draft.baseURL && profile.wireProtocol == draft.wireProtocol {
             edited = profile
+            if profile.presetID != draft.presetID || profile.kind == .custom { edited.kind = draft.kind }
             edited.displayName = draft.displayName
             edited.presetID = draft.presetID
             edited.allowsPlainHTTP = draft.allowsPlainHTTP
@@ -52,6 +59,26 @@ struct HostProviderAccount: Codable, Identifiable {
 
     func record(_ model: ModelProfile) -> HostAgentProvider {
         HostAgentProvider(profile: profile, model: model, apiKey: apiKey, presetID: presetID)
+    }
+}
+
+extension ProviderCatalogServiceRole {
+    func includes(_ model: ModelProfile) -> Bool {
+        switch self {
+        case .conversation: model.supportsChatAgentSurface
+        case .image: model.supportsImageGenerationSurface
+        case .video: model.supportsVideoGenerationSurface
+        }
+    }
+
+    /// In a media editor a manually adopted ID represents this exact media
+    /// role, regardless of generic chat metadata returned by a models listing.
+    func configureNewModel(_ model: inout ModelProfile) {
+        guard self != .conversation else { return }
+        model.capabilities = self == .image ? [.imageGeneration, .imageEditing] : [.videoGeneration]
+        model.useSurfaces = self == .image ? .imageGeneration : .videoGeneration
+        model.isHiddenFromPrimaryPicker = true
+        model.explicitCapabilities = nil
     }
 }
 

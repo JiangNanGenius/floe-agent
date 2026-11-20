@@ -42,6 +42,7 @@ targets:
       - path: ../FloeAgent/FloeApp/Chat/UserMessageBubble.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/CodeBlockView.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/MarkdownRendererView.swift
+      - path: ../FloeAgent/FloeApp/Resources/ProviderCatalog.json
       - path: Resources/Licenses/ZIPFoundation.txt
       - path: Resources/en.lproj/Localizable.strings
       - path: Resources/zh-Hans.lproj/Localizable.strings

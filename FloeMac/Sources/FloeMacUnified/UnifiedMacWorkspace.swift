@@ -71,12 +71,12 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
             draftStore = drafts
             let images = directory.map {
                 MacImageGeneration(directory: $0.appendingPathComponent("Images", isDirectory: true), namespace: namespace,
-                                   useKeychain: testSupport == nil, admitWork: admitWork)
+                                   useKeychain: testSupport == nil, workspace: workspace, preferences: preferences, admitWork: admitWork)
             }
             self.images = images
             let videos = directory.map {
                 MacVideoGeneration(directory: $0.appendingPathComponent("Videos", isDirectory: true), namespace: namespace,
-                                   useKeychain: testSupport == nil, admitWork: admitWork)
+                                   useKeychain: testSupport == nil, workspace: workspace, preferences: preferences, admitWork: admitWork)
             }
             let library = directory.map {
                 MacCreativeLibrary(directory: $0.appendingPathComponent("Canvases", isDirectory: true), preferences: preferences, admitWork: admitWork)

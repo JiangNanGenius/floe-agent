@@ -12,6 +12,7 @@ struct MacImageWorkbenchView: View {
     var attachToTask: ((URL) -> Bool)?
     var initialReference: URL? = nil
     @State private var prompt = ""
+    @State private var providerOverride: MacMediaProviderSelection?
     @State private var selectedID: UUID?
     @State private var preview: NSImage?
     @State private var exportFailed = false
@@ -33,13 +34,19 @@ struct MacImageWorkbenchView: View {
         images.history.first(where: { $0.id == selectedID }) ?? images.history.first
     }
 
+    private var contract: ImageGenerationPresetResolver.ParameterContract? {
+        images.parameterContract(for: providerOverride, operation: references.isEmpty ? .generate : .edit)
+    }
+
+    private var maximumReferenceImages: Int { images.maximumReferenceImages(for: providerOverride) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextField("mac.images.prompt", text: $prompt, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...5)
                 .disabled(images.isGenerating)
-            if let contract = images.parameterContract {
+            if let contract {
                 Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 8) {
                     if !contract.aspectRatio.isEmpty {
                         GridRow {
@@ -91,13 +98,13 @@ struct MacImageWorkbenchView: View {
                     }
                 }
             }
-            if images.maximumReferenceImages > 0 {
+            if maximumReferenceImages > 0 {
                 referenceSection
             }
             HStack {
-                Button(action: openSettings) {
-                    Label(images.configuration?.modelID ?? String(localized: "mac.images.configure"), systemImage: "slider.horizontal.3")
-                }
+                MacCreativeModelMenu(choices: images.modelChoices, defaultModelName: images.configuration?.modelID,
+                                     selection: $providerOverride, openSettings: openSettings)
+                    .disabled(images.isGenerating)
                 Spacer()
                 if images.isGenerating {
                     ProgressView().controlSize(.small)
@@ -106,10 +113,10 @@ struct MacImageWorkbenchView: View {
                     Button("mac.images.generate") {
                         images.generate(prompt: prompt, options: .init(
                             count: count, aspectRatio: aspectRatio, resolution: resolution,
-                            quality: quality, referenceImages: references.map(\.data)))
+                            quality: quality, referenceImages: references.map(\.data)), providerOverride: providerOverride)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(images.configuration == nil || images.parameterContract == nil
+                    .disabled((providerOverride == nil && !images.hasCredential) || contract == nil
                               || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -161,7 +168,9 @@ struct MacImageWorkbenchView: View {
         }
         .padding(18)
         .onChange(of: images.history.first?.id, initial: true) { _, id in selectedID = id }
-        .onChange(of: images.configuration?.endpoint, initial: true) { _, _ in normalizeControls() }
+        .onChange(of: images.configuration(for: providerOverride), initial: true) { _, _ in normalizeControls() }
+        .onChange(of: maximumReferenceImages) { _, _ in normalizeControls() }
+        .onChange(of: references.isEmpty) { _, _ in normalizeControls() }
         .onChange(of: selection?.id, initial: true) { _, _ in
             preview = selection.flatMap { images.imageData(for: $0).flatMap(NSImage.init(data:)) }
         }
@@ -180,11 +189,11 @@ struct MacImageWorkbenchView: View {
     private var referenceSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("\(MacImageWorkbenchText.referenceImages) (\(references.count)/\(images.maximumReferenceImages))")
+                Text("\(MacImageWorkbenchText.referenceImages) (\(references.count)/\(maximumReferenceImages))")
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(MacImageWorkbenchText.addReference) { pickReferences() }
-                    .disabled(images.isGenerating || references.count >= images.maximumReferenceImages)
+                    .disabled(images.isGenerating || references.count >= maximumReferenceImages)
             }
             if !references.isEmpty {
                 ScrollView(.horizontal) {
@@ -214,7 +223,6 @@ struct MacImageWorkbenchView: View {
 
     @MainActor
     private func normalizeControls() {
-        let contract = images.parameterContract
         count = min(max(count, 1), max(1, contract?.maximumCount ?? 1))
         if let aspectRatio, contract?.aspectRatio.contains(aspectRatio) != true {
             self.aspectRatio = nil
@@ -225,7 +233,7 @@ struct MacImageWorkbenchView: View {
         if let quality, contract?.quality.contains(quality) != true {
             self.quality = nil
         }
-        let limit = images.maximumReferenceImages
+        let limit = maximumReferenceImages
         if references.count > limit {
             references = Array(references.prefix(limit))
         }
@@ -247,7 +255,7 @@ struct MacImageWorkbenchView: View {
             referenceError = MacImageWorkbenchText.referenceUnreadable
             return
         }
-        guard references.count < images.maximumReferenceImages else {
+        guard references.count < maximumReferenceImages else {
             referenceError = MacImageWorkbenchText.referenceLimitReached
             return
         }

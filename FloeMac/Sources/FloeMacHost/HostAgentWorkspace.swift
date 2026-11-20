@@ -319,6 +319,7 @@ final class HostAgentWorkspace: ObservableObject {
     var smokeProjectNameFrames: [UUID: CGRect] = [:]
     var smokeSpacePage: MacSpacePage?
     var smokeCreativeMounted = false
+    var smokeMediaAddFrame: CGRect?
     var smokeMediaSettingsRole: String?
     var smokeCreativeFrame: CGRect?
     var smokeSpaceFrame: CGRect?
@@ -636,6 +637,8 @@ final class HostAgentWorkspace: ObservableObject {
     private var cachedDraftTaskID: UUID?
     private static let draftTaskIDKey = "floe.mac.agent.draftTaskID"
 
+    var attachmentOwnerID: UUID { selectedID ?? draftTaskID }
+
     private var draftTaskID: UUID {
         if let cachedDraftTaskID { return cachedDraftTaskID }
         if let raw = preferences.string(forKey: Self.draftTaskIDKey),
@@ -815,17 +818,20 @@ final class HostAgentWorkspace: ObservableObject {
         return addProvider(name: nil, endpoint: endpoint, protocolKind: protocolKind, modelID: modelID, key: key)
     }
 
-    /// Adds a provider and makes it the selected one for chat.
+    /// Media-only accounts leave the currently selected chat model in place.
     @discardableResult
     func addProvider(name: String?, endpoint: String, protocolKind: ModelProtocol,
                      modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false,
                      presetID: String? = nil, limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0),
                      allowsPlainHTTP: Bool = false, catalogModel: ModelProfile? = nil,
-                     explicit: ModelCapabilities = [], supportsApproval: Bool? = nil) -> Bool {
+                     explicit: ModelCapabilities = [], supportsApproval: Bool? = nil,
+                     role: ProviderCatalogServiceRole = .conversation) -> Bool {
         updateProviderStore { store in
             if modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                store.accounts.append(try HostProviderAccount.configured(name: name, endpoint: endpoint, protocolKind: protocolKind,
-                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP))
+                var account = try HostProviderAccount.configured(name: name, endpoint: endpoint, protocolKind: protocolKind,
+                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+                account.initialRole = role
+                store.accounts.append(account)
                 return
             }
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
@@ -835,8 +841,11 @@ final class HostAgentWorkspace: ObservableObject {
             record.model.explicitCapabilities = explicit
             record.applyCatalogModel(catalogModel)
             if let supportsApproval { record.setApprovalEligibility(supportsApproval) }
-            store.accounts.append(HostProviderAccount(record))
-            store.selectedModelID = record.model.id
+            role.configureNewModel(&record.model)
+            var account = HostProviderAccount(record)
+            account.initialRole = role
+            store.accounts.append(account)
+            if record.canSelectAsPrimary { store.selectedModelID = record.model.id }
         }
     }
 
@@ -855,6 +864,7 @@ final class HostAgentWorkspace: ObservableObject {
                 guard account.models.isEmpty && editingModelID == nil else { throw ProviderStoreError.missingRecord }
                 var updated = try HostProviderAccount.configured(name: name, endpoint: endpoint, protocolKind: protocolKind,
                     apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+                updated.initialRole = account.initialRole
                 updated.profile = account.profileForEdit(updated.profile)
                 store.accounts[i] = updated
                 return
@@ -886,6 +896,13 @@ final class HostAgentWorkspace: ObservableObject {
             }
             record.applyCatalogModel(catalogModel)
             if let supportsApproval { record.setApprovalEligibility(supportsApproval) }
+            if previous.model.supportsImageGenerationSurface || previous.model.supportsVideoGenerationSurface {
+                record.model.capabilities = previous.model.capabilities
+                record.model.useSurfaces = previous.model.useSurfaces
+                record.model.isHiddenFromPrimaryPicker = previous.model.isHiddenFromPrimaryPicker
+                record.model.explicitCapabilities = previous.model.explicitCapabilities
+            }
+            record.model.isEnabled = previous.model.isEnabled
             record.model.id = previous.model.id
             record.model.providerID = id
             if previous.model.displayName != previous.model.remoteModelID && previous.model.remoteModelID == record.model.remoteModelID {
@@ -898,6 +915,29 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    /// Editing shared connection fields from an empty role on a mixed account
+    /// never selects an arbitrary sibling model to update.
+    @discardableResult
+    func updateProviderAccount(id: UUID, name: String?, endpoint: String, protocolKind: ModelProtocol,
+                               key: String, presetID: String?, allowsPlainHTTP: Bool) -> Bool {
+        updateProviderStore { store in
+            let i = try store.accountIndex(id)
+            let updated = try HostProviderAccount.configured(name: name, endpoint: endpoint,
+                protocolKind: protocolKind, apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+            store.accounts[i].profile = store.accounts[i].profileForEdit(updated.profile)
+            store.accounts[i].apiKey = updated.apiKey
+            store.accounts[i].presetID = presetID
+        }
+    }
+
+    @discardableResult
+    func setAccountEnabled(id: UUID, enabled: Bool) -> Bool {
+        updateProviderStore { store in
+            let i = try store.accountIndex(id)
+            store.accounts[i].profile.isEnabled = enabled
+        }
+    }
+
     @discardableResult
     func addProviderModel(providerID: UUID, model: ModelProfile) -> Bool {
         updateProviderStore { store in
@@ -905,6 +945,18 @@ final class HostAgentWorkspace: ObservableObject {
             var added = model
             added.providerID = providerID
             store.accounts[i].models.append(added)
+        }
+    }
+
+    /// Explicitly adopt an existing model created as text by an older editor.
+    /// Keep its stable ID, enabled state and every other account model intact.
+    @discardableResult
+    func assignMediaRole(_ role: ProviderCatalogServiceRole, to modelID: UUID, providerID: UUID) -> Bool {
+        guard role != .conversation else { return false }
+        return updateProviderStore { store in
+            let (i, j) = try store.indices(for: modelID)
+            guard store.accounts[i].id == providerID else { throw ProviderStoreError.missingRecord }
+            role.configureNewModel(&store.accounts[i].models[j])
         }
     }
 
@@ -1209,7 +1261,7 @@ final class HostAgentWorkspace: ObservableObject {
     /// plus one byte so an oversized file is rejected without being fully
     /// loaded. The returned array lists exactly what was staged.
     @discardableResult
-    func stageAttachments(_ urls: [URL]) -> [HostAgentAttachmentDraft] {
+    func stageAttachments(_ urls: [URL], importedImageID: UUID? = nil) -> [HostAgentAttachmentDraft] {
         guard isReady, !isSending, !isTerminating else { return [] }
         var staged: [HostAgentAttachmentDraft] = []
         var stagedPaths = Set(stagedAttachments.map {
@@ -1244,7 +1296,7 @@ final class HostAgentWorkspace: ObservableObject {
             // stage as model-visible drafts that the runtime then drops.
             if kind == .image, head.count > Self.maximumInlineImageBytes { continue }
             staged.append(HostAgentAttachmentDraft(
-                id: UUID(),
+                id: urls.count == 1 ? (importedImageID ?? UUID()) : UUID(),
                 kind: kind,
                 url: resolved,
                 bookmark: bookmark,
@@ -1283,8 +1335,13 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func unstageAttachment(_ id: UUID) {
-        stagedAttachments.removeAll { $0.id == id }
+        guard let index = stagedAttachments.firstIndex(where: { $0.id == id }) else { return }
+        let removed = stagedAttachments.remove(at: index)
         saveAttachmentDraft?(selectedID, stagedAttachments.map(\.reference))
+        #if FLOE_UNIFIED_MAC
+        HostAgentDatabase.discardComposerImage(removed.url, id: removed.id, owner: attachmentOwnerID,
+                                              runtimeDirectory: personalTaskLeaseBase)
+        #endif
     }
 
     func clearStagedAttachments() {
@@ -1362,7 +1419,10 @@ final class HostAgentWorkspace: ObservableObject {
         do {
             try await runtime.changeConversationMetadata(id: id, change: change)
             #if FLOE_UNIFIED_MAC
-            if case .delete = change { saveTaskMode(nil, for: id) }
+            if case .delete = change {
+                saveTaskMode(nil, for: id)
+                HostAgentDatabase.removeComposerImages(for: id, runtimeDirectory: personalTaskLeaseBase)
+            }
             #endif
             try await reloadConversations(using: runtime)
             return true
@@ -2777,6 +2837,9 @@ final class HostAgentWorkspace: ObservableObject {
     /// fail closed (surfaced as the existing Keychain-unavailable notice)
     /// and the stored bytes are never rewritten by a read.
     private func loadProviderStore() throws -> ProviderListEnvelope {
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        if vault == nil { return ProviderListEnvelope(accounts: accounts, selectedModelID: selectedModelID) }
+        #endif
         guard let vault else { return ProviderListEnvelope() }
         do {
             return try JSONDecoder().decode(ProviderListEnvelope.self, from: vault.read(account: Self.providerListAccount))
@@ -2837,8 +2900,10 @@ final class HostAgentWorkspace: ObservableObject {
     /// untouched and reports the existing local error notices.
     @discardableResult
     private func updateProviderStore(_ mutation: (inout ProviderListEnvelope) throws -> Void) -> Bool {
-        guard vault != nil, !isSending, !isTerminating else { return false }
-        guard let release = admit() else { return false }
+        #if !(FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE)
+        guard vault != nil else { return false }
+        #endif
+        guard !isSending, !isTerminating, let release = admit() else { return false }
         defer { release() }
         do {
             var store = try loadProviderStore()
@@ -2895,7 +2960,8 @@ final class HostAgentWorkspace: ObservableObject {
     /// briefly so a burst of edits collapses into one request; intermediate
     /// endpoints the user typed through never receive a request.
     func requestModelDiscovery(endpoint: String, protocolKind: ModelProtocol, apiKey: String,
-                               debounce: Bool, allowsPlainHTTP: Bool = false, providerID: UUID? = nil) {
+                               debounce: Bool, allowsPlainHTTP: Bool = false, providerID: UUID? = nil,
+                               presetID: ProviderTemplateID? = nil) {
         guard !isTerminating else { return }
         modelDiscoveryGeneration &+= 1
         let generation = modelDiscoveryGeneration
@@ -2911,7 +2977,7 @@ final class HostAgentWorkspace: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             await self.runModelDiscovery(generation: generation, endpoint: trimmedEndpoint,
                                          protocolKind: protocolKind, apiKey: trimmedKey,
-                                         allowsPlainHTTP: allowsPlainHTTP, providerID: providerID)
+                                         allowsPlainHTTP: allowsPlainHTTP, providerID: providerID, presetID: presetID)
         }
     }
 
@@ -2927,15 +2993,16 @@ final class HostAgentWorkspace: ObservableObject {
 
     #if FLOE_UNIFIED_MAC
     func testProviderConnection(endpoint: String, protocolKind: ModelProtocol, modelID: String,
-                                key: String, allowsPlainHTTP: Bool = false, providerID: UUID? = nil) async throws {
+                                key: String, allowsPlainHTTP: Bool = false, providerID: UUID? = nil,
+                                presetID: ProviderTemplateID? = nil) async throws {
         guard isReady, !isTerminating, let release = admit() else { throw CancellationError() }
         defer { release() }
-        var config = try HostAgentProvider(endpoint: endpoint, protocolKind: protocolKind, modelID: modelID,
-                                           apiKey: key, allowsPlainHTTP: allowsPlainHTTP)
+        var config = try HostProviderAccount.configured(name: nil, endpoint: endpoint, protocolKind: protocolKind,
+            apiKey: key, presetID: presetID?.rawValue, allowsPlainHTTP: allowsPlainHTTP)
         config.profile.nonSecretHeaders = savedHeaders(for: providerID, endpoint: config.profile.baseURL)
-        let binding = config.binding()
-        try await ProviderConnectionProbe.testConnection(provider: binding.provider, credentials: binding.credentials,
-                                                          modelRemoteID: config.model.remoteModelID, adapter: binding.adapter)
+        let credentials = ProviderCredentials(apiKey: config.apiKey.isEmpty ? nil : config.apiKey)
+        try await ProviderConnectionProbe.testConnection(provider: config.profile, credentials: credentials,
+            modelRemoteID: modelID, adapter: ProviderAdapterFactory().adapter(for: config.profile))
     }
     #endif
 
@@ -2946,7 +3013,8 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func runModelDiscovery(generation: UInt64, endpoint: String,
-                                   protocolKind: ModelProtocol, apiKey: String, allowsPlainHTTP: Bool, providerID: UUID?) async {
+                                   protocolKind: ModelProtocol, apiKey: String, allowsPlainHTTP: Bool,
+                                   providerID: UUID?, presetID: ProviderTemplateID?) async {
         // The endpoint must parse to an absolute http(s) URL before any
         // network work; everything else stays idle.
         guard !endpoint.isEmpty,
@@ -2959,7 +3027,7 @@ final class HostAgentWorkspace: ObservableObject {
         }
         // Subscription gateways publish no `/models` listing; their honest
         // path here is manual model entry, never a fabricated catalog.
-        let preset = ProviderPreset.preset(for: .custom, baseURL: url)
+        let preset = ProviderPreset.all.first { $0.id == presetID } ?? ProviderPreset.preset(for: .custom, baseURL: url)
         guard preset.supportsModelDiscovery else {
             applyModelDiscoveryResult(generation: generation, state: .listingUnavailable, models: [])
             return
@@ -2980,8 +3048,8 @@ final class HostAgentWorkspace: ObservableObject {
         }
         applyModelDiscoveryResult(generation: generation, state: .discovering, models: [])
         do {
-            var profile = ProviderProfile(kind: .custom, wireProtocol: protocolKind,
-                                          baseURL: url, displayName: nil)
+            var profile = ProviderProfile(kind: preset.kind, wireProtocol: protocolKind,
+                                          baseURL: url, displayName: nil, presetID: preset.id.rawValue)
             profile.allowsPlainHTTP = allowsPlainHTTP
             profile.nonSecretHeaders = savedHeaders(for: providerID, endpoint: url)
             try ProviderConfigurationValidation.validate(profile)
@@ -3113,8 +3181,51 @@ final class HostAgentWorkspace: ObservableObject {
                       protocolKind: .openAIChatCompletions, modelID: second.remoteModelID, key: "synthetic-D",
                       supportsImages: true, editingModelID: second.id) else { return false }
             let saved = try fixture.loadProviderStore()
-            return saved.accounts.count == 1 && saved.accounts.first?.apiKey == "synthetic-D"
-                && saved.accounts.first?.models.first?.id == second.id && saved.accounts.first?.name == "Renamed"
+            guard saved.accounts.count == 1, saved.accounts.first?.apiKey == "synthetic-D",
+                  saved.accounts.first?.models.first?.id == second.id, saved.accounts.first?.name == "Renamed",
+                  saved.selectedModelID == second.id,
+                  fixture.addProvider(name: "Studio", endpoint: ProviderPreset.volcengineArk.defaultBaseURL.absoluteString,
+                    protocolKind: .openAIChatCompletions, modelID: "test-image", key: "synthetic-media",
+                    presetID: ProviderTemplateID.volcengineArk.rawValue, role: .image),
+                  let studio = fixture.accounts.last, let image = studio.models.first,
+                  studio.profile.kind == .volcengineArk, image.supportsImageGenerationSurface,
+                  !image.supportsChatAgentSurface, !fixture.selectDefaultModel(image.id)
+            else { return false }
+            var video = ModelProfile(providerID: studio.id, remoteModelID: "test-video", displayName: "Video",
+                                     limits: image.limits, capabilities: [.text])
+            ProviderCatalogServiceRole.video.configureNewModel(&video)
+            guard fixture.addProviderModel(providerID: studio.id, model: video),
+                  fixture.setProviderModelEnabled(modelID: image.id, enabled: false),
+                  fixture.updateProvider(id: studio.id, name: "Studio", endpoint: studio.profile.baseURL.absoluteString,
+                      protocolKind: studio.profile.wireProtocol, modelID: image.remoteModelID, key: studio.apiKey,
+                      presetID: studio.presetID, editingModelID: image.id),
+                  fixture.setAccountEnabled(id: studio.id, enabled: false),
+                  fixture.updateProviderAccount(id: studio.id, name: "Media", endpoint: studio.profile.baseURL.absoluteString,
+                      protocolKind: studio.profile.wireProtocol, key: studio.apiKey, presetID: studio.presetID,
+                      allowsPlainHTTP: false)
+            else { return false }
+            fixture.reloadProviders()
+            guard let reloaded = fixture.accounts.first(where: { $0.id == studio.id }),
+                  reloaded.name == "Media", reloaded.apiKey == studio.apiKey, reloaded.initialRole == .image,
+                  !reloaded.profile.isEnabled, reloaded.models.count == 2,
+                  reloaded.models.contains(where: { $0.id == image.id && !$0.isEnabled && $0.supportsImageGenerationSurface }),
+                  reloaded.models.contains(where: { $0.id == video.id && $0.isEnabled && $0.supportsVideoGenerationSurface }),
+                  !reloaded.models.contains(where: { $0.supportsChatAgentSurface || $0.supportsGeneralAuxiliaryLLM }),
+                  fixture.setAccountEnabled(id: studio.id, enabled: true)
+            else { return false }
+            guard fixture.selectedModelID == second.id,
+                  fixture.setAccountEnabled(id: empty.id, enabled: false), fixture.selectedModelID == nil,
+                  !fixture.selectDefaultModel(second.id), !fixture.selectDefaultModel(video.id),
+                  fixture.setAccountEnabled(id: empty.id, enabled: true), fixture.selectedModelID == second.id
+            else { return false }
+            var legacyMedia = second
+            legacyMedia.id = UUID()
+            legacyMedia.remoteModelID = "legacy-media-as-text"
+            guard fixture.addProviderModel(providerID: studio.id, model: legacyMedia),
+                  fixture.assignMediaRole(.image, to: legacyMedia.id, providerID: studio.id),
+                  let adopted = fixture.providers.first(where: { $0.model.id == legacyMedia.id })
+            else { return false }
+            return adopted.model.supportsImageGenerationSurface && !adopted.canSelectAsPrimary && fixture.selectedModelID == second.id
         } catch { return false }
     }
 

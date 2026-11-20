@@ -127,9 +127,102 @@ enum HostAgentDatabase {
         return applicationSupport.appendingPathComponent(name, isDirectory: true)
     }
 
+    #if FLOE_UNIFIED_MAC
+    /// File-picker bookmarks remain external. Images received as bytes are
+    /// kept in a private directory belonging to exactly one conversation.
+    private static let composerImagesDirectory = "Composer Images"
+
+    @MainActor static func saveComposerImage(_ bytes: Data, fileExtension: String, id: UUID,
+                                             owner: UUID, runtimeDirectory: URL) throws -> URL {
+        guard ["png", "jpg", "gif", "webp"].contains(fileExtension), !bytes.isEmpty,
+              bytes.count <= HostAgentWorkspace.maximumInlineImageBytes else { throw CocoaError(.fileReadTooLarge) }
+        let base = physicalRuntimeDirectory(runtimeDirectory)
+        let imports = base.appendingPathComponent(composerImagesDirectory, isDirectory: true)
+        let (root, _) = try openPrivateDirectory(parent: base, name: composerImagesDirectory)
+        defer { Darwin.close(root) }
+        let (directory, _) = try openPrivateDirectory(parentFD: root, name: owner.uuidString)
+        defer { Darwin.close(directory) }
+        let name = "Photo-" + id.uuidString + "." + fileExtension
+        let file = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard file >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        defer { Darwin.close(file) }
+        do {
+            _ = try checkedIdentity(file, type: S_IFREG, permissions: 0o600)
+            try bytes.withUnsafeBytes { buffer in
+                guard let start = buffer.baseAddress else { throw CocoaError(.fileWriteUnknown) }
+                var done = 0
+                while done < buffer.count {
+                    let n = Darwin.write(file, start.advanced(by: done), buffer.count - done)
+                    if n < 0 && errno == EINTR { continue }
+                    guard n > 0 else { throw CocoaError(.fileWriteUnknown) }
+                    done += n
+                }
+            }
+            guard fsync(file) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        } catch {
+            unlinkat(directory, name, 0)
+            unlinkat(root, owner.uuidString, AT_REMOVEDIR)
+            throw error
+        }
+        return imports.appendingPathComponent(owner.uuidString, isDirectory: true).appendingPathComponent(name)
+    }
+
+    /// A recovered failed message gets a fresh draft ID. Only the original
+    /// unsent import, identified by both its owner and its ID, may be discarded.
+    static func discardComposerImage(_ url: URL, id: UUID, owner: UUID, runtimeDirectory: URL) {
+        let imports = physicalRuntimeDirectory(runtimeDirectory).appendingPathComponent(composerImagesDirectory)
+        let directory = imports.appendingPathComponent(owner.uuidString)
+        let name = url.lastPathComponent
+        guard directory.standardizedFileURL.path == url.deletingLastPathComponent().standardizedFileURL.path,
+              composerImageID(name) == id, let parent = try? openDirectory(imports) else { return }
+        defer { Darwin.close(parent) }
+        guard (try? checkedIdentity(parent, type: S_IFDIR, permissions: 0o700)) != nil else { return }
+        let fd = openat(parent, owner.uuidString, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        guard (try? checkedIdentity(fd, type: S_IFDIR, permissions: 0o700)) != nil else { return }
+        if unlinkat(fd, name, 0) == 0 {
+            unlinkat(parent, owner.uuidString, AT_REMOVEDIR)
+        }
+    }
+
+    static func removeComposerImages(for owner: UUID, runtimeDirectory: URL) {
+        let imports = physicalRuntimeDirectory(runtimeDirectory).appendingPathComponent(composerImagesDirectory)
+        guard let parent = try? openDirectory(imports) else { return }
+        defer { Darwin.close(parent) }
+        guard (try? checkedIdentity(parent, type: S_IFDIR, permissions: 0o700)) != nil else { return }
+        let fd = openat(parent, owner.uuidString, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        guard (try? checkedIdentity(fd, type: S_IFDIR, permissions: 0o700)) != nil else { return }
+        let directoryURL = imports.appendingPathComponent(owner.uuidString)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? [] where composerImageID(name) != nil {
+            unlinkat(fd, name, 0)
+        }
+        unlinkat(parent, owner.uuidString, AT_REMOVEDIR)
+    }
+
+    private static func composerImageID(_ name: String) -> UUID? {
+        let file = name as NSString
+        guard ["png", "jpg", "gif", "webp"].contains(file.pathExtension), file.deletingPathExtension.hasPrefix("Photo-") else { return nil }
+        return UUID(uuidString: String(file.deletingPathExtension.dropFirst(6)))
+    }
+
+    private static func physicalRuntimeDirectory(_ directory: URL) -> URL {
+        if directory.path.hasPrefix("/var/") || directory.path.hasPrefix("/tmp/") {
+            return URL(fileURLWithPath: "/private" + directory.path, isDirectory: true)
+        }
+        return directory
+    }
+    #endif
+
     private static func openPrivateDirectory(parent: URL, name: String) throws -> (Int32, FloeMacSelfFileIdentity) {
         let parentFD = try openDirectory(parent)
         defer { Darwin.close(parentFD) }
+        return try openPrivateDirectory(parentFD: parentFD, name: name)
+    }
+
+    private static func openPrivateDirectory(parentFD: Int32, name: String) throws -> (Int32, FloeMacSelfFileIdentity) {
         guard mkdirat(parentFD, name, 0o700) == 0 || errno == EEXIST else { throw StorageError.directoryCreate }
         let fd = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw StorageError.directoryOpen }

@@ -23,6 +23,7 @@ struct MacVideoWorkbenchView: View {
     var initialReference: URL? = nil
 
     @State private var prompt = ""
+    @State private var providerOverride: MacMediaProviderSelection?
     @State private var selectedID: UUID?
     @State private var player: AVPlayer?
     @State private var aspectRatio: String?
@@ -32,23 +33,6 @@ struct MacVideoWorkbenchView: View {
     @State private var watermark: Bool?
     @State private var referenceImageURL: URL?
     @State private var exportFailed = false
-
-    /// Supplier presets the shipped video adapters can actually serve
-    /// (Volcengine Ark, Volcengine Agent Plan, Alibaba Model Studio,
-    /// Alibaba Token Plan, Google Gemini), in stable shared order. A saved
-    /// configuration whose preset left the adapter list (legacy hand-entered
-    /// route) is unioned in so editing never strands, matching the iPad
-    /// provider form contract.
-    private let eligiblePresets = ProviderFormSpecResolver.eligiblePresets(for: .video)
-
-    private var presets: [ProviderPreset] {
-        guard let config = videos.configuration,
-              !eligiblePresets.contains(where: { $0.id == config.presetID }),
-              let saved = ProviderPreset.all.first(where: { $0.id == config.presetID }) else {
-            return eligiblePresets
-        }
-        return eligiblePresets + [saved]
-    }
 
     private var selection: MacVideoGeneration.JobItem? {
         videos.history.first(where: { $0.id == selectedID }) ?? videos.history.first
@@ -60,17 +44,16 @@ struct MacVideoWorkbenchView: View {
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...5)
                 .disabled(videos.isGenerating)
-            if videos.configuration != nil {
-                optionsRow
+            if let contract {
+                optionsRow(contract)
                 if supportsReferenceImage {
                     referenceImageRow
                 }
             }
             HStack {
-                Button(action: openSettings) {
-                    Label(videos.configuration?.modelID ?? MacVideoStrings.configure,
-                          systemImage: "slider.horizontal.3")
-                }
+                MacCreativeModelMenu(choices: videos.modelChoices, defaultModelName: videos.configuration?.modelID,
+                                     selection: $providerOverride, openSettings: openSettings)
+                    .disabled(videos.isGenerating)
                 Spacer()
                 if videos.isGenerating {
                     ProgressView().controlSize(.small)
@@ -78,7 +61,7 @@ struct MacVideoWorkbenchView: View {
                 } else {
                     Button(String(localized: "mac.images.generate")) { generate() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(videos.configuration == nil
+                        .disabled((providerOverride == nil && !videos.hasCredential) || contract == nil
                                   || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -129,7 +112,7 @@ struct MacVideoWorkbenchView: View {
                                 if !item.state.isTerminal {
                                     if videos.isWorking(on: item.id) {
                                         Button("host.chat.stop") { videos.cancel(item) }
-                                    } else if item.providerTaskID != nil, item.configuration == videos.configuration {
+                                    } else if videos.canResume(item) {
                                         Button("mac.videos.resume") { videos.resume(item.id) }
                                     }
                                 }
@@ -148,6 +131,14 @@ struct MacVideoWorkbenchView: View {
         .onChange(of: selection?.id, initial: true) { _, _ in resetPlayback() }
         .onChange(of: selection?.state) { _, _ in resetPlayback() }
         .onAppear { if supportsReferenceImage { referenceImageURL = initialReference } }
+        .onChange(of: contract) { _, contract in
+            if let aspectRatio, contract?.aspectRatios.contains(aspectRatio) != true { self.aspectRatio = nil }
+            if let duration, contract?.supportedDurations.contains(duration) != true { self.duration = nil }
+            if let resolution, contract?.resolutions.contains(resolution) != true { self.resolution = nil }
+            if contract?.supportsAudio != true { includeAudio = nil }
+            if contract?.supportsWatermark != true { watermark = nil }
+        }
+        .onChange(of: supportsReferenceImage) { _, supported in if !supported { referenceImageURL = nil } }
         .onDisappear { stopPlayback() }
         .alert(MacVideoStrings.exportFailed, isPresented: $exportFailed) {
             Button("OK", role: .cancel) {}
@@ -156,32 +147,8 @@ struct MacVideoWorkbenchView: View {
 
     // MARK: - Supported video options (shared contract)
 
-    /// Provider-neutral option surface for the configured route, resolved by
-    /// the same shared registry the iPad workbench and the agent tools use.
-    private var contract: VideoParameterContract {
-        let config = videos.configuration
-        let preset = config.flatMap { configuration in
-            presets.first(where: { $0.id == configuration.presetID })
-        } ?? presets[0]
-        let endpoint = config.flatMap { URL(string: $0.endpoint) } ?? preset.defaultBaseURL
-        let profile = ProviderProfile(kind: preset.kind, wireProtocol: preset.defaultProtocol,
-                                      baseURL: endpoint)
-        let model = ModelProfile(
-            providerID: profile.id,
-            remoteModelID: config?.modelID ?? "",
-            displayName: config?.modelID ?? "",
-            limits: ModelLimits(contextTokens: 0, maxOutputTokens: 0),
-            capabilities: [.videoGeneration]
-        )
-        return VideoModelRegistry.contract(model: model, provider: profile)
-    }
-
-    /// Whether the configured family documents a single reference/first-frame
-    /// image. Gated per `VideoReferenceImagePolicy`; text-only routes never
-    /// offer the chooser.
-    private var supportsReferenceImage: Bool {
-        Self.acceptsReference(videos.configuration)
-    }
+    private var contract: VideoParameterContract? { videos.parameterContract(for: providerOverride) }
+    private var supportsReferenceImage: Bool { videos.supportsReferenceImage(for: providerOverride) }
 
     static func acceptsReference(_ configuration: MacVideoGeneration.Configuration?) -> Bool {
         guard let config = configuration, let endpoint = URL(string: config.endpoint),
@@ -190,7 +157,7 @@ struct MacVideoWorkbenchView: View {
             providerKind: preset.kind, modelRemoteID: config.modelID, baseURL: endpoint)
     }
 
-    @ViewBuilder private var optionsRow: some View {
+    @ViewBuilder private func optionsRow(_ contract: VideoParameterContract) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 14) {
                 if !contract.aspectRatios.isEmpty {
@@ -252,7 +219,7 @@ struct MacVideoWorkbenchView: View {
         options.durationSeconds = duration
         options.includeAudio = includeAudio
         options.watermark = watermark
-        videos.generate(prompt: prompt, options: options, referenceImage: referenceImageURL)
+        videos.generate(prompt: prompt, options: options, referenceImage: referenceImageURL, providerOverride: providerOverride)
     }
 
     private func chooseReferenceImage() {
@@ -402,7 +369,7 @@ struct MacVideoSettingsView: View {
     /// preset + endpoint pair can reuse it without retyping.
     private var canUseSavedKey: Bool {
         guard let configuration = videos.configuration else { return false }
-        return configuration.presetID == presetID
+        return videos.hasCredential && configuration.presetID == presetID
             && configuration.endpoint == endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

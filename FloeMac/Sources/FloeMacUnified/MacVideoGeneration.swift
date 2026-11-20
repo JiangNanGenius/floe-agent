@@ -21,11 +21,7 @@ import Foundation
 @MainActor
 final class MacVideoGeneration: ObservableObject {
 
-    struct Configuration: Codable, Equatable {
-        var presetID: ProviderTemplateID
-        var endpoint: String
-        var modelID: String
-    }
+    typealias Configuration = MacMediaProviderConfiguration
 
     struct JobItem: Codable, Equatable, Identifiable {
         let id: UUID
@@ -89,6 +85,18 @@ final class MacVideoGeneration: ObservableObject {
     @Published private(set) var isGenerating = false
     @Published private(set) var notice: String?
 
+    private let providerLink: MacMediaProviderLink
+    var providerSelection: MacMediaProviderSelection? { providerLink.selection }
+    var modelChoices: [MacMediaProviderSelection.Choice] { providerLink.choices }
+
+    func configuration(for providerOverride: MacMediaProviderSelection?) -> Configuration? {
+        if let providerOverride { return providerLink.configuration(for: providerOverride) }
+        return configuration
+    }
+
+    var hasStandaloneConfiguration: Bool { standaloneConfiguration != nil }
+    private var standaloneConfiguration: Configuration?
+
     private let directory: URL
     private let vault: KeychainStore?
     private let admitWork: HostAgentWorkspace.AdmitWork
@@ -109,7 +117,9 @@ final class MacVideoGeneration: ObservableObject {
     private static let maximumVideoBytes = 512 * 1_048_576
 
     init(directory: URL, namespace: String, useKeychain: Bool,
+         workspace: HostAgentWorkspace? = nil, preferences: UserDefaults = .standard,
          admitWork: @escaping HostAgentWorkspace.AdmitWork) {
+        self.providerLink = MacMediaProviderLink(workspace: workspace, preferences: preferences, role: .video)
         self.directory = directory
         self.vault = useKeychain
             ? KeychainStore(service: namespace + ".video", synchronizable: false,
@@ -117,13 +127,39 @@ final class MacVideoGeneration: ObservableObject {
             : nil
         self.admitWork = admitWork
         loadPersistedState()
+        standaloneConfiguration = configuration
         hasCredential = currentKey() != nil
+        providerLink.didChange = { [weak self] resolved in
+            guard let self else { return }
+            configuration = providerLink.selection == nil ? standaloneConfiguration : resolved.map(Configuration.init)
+            hasCredential = resolved != nil || (providerLink.selection == nil && currentKey() != nil)
+        }
+        providerLink.catalogueBecameAvailable = { [weak self] in
+            // Published account snapshots arrive immediately before assignment.
+            Task { [weak self] in self?.resume() }
+        }
+        providerLink.observe { [weak self] in self?.hasStandaloneConfiguration ?? true }
     }
 
     // MARK: - Configuration
 
+    func bindProvider(accountID: UUID, modelID: UUID) throws {
+        try selectProvider(.init(accountID: accountID, modelID: modelID))
+    }
+
+    func useStandaloneConfiguration() throws { try selectProvider(nil) }
+
+    private func selectProvider(_ selection: MacMediaProviderSelection?) throws {
+        guard !isGenerating else { throw MacVideoGenerationError.busy }
+        guard let release = admit() else { throw MacVideoGenerationError.admissionRefused }
+        defer { release() }
+        try providerLink.choose(selection)
+        notice = nil
+    }
+
     /// Changing the endpoint or preset requires a key for the new connection.
     func save(_ config: Configuration, apiKey: String?) throws {
+        guard providerSelection == nil, config.providerSelection == nil else { throw MacVideoGenerationError.invalidConfiguration }
         let endpoint = config.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelID = config.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !modelID.isEmpty else { throw MacVideoGenerationError.invalidConfiguration }
@@ -173,6 +209,7 @@ final class MacVideoGeneration: ObservableObject {
             do { try persistConfiguration(prepared) } catch { throw MacVideoGenerationError.storageFailed }
             sessionKey = key
         }
+        standaloneConfiguration = prepared
         configuration = prepared
         hasCredential = true
         notice = nil
@@ -180,17 +217,28 @@ final class MacVideoGeneration: ObservableObject {
 
     // MARK: - Generation
 
-    func generate(prompt: String, options: VideoGenerationOptions = .init(), referenceImage: URL? = nil) {
+    func parameterContract(for providerOverride: MacMediaProviderSelection?) -> VideoParameterContract? {
+        guard let config = configuration(for: providerOverride), let route = route(for: config) else { return nil }
+        return VideoModelRegistry.contract(model: route.model, provider: route.profile)
+    }
+
+    func supportsReferenceImage(for providerOverride: MacMediaProviderSelection?) -> Bool {
+        guard let config = configuration(for: providerOverride), let route = route(for: config) else { return false }
+        return VideoReferenceImagePolicy.supportsReferenceImages(
+            providerKind: route.profile.kind, modelRemoteID: route.model.remoteModelID, baseURL: route.profile.baseURL)
+    }
+
+    func generate(prompt: String, options: VideoGenerationOptions = .init(), referenceImage: URL? = nil,
+                  providerOverride: MacMediaProviderSelection? = nil) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isGenerating else { return }
-        guard let config = configuration, let apiKey = currentKey() else {
-            hasCredential = false
+        guard let config = configuration(for: providerOverride), key(for: config) != nil else {
+            if providerOverride == nil { hasCredential = false }
             notice = String(localized: "mac.videos.keyUnavailable")
             return
         }
-        let route = Self.makeRoute(configuration: config,
-                                   allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault))
-        guard let adapter = VideoProviderAdapterFactory().adapter(for: route.profile),
+        guard let route = route(for: config),
+              let adapter = VideoProviderAdapterFactory().adapter(for: route.profile),
               ProviderConfigurationValidation.issues(for: route.profile).isEmpty,
               ProviderConfigurationValidation.issues(for: route.model).isEmpty else {
             notice = String(localized: "mac.videos.invalidConfiguration")
@@ -237,7 +285,7 @@ final class MacVideoGeneration: ObservableObject {
                 guard let self else { release(); return }
                 defer { generationTask = nil; foregroundJobID = nil; isGenerating = false; release() }
                 await runJob(itemID: existing.id, adapter: adapter, profile: route.profile,
-                             key: apiKey, reference: reference?.url, foreground: true)
+                             reference: reference?.url, foreground: true)
             }
             return
         }
@@ -266,7 +314,7 @@ final class MacVideoGeneration: ObservableObject {
             guard let self else { release(); return }
             defer { generationTask = nil; foregroundJobID = nil; isGenerating = false; release() }
             await runJob(itemID: itemID, adapter: adapter, profile: route.profile,
-                         key: apiKey, reference: reference?.url, foreground: true)
+                         reference: reference?.url, foreground: true)
         }
     }
 
@@ -295,8 +343,8 @@ final class MacVideoGeneration: ObservableObject {
 
     // MARK: - Recovery
 
-    /// Resumes polling every pending job that still matches the current
-    /// configuration and has a usable credential, holding the same Bridge
+    /// Resumes each submitted job through its original account and endpoint,
+    /// with a currently usable credential, holding the same Bridge
     /// activity lease as a foreground generation for the whole recovery.
     /// Jobs whose settings were changed or whose submit never confirmed a
     /// provider task ID are left untouched so nothing is silently resubmitted
@@ -304,14 +352,15 @@ final class MacVideoGeneration: ObservableObject {
     /// restarted download re-polls the provider for a fresh one.
     func isWorking(on id: UUID) -> Bool { foregroundJobID == id || resumedTasks[id] != nil }
 
+    func canResume(_ item: JobItem) -> Bool {
+        !item.state.isTerminal && item.providerTaskID != nil && key(for: item) != nil
+    }
+
     func resume(_ chosenID: UUID? = nil) {
-        guard configuration != nil, currentKey() != nil else { return }
         for item in history where !item.state.isTerminal && (chosenID == nil || chosenID == item.id) {
             guard item.providerTaskID != nil, resumedTasks[item.id] == nil,
-                  foregroundJobID != item.id, let key = key(for: item),
+                  foregroundJobID != item.id, canResume(item), let route = route(for: item.configuration),
                   let release = try? admitWork() else { continue }
-            let route = Self.makeRoute(configuration: item.configuration,
-                                       allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault))
             guard let adapter = VideoProviderAdapterFactory().adapter(for: route.profile),
                   ProviderConfigurationValidation.issues(for: route.profile).isEmpty else {
                 release()
@@ -322,7 +371,7 @@ final class MacVideoGeneration: ObservableObject {
                 guard let self else { release(); return }
                 defer { resumedTasks.removeValue(forKey: itemID); release() }
                 await runJob(itemID: itemID, adapter: adapter, profile: route.profile,
-                             key: key, reference: nil, foreground: false)
+                             reference: nil, foreground: false)
             }
         }
     }
@@ -335,29 +384,34 @@ final class MacVideoGeneration: ObservableObject {
     /// live only in this in-memory flow; only the pollable provider task ID is
     /// durable.
     private func runJob(itemID: UUID, adapter: any VideoProviderAdapter,
-                        profile: ProviderProfile, key: String,
+                        profile: ProviderProfile,
                         reference: URL?, foreground: Bool) async {
         do {
             let immediate = try await submitIfNeeded(itemID: itemID, adapter: adapter,
-                                                     profile: profile, key: key, reference: reference)
+                                                     profile: profile, reference: reference)
             if let url = immediate?.resultURL {
                 try await downloadResult(itemID: itemID, url: url,
                                          expiresAt: immediate?.resultURLExpiresAt,
-                                         profile: profile, key: key)
+                                         profile: profile)
             } else {
                 try await pollUntilResolved(itemID: itemID, adapter: adapter,
-                                            profile: profile, key: key)
+                                            profile: profile)
             }
             if foreground { notice = nil }
         } catch is CancellationError {
             await handleCancellation(itemID: itemID, adapter: adapter, profile: profile,
-                                     key: key, foreground: foreground)
+                                     foreground: foreground)
         } catch let urlError as URLError where urlError.code == .cancelled {
             await handleCancellation(itemID: itemID, adapter: adapter, profile: profile,
-                                     key: key, foreground: foreground)
+                                     foreground: foreground)
         } catch let floeError as FloeError where floeError == .cancelled {
             await handleCancellation(itemID: itemID, adapter: adapter, profile: profile,
-                                     key: key, foreground: foreground)
+                                     foreground: foreground)
+        } catch MacVideoGenerationError.keyRequired {
+            // Preserve a submitted job until the original account becomes available again.
+            if let item = history.first(where: { $0.id == itemID }), item.providerTaskID == nil {
+                failJob(itemID: itemID, error: MacVideoGenerationError.keyRequired, foreground: foreground)
+            } else if foreground { notice = String(localized: "mac.videos.keyUnavailable") }
         } catch let uncertain as SubmitOutcomeUncertain {
             // The provider may hold a task this install never learned the ID
             // of. Keep the job preparing with an honest note; never mark it
@@ -376,10 +430,11 @@ final class MacVideoGeneration: ObservableObject {
     }
 
     private func submitIfNeeded(itemID: UUID, adapter: any VideoProviderAdapter,
-                                profile: ProviderProfile, key: String,
+                                profile: ProviderProfile,
                                 reference: URL?) async throws -> RemoteVideoSubmission? {
         guard let item = history.first(where: { $0.id == itemID }),
               item.providerTaskID == nil else { return nil }
+        guard let key = key(for: item) else { throw MacVideoGenerationError.keyRequired }
         let request = RemoteVideoRequest(
             prompt: item.prompt, modelRemoteID: item.configuration.modelID,
             options: item.options, referenceAssetURLs: reference.map { [$0] } ?? [])
@@ -411,7 +466,7 @@ final class MacVideoGeneration: ObservableObject {
     }
 
     private func pollUntilResolved(itemID: UUID, adapter: any VideoProviderAdapter,
-                                   profile: ProviderProfile, key: String) async throws {
+                                   profile: ProviderProfile) async throws {
         var attempt = 0
         var consecutiveErrors = 0
         while true {
@@ -419,7 +474,7 @@ final class MacVideoGeneration: ObservableObject {
             guard let item = history.first(where: { $0.id == itemID }) else { return }
             // Settings changed: stop polling without claiming a terminal
             // state. The persisted state resumes if the settings return.
-            guard item.configuration == configuration, let taskID = item.providerTaskID else { return }
+            guard let key = key(for: item), let taskID = item.providerTaskID else { throw MacVideoGenerationError.keyRequired }
             let status: RemoteVideoStatus
             do {
                 status = try await adapter.status(
@@ -456,12 +511,12 @@ final class MacVideoGeneration: ObservableObject {
                 }
                 try await downloadResult(itemID: itemID, url: url,
                                          expiresAt: status.resultURLExpiresAt,
-                                         profile: profile, key: key)
+                                         profile: profile)
                 return
             case .failed, .cancelled, .expired:
                 try updateItem(itemID) {
                     $0.state = status.state
-                    $0.error = status.error
+                    $0.error = status.error.map { SecretRedactor.redact($0, secret: key) }
                 }
                 return
             default:
@@ -481,7 +536,10 @@ final class MacVideoGeneration: ObservableObject {
     /// only after the verified bytes are atomically on disk. The download
     /// origin must be HTTPS, or the exact debug loopback fixture origin.
     private func downloadResult(itemID: UUID, url: URL, expiresAt: Date?,
-                                profile: ProviderProfile, key: String) async throws {
+                                profile: ProviderProfile) async throws {
+        guard let item = history.first(where: { $0.id == itemID }), let key = key(for: item) else {
+            throw MacVideoGenerationError.keyRequired
+        }
         guard Self.allowsResultDownload(url: url, profile: profile,
                                         allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault)) else {
             throw MacVideoGenerationError.unsupportedResult
@@ -499,6 +557,8 @@ final class MacVideoGeneration: ObservableObject {
         var headers: [String: String] = [:]
         if profile.kind == .googleGemini, !key.isEmpty,
            let host = url.host, let trustedHost = profile.baseURL.host,
+           url.scheme?.lowercased() == profile.baseURL.scheme?.lowercased(),
+           (url.port ?? 443) == (profile.baseURL.port ?? 443),
            host.caseInsensitiveCompare(trustedHost) == .orderedSame {
             headers["x-goog-api-key"] = key
         }
@@ -533,19 +593,23 @@ final class MacVideoGeneration: ObservableObject {
     /// locally without claiming a remote cancellation; a failed provider
     /// cancel asks the provider for the real outcome first.
     private func handleCancellation(itemID: UUID, adapter: any VideoProviderAdapter,
-                                    profile: ProviderProfile, key: String,
+                                    profile: ProviderProfile,
                                     foreground: Bool) async {
         guard let item = history.first(where: { $0.id == itemID }) else { return }
         // URLSession inherits cancellation. Finish the remote cancel before releasing the job lease.
         await Task { @MainActor in
-            await settleCancellation(item: item, adapter: adapter, profile: profile, key: key, foreground: foreground)
+            await settleCancellation(item: item, adapter: adapter, profile: profile, foreground: foreground)
         }.value
     }
 
     private func settleCancellation(item: JobItem, adapter: any VideoProviderAdapter, profile: ProviderProfile,
-                                    key: String, foreground: Bool) async {
+                                    foreground: Bool) async {
         let itemID = item.id
         if let taskID = item.providerTaskID {
+            guard let key = key(for: item) else {
+                if foreground { notice = String(localized: "mac.videos.keyUnavailable") }
+                return
+            }
             do {
                 try await adapter.cancel(taskID: taskID, provider: profile,
                                          credentials: ProviderCredentials(apiKey: key))
@@ -554,16 +618,16 @@ final class MacVideoGeneration: ObservableObject {
                     $0.error = nil
                 }
             } catch {
-                if let status = try? await adapter.status(
+                if let currentKey = self.key(for: item), let status = try? await adapter.status(
                     taskID: taskID, modelRemoteID: item.configuration.modelID,
-                    provider: profile, credentials: ProviderCredentials(apiKey: key)) {
+                    provider: profile, credentials: ProviderCredentials(apiKey: currentKey)) {
                     switch status.state {
                     case .completed:
                         if let url = status.resultURL {
                             try? updateItem(itemID) { $0.state = .downloading }
                             try? await downloadResult(itemID: itemID, url: url,
                                                       expiresAt: status.resultURLExpiresAt,
-                                                      profile: profile, key: key)
+                                                      profile: profile)
                             if foreground {
                                 notice = String(localized: "mac.videos.finishedBeforeCancel")
                             }
@@ -572,7 +636,7 @@ final class MacVideoGeneration: ObservableObject {
                     case .failed, .cancelled, .expired:
                         try? updateItem(itemID) {
                             $0.state = status.state
-                            $0.error = status.error
+                            $0.error = status.error.map { SecretRedactor.redact($0, secret: currentKey) }
                         }
                         return
                     default:
@@ -678,7 +742,7 @@ final class MacVideoGeneration: ObservableObject {
         var next = history
         mutate(&next[index])
         if let detail = next[index].error {
-            next[index].error = SecretRedactor.redact(String(detail.prefix(500)), secret: currentKey())
+            next[index].error = String(SecretRedactor.redact(detail, secret: key(for: next[index])).prefix(500))
         }
         do { try persistHistory(next) } catch { throw MacVideoGenerationError.storageFailed }
         history = next
@@ -698,19 +762,21 @@ final class MacVideoGeneration: ObservableObject {
     }
 
     private func currentKey() -> String? {
+        guard let configuration else { return nil }
+        return key(for: configuration)
+    }
+
+    private func key(for item: JobItem) -> String? { key(for: item.configuration) }
+
+    private func key(for config: Configuration) -> String? {
+        if config.providerSelection != nil { return providerLink.resolve(config)?.apiKey }
+        guard config == standaloneConfiguration else { return nil }
         if let vault {
-            guard let stored = Self.readStoredSettings(vault), stored.configuration == configuration,
+            guard let stored = Self.readStoredSettings(vault), stored.configuration == config,
                   !stored.apiKey.isEmpty else { return nil }
             return stored.apiKey
         }
         return sessionKey
-    }
-
-    /// A job may only use the credential while the store still holds the
-    /// exact configuration it was submitted under.
-    private func key(for item: JobItem) -> String? {
-        guard item.configuration == configuration else { return nil }
-        return currentKey()
     }
 
     private func admit() -> HostAgentWorkspace.ReleaseWork? {
@@ -736,6 +802,14 @@ final class MacVideoGeneration: ObservableObject {
     }
 
     private typealias Route = (profile: ProviderProfile, model: ModelProfile)
+
+    private func route(for config: Configuration) -> Route? {
+        if config.providerSelection != nil {
+            guard let resolved = providerLink.resolve(config) else { return nil }
+            return (resolved.profile, resolved.model)
+        }
+        return Self.makeRoute(configuration: config, allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault))
+    }
 
     private static func makeRoute(configuration: Configuration,
                                   allowLoopbackHTTP: Bool) -> Route {

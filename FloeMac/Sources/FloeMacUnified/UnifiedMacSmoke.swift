@@ -11,6 +11,7 @@ import FloeCore
 import FloeMacBridgeProtocol
 import FloeMacToolbox
 import FloeModels
+import FloeProviders
 import FloeTools
 import Foundation
 
@@ -798,25 +799,67 @@ final class UnifiedMacSmoke {
               let videos = owner.videos, let library = owner.creativeLibrary, let agent = owner.agent else { return false }
         do {
             guard let batch = owner.images else { return false }
-            try batch.save(.init(presetID: .openAI, endpoint: endpoint.absoluteString, modelID: "gpt-image-1"),
-                           apiKey: "floe-image-fixture")
-            batch.generate(prompt: "Storyboard candidates", options: .init(count: 2))
+            let primary = agent.selectedModelID
+            guard agent.addProvider(name: "Fixture Image", endpoint: endpoint.absoluteString,
+                                    protocolKind: .openAIChatCompletions, modelID: "gpt-image-1", key: "old-fixture-key",
+                                    presetID: ProviderTemplateID.openAI.rawValue, allowsPlainHTTP: true, role: .image),
+                  let imageAccount = agent.accounts.first(where: { $0.name == "Fixture Image" }),
+                  let imageModel = imageAccount.models.first, imageModel.supportsImageGenerationSurface,
+                  agent.selectedModelID == primary else {
+                settingsDiagnostics.append("Image account creation changed chat selection or lost its media role.")
+                return false
+            }
+            guard batch.providerSelection == MacMediaProviderSelection(accountID: imageAccount.id, modelID: imageModel.id) else {
+                settingsDiagnostics.append("Missing automatic image default.")
+                return false
+            }
+            try batch.bindProvider(accountID: imageAccount.id, modelID: imageModel.id)
+            guard agent.updateProvider(id: imageAccount.id, name: imageAccount.name, endpoint: endpoint.absoluteString,
+                                       protocolKind: .openAIChatCompletions, modelID: imageModel.remoteModelID, key: "floe-image-fixture",
+                                       presetID: imageAccount.presetID, allowsPlainHTTP: true, editingModelID: imageModel.id) else { return false }
+            func otherDefault(role: ProviderCatalogServiceRole, model: String, preset: ProviderTemplateID) -> MacMediaProviderSelection? {
+                let name = "Default fixture " + role.rawValue
+                guard agent.addProvider(name: name, endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
+                                        modelID: model, key: "unused-default-fixture-key", presetID: preset.rawValue,
+                                        allowsPlainHTTP: true, role: role),
+                      let account = agent.accounts.first(where: { $0.name == name }), let saved = account.models.first else { return nil }
+                return .init(accountID: account.id, modelID: saved.id)
+            }
+            let imageRef = MacMediaProviderSelection(accountID: imageAccount.id, modelID: imageModel.id)
+            guard let defaultImage = otherDefault(role: .image, model: "gpt-image-1", preset: .openAI) else { return false }
+            try batch.bindProvider(accountID: defaultImage.accountID, modelID: defaultImage.modelID)
+            batch.generate(prompt: "Storyboard candidates", options: .init(count: 2), providerOverride: imageRef)
             let imageDeadline = ContinuousClock.now + .seconds(8)
             while batch.isGenerating && ContinuousClock.now < imageDeadline { try await Task.sleep(for: .milliseconds(50)) }
             let candidates = batch.history.filter { $0.prompt == "Storyboard candidates" }
-            guard candidates.count == 2, Set(candidates.map(\.id)).count == 2,
+            guard batch.providerSelection == defaultImage, candidates.count == 2, Set(candidates.map(\.id)).count == 2,
                   candidates.allSatisfy({ NSImage(contentsOf: batch.imageURL(for: $0))?.isValid == true })
             else {
                 settingsDiagnostics.append("Batch image fixture: " + (batch.notice ?? "missing candidates"))
                 return false
             }
-            try videos.save(.init(presetID: .volcengineArk, endpoint: endpoint.absoluteString,
-                                  modelID: "doubao-seedance-2-5-260628"), apiKey: "floe-video-fixture")
+            guard agent.addProvider(name: "Fixture Video", endpoint: endpoint.absoluteString,
+                                    protocolKind: .openAIChatCompletions, modelID: "doubao-seedance-2-5-260628",
+                                    key: "floe-video-fixture", presetID: ProviderTemplateID.volcengineArk.rawValue, allowsPlainHTTP: true, role: .video),
+                  let videoAccount = agent.accounts.first(where: { $0.name == "Fixture Video" }),
+                  let videoModel = videoAccount.models.first, videoModel.supportsVideoGenerationSurface,
+                  agent.selectedModelID == primary else {
+                settingsDiagnostics.append("Video account creation changed chat selection or lost its media role.")
+                return false
+            }
+            guard videos.providerSelection == MacMediaProviderSelection(accountID: videoAccount.id, modelID: videoModel.id) else {
+                settingsDiagnostics.append("Missing automatic video default.")
+                return false
+            }
+            let videoRef = MacMediaProviderSelection(accountID: videoAccount.id, modelID: videoModel.id)
+            guard let defaultVideo = otherDefault(role: .video, model: videoModel.remoteModelID, preset: .volcengineArk) else { return false }
+            try videos.bindProvider(accountID: defaultVideo.accountID, modelID: defaultVideo.modelID)
             videos.generate(prompt: "Synthetic clip", options: .init(aspectRatio: "16:9", durationSeconds: 5),
-                            referenceImage: batch.imageURL(for: candidates[0]))
+                            referenceImage: batch.imageURL(for: candidates[0]), providerOverride: videoRef)
             let deadline = ContinuousClock.now + .seconds(16)
             while videos.isGenerating && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(60)) }
-            guard let item = videos.history.first, let url = videos.videoURL(for: item),
+            guard videos.providerSelection == defaultVideo, let item = videos.history.first,
+                  item.configuration.providerSelection == videoRef, let url = videos.videoURL(for: item),
                   try await AVURLAsset(url: url).load(.isPlayable) else {
                 settingsDiagnostics.append("Video fixture: " + (videos.notice ?? "no saved playable video"))
                 return false
@@ -825,7 +868,7 @@ final class UnifiedMacSmoke {
             let reopenedVideos = MacVideoGeneration(directory: videoDirectory, namespace: "fixture.no-keychain",
                                                      useKeychain: false, admitWork: { {} })
             guard reopenedVideos.history.first?.id == item.id, reopenedVideos.videoURL(for: item) == url else { return false }
-            guard try await verifyVideoRecovery(in: videoDirectory, configuration: item.configuration, savedID: item.id) else { return false }
+            guard try await verifyVideoRecovery(in: videoDirectory, workspace: agent, accountID: videoAccount.id, modelID: videoModel.id, savedID: item.id) else { return false }
             let imageDirectory = root.appendingPathComponent("Generated Images Fixture", isDirectory: true)
             let images = MacImageGeneration(directory: imageDirectory, namespace: "fixture.no-keychain", useKeychain: false, admitWork: { {} })
             guard let image = images.history.first else { return false }
@@ -891,30 +934,71 @@ final class UnifiedMacSmoke {
             defer { model.closeSettingsWindow() }
             for role: BridgeAppModel.MediaSettings in [.image, .video] {
                 let expected = role == .image ? "image" : "video"
-                model.openSettings(.models, media: role)
+                model.openSettings(.models)
+                let mounted = ContinuousClock.now + .seconds(3)
+                let providerRole: ProviderCatalogServiceRole = role == .image ? .image : .video
+                var pressed = false
+                while !pressed && ContinuousClock.now < mounted {
+                    try await Task.sleep(for: .milliseconds(50))
+                    guard model.providerDetail == nil, let sheet = model.smokeAgentSettingsSheet,
+                          let content = sheet.contentView else { continue }
+                    content.layoutSubtreeIfNeeded()
+                    refreshButtonFrames(in: content)
+                    if let frame = MacProviderSettingsView.smokeSelectionFrames[providerRole], !frame.isEmpty,
+                       content.bounds.contains(content.convert(NSPoint(x: frame.midX, y: frame.midY), from: nil)) {
+                        if role == .image { capture(content, extension: "provider-accounts.png") }
+                        pressed = pressAccessibilityButton(content, id: "settings.providers.select." + expected)
+                            || clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: sheet)
+                    }
+                }
+                guard pressed else { settingsDiagnostics.append("Provider selection button missing: " + expected); return false }
                 let timeout = ContinuousClock.now + .seconds(3)
                 while agent.smokeMediaSettingsRole != expected && ContinuousClock.now < timeout {
                     try await Task.sleep(for: .milliseconds(40))
                 }
-                guard agent.smokeMediaSettingsRole == expected, let view = model.smokeAgentSettingsSheet?.contentView else {
+                guard model.settingsPane == .models, model.providerDetail == role, agent.smokeMediaSettingsRole == expected, let view = model.smokeAgentSettingsSheet?.contentView else {
                     settingsDiagnostics.append("Missing media settings pane: " + expected)
                     return false
                 }
                 capture(view, extension: "creative-" + expected + "-settings.png")
+                if role == .video, let sheet = view.window {
+                    view.layoutSubtreeIfNeeded()
+                    refreshButtonFrames(in: view)
+                    let pressedAdd = pressAccessibilityButton(view, id: "settings.providers.addForRole")
+                        || agent.smokeMediaAddFrame.map { clickWindowLocation(NSPoint(x: $0.midX, y: $0.midY), in: sheet) } == true
+                    let editorDeadline = ContinuousClock.now + .seconds(2)
+                    while MacProviderSettingsView.smokeEditorRole != .video && ContinuousClock.now < editorDeadline {
+                        try await Task.sleep(for: .milliseconds(40))
+                    }
+                    guard pressedAdd, model.providerDetail == nil, MacProviderSettingsView.smokeEditorRole == .video else {
+                        settingsDiagnostics.append("Add Provider did not open the video account editor.")
+                        return false
+                    }
+                    capture(view, extension: "provider-add-video.png")
+                }
             }
             model.closeSettingsWindow()
             let closed = ContinuousClock.now + .seconds(3)
             while (visibleWorkbench?.isKeyWindow != true || model.smokeAgentSettingsSheet != nil) && ContinuousClock.now < closed {
                 try await Task.sleep(for: .milliseconds(40))
             }
-            return visibleWorkbench?.isKeyWindow == true && model.smokeAgentSettingsSheet == nil
+            try batch.bindProvider(accountID: imageRef.accountID, modelID: imageRef.modelID)
+            try videos.bindProvider(accountID: videoRef.accountID, modelID: videoRef.modelID)
+            guard visibleWorkbench?.isKeyWindow == true, model.smokeAgentSettingsSheet == nil,
+                  agent.setAccountEnabled(id: imageAccount.id, enabled: false),
+                  agent.removeProvider(id: videoAccount.id) else { return false }
+            let invalidated = ContinuousClock.now + .seconds(2)
+            while (batch.hasCredential || videos.hasCredential) && ContinuousClock.now < invalidated {
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            return !batch.hasCredential && !videos.hasCredential && agent.selectedModelID == primary
         } catch {
             settingsDiagnostics.append("Creative fixture: " + error.localizedDescription)
             return false
         }
     }
 
-    private func verifyVideoRecovery(in directory: URL, configuration: MacVideoGeneration.Configuration, savedID: UUID) async throws -> Bool {
+    private func verifyVideoRecovery(in directory: URL, workspace: HostAgentWorkspace, accountID: UUID, modelID: UUID, savedID: UUID) async throws -> Bool {
         let pendingDirectory = root.appendingPathComponent("Video Recovery Fixture", isDirectory: true)
         try FileManager.default.createDirectory(at: pendingDirectory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
@@ -932,11 +1016,13 @@ final class UnifiedMacSmoke {
         envelope["results"] = entries
         try JSONSerialization.data(withJSONObject: envelope).write(to: pendingDirectory.appendingPathComponent("history.json"))
         var leases = 0
-        let resumed = MacVideoGeneration(directory: pendingDirectory, namespace: "fixture.no-keychain", useKeychain: false) {
+        let resumed = MacVideoGeneration(directory: pendingDirectory, namespace: "fixture.no-keychain", useKeychain: false,
+                                         workspace: workspace, preferences: preferences) {
             leases += 1
             return { leases -= 1 }
         }
-        try resumed.save(configuration, apiKey: "floe-video-fixture")
+        let original = MacMediaProviderSelection(accountID: accountID, modelID: modelID)
+        guard let current = resumed.providerSelection, current != original else { return false }
         resumed.resume()
         resumed.resume()
         let timeout = ContinuousClock.now + .seconds(10)
@@ -946,7 +1032,7 @@ final class UnifiedMacSmoke {
             settingsDiagnostics.append("Submitted video fixture did not resume and release its activity lease.")
             return false
         }
-        resumed.generate(prompt: "Cancel fixture", options: .init())
+        resumed.generate(prompt: "Cancel fixture", options: .init(), providerOverride: original)
         let cancellation = ContinuousClock.now + .seconds(5)
         while (resumed.history.first?.prompt != "Cancel fixture" || resumed.history.first?.providerTaskID == nil)
                 && ContinuousClock.now < cancellation { try await Task.sleep(for: .milliseconds(50)) }
@@ -1385,6 +1471,10 @@ final class UnifiedMacSmoke {
             try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
             try Data("Synthetic attachment".utf8).write(to: reference, options: .withoutOverwriting)
         } catch {
+            return false
+        }
+        guard await MacComposerImport.verify(in: agent, file: reference) else {
+            settingsDiagnostics.append("Composer file, image or text paste failed.")
             return false
         }
         guard let first = await agent.addWorkspace(name: "Fixture Project", rootURL: project),

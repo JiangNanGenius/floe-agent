@@ -684,7 +684,7 @@
 "mac.workspace.dismissSearchNotice" = "Dismiss";
 "mac.workspace.configureModel" = "Configure Model…";
 "mac.workspace.sendShortcut" = "Send (⌘Return)";
-"mac.settings.providerModels" = "Providers & Models";
+"mac.settings.providerModels" = "Model Providers";
 "mac.settings.find" = "Find a setting";
 "mac.settings.noMatches" = "No matching settings";
 "mac.settings.runningInput" = "Messages during a run";

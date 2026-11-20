@@ -92,7 +92,7 @@ private struct BridgeMenuView: View {
 
 @MainActor
 final class BridgeAppModel: ObservableObject {
-    enum SettingsPane: String, CaseIterable { case general, models, auxiliary, image, video, permissions, bridge }
+    enum SettingsPane: String, CaseIterable { case general, models, auxiliary, permissions, bridge }
 
     @Published var error: String?
     @Published var clients: [(String, String)] = []
@@ -107,6 +107,7 @@ final class BridgeAppModel: ObservableObject {
     #if FLOE_UNIFIED_MAC
     @Published private(set) var macWorkspace: UnifiedMacWorkspace?
     @Published var settingsPane: SettingsPane = .general
+    @Published var providerDetail: MediaSettings?
     enum Appearance: String, CaseIterable { case system, light, dark }
     @Published var appearance: Appearance = .system {
         didSet {
@@ -326,10 +327,7 @@ final class BridgeAppModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             pendingSettingsPresentation = nil
             #if FLOE_UNIFIED_MAC
-            if pane == .models, let media {
-                presentSettingsWindow(media == .image ? .image : .video)
-                return
-            }
+            if pane != nil { providerDetail = media }
             #endif
             presentSettingsWindow(pane)
         }
@@ -357,8 +355,8 @@ final class BridgeAppModel: ObservableObject {
         }
         NSApp.setActivationPolicy(.regular)
         macWorkspace?.openAgent(openSettings: { [weak self] in self?.openSettings() },
-                                openImageSettings: { [weak self] in self?.openSettings(.image) },
-                                openVideoSettings: { [weak self] in self?.openSettings(.video) },
+                                openImageSettings: { [weak self] in self?.openSettings(.models, media: .image) },
+                                openVideoSettings: { [weak self] in self?.openSettings(.models, media: .video) },
                                 openModelSettings: { [weak self] in self?.openSettings(.models) },
                                 openPermissionSettings: { [weak self] in self?.openSettings(.permissions) },
                                 settingsContent: { [weak self] in
@@ -535,7 +533,7 @@ private struct UnifiedMacSettingsView: View {
                         } else {
                             List(selection: Binding<BridgeAppModel.SettingsPane?>(
                                 get: { model.settingsPane },
-                                set: { if let pane = $0 { model.settingsPane = pane } }
+                                set: { if let pane = $0 { model.providerDetail = nil; model.settingsPane = pane } }
                             )) {
                                 ForEach(destinations, id: \.self) { pane in
                                     Label(pane.title, systemImage: pane.icon)
@@ -572,25 +570,79 @@ private struct UnifiedMacSettingsView: View {
         case .general:
             HostAgentGeneralSettings(model: model, workspace: workspace)
         case .models:
-            MacProviderSettingsView(workspace: workspace, editing: $providerEditor)
+            if let role = model.providerDetail {
+                VStack(alignment: .leading, spacing: 0) {
+                    Button { model.providerDetail = nil } label: {
+                        Label("mac.settings.providerModels", systemImage: "chevron.backward")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("settings.providers.back")
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider()
+                    switch role {
+                    case .image:
+                        if let images = model.macWorkspace?.images {
+                            MacImageProviderDetail(workspace: workspace, images: images) {
+                                providerEditor.pendingAddRole = .image
+                                model.providerDetail = nil
+                            }
+                        }
+                    case .video:
+                        if let videos = model.macWorkspace?.videos {
+                            MacVideoProviderDetail(workspace: workspace, videos: videos) {
+                                providerEditor.pendingAddRole = .video
+                                model.providerDetail = nil
+                            }
+                        }
+                    }
+                }
+            } else {
+                MacProviderSettingsView(workspace: workspace, editing: $providerEditor, openMediaSettings: { role in
+                    switch role {
+                    case .image: model.providerDetail = .image
+                    case .video: model.providerDetail = .video
+                    default: break
+                    }
+                })
+            }
         case .auxiliary:
             MacAuxiliaryModelsView(workspace: workspace)
-        case .image:
-            if let images = model.macWorkspace?.images {
-                MacMediaAccountSettings(workspace: workspace, role: .image, apply: { preset, endpoint, modelID, key in
-                    try images.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
-                }) { MacImageSettingsView(images: images) }
-            }
-        case .video:
-            if let videos = model.macWorkspace?.videos {
-                MacMediaAccountSettings(workspace: workspace, role: .video, apply: { preset, endpoint, modelID, key in
-                    try videos.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
-                }) { MacVideoSettingsView(videos: videos) }
-            }
         case .permissions:
             MacPermissionsSettingsView(workspace: workspace, bridge: model)
         case .bridge:
             BridgeSettingsView(model: model)
+        }
+    }
+}
+
+private struct MacImageProviderDetail: View {
+    @ObservedObject var workspace: HostAgentWorkspace
+    @ObservedObject var images: MacImageGeneration
+    let addProvider: () -> Void
+
+    var body: some View {
+        MacMediaAccountSettings(workspace: workspace, role: .image,
+                                hasStandaloneConfiguration: images.hasStandaloneConfiguration,
+                                selection: { images.providerSelection },
+                                bind: images.bindProvider, useStandalone: images.useStandaloneConfiguration,
+                                addProvider: addProvider) {
+            MacImageSettingsView(images: images)
+        }
+    }
+}
+
+private struct MacVideoProviderDetail: View {
+    @ObservedObject var workspace: HostAgentWorkspace
+    @ObservedObject var videos: MacVideoGeneration
+    let addProvider: () -> Void
+
+    var body: some View {
+        MacMediaAccountSettings(workspace: workspace, role: .video,
+                                hasStandaloneConfiguration: videos.hasStandaloneConfiguration,
+                                selection: { videos.providerSelection },
+                                bind: videos.bindProvider, useStandalone: videos.useStandaloneConfiguration,
+                                addProvider: addProvider) {
+            MacVideoSettingsView(videos: videos)
         }
     }
 }
@@ -629,8 +681,6 @@ private extension BridgeAppModel.SettingsPane {
         case .general: "General"
         case .models: "mac.settings.providerModels"
         case .auxiliary: "mac.aux.title"
-        case .image: "mac.provider.imageModel"
-        case .video: "mac.creative.videoModel"
         case .permissions: "Permissions"
         case .bridge: "host.role.bridge"
         }
@@ -639,10 +689,8 @@ private extension BridgeAppModel.SettingsPane {
     var searchTerms: String {
         switch self {
         case .general: "通用 外观 默认模式 排队 引导 答案核验 General appearance mode queue steer verify"
-        case .models: "供应商 服务商 账户 模型 模型配置 密钥 连接 Provider Accounts Models API key endpoints"
+        case .models: "供应商 服务商 账户 模型 模型配置 密钥 连接 生图 绘图 图片 视频生成 图像 模型 Provider Accounts Models API key endpoints image video generation"
         case .auxiliary: "辅助模型 通用辅助 视觉 推理 审批模型 Auxiliary Models vision reasoning reviewer"
-        case .image: "图像模型 图片 生图 绘图 Image model generation"
-        case .video: "视频模型 生视频 Video model generation"
         case .permissions: "权限 审批 自动审批 完全访问 命令 执行 屏幕录制 辅助功能 磁盘 Kimi CU Permissions approvals command access disk screen"
         case .bridge: "桥接 配对 更新 存储 Bridge pairing updates storage OTA"
         }
@@ -653,8 +701,6 @@ private extension BridgeAppModel.SettingsPane {
         case .general: "gearshape"
         case .models: "antenna.radiowaves.left.and.right"
         case .auxiliary: "wand.and.stars"
-        case .image: "photo"
-        case .video: "film"
         case .permissions: "hand.raised"
         case .bridge: "link"
         }
