@@ -403,7 +403,7 @@ final class GameWorkspaceRegistry {
         -> (session: GameWorkspaceSession, reused: Bool) {
         guard record.kind == .game else { throw GameWorkspaceRegistryError.notGameRecord }
         let resolved = try await PersonalContentService.shared.library().resolve(record.id)
-        let (paths, storedProject) = try await SpaceGameOriginal.read(id: record.id, directory: resolved.url)
+        let paths = try await SpaceGameOriginal.verifiedLocation(id: record.id, directory: resolved.url)
         let key = GameWorkspaceKey(projectID: record.id,
                                    owner: .space(recordID: record.id), rootURL: paths.files)
         if let existing = sessions[key], !existing.closed {
@@ -419,6 +419,8 @@ final class GameWorkspaceRegistry {
                                                                        directory: resolved.url)
             var retainedUse = false
             defer { if !retainedUse { libraryUse.release() } }
+            let history = try FileGameProjectRepository(directory: paths.history)
+            let storedProject = try await history.open(record.id, owner: .space(recordID: record.id))
             let workspaceRecord = try await self.ensureOwnedWorkspace(
                 projectID: record.id, title: record.title, rootURL: paths.files)
             let center = WorkspaceCenter(environment: environment, publishesSharedState: false)

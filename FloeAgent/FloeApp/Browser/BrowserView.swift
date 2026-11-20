@@ -93,8 +93,10 @@ private struct BrowserPreviewPresenter: ViewModifier {
                       old.session.isUserControlling, center.previewInteractionID == old.id else { panel = next; return }
                 let receipt = center.handoff(for: old.session.conversationID)?.id
                 Task {
-                    _ = await center.returnControlIfCurrent(for: old.session, handoffID: receipt, presentationID: old.id)
-                    if panel?.id == old.id { panel = nil }
+                    let returned = await center.returnControlIfCurrent(for: old.session, handoffID: receipt, presentationID: old.id)
+                    if panel?.id == old.id, returned || !old.session.isUserControlling || center.previewInteractionID != old.id {
+                        panel = nil
+                    }
                 }
             })) { shown in
                 BrowserLivePreviewSheet(center: center, session: shown.session, panel: shown) {
@@ -171,11 +173,18 @@ private struct BrowserLivePreviewControls: View {
                     Button {
                         presentation?.open(.watching, session, page, lease)
                     } label: {
-                        Label(BrowserModelStatusBar.description(for: kind), systemImage: "safari")
-                            .font(.subheadline)
-                            .lineLimit(1)
-                            .padding(.horizontal, 12)
-                            .frame(minHeight: 44)
+                        HStack(spacing: 8) {
+                            Image(systemName: "safari").foregroundStyle(.tint)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(BrowserModelStatusBar.description(for: kind)).font(.subheadline)
+                                if let host = (session.fixedViewportTab ?? session.activeTab)?.webView.url?.host {
+                                    Text(verbatim: host).font(.caption).foregroundStyle(.secondary)
+                                        .truncationMode(.middle)
+                                }
+                            }.lineLimit(1)
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 44)
                     }
                     .accessibilityHint(IDELanguageRunText.t("打开网页预览", "Open page preview"))
                     .accessibilityIdentifier("browser.live.watch")
@@ -245,6 +254,7 @@ private struct BrowserLivePreviewSheet: View {
                         } label: {
                             Label(IDELanguageRunText.t("我来操作", "Take over"), systemImage: "hand.tap")
                         }
+                        .labelStyle(.titleAndIcon)
                         .accessibilityIdentifier("browser.preview.takeover")
                     }
                 }
@@ -303,12 +313,15 @@ private struct BrowserReturnActions: View {
                 .accessibilityLabel(IDELanguageRunText.t("带备注交还", "Return with a comment"))
                 .popover(isPresented: $composing) {
                     VStack(alignment: .leading, spacing: 12) {
+                        Text(IDELanguageRunText.t("带备注交还", "Return with a comment"))
+                            .font(.headline)
                         TextField(IDELanguageRunText.t("给模型的备注", "Comment for the model"), text: $note, axis: .vertical)
                             .lineLimit(2...5).textFieldStyle(.roundedBorder)
                         if let error = center.handoffError { Text(error).foregroundStyle(.red).font(.caption) }
                         Button(IDELanguageRunText.t("交还给模型", "Return to model")) { handback(note) }
                             .buttonStyle(.borderedProminent)
-                    }.padding().frame(idealWidth: 320).presentationCompactAdaptation(.popover)
+                    }.padding().frame(idealWidth: 320).presentationCompactAdaptation(.sheet)
+                        .presentationDetents([.medium])
                 }
             }
         }
@@ -613,10 +626,15 @@ private struct BrowserSurface: View {
             VStack(spacing: 0) {
                 if session.usesFixedViewport {
                     HStack {
-                        Label(session.humanBrowsingTabID == nil
-                              ? IDELanguageRunText.t("模型正在浏览", "AI browsing")
-                              : IDELanguageRunText.t("浏览标签页", "Browsing tab"),
-                              systemImage: session.humanBrowsingTabID == nil ? "sparkles" : "safari")
+                        if center.taskHandoffsEnabled, let activity = session.visibleModelActivity, session.humanBrowsingTabID == nil {
+                            BrowserModelStatusBar(center: center, session: session, presentationID: spectator, activity: activity)
+                        } else {
+                            Text((session.humanBrowsingTab ?? session.fixedViewportTab)?.webView.url?.host
+                                 ?? IDELanguageRunText.t("浏览器", "Browser"))
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                         Spacer()
                         Button { activeSheet = .settings } label: { Image(systemName: "gearshape") }
                             .accessibilityLabel(IDELanguageRunText.t("浏览器设置", "Browser settings"))
@@ -638,6 +656,11 @@ private struct BrowserSurface: View {
                     showPorts: { activeSheet = .ports }
                 ) { expanded.toggle() }
                     if wide { BrowserTabStrip(session: session) }
+                    if center.taskHandoffsEnabled, let activity = session.visibleModelActivity, session.humanBrowsingTabID == nil {
+                        BrowserModelStatusBar(center: center, session: session, presentationID: spectator, activity: activity)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                    }
                 }
             }
             .background(.bar)
@@ -662,12 +685,6 @@ private struct BrowserSurface: View {
                 .overlay(alignment: .topLeading) {
                     if interactionID == nil || reminderID != nil || session.takeoverPending || center.handoffError != nil {
                         humanHandoffBadge.padding(8)
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if center.taskHandoffsEnabled && session.visibleModelActivity != nil && session.humanBrowsingTabID == nil {
-                        BrowserModelStatusBar(center: center, session: session, presentationID: spectator)
-                            .padding(8)
                     }
                 }
                 .overlay(alignment: .top) {
@@ -894,13 +911,14 @@ private struct BrowserModelStatusBar: View {
     @ObservedObject var center: BrowserSessionCenter
     @ObservedObject var session: BrowserTaskSession
     let presentationID: UUID
+    let activity: BrowserModelActivity.Kind
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "sparkles")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(session.visibleModelActivity.map(Self.description(for:)) ?? "")
+            Text(Self.description(for: activity))
                 .font(.caption)
                 .lineLimit(2)
             Button {
@@ -914,8 +932,6 @@ private struct BrowserModelStatusBar: View {
             .accessibilityLabel(IDELanguageRunText.t("我来操作", "I'll take over"))
             .accessibilityIdentifier("browser.takeControlInline")
         }
-        .padding(.horizontal, 12)
-        .background(.thinMaterial, in: Capsule())
         .accessibilityIdentifier("browser.modelStatus")
     }
 

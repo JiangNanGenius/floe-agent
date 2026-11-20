@@ -20,6 +20,7 @@ struct FeedbackReportView: View {
     @State private var pendingPackageURL: URL?
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var imageAttachments: [FeedbackImageAttachment] = []
+    @State private var nextImageIndex = 0
     @State private var isLoadingImages = false
     /// Reuse one client id across retries so the server can de-duplicate the
     /// same report instead of treating every tap as a new upload.
@@ -34,7 +35,11 @@ struct FeedbackReportView: View {
         Group {
             if let submittedID {
                 ContentUnavailableView {
-                    Label("feedback.success.title", systemImage: "checkmark.circle")
+                    Label {
+                        Text("feedback.success.title")
+                    } icon: {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    }
                 } description: {
                     VStack(spacing: 6) {
                         Text("feedback.success.reference")
@@ -103,6 +108,11 @@ struct FeedbackReportView: View {
         Form {
             Section {
                 ZStack(alignment: .topLeading) {
+                    TextEditor(text: $problem)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 124)
+                        .accessibilityLabel("feedback.problem.title")
+                        .accessibilityIdentifier("feedback.problem")
                     if problem.isEmpty {
                         Text("feedback.problem.placeholder")
                             .foregroundStyle(.tertiary)
@@ -110,9 +120,6 @@ struct FeedbackReportView: View {
                             .padding(.vertical, 8)
                             .allowsHitTesting(false)
                     }
-                    TextEditor(text: $problem)
-                        .frame(minHeight: 150)
-                        .accessibilityIdentifier("feedback.problem")
                 }
                 Text("\(problem.count)/\(FeedbackUploadService.maximumProblemCharacters)")
                     .font(FloeTheme.Typography.metadata)
@@ -144,12 +151,12 @@ struct FeedbackReportView: View {
             Section {
                 PhotosPicker(
                     selection: $selectedPhotoItems,
-                    maxSelectionCount: FeedbackUploadService.maximumImageCount,
+                    maxSelectionCount: max(1, FeedbackUploadService.maximumImageCount - imageAttachments.count),
                     matching: .images
                 ) {
                     Label("feedback.images.add", systemImage: "photo.badge.plus")
                 }
-                .disabled(isSubmitting || isLoadingImages)
+                .disabled(isSubmitting || isLoadingImages || imageAttachments.count >= FeedbackUploadService.maximumImageCount)
                 .accessibilityIdentifier("feedback.add_images")
 
                 ForEach(imageAttachments) { attachment in
@@ -174,10 +181,12 @@ struct FeedbackReportView: View {
                         Spacer()
                         Button(role: .destructive) {
                             imageAttachments.removeAll { $0.id == attachment.id }
-                            selectedPhotoItems = []
                         } label: {
                             Image(systemName: "xmark.circle.fill")
+                                .frame(width: 44, height: 44)
                         }
+                        .buttonStyle(.plain)
+                        .disabled(isLoadingImages)
                         .accessibilityLabel("feedback.images.remove")
                     }
                 }
@@ -254,19 +263,26 @@ struct FeedbackReportView: View {
         defer { isLoadingImages = false }
         do {
             var processed: [FeedbackImageAttachment] = []
-            for (index, item) in items.prefix(FeedbackUploadService.maximumImageCount).enumerated() {
+            let remaining = FeedbackUploadService.maximumImageCount - imageAttachments.count
+            for (index, item) in items.prefix(max(0, remaining)).enumerated() {
                 guard let data = try await item.loadTransferable(type: Data.self) else {
                     throw FeedbackUploadError.invalidImage
                 }
-                processed.append(try FeedbackImageProcessor.makeAttachment(data: data, index: index))
+                let number = nextImageIndex + index
+                let image = try await Task.detached(priority: .userInitiated) {
+                    try FeedbackImageProcessor.makeAttachment(data: data, index: number)
+                }.value
+                processed.append(image)
             }
-            guard processed.reduce(0, { $0 + $1.data.count })
+            let combined = imageAttachments + processed
+            guard combined.reduce(0, { $0 + $1.data.count })
                     <= FeedbackUploadService.maximumTotalImageBytes else {
                 throw FeedbackUploadError.imageTooLarge
             }
-            imageAttachments = processed
+            imageAttachments = combined
+            nextImageIndex += processed.count
+            selectedPhotoItems = []
         } catch {
-            imageAttachments = []
             selectedPhotoItems = []
             errorMessage = error.localizedDescription
         }

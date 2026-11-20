@@ -264,6 +264,7 @@ struct GameProjectSpaceScreen: View {
     @State private var ideRequestBox: IDEOpenBox?
 
     @ViewBuilder private func overview(_ session: GameWorkspaceSession) -> some View {
+        let presentation = content(session)
         VStack(spacing: 0) {
             if let error { noticeBar(error, failed: true) }
             else if let notice { noticeBar(notice, failed: false) }
@@ -282,9 +283,9 @@ struct GameProjectSpaceScreen: View {
             if pending == .importProject {
                 importProgress
             }
-            engineSummary(session)
-            GameProjectOverviewView(content: content(session), pendingAction: pending,
-                status: status(session), showEngineSummary: false, usesWorkspaceIDE: true,
+            engineSummary(presentation.engineSummary)
+            GameProjectOverviewView(content: presentation, pendingAction: pending,
+                status: operationStatus, showEngineSummary: false, usesWorkspaceIDE: true,
                 onCreateStarter: { starterEngine = nil; starterError = nil; showingCreateStarter = true }) { action in
                     perform(action, session: session)
                 }
@@ -341,7 +342,7 @@ struct GameProjectSpaceScreen: View {
                 })
     }
 
-    private func engineSummary(_ session: GameWorkspaceSession) -> some View {
+    private func engineSummary(_ summary: String) -> some View {
         Button { showingProjectSetup = true } label: {
             HStack(spacing: 12) {
                 Image(systemName: "gamecontroller")
@@ -349,7 +350,7 @@ struct GameProjectSpaceScreen: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(IDELanguageRunText.t("游戏引擎", "Game engine"))
                         .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                    Text(content(session).engineSummary)
+                    Text(summary)
                         .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer(minLength: 8)
@@ -470,11 +471,10 @@ struct GameProjectSpaceScreen: View {
         } else if let state, state.selectedEngine != nil {
             summary = engineName + " · " + (state.selectedRoot?.value ?? IDELanguageRunText.t("工程根目录", "Project root"))
                 + (state.isManualUnverified
-                    ? " · " + IDELanguageRunText.t("手动未验证", "manual, unverified")
+                    ? " · " + IDELanguageRunText.t("尚未验证，暂无法运行", "unverified, run unavailable")
                     : "")
         } else if project.files.isEmpty {
-            summary = IDELanguageRunText.t("空工程 · 选择引擎、创建起始模板或导入",
-                                           "Empty project · choose an engine, create a starter or import")
+            summary = IDELanguageRunText.t("导入后自动识别", "Detected after import")
         } else if state?.state == .ambiguous {
             summary = IDELanguageRunText.t("发现多个工程根／引擎，请选择",
                                            "Multiple roots/engines found. Choose one.")
@@ -490,36 +490,19 @@ struct GameProjectSpaceScreen: View {
             hasFiles: !project.files.isEmpty)
     }
 
-    private func status(_ session: GameWorkspaceSession) -> String? {
-        if pending == .importProject { return nil }
-        if pending == .play { return playProgress }
-        if pending != nil { return IDELanguageRunText.t("正在处理…", "Working…") }
-        if let snapshot = session.project.selectionSnapshot {
-            if snapshot.state == .ambiguous {
-                return IDELanguageRunText.t("请先选择根目录和引擎。",
-                                            "Choose a root and engine first.")
-            }
-            if snapshot.state == .unresolved {
-                return IDELanguageRunText.t("没有识别到支持的引擎。可手动选择，或让当前工程 AI 读取依据后建议。",
-                                            "No supported engine was recognized. Choose manually or ask the project AI to inspect the evidence.")
-            }
-            if snapshot.isManualUnverified {
-                return IDELanguageRunText.t("引擎是手动选择，没有识别依据；运行和构建保持关闭。",
-                                            "The engine was chosen manually without recognized evidence; run and build stay closed.")
-            }
-            if let recommendation = snapshot.aiRecommendation {
-                return IDELanguageRunText.t("AI 建议：\(recommendation.engine.rawValue)，可手动采用或覆盖。", "AI suggests \(recommendation.engine.rawValue). You can use or override it.")
-            }
-
+    private var operationStatus: String? {
+        switch pending {
+        case .play: playProgress
+        case .ide, .files: IDELanguageRunText.t("正在打开 IDE…", "Opening IDE…")
+        case .simpleEdit: IDELanguageRunText.t("正在打开编辑器…", "Opening editor…")
+        case .aiModify: IDELanguageRunText.t("正在打开工程助手…", "Opening project assistant…")
+        case .history: IDELanguageRunText.t("正在打开源码管理…", "Opening source control…")
+        case .importProject, nil: nil
         }
-        return nil
     }
 
     private var projectMenu: some View {
         Menu {
-            Button(IDELanguageRunText.t("游戏引擎", "Game engine"), systemImage: "gamecontroller") {
-                showingProjectSetup = true
-            }
             Button(IDELanguageRunText.t("切换引擎（新副本）", "Change engine (new copy)"),
                    systemImage: "arrow.triangle.branch") {
                 showingEngineChange = true
