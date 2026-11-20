@@ -4,7 +4,7 @@
 // capability for the unified Mac host ("Floe SelfCore" runtime).
 //
 // This file is the whole capability: a scoped ToolExecutor over the
-// explicitly user-selected project workspace, plus a one-shot approval
+// explicitly user-selected project workspace, plus the shared task approval
 // policy composition, exposed as one binding factory for the host to hand
 // to `FloeMacSelfRuntime.startSession(_:provider:tools:)`.
 //
@@ -43,10 +43,7 @@
 // - Writes are bounded (4 MiB), reads are bounded (64 KiB pages, 10 MiB
 //   ceiling). createFile stages and verifies bytes
 //   through a held descriptor before exclusive publication.
-// - One-shot approval: the policy composes the existing HumanApprovalPolicy
-//   so every side-effecting call surfaces exactly one human card; reads are
-//   non-side-effecting and are auto-allowed by the runtime before policy
-//   consultation (the policy still allows them if consulted directly).
+// - The task approval policy and runtime gates govern every mutation.
 
 import Foundation
 import Darwin
@@ -175,7 +172,6 @@ public enum MacAgentWorkspaceTools {
     public static let writeToolNames: Set<String> = [createFileToolName, replaceTextToolName]
 
     /// Stable labels for the host gate (provenance, not secrets).
-    public static let approvalPolicySource = "floe.security.human-one-shot"
     public static let toolCorpusIdentifier = "floe.macunified.workspace-tools.v1"
     public static let issuer = "floe.macunified.mac-agent-workspace-tools"
 
@@ -206,9 +202,7 @@ public enum MacAgentWorkspaceTools {
     ///     user-home root fails closed.
     ///   - readOnly: When true (plan-style investigation) the binding
     ///     advertises and permits only the read tools. When false
-    ///     (agent/goal) text writes are added; every write
-    ///     still requires exactly one human approval through the session's
-    ///     pending-approval card.
+    ///     (agent/goal) the task approval policy governs text writes.
     ///   - delegationRegistry: When non-nil (normal project Agent/Goal runs
     ///     only; never chat/plan), the binding additionally advertises the
     ///     delegation tools (`delegate`, `delegate.wait`) as private
@@ -220,7 +214,8 @@ public enum MacAgentWorkspaceTools {
         workspace: WorkspaceRecord,
         readOnly: Bool,
         chatOnly: Bool = false,
-        delegationRegistry: SubagentRunnerRegistry? = nil
+        delegationRegistry: SubagentRunnerRegistry? = nil,
+        approvalPolicy: ((URL, [String: String]) -> any ApprovalPolicy)? = nil
     ) throws -> FloeMacSelfToolBinding {
         guard workspace.kind == .project else {
             throw MacAgentWorkspaceToolsError.workspaceKindUnsupported(workspace.kind.rawValue)
@@ -273,23 +268,29 @@ public enum MacAgentWorkspaceTools {
             allowedWorkspacePaths: [],
             ownership: .nativeHost
         )
+        let identities = Dictionary(uniqueKeysWithValues: baseExecutor.allDescriptors.map { ($0.name, $0.authorizationIdentity) })
+        let policy = approvalPolicy?(root, identities) ?? HumanApprovalPolicy()
         let hostGate = FloeMacSelfHostGate(
             workspaceID: workspace.id,
             workspaceRootPath: root.path,
-            approvalPolicySource: approvalPolicySource,
+            approvalPolicySource: policy.policyName,
             toolCorpusIdentifier: toolCorpusIdentifier,
             approvedToolNames: allowed,
             issuer: issuer
         )
         return FloeMacSelfToolBinding(
             executor: executor,
-            policy: MacAgentWorkspaceOneShotApprovalPolicy(),
+            policy: policy,
             gate: gate,
             auditSink: nil,
             boundary: boundary,
             allowedToolNames: allowed,
             hostGate: hostGate
         )
+    }
+
+    static func canRememberFile(_ path: String) -> Bool {
+        path != "." && (try? MacAgentWorkspacePinSupport.standardizedRelativePath(path)) == path
     }
 
     /// Reveal the current regular file only while the original project bookmark and verified descriptor are held.
@@ -343,51 +344,6 @@ public enum MacAgentWorkspaceTools {
                 "the workspace root is not an existing directory"
             )
         }
-    }
-}
-
-// MARK: - One-shot approval policy
-
-/// Every side-effecting call composes to exactly one human decision; reads
-/// never require a card.
-///
-/// The runtime already auto-allows non-side-effecting descriptors before
-/// policy consultation, so in production only the two write tools reach
-/// the decision path and `HumanApprovalPolicy` escalates it to the session's
-/// pending-approval card. The read fast-path keeps the policy correct even
-/// if a future runtime consults it for a read: it returns a single-use allow
-/// instead of incorrectly escalating. No reusable grant is ever minted here.
-public struct MacAgentWorkspaceOneShotApprovalPolicy: ApprovalPolicy {
-    public let policyName = MacAgentWorkspaceTools.approvalPolicySource
-
-    /// Risk labels whose presence makes a call side-effecting. Mirrors the
-    /// runtime's descriptor classification for this catalog.
-    private static let sideEffectingRisks: Set<String> = [
-        RiskLabel.writesFiles.rawValue,
-        RiskLabel.deletesFiles.rawValue,
-        RiskLabel.executesLocalCode.rawValue,
-        RiskLabel.executesRemoteCommand.rawValue,
-        RiskLabel.modifiesRemoteSystem.rawValue,
-        RiskLabel.controlsGUI.rawValue,
-        RiskLabel.accessesCredentials.rawValue,
-        RiskLabel.sendsDataToProvider.rawValue,
-        RiskLabel.persistsPersonalData.rawValue,
-        RiskLabel.changesAgentBehavior.rawValue,
-    ]
-
-    private let human = HumanApprovalPolicy()
-
-    public init() {}
-
-    public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
-        guard !action.riskLabels.isDisjoint(with: Self.sideEffectingRisks) else {
-            return .allow(
-                scope: ApprovalScope(toolName: action.toolCall.toolName, singleUse: true),
-                expiresAt: nil
-            )
-        }
-        // The user decides this exact workspace mutation once.
-        return try await human.decide(action)
     }
 }
 

@@ -10,6 +10,9 @@ import FloeProviders
 import FloeSecurity
 import Foundation
 import UniformTypeIdentifiers
+#if FLOE_UNIFIED_MAC
+import LocalAuthentication
+#endif
 
 /// One staged file attachment prepared for the next send. The draft carries
 /// a read-only security-scoped bookmark created at pick time plus verified
@@ -70,7 +73,7 @@ struct HostAgentProvider: Codable {
                                   displayName: trimmedName?.isEmpty == false ? trimmedName : nil,
                                   presetID: presetID)
         profile.allowsPlainHTTP = allowsPlainHTTP
-        var capabilities: ModelCapabilities = [.text]
+        var capabilities = ModelCapabilities.defaultTextModel(for: protocolKind).subtracting([.tools, .vision])
         if supportsImages { capabilities.insert(.vision) }
         if supportsTools { capabilities.insert(.tools) }
         model = ModelProfile(providerID: profile.id, remoteModelID: modelID, displayName: modelID,
@@ -79,6 +82,12 @@ struct HostAgentProvider: Codable {
         self.apiKey = apiKey
         self.presetID = presetID
         try validate()
+    }
+
+    mutating func setApprovalEligibility(_ enabled: Bool) {
+        if enabled { model.capabilities.insert(.approval); model.useSurfaces?.insert(.approval) }
+        else { model.capabilities.remove(.approval); model.useSurfaces?.remove(.approval) }
+        model.explicitCapabilities = (model.explicitCapabilities ?? []).union(.approval)
     }
 
     mutating func applyCatalogModel(_ discovered: ModelProfile?) {
@@ -169,6 +178,23 @@ struct HostAgentApproval: Equatable {
 }
 
 #if FLOE_UNIFIED_MAC
+private struct MacProjectApprovalContext {
+    let grants: FloeMacSelfApprovalGrants
+    let workspaceID: UUID
+    let conversationID: UUID
+    let root: URL
+    let identities: [String: String]
+    let primaryIsOnDevice: Bool
+    let networkStatus: NetworkStatusMonitor
+
+    func policy(_ mode: TaskApprovalMode, reviewer: FloeMacSelfProviderBinding?) -> any ApprovalPolicy {
+        grants.wrapping(MacTaskApprovalPolicy.make(mode: mode, reviewer: reviewer,
+                        primaryIsOnDevice: primaryIsOnDevice, isOffline: networkStatus.isOffline),
+                        workspaceID: workspaceID, conversationID: conversationID,
+                        workspaceRoot: root, authorizationIdentities: identities)
+    }
+}
+
 struct HostAgentToolActivity: Identifiable, Equatable {
     let id: String
     let toolName: String
@@ -195,6 +221,7 @@ final class HostAgentWorkspace: ObservableObject {
         var reasoningText = ""
         var awaitingModel = false
         var waitingForQuestion = false
+        var reviewingCalls = Set<String>()
         var approval: HostAgentApproval?
         /// Live question card projected from the durable question center.
         var question: HostAgentQuestion?
@@ -203,6 +230,10 @@ final class HostAgentWorkspace: ObservableObject {
         var steering = false
         var lastSteer: String?
         var modelID: UUID?
+        #if FLOE_UNIFIED_MAC
+        var approvalContext: MacProjectApprovalContext?
+        var approvalMode: TaskApprovalMode = .ask
+        #endif
     }
 
     @Published private(set) var isReady = false
@@ -229,6 +260,7 @@ final class HostAgentWorkspace: ObservableObject {
     var liveReasoning: String { visibleRun?.reasoningText ?? "" }
     var awaitingModel: Bool { visibleRun?.awaitingModel == true }
     var reconnectAttempt: Int? { visibleRun?.reconnectAttempt }
+    var isReviewingApproval: Bool { visibleRun?.reviewingCalls.isEmpty == false }
     var streamedText: String { visibleRun?.streamedText ?? "" }
     var pendingPrompt: String? {
         guard let run = visibleRun else { return nil }
@@ -276,6 +308,7 @@ final class HostAgentWorkspace: ObservableObject {
     var windowShowsTask = false
     var draftSelectionID: UUID { historySelection }
     #if FLOE_MAC_HOST_SMOKE
+    var smokeOwnerAuthentication: (() -> Bool)?
     var smokeTaskSearchMounted = false
     var smokeTaskFindInvocations = 0
     var smokeConversationSearchMounted = false
@@ -298,6 +331,101 @@ final class HostAgentWorkspace: ObservableObject {
     @Published var allowsWorkspaceWrites: Bool { didSet { preferences.set(allowsWorkspaceWrites, forKey: "floe.mac.workspace.allowWrites") } }
     @Published var verifyAgentAnswers: Bool { didSet { preferences.set(verifyAgentAnswers, forKey: "floe.mac.agent.verifyAnswers") } }
     @Published var defaultMode: HostAgentMode { didSet { preferences.set(defaultMode.rawValue, forKey: "floe.mac.agent.defaultMode") } }
+    @Published private(set) var defaultApprovalMode: TaskApprovalMode
+    @Published private(set) var approvalModelID: UUID?
+    @Published private var selectedApprovalMode: TaskApprovalMode?
+    @Published private var draftApprovalMode: TaskApprovalMode?
+    @Published private(set) var savingApprovalMode = false
+    @Published private(set) var approvalSettingsError: String?
+    private static let defaultApprovalKey = "floe.mac.agent.defaultApprovalMode"
+    private static let reviewerKey = "floe.mac.agent.approvalModelID"
+
+    var taskApprovalMode: TaskApprovalMode {
+        selectedID == nil ? draftApprovalMode ?? defaultApprovalMode : selectedApprovalMode ?? .ask
+    }
+
+    private var reviewer: FloeMacSelfProviderBinding? {
+        providers.first { $0.model.id == approvalModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsApprovalSurface }?.binding()
+    }
+
+    func approvalGrantStore() async throws -> FloeMacSelfApprovalGrants {
+        guard isReady, let runtime else { throw CocoaError(.fileReadUnknown) }
+        return try await runtime.approvalGrantStore()
+    }
+
+    func setApprovalModelID(_ id: UUID?) {
+        guard !savingApprovalMode, id != approvalModelID, !isTerminating,
+              id == nil || providers.contains(where: {
+                  $0.model.id == id && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsApprovalSurface
+              }) else { return }
+        approvalModelID = id
+        preferences.set(id?.uuidString, forKey: Self.reviewerKey)
+        refreshAutomaticReviewers()
+    }
+
+    private func refreshAutomaticReviewers() {
+        let handles = liveRuns.values.compactMap { run -> (FloeMacSelfSessionHandle, MacProjectApprovalContext)? in
+            guard run.approvalMode == .automatic, !run.stopping, let handle = run.handle,
+                  let context = run.approvalContext else { return nil }
+            return (handle, context)
+        }
+        guard !handles.isEmpty, !savingApprovalMode, let release = admit() else { return }
+        let selected = reviewer
+        savingApprovalMode = true
+        Task {
+            defer { savingApprovalMode = false; release() }
+            for (handle, context) in handles where liveRuns[context.conversationID]?.handle?.identity == handle.identity {
+                _ = await handle.updateApprovalPolicy(context.policy(.automatic, reviewer: selected))
+                await updateLiveRun(handle)
+            }
+        }
+    }
+
+    private func authorizeFullAccess() async throws -> Bool {
+        #if FLOE_MAC_HOST_SMOKE
+        if vault == nil, let smokeOwnerAuthentication { return smokeOwnerAuthentication() }
+        #endif
+        return try await LAContext().evaluatePolicy(.deviceOwnerAuthentication,
+            localizedReason: String(localized: "mac.permissions.authenticate"))
+    }
+
+    @discardableResult
+    func setApprovalMode(_ mode: TaskApprovalMode, asDefault: Bool) async -> Bool {
+        guard isReady, !isTerminating, !savingApprovalMode, let runtime, let release = admit() else { return false }
+        let id = selectedID
+        let selection = historySelection
+        approvalSettingsError = nil
+        guard asDefault || (!isLoadingHistory && (!isSending || activeRun != nil)) else { release(); return false }
+        if mode == (asDefault ? defaultApprovalMode : taskApprovalMode) { release(); return true }
+        savingApprovalMode = true
+        defer { savingApprovalMode = false; release() }
+        do {
+            if mode == .fullAccess {
+                guard try await authorizeFullAccess() else { return false }
+            }
+            guard !isTerminating, asDefault || (selection == historySelection && id == selectedID) else { return false }
+            if asDefault {
+                defaultApprovalMode = mode
+                preferences.set(mode.rawValue, forKey: Self.defaultApprovalKey)
+            } else if let id {
+                try await runtime.setTaskApprovalMode(mode, conversationID: id)
+                if let handle = liveRuns[id]?.handle, let context = liveRuns[id]?.approvalContext {
+                    liveRuns[id]?.approvalMode = mode
+                    _ = await handle.updateApprovalPolicy(context.policy(mode, reviewer: reviewer))
+                    await updateLiveRun(handle)
+                }
+                if selection == historySelection { selectedApprovalMode = mode }
+            } else { draftApprovalMode = mode }
+            return true
+        } catch {
+            if let auth = error as? LAError, [.userCancel, .appCancel, .systemCancel].contains(auth.code) { return false }
+            let message = (error as? LAError)?.localizedDescription ?? String(localized: "mac.permissions.saveFailed")
+            if asDefault { approvalSettingsError = message }
+            if selection == historySelection { notice = message }
+            return false
+        }
+    }
+
     @Published private(set) var chatReasoning: ChatReasoningPreference = .fast
     @Published private(set) var savingChatReasoning = false
 
@@ -350,6 +478,7 @@ final class HostAgentWorkspace: ObservableObject {
         taskModes[id.uuidString] = mode?.rawValue
         preferences.set(taskModes, forKey: Self.taskModesKey)
     }
+    private let networkStatus = NetworkStatusMonitor()
     private let preferences: UserDefaults
     @Published private var taskProviderID: UUID?
     @Published private var failedRunID: UUID?
@@ -474,6 +603,8 @@ final class HostAgentWorkspace: ObservableObject {
         self.admitWork = admitWork
         #if FLOE_UNIFIED_MAC
         self.preferences = preferences
+        self.defaultApprovalMode = preferences.string(forKey: Self.defaultApprovalKey).flatMap(TaskApprovalMode.init(rawValue:)) ?? .ask
+        self.approvalModelID = preferences.string(forKey: Self.reviewerKey).flatMap(UUID.init(uuidString:))
         self.allowsWorkspaceWrites = preferences.object(forKey: "floe.mac.workspace.allowWrites") as? Bool ?? true
         self.verifyAgentAnswers = preferences.bool(forKey: "floe.mac.agent.verifyAnswers")
         self.defaultMode = preferences.string(forKey: "floe.mac.agent.defaultMode").flatMap(HostAgentMode.init(rawValue:)) ?? .chat
@@ -506,6 +637,7 @@ final class HostAgentWorkspace: ObservableObject {
                 selectedConversationWorkspace = try? await runtime.workspaceForConversation(recent.id)
                 #if FLOE_UNIFIED_MAC
                 let run = try? await runtime.recentRuns(conversationID: recent.id, limit: 1).first
+                selectedApprovalMode = try await runtime.taskApprovalMode(conversationID: recent.id)
                 chatReasoning = try await runtime.chatReasoning(conversationID: recent.id)
                 applyComposerRun(run)
                 if let run { await loadToolActivity(runID: run.id, conversationID: recent.id, runtime: runtime) }
@@ -567,7 +699,7 @@ final class HostAgentWorkspace: ObservableObject {
                      modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false,
                      presetID: String? = nil, limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0),
                      allowsPlainHTTP: Bool = false, catalogModel: ModelProfile? = nil,
-                     explicit: ModelCapabilities = []) -> Bool {
+                     explicit: ModelCapabilities = [], supportsApproval: Bool? = nil) -> Bool {
         updateProviderStore { store in
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
                                                protocolKind: protocolKind, modelID: modelID, apiKey: key,
@@ -575,6 +707,7 @@ final class HostAgentWorkspace: ObservableObject {
                                                presetID: presetID, limits: limits, allowsPlainHTTP: allowsPlainHTTP)
             record.model.explicitCapabilities = explicit
             record.applyCatalogModel(catalogModel)
+            if let supportsApproval { record.setApprovalEligibility(supportsApproval) }
             store.providers.append(record)
             store.selectedProviderID = record.profile.id
         }
@@ -586,7 +719,7 @@ final class HostAgentWorkspace: ObservableObject {
     func updateProvider(id: UUID, name: String?, endpoint: String, protocolKind: ModelProtocol,
                         modelID: String, key: String, supportsImages: Bool = false, supportsTools: Bool = false,
                         presetID: String? = nil, limits: ModelLimits? = nil, allowsPlainHTTP: Bool = false,
-                        catalogModel: ModelProfile? = nil, explicit: ModelCapabilities = []) -> Bool {
+                        catalogModel: ModelProfile? = nil, explicit: ModelCapabilities = [], supportsApproval: Bool? = nil) -> Bool {
         updateProviderStore { store in
             guard let index = store.providers.firstIndex(where: { $0.profile.id == id }) else {
                 throw ProviderStoreError.missingRecord
@@ -621,6 +754,7 @@ final class HostAgentWorkspace: ObservableObject {
                 record.model.explicitCapabilities = (record.model.explicitCapabilities ?? []).union(explicit)
             }
             record.applyCatalogModel(catalogModel)
+            if let supportsApproval { record.setApprovalEligibility(supportsApproval) }
             record.model.id = previous.model.id
             record.model.providerID = id
             store.providers[index] = record
@@ -722,6 +856,9 @@ final class HostAgentWorkspace: ObservableObject {
             guard historySelection == selection, !Task.isCancelled else { return }
             let reasoning = try await runtime.chatReasoning(conversationID: id)
             guard historySelection == selection, !Task.isCancelled else { return }
+            let approvalMode = try await runtime.taskApprovalMode(conversationID: id)
+            guard historySelection == selection, !Task.isCancelled else { return }
+            selectedApprovalMode = approvalMode
             chatReasoning = reasoning
             applyComposerRun(run)
             if let run { await loadToolActivity(runID: run.id, conversationID: id, runtime: runtime) }
@@ -751,6 +888,8 @@ final class HostAgentWorkspace: ObservableObject {
         let selection = UUID()
         historySelection = selection
         #if FLOE_UNIFIED_MAC
+        selectedApprovalMode = nil
+        draftApprovalMode = nil
         chatReasoning = .fast
         #endif
         isLoadingHistory = id != nil
@@ -1196,7 +1335,8 @@ final class HostAgentWorkspace: ObservableObject {
         let goalCriteria = criteria
         let selectedProject = workspaces.first { $0.id == workspaceID && $0.kind == .project }
         #if FLOE_UNIFIED_MAC
-        guard !savingChatReasoning else { return false }
+        let newTaskApproval = draftApprovalMode ?? defaultApprovalMode
+        guard !savingApprovalMode, !savingChatReasoning else { return false }
         let draftReasoning: ChatReasoningPreference? = currentID == nil && mode == .chat ? chatReasoning : nil
         let acceptsQuestions = true
         #else
@@ -1256,6 +1396,9 @@ final class HostAgentWorkspace: ObservableObject {
             do {
                 let tools: FloeMacSelfToolBinding?
                 #if FLOE_UNIFIED_MAC
+                let approvalMode: TaskApprovalMode
+                if let currentID { approvalMode = try await runtime.taskApprovalMode(conversationID: currentID) }
+                else { approvalMode = newTaskApproval }
                 let project: WorkspaceRecord?
                 if let currentID {
                     let owner = try await runtime.workspaceForConversation(currentID)
@@ -1273,8 +1416,16 @@ final class HostAgentWorkspace: ObservableObject {
                 }
                 let delegationRegistry = delegationRunID == nil ? nil : childSubagents.childRegistry
                 if let project, mode != .chat || provider.model.capabilities.contains(.tools) {
-                    tools = try MacAgentWorkspaceTools.binding(workspace: project, readOnly: readOnly, chatOnly: mode == .chat,
-                                                               delegationRegistry: delegationRegistry)
+                    let grants = try await runtime.approvalGrantStore()
+                    tools = try MacAgentWorkspaceTools.binding(workspace: project, readOnly: readOnly,
+                        chatOnly: mode == .chat, delegationRegistry: delegationRegistry) { root, identities in
+                        let context = MacProjectApprovalContext(grants: grants, workspaceID: project.id,
+                            conversationID: taskID, root: root, identities: identities,
+                            primaryIsOnDevice: provider.provider.id == ProviderProfile.onDeviceProviderID, networkStatus: self.networkStatus)
+                        self.liveRuns[taskID]?.approvalContext = context
+                        self.liveRuns[taskID]?.approvalMode = approvalMode
+                        return context.policy(approvalMode, reviewer: self.reviewer)
+                    }
                 } else {
                     tools = nil
                 }
@@ -1292,6 +1443,7 @@ final class HostAgentWorkspace: ObservableObject {
                     )
                 }
                 #else
+                let approvalMode: TaskApprovalMode = .ask
                 let project = selectedProject
                 tools = nil
                 #endif
@@ -1316,6 +1468,7 @@ final class HostAgentWorkspace: ObservableObject {
                     conversationTitle: currentID == nil ? Self.initialTaskTitle(text, provider: provider) : "",
                     goal: acceptedExecution?.goal ?? text,
                     mode: acceptedExecution?.conversationMode ?? mode.runtimeMode,
+                    initialPolicy: .init(approvalMode: approvalMode),
                     runID: acceptedExecution?.runID ?? queued?.id ?? delegationRunID,
                     context: FloeMacSelfRunContext(workspaceName: project?.name),
                     attachments: drafts.map {
@@ -1354,7 +1507,7 @@ final class HostAgentWorkspace: ObservableObject {
                     await refreshQueue(taskID)
                 }
                 saveTaskMode(mode, for: taskID)
-                if currentID == nil, hasOriginSelection { draftMode = nil }
+                if currentID == nil, hasOriginSelection { draftMode = nil; draftApprovalMode = nil }
                 #endif
                 if !drafts.isEmpty,
                    loadAttachmentDraft.map({ $0(currentID).map(\.id) == drafts.map(\.id) }) ?? true {
@@ -1375,6 +1528,7 @@ final class HostAgentWorkspace: ObservableObject {
                 if newDraftRunID == taskID { newDraftRunID = nil }
                 #if FLOE_UNIFIED_MAC
                 if selectedID == taskID {
+                    selectedApprovalMode = approvalMode
                     taskProviderID = provider.provider.id
                     failedRunID = nil
                 }
@@ -1391,6 +1545,10 @@ final class HostAgentWorkspace: ObservableObject {
                     case .harness(.planChanged), .harness(.goalChanged):
                         await loadPlanning(conversationID: handle.identity.conversationID, runtime: runtime)
                     #if FLOE_UNIFIED_MAC
+                    case .harness(.approvalReviewChanged(let review)):
+                        let key = review.callID ?? review.toolName
+                        if review.isEvaluating { liveRuns[taskID]?.reviewingCalls.insert(key) }
+                        else { liveRuns[taskID]?.reviewingCalls.remove(key) }
                     case .harness(.toolLifecycle(let event)):
                         updateToolActivity(event, runID: handle.identity.runID)
                     #endif
@@ -1714,7 +1872,7 @@ final class HostAgentWorkspace: ObservableObject {
         if liveRuns[taskID]?.approval != card { liveRuns[taskID]?.approval = card }
     }
 
-    func resolveApproval(_ approval: HostAgentApproval, allow: Bool) async {
+    func resolveApproval(_ approval: HostAgentApproval, allow: Bool, remember scope: FloeMacFileGrantScope? = nil) async {
         guard isSending, !isStopping, !isResolvingApproval, !isTerminating,
               pendingApproval == approval, let handle = activeRun,
               handle.identity.runID == approval.runID, !allow || approval.canAllow,
@@ -1725,12 +1883,28 @@ final class HostAgentWorkspace: ObservableObject {
             if liveRuns[taskID]?.handle?.identity == handle.identity { liveRuns[taskID]?.resolvingApproval = false }
             release()
         }
+        #if FLOE_UNIFIED_MAC
+        let context = liveRuns[taskID]?.approvalContext
+        #endif
         let decision: ApprovalDecision = allow
             ? .allow(scope: ApprovalScope(toolName: approval.toolName, singleUse: true), expiresAt: nil)
             : .deny(reason: "User declined this workspace operation.")
         let result = await handle.resolveApproval(.init(conversationID: approval.conversationID,
             runID: approval.runID, workspaceID: approval.workspaceID, callID: approval.callID,
             toolName: approval.toolName, decision: decision, requestedAt: approval.requestedAt))
+        #if FLOE_UNIFIED_MAC
+        if result == .accepted, allow, let scope, let context, context.conversationID == taskID,
+           context.workspaceID == approval.workspaceID, let path = approval.path,
+           MacAgentWorkspaceTools.writeToolNames.contains(approval.toolName), MacAgentWorkspaceTools.canRememberFile(path),
+           let identity = context.identities[approval.toolName] {
+            do {
+                try await context.grants.remember(scope: scope, workspaceID: context.workspaceID,
+                    conversationID: taskID, toolName: approval.toolName, path: path, authorizationIdentity: identity, workspaceRoot: context.root)
+            } catch {
+                if selectedID == taskID { notice = String(localized: "mac.permissions.grantFailed") }
+            }
+        }
+        #endif
         guard liveRuns[taskID]?.handle?.identity == handle.identity else { return }
         if result == .accepted, liveRuns[taskID]?.approval == approval { liveRuns[taskID]?.approval = nil }
         await updateLiveRun(handle)
@@ -2361,6 +2535,13 @@ final class HostAgentWorkspace: ObservableObject {
 
     private func applyProviderStore(_ store: ProviderListEnvelope) {
         providers = store.providers
+        #if FLOE_UNIFIED_MAC
+        if let approvalModelID, !providers.contains(where: { $0.model.id == approvalModelID }) {
+            self.approvalModelID = nil
+            preferences.removeObject(forKey: Self.reviewerKey)
+        }
+        refreshAutomaticReviewers()
+        #endif
         selectedProviderID = store.selectedProviderID
         modelName = store.providers.first { $0.profile.id == store.selectedProviderID }
             .map { $0.profile.displayName ?? $0.model.displayName }
@@ -2710,6 +2891,138 @@ final class HostAgentWorkspace: ObservableObject {
             results.append(stored && (allow ? data == "Synthetic workspace output." : data == nil))
         }
         return (results.first == true, results.count == 2 && results[1])
+    }
+
+    private struct SmokeApprovalReviewer: ProviderAdapter {
+        let protocolKind: ModelProtocol = .openAIChatCompletions
+        let modelID: UUID
+
+        func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+            AsyncThrowingStream { stream in
+                guard request.model.id == modelID, request.toolSchemas.isEmpty, !request.messages.isEmpty else {
+                    stream.finish(throwing: CocoaError(.fileReadUnknown)); return
+                }
+                stream.yield(.textDelta(.init(text: #"{"decision":"deny","reason":"fixture reviewer decision"}"#)))
+                stream.yield(.completed(.init(stopReason: .endTurn)))
+                stream.finish()
+            }
+        }
+
+        func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+    }
+
+    func verifyApprovalReviewerSmoke() async -> Bool {
+        guard vault == nil, let saved = try? HostAgentProvider(endpoint: "https://example.invalid/v1",
+                  protocolKind: .openAIChatCompletions, modelID: "approval-fixture", apiKey: ""),
+              saved.model.supportsApprovalSurface,
+              let call = try? ToolCall(id: "review-fixture", toolName: "fixture.sensitive", argumentsJSON: Data("{}".utf8), scope: .local)
+        else { return false }
+        let action = ProposedAction(toolCall: call, riskLabels: ["accessesCredentials"], userGoal: "Inspect this action",
+                                    hostAndPathScope: .local)
+        let binding = FloeMacSelfProviderBinding(provider: saved.profile, model: saved.model,
+            adapter: SmokeApprovalReviewer(modelID: saved.model.id), credentials: .init())
+        let configured = MacTaskApprovalPolicy.make(mode: .automatic, reviewer: binding, primaryIsOnDevice: false, isOffline: false)
+        let missing = MacTaskApprovalPolicy.make(mode: .automatic, reviewer: nil, primaryIsOnDevice: false, isOffline: false)
+        guard case .deny = try? await configured.decide(action),
+              case .escalateToHuman = try? await missing.decide(action) else { return false }
+        return true
+    }
+
+    func verifyTaskPermissionSmoke(project: WorkspaceRecord, folder: URL) async -> Bool {
+        guard vault == nil, !isSending, let runtime else { return false }
+        await select(nil)
+        guard await setApprovalMode(.ask, asDefault: true),
+              let provider = smokeProvider(.createFile("permission-live.txt")),
+              beginSend("Create permission-live.txt", runtime: runtime, provider: provider,
+                        workspaceID: project.id, mode: .agent) else { return false }
+        let deadline = ContinuousClock.now + .seconds(6)
+        while pendingApproval == nil && isSending && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard pendingApproval?.path == "permission-live.txt", let original = selectedID,
+              await setApprovalMode(.automatic, asDefault: false),
+              await waitForSmokeRun(),
+              (try? String(contentsOf: folder.appendingPathComponent("permission-live.txt"), encoding: .utf8)) == "Synthetic workspace output.",
+              defaultApprovalMode == .ask else { stop(); return false }
+
+        await select(nil)
+        guard taskApprovalMode == .ask, await setApprovalMode(.automatic, asDefault: true),
+              taskApprovalMode == .automatic,
+              let next = smokeProvider(.createFile("permission-default.txt")),
+              beginSend("Create permission-default.txt", runtime: runtime, provider: next,
+                        workspaceID: project.id, mode: .agent), await waitForSmokeRun(),
+              let second = selectedID, second != original,
+              (try? String(contentsOf: folder.appendingPathComponent("permission-default.txt"), encoding: .utf8)) == "Synthetic workspace output.",
+              await setApprovalMode(.ask, asDefault: true) else { stop(); return false }
+        await select(original)
+        guard taskApprovalMode == .automatic, await setApprovalMode(.ask, asDefault: false),
+              (try? await runtime.taskApprovalMode(conversationID: original)) == .ask else { return false }
+        await select(second)
+        guard taskApprovalMode == .automatic, defaultApprovalMode == .ask else { return false }
+        smokeOwnerAuthentication = { false }
+        defer { smokeOwnerAuthentication = nil }
+        guard !(await setApprovalMode(.fullAccess, asDefault: false)),
+              (try? await runtime.taskApprovalMode(conversationID: second)) == .automatic else { return false }
+        smokeOwnerAuthentication = { true }
+        guard await setApprovalMode(.fullAccess, asDefault: false),
+              let full = smokeProvider(.createFile("permission-full.txt")),
+              beginSend("Create permission-full.txt", runtime: runtime, provider: full, mode: .agent),
+              await waitForSmokeRun(),
+              (try? String(contentsOf: folder.appendingPathComponent("permission-full.txt"), encoding: .utf8)) == "Synthetic workspace output.",
+              (try? await runtime.taskApprovalMode(conversationID: second)) == .fullAccess else { stop(); return false }
+        return await setApprovalMode(.ask, asDefault: false)
+    }
+
+    func verifySavedFilePermissionSmoke(project: WorkspaceRecord, folder: URL) async -> Bool {
+        guard vault == nil, !isSending, let runtime else { return false }
+        await select(nil)
+        let path = "permission-remember.txt"
+        let original = Data("before\nkeep\n".utf8)
+        let url = folder.appendingPathComponent(path)
+        func startEdit() -> Bool {
+            guard let provider = smokeProvider(.replaceText(path, FloeDigest.sha256Hex(original))) else { return false }
+            return beginSend("Edit " + path, runtime: runtime, provider: provider,
+                             workspaceID: selectedID == nil ? project.id : nil, mode: .agent)
+        }
+        func waitForCard() async -> HostAgentApproval? {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while pendingApproval == nil && isSending && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            return pendingApproval
+        }
+        do {
+            try original.write(to: url, options: .withoutOverwriting)
+            guard startEdit(), let card = await waitForCard(), card.path == path else { stop(); return false }
+            let owner = card.conversationID
+            await resolveApproval(card, allow: true, remember: .task)
+            guard await waitForSmokeRun(), try String(contentsOf: url, encoding: .utf8) == "after\nkeep\n" else { return false }
+            await select(nil)
+            await select(owner)
+            try original.write(to: url, options: .atomic)
+            guard startEdit(), await waitForSmokeRun(),
+                  try String(contentsOf: url, encoding: .utf8) == "after\nkeep\n" else { stop(); return false }
+            await select(nil)
+            try original.write(to: url, options: .atomic)
+            guard startEdit(), let different = await waitForCard(), different.conversationID != owner else { stop(); return false }
+            await resolveApproval(different, allow: true, remember: .workspace)
+            guard await waitForSmokeRun() else { return false }
+            await select(nil)
+            try original.write(to: url, options: .atomic)
+            guard startEdit(), await waitForSmokeRun(),
+                  try String(contentsOf: url, encoding: .utf8) == "after\nkeep\n" else { stop(); return false }
+            let grants = try await approvalGrantStore()
+            let saved = try await grants.list(workspaceID: project.id).filter { $0.path == path }
+            guard saved.count == 2 else { return false }
+            for grant in saved { try await grants.revoke(id: grant.id) }
+            guard try await grants.list(workspaceID: project.id).allSatisfy({ $0.path != path }) else { return false }
+            await select(owner)
+            try original.write(to: url, options: .atomic)
+            guard startEdit(), let revoked = await waitForCard(), revoked.conversationID == owner else { stop(); return false }
+            await resolveApproval(revoked, allow: false)
+            _ = await waitForSmokeRun()
+            return try Data(contentsOf: url) == original
+        } catch { stop(); return false }
     }
 
     func verifyAgentTextEditSmoke(project: WorkspaceRecord, folder: URL) async -> Bool {

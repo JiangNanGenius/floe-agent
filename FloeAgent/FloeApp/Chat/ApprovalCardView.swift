@@ -85,6 +85,7 @@ enum ApprovalScopeChoice: String, CaseIterable, Identifiable, Sendable {
 struct ApprovalCardView: View {
     let approval: PendingApproval
     var singleUseOnly = false
+    var approveTitleOverride: LocalizedStringKey? = nil
     var canApprove = true
     var isResolving = false
     var displayedScope: String? = nil
@@ -323,7 +324,7 @@ struct ApprovalCardView: View {
     }
 
     private var approveTitle: LocalizedStringKey {
-        singleUseOnly ? "approval.scope.once" : "action.approve"
+        approveTitleOverride ?? (singleUseOnly ? "approval.scope.once" : "action.approve")
     }
 
     /// Maps the four-tier choice onto ApprovalScope. The catastrophic

@@ -768,6 +768,7 @@ struct MacWorkspaceRootView: View {
             return "mac.workspace.runStopping"
         }
         if workspace.pendingApproval != nil { return "mac.agent.waitingForApproval" }
+        if workspace.isReviewingApproval { return "mac.permissions.reviewing" }
         if workspace.runPhase == nil { return "mac.workspace.runPreparing" }
         return "mac.workspace.inspector.running"
     }

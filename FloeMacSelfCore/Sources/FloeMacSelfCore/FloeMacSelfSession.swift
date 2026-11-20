@@ -22,6 +22,7 @@ actor FloeMacSelfSession {
 
     private let service: ConversationRunService
     private let conversationStore: any ConversationStore
+    private let launchStatusPayloads: [String]
     private let runStore: any RunStore
     private let checkpointStore: any CheckpointStore
     private let admissions: FloeMacSelfAdmissionStore
@@ -68,6 +69,7 @@ actor FloeMacSelfSession {
     private var forwardTask: Task<Void, Never>?
     private var closeTask: Task<FloeMacSelfCloseReceipt, Error>?
     private var cancelDriver: Task<Void, Never>?
+    private var cancellationAttempt: Task<Void, Never>?
     private var tornDown = false
 
     init(
@@ -90,6 +92,7 @@ actor FloeMacSelfSession {
         verifyWorkspaceLease: (@Sendable () async throws -> Void)? = nil,
         questionCenter: FloeMacSelfQuestionCenter? = nil,
         questionAnsweringEnabled: Bool = false,
+        launchStatusPayloads: [String] = [],
         eventBufferLimit: Int,
         beforeInputRecheck: (@Sendable () async -> Void)? = nil,
         beforeServiceStart: (@Sendable () async -> Void)? = nil,
@@ -98,6 +101,7 @@ actor FloeMacSelfSession {
         self.identity = identity
         self.service = service
         self.conversationStore = conversationStore
+        self.launchStatusPayloads = launchStatusPayloads
         self.runStore = runStore
         self.checkpointStore = checkpointStore
         self.admissions = admissions
@@ -228,6 +232,11 @@ actor FloeMacSelfSession {
 
         await beforeServiceStart?()
         do {
+            // A proven no-dispatch cancellation requires the untouched preparing
+            // record. Add runtime metadata only after the dispatch claim commits.
+            for payload in launchStatusPayloads {
+                _ = try await runStore.appendEvent(runID: identity.runID, kind: .status, payloadJSON: payload)
+            }
             try await service.startPrepared(goal: goal, userMessageID: identity.userMessageID)
             await finishRun(failure: nil)
         } catch {
@@ -340,6 +349,12 @@ actor FloeMacSelfSession {
     }
 
     // MARK: - Approval
+
+    func updateApprovalPolicy(_ policy: any ApprovalPolicy) async -> Bool {
+        guard toolsEnabled, !runFinished, !tornDown, !fence.isStopRequested else { return false }
+        await service.updateApprovalPolicy(policy)
+        return true
+    }
 
     func resolveApproval(_ command: FloeMacSelfApprovalCommand) async -> FloeMacSelfApprovalResolution {
         guard !tornDown else { return .rejected(.sessionEnded) }
@@ -696,9 +711,23 @@ actor FloeMacSelfSession {
         )
     }
 
+    /// The stream supervisor can return while cancellation is still joining
+    /// children and saving the parent's checkpoint. Both paths await that
+    /// same write before treating the terminal receipt as final.
+    private func cancelServiceAndJoin() async {
+        if let cancellationAttempt {
+            await cancellationAttempt.value
+            return
+        }
+        let attempt = Task { [service] in await service.cancel() }
+        cancellationAttempt = attempt
+        await attempt.value
+        cancellationAttempt = nil
+    }
+
     private func driveCancellationUntilFinished() async {
         while !runFinished && !tornDown && !Task.isCancelled {
-            await service.cancel()
+            await cancelServiceAndJoin()
             await afterCancellationAttempt?()
             guard !runFinished && !tornDown && !Task.isCancelled else { return }
             do {
@@ -841,6 +870,7 @@ actor FloeMacSelfSession {
         guard !runFinished else { return }
         startFailure = failure
         _ = fence.beginSettlement()
+        if fence.isStopRequested && fence.dispatchHasStarted { await cancelServiceAndJoin() }
         lastSnapshot = await service.snapshot()
 
         let receipt = await probeTerminalWithBoundedRetry(timeout: 1.5)

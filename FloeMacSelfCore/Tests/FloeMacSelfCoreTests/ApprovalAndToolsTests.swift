@@ -11,7 +11,8 @@ import FloeModels
 import FloeProviders
 import FloeTools
 import FloeSecurity
-import FloePersistence
+@testable import FloePersistence
+import GRDB
 import FloeAgentRuntime
 @testable import FloeMacSelfCore
 
@@ -32,6 +33,133 @@ private struct DuplicateDescriptorToolExecutor: ToolExecutor {
 
 @Suite("Mac self-owned runtime approvals and tools")
 struct ApprovalAndToolsTests {
+
+    @Test("Mac and iPad use the same reviewer routes for online, offline, and on-device tasks")
+    func approvalRoutes() async throws {
+        struct Reviewer: ModelApprovalPolicy.DecisionBackend {
+            let label: String
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision { .deny(reason: label) }
+        }
+        let cloud = Reviewer(label: "cloud")
+        let local = Reviewer(label: "local")
+        let call = try ToolCall(id: "review", toolName: "fixture.sensitive",
+                                argumentsJSON: Data("{}".utf8), scope: .local)
+        let action = ProposedAction(toolCall: call, riskLabels: ["accessesCredentials"], userGoal: "Review",
+                                    hostAndPathScope: .local)
+        func decide(_ mode: TaskApprovalMode, offline: Bool = false, onDevice: Bool = false) async throws -> ApprovalDecision {
+            try await TaskApprovalPolicyFactory.make(mode: mode, primaryIsOnDevice: onDevice, isOffline: offline,
+                reviewer: cloud, localReviewer: local).decide(action)
+        }
+        guard case .escalateToHuman = try await decide(.ask),
+              case .deny("cloud") = try await decide(.automatic),
+              case .deny("local") = try await decide(.automatic, offline: true),
+              case .escalateToHuman = try await decide(.automatic, onDevice: true),
+              case .allow = try await decide(.fullAccess),
+              case .deny("local") = try await decide(.fullAccess, offline: true),
+              case .escalateToHuman = try await decide(.fullAccess, onDevice: true)
+        else { Issue.record("Approval routing diverged from the iPad task policy"); return }
+    }
+
+    @Test("A v65 database retains legacy grants, and deleting a task revokes only its own file grant")
+    func migrateGrantsAndDeleteTask() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("db.sqlite")
+        let legacyID = UUID()
+        do {
+            let old = try DatabaseQueue(path: file.path)
+            var migrations = DatabaseMigrator()
+            DatabaseManager.registerMigrations(into: &migrations)
+            try migrations.migrate(old, upTo: "v65")
+            try await old.write { db in
+                try db.execute(sql: """
+                    INSERT INTO approval_grants (id,tool_name,paths_json,single_use,policy_name,decided_at)
+                    VALUES (?, 'workspace.replaceText', '["legacy.txt"]', 0, 'human', ?)
+                    """, arguments: [legacyID.uuidString, "2026-11-20T00:00:00.000Z"])
+            }
+        }
+        let database = try DatabaseManager(path: file)
+        try await database.migrate()
+        let store = SQLiteWorkspaceStore(database: database)
+        let conversations = SQLiteConversationStore(database: database)
+        let id = UUID(), workspace = UUID(), now = Date()
+        try await conversations.saveConversation(.init(id: id, title: "Grant fixture", createdAt: now, updatedAt: now))
+        try await store.saveWorkspace(.init(id: workspace, name: "Grant project", rootBookmark: try directory.bookmarkData()))
+        for owner in [id, nil] {
+            try await store.saveGrant(.init(workspaceID: workspace, toolName: "workspace.replaceText",
+                paths: ["target.txt"], singleUse: false, policyName: "file", conversationID: owner, authorizationIdentity: "fixture"))
+        }
+        #expect(try await store.allGrants().count == 3)
+        let legacy = try await store.activeGrants(toolName: "workspace.replaceText", workspaceID: nil, hostID: nil)
+        #expect(legacy.map(\.id) == [legacyID])
+        try await conversations.deleteConversation(id: id)
+        let saved = try await store.fileApprovalGrants(workspaceID: workspace, toolName: "workspace.replaceText")
+        #expect(saved.count == 1 && saved.first?.conversationID == nil && saved.first?.authorizationIdentity == "fixture")
+        #expect(try await store.allGrants().contains { $0.id == legacyID })
+    }
+
+    @Test("Remembered file permission is bound to the executor, workspace, task, path and local mode")
+    func exactFilePermission() async throws {
+        try await withSelfCoreFixture { fixture in
+            let db = try DatabaseManager(path: fixture.databaseURL)
+            let workspaces = SQLiteWorkspaceStore(database: db)
+            let project = try await fixture.createWorkspace(named: "Grant owner")
+            let otherProject = try await fixture.createWorkspace(named: "Another grant project")
+            let id = UUID(), now = Date()
+            try await SQLiteConversationStore(database: db).saveConversation(.init(id: id, title: "File grant", createdAt: now, updatedAt: now))
+            try await workspaces.assignConversation(workspaceID: project, conversationID: id)
+            let grants = try await fixture.runtime.approvalGrantStore()
+            let root = fixture.workspaceRoot.resolvingSymlinksInPath().standardizedFileURL
+            let tool = "workspace.replaceText"
+            try await grants.remember(scope: .task, workspaceID: project, conversationID: id, toolName: tool,
+                                      path: "draft.txt", authorizationIdentity: "original", workspaceRoot: root)
+            func result(_ path: String = "draft.txt", identity: String = "original", projectID: UUID? = nil,
+                        taskID: UUID? = nil, environment: ApprovalEnvironmentClass = .localNative) async throws -> ApprovalDecision {
+                let args = try JSONEncoder().encode(["path": path])
+                let call = try ToolCall(id: "file", toolName: tool, argumentsJSON: args, scope: .local)
+                let policy = grants.wrapping(HumanApprovalPolicy(), workspaceID: projectID ?? project,
+                    conversationID: taskID ?? id, workspaceRoot: root, authorizationIdentities: [tool: identity])
+                return try await policy.decide(.init(toolCall: call, riskLabels: ["writesFiles"], userGoal: "Edit draft",
+                    hostAndPathScope: .local, trustedContext: .init(environmentClass: environment, workspaceRootPath: root.path)))
+            }
+            guard case .allow = try await result(),
+                  case .escalateToHuman = try await result("other.txt"),
+                  case .escalateToHuman = try await result("../draft.txt"),
+                  case .escalateToHuman = try await result(identity: "different"),
+                  case .escalateToHuman = try await result(taskID: UUID()),
+                  case .escalateToHuman = try await result(projectID: otherProject),
+                  case .escalateToHuman = try await result(environment: .remote)
+            else { Issue.record("File approval exceeded its original scope"); return }
+            let saved = try #require(try await grants.list().first)
+            try await grants.revoke(id: saved.id)
+            guard case .escalateToHuman = try await result() else { Issue.record("Revoked permission still applies"); return }
+        }
+    }
+
+    @Test("Changing a task approval mode preserves its other restrictions and legacy policy")
+    func changeOnlyApprovalMode() async throws {
+        try await withSelfCoreFixture { fixture in
+            let database = try DatabaseManager(path: fixture.databaseURL)
+            let workspace = SQLiteWorkspaceStore(database: database)
+            let conversations = SQLiteConversationStore(database: database)
+            let id = UUID(), now = Date()
+            try await conversations.saveConversation(.init(id: id, title: "Permission fixture", createdAt: now, updatedAt: now))
+            #expect(try await fixture.runtime.taskApprovalMode(conversationID: id) == .ask)
+            try await fixture.runtime.setTaskApprovalMode(.automatic, conversationID: id)
+            #expect(try await fixture.runtime.taskApprovalMode(conversationID: id) == .automatic)
+            let restricted = TaskPolicy(conversationID: id, approvalMode: "fullControl", allowedToolNames: ["workspace.readFile"],
+                filePaths: ["report.txt"], networkAllowed: false, uploadAllowed: false, credentialsAllowed: false)
+            try await workspace.saveTaskPolicy(restricted)
+            #expect(try await fixture.runtime.taskApprovalMode(conversationID: id) == .fullAccess)
+            try await fixture.runtime.setTaskApprovalMode(.ask, conversationID: id)
+            let stored = try await workspace.taskPolicy(conversationID: id)
+            #expect(stored.resolvedApprovalMode == .ask)
+            #expect(stored.allowedToolNames == restricted.allowedToolNames)
+            #expect(stored.filePaths == restricted.filePaths)
+            #expect(stored.networkAllowed == false && stored.uploadAllowed == false && stored.credentialsAllowed == false)
+        }
+    }
 
     @Test("A duplicate executor descriptor is rejected without starting a run")
     func duplicateToolDescriptorsFailClosed() async throws {

@@ -5091,62 +5091,13 @@ final class ConversationCenter: ObservableObject {
         let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID
             ?? generalAuxiliaryProviderAndModel()?.1.id)
         let localBackend = await localApprovalBackend(primaryModel: primaryModel)
-        let mustUseLocalApproval = environment.networkStatusMonitor.isOffline
-            || primaryModel.providerID == ProviderProfile.onDeviceProviderID
-        switch taskPolicy.resolvedApprovalMode {
-        case .ask:
-            return HumanApprovalPolicy()
-        case .automatic:
-            if primaryModel.providerID == ProviderProfile.onDeviceProviderID {
-                // Never recursively run the same resident MLX model as its
-                // own action reviewer. Device diagnostics showed the primary
-                // turn completing and the process being terminated during
-                // this second generation. Deterministic low-risk actions run
-                // locally; sensitive actions escalate to the user.
-                FloeLogger(category: .security).info(
-                    "approvalRoute mode=automatic route=deterministicLocal primaryLocal=true"
-                )
-                return AutomaticApprovalPolicy(packageReviewBackend: nil)
-            }
-            if mustUseLocalApproval, let localBackend {
-                FloeLogger(category: .security).info(
-                    "approvalRoute mode=automatic route=local offline=\(environment.networkStatusMonitor.isOffline) primaryLocal=\(primaryModel.providerID == ProviderProfile.onDeviceProviderID) model=\(localBackend.model.id.uuidString)"
-                )
-                return AutomaticApprovalPolicy(
-                    backend: localBackend.backend,
-                    packageReviewBackend: localBackend.backend
-                )
-            }
-            guard let modelID = modelPreferences.approvalModelID,
-                  let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
-                      $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.text)
-                  }),
-                  let provider = providers.first(where: { $0.id == model.providerID }) else {
-                return AutomaticApprovalPolicy(packageReviewBackend: packageBackend)
-            }
-            return AutomaticApprovalPolicy(backend: ApprovalModelBackend(
-                adapter: providerAdapter(for: provider),
-                provider: provider,
-                model: model,
-                credentials: resolveCredentials(for: provider)
-            ), packageReviewBackend: packageBackend)
-        case .fullAccess:
-            // Weak local models may assist with approval, but can never grant
-            // an unreviewed Full Access path. Pure-local/offline tasks are
-            // downgraded to automatic review for every non-exempt action.
-            if mustUseLocalApproval {
-                FloeLogger(category: .security).warning(
-                    "approvalRoute mode=fullAccess route=downgradedLocalReview offline=\(environment.networkStatusMonitor.isOffline) primaryLocal=\(primaryModel.providerID == ProviderProfile.onDeviceProviderID)"
-                )
-                return AutomaticApprovalPolicy(
-                    backend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
-                        ? nil : localBackend?.backend,
-                    packageReviewBackend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
-                        ? nil : (localBackend?.backend ?? packageBackend)
-                )
-            }
-            return TaskFullAccessPolicy(packageReviewBackend: packageBackend)
-        }
+        let primaryIsOnDevice = primaryModel.providerID == ProviderProfile.onDeviceProviderID
+        let offline = environment.networkStatusMonitor.isOffline
+        let usesConfiguredReviewer = taskPolicy.resolvedApprovalMode == .automatic && !primaryIsOnDevice
+            && !(offline && localBackend != nil)
+        let reviewer = usesConfiguredReviewer ? reviewBackend(modelID: modelPreferences.approvalModelID, kind: .action) : nil
+        return TaskApprovalPolicyFactory.make(mode: taskPolicy.resolvedApprovalMode, primaryIsOnDevice: primaryIsOnDevice,
+            isOffline: offline, reviewer: reviewer, localReviewer: localBackend?.backend, packageReviewer: packageBackend)
     }
 
     private struct LocalApprovalRoute {
@@ -5178,7 +5129,7 @@ final class ConversationCenter: ObservableObject {
         )
     }
 
-    private func reviewBackend(modelID: UUID?) -> ApprovalModelBackend? {
+    private func reviewBackend(modelID: UUID?, kind: ApprovalModelBackend.ReviewKind = .softwarePackage) -> ApprovalModelBackend? {
         guard let modelID,
               let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
                   $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.text)
@@ -5190,7 +5141,7 @@ final class ConversationCenter: ObservableObject {
             provider: provider,
             model: model,
             credentials: resolveCredentials(for: provider),
-            reviewKind: .softwarePackage
+            reviewKind: kind
         )
     }
 

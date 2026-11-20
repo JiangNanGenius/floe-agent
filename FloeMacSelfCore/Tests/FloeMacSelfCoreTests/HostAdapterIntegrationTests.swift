@@ -33,7 +33,7 @@ struct HostAdapterIntegrationTests {
                 provenance: try makeHostProvenance(databaseURL: databaseURL)
             )
             let receipt = try await runtime.bootstrap()
-            #expect(receipt.schemaVersion == 65)
+            #expect(receipt.schemaVersion == 66)
             let messages = try await runtime.conversationMessages(conversationID: conversationID)
             #expect(messages.map(\.id) == [messageID])
             #expect(messages.first?.content == "Saved before the update.")
@@ -135,7 +135,7 @@ struct HostAdapterIntegrationTests {
                 )
                 let error = await selfCoreError { _ = try await runtime.bootstrap() }
                 if futureVersion {
-                    #expect(error == .schemaMismatch(expected: 65, actual: 999))
+                    #expect(error == .schemaMismatch(expected: 66, actual: 999))
                 } else {
                     #expect(error == .authoritySchemaUnsupported("unknown_migration"))
                 }
@@ -147,7 +147,7 @@ struct HostAdapterIntegrationTests {
                     let admission = try db.tableExists("floe_mac_self_admission")
                     return (version, future, admission)
                 }
-                #expect(observed.0 == (futureVersion ? 999 : 65))
+                #expect(observed.0 == (futureVersion ? 999 : 66))
                 #expect(observed.1 == (futureVersion ? 0 : 1))
                 #expect(!observed.2)
                 try await reopened.close()
@@ -160,7 +160,9 @@ struct HostAdapterIntegrationTests {
         try await withSelfCoreFixture { fixture in
             let workspaceID = try await fixture.createWorkspace(named: "Unleased workspace")
             let (provider, adapter) = fixture.makeProvider(scripts: [])
-            let (tools, executor, _) = try fixture.makeToolBinding(workspaceID: workspaceID)
+            let unleased = fixture.root.appendingPathComponent("unleased-directory", isDirectory: true)
+            try FileManager.default.createDirectory(at: unleased, withIntermediateDirectories: false)
+            let (tools, executor, _) = try fixture.makeToolBinding(workspaceID: workspaceID, boundaryRoot: unleased)
             let conversationID = UUID()
             let request = FloeMacSelfSessionRequest(
                 newConversationID: conversationID,
@@ -170,8 +172,8 @@ struct HostAdapterIntegrationTests {
             let error = await selfCoreError {
                 _ = try await fixture.runtime.startSession(request, provider: provider, tools: tools)
             }
-            #expect(error == .toolCapabilityUnavailable(
-                "workspace ownership and task-root lease are not connected"
+            #expect(error == .invalidTaskBoundary(
+                "the boundary root does not match the persisted workspace root"
             ))
             #expect(adapter.requests.isEmpty)
             #expect(executor.executedCalls.isEmpty)

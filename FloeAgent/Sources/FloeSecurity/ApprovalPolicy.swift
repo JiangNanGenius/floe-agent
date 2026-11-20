@@ -105,6 +105,35 @@ public final class DynamicApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting,
     }
 }
 
+/// Shared routing for ordinary tasks on iPad and Mac. Platform adapters supply
+/// available reviewers and reachability. Policies own the actual decision.
+public enum TaskApprovalPolicyFactory {
+    public static func make(
+        mode: TaskApprovalMode, primaryIsOnDevice: Bool, isOffline: Bool,
+        reviewer: (any ModelApprovalPolicy.DecisionBackend)? = nil,
+        localReviewer: (any ModelApprovalPolicy.DecisionBackend)? = nil,
+        packageReviewer: (any ModelApprovalPolicy.DecisionBackend)? = nil
+    ) -> any ApprovalPolicy {
+        switch mode {
+        case .ask:
+            return HumanApprovalPolicy()
+        case .automatic:
+            if primaryIsOnDevice { return AutomaticApprovalPolicy() }
+            if isOffline, let localReviewer {
+                return AutomaticApprovalPolicy(backend: localReviewer, packageReviewBackend: localReviewer)
+            }
+            return AutomaticApprovalPolicy(backend: reviewer, packageReviewBackend: packageReviewer)
+        case .fullAccess:
+            // Never invoke the primary on-device model recursively as its own reviewer.
+            if primaryIsOnDevice { return AutomaticApprovalPolicy() }
+            if isOffline {
+                return AutomaticApprovalPolicy(backend: localReviewer, packageReviewBackend: localReviewer ?? packageReviewer)
+            }
+            return TaskFullAccessPolicy(packageReviewBackend: packageReviewer)
+        }
+    }
+}
+
 /// Policy 1: every side-effecting action waits for the user, EXCEPT the
 /// deterministic local carve-outs (ordinary document edits outside a Git
 /// worktree, resolved native CAD document edits, routine commands in a

@@ -42,6 +42,8 @@ public struct StoredGrant: Sendable, Hashable, Identifiable {
     public var policyName: String
     public var decidedAt: Date
     public var expiresAt: Date?
+    public var conversationID: UUID?
+    public var authorizationIdentity: String?
 
     public init(
         id: UUID = UUID(),
@@ -52,7 +54,9 @@ public struct StoredGrant: Sendable, Hashable, Identifiable {
         singleUse: Bool = true,
         policyName: String,
         decidedAt: Date = Date(),
-        expiresAt: Date? = nil
+        expiresAt: Date? = nil,
+        conversationID: UUID? = nil,
+        authorizationIdentity: String? = nil
     ) {
         self.id = id
         self.workspaceID = workspaceID
@@ -63,6 +67,8 @@ public struct StoredGrant: Sendable, Hashable, Identifiable {
         self.policyName = policyName
         self.decidedAt = decidedAt
         self.expiresAt = expiresAt
+        self.conversationID = conversationID
+        self.authorizationIdentity = authorizationIdentity
     }
 }
 
@@ -511,6 +517,17 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         }
     }
 
+    /// A live change to approval must preserve independently updated task restrictions.
+    public func setApprovalMode(_ mode: TaskApprovalMode, conversationID: UUID) async throws {
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO task_policies (conversation_id, approval_mode, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    approval_mode = excluded.approval_mode, updated_at = excluded.updated_at
+                """, arguments: [conversationID.uuidString, mode.rawValue, PersistenceCodec.encode(Date())])
+        }
+    }
+
     public func saveTaskPolicy(_ policy: TaskPolicy) async throws {
         try await database.writer { db in
             let tools = try policy.allowedToolNames.map { try Self.encodeJSON(Array($0).sorted()) }
@@ -604,8 +621,8 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                 sql: """
                     INSERT INTO approval_grants (
                         id, workspace_id, host_id, tool_name, paths_json,
-                        single_use, policy_name, decided_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        single_use, policy_name, decided_at, expires_at, conversation_id, authorization_identity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         workspace_id = excluded.workspace_id,
                         host_id = excluded.host_id,
@@ -614,7 +631,9 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                         single_use = excluded.single_use,
                         policy_name = excluded.policy_name,
                         decided_at = excluded.decided_at,
-                        expires_at = excluded.expires_at
+                        expires_at = excluded.expires_at,
+                        conversation_id = excluded.conversation_id,
+                        authorization_identity = excluded.authorization_identity
                     """,
                 arguments: [
                     grant.id.uuidString,
@@ -625,9 +644,21 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                     grant.singleUse,
                     grant.policyName,
                     PersistenceCodec.encode(grant.decidedAt),
-                    grant.expiresAt.map(PersistenceCodec.encode)
+                    grant.expiresAt.map(PersistenceCodec.encode), grant.conversationID?.uuidString, grant.authorizationIdentity
                 ]
             )
+        }
+    }
+
+    public func fileApprovalGrants(workspaceID: UUID, toolName: String) async throws -> [StoredGrant] {
+        try await database.reader { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM approval_grants
+                WHERE workspace_id = ? AND tool_name = ? AND authorization_identity IS NOT NULL AND host_id IS NULL
+                ORDER BY decided_at DESC, id
+                """, arguments: [workspaceID.uuidString, toolName])
+            let now = Date()
+            return try rows.map(Self.grant(from:)).filter { $0.expiresAt.map { $0 > now } ?? true }
         }
     }
 
@@ -645,7 +676,7 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                 db,
                 sql: """
                     SELECT * FROM approval_grants
-                    WHERE tool_name = ?
+                    WHERE tool_name = ? AND authorization_identity IS NULL AND conversation_id IS NULL
                       AND (workspace_id IS ? OR workspace_id = ?)
                       AND (host_id IS ? OR host_id = ?)
                     ORDER BY decided_at DESC, id
@@ -725,6 +756,11 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         }
         let workspaceID: UUID? = (row["workspace_id"] as String?).flatMap(UUID.init(uuidString:))
         let hostID: UUID? = (row["host_id"] as String?).flatMap(UUID.init(uuidString:))
+        let rawConversation: String? = row["conversation_id"]
+        let conversationID = rawConversation.flatMap(UUID.init(uuidString:))
+        if rawConversation != nil && conversationID == nil {
+            throw FloeError.storageCorrupted("Invalid conversation identifier on an approval grant")
+        }
         return StoredGrant(
             id: id,
             workspaceID: workspaceID,
@@ -734,7 +770,8 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
             singleUse: row["single_use"],
             policyName: row["policy_name"],
             decidedAt: try PersistenceCodec.decodeDate(row["decided_at"]),
-            expiresAt: (row["expires_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) }
+            expiresAt: (row["expires_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) },
+            conversationID: conversationID, authorizationIdentity: row["authorization_identity"]
         )
     }
 

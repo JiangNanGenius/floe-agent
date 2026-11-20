@@ -378,7 +378,10 @@ public struct SubagentRunner: Sendable {
                     evidence: outcome.evidence,
                     unfinished: outcome.unfinished)
                 if let persistence {
-                    return await persistence.finish(cancelled, requireResult: onDurableRegistration != nil)
+                    // SQLite rejects work from an already cancelled Task. Join the
+                    // final write before reporting this child's cancellation.
+                    let requireResult = onDurableRegistration != nil
+                    return await Task { await persistence.finish(cancelled, requireResult: requireResult) }.value
                 }
                 return cancelled
             }
@@ -389,7 +392,9 @@ public struct SubagentRunner: Sendable {
                 interrupted = await isBackgroundInterrupted?() == true
             }
             if interrupted {
-                if let persistence { return await persistence.interrupt(outcome) }
+                if let persistence {
+                    return await Task { await persistence.interrupt(outcome) }.value
+                }
                 return outcome
             }
             if let persistence {
@@ -1803,7 +1808,10 @@ public struct SubagentRunner: Sendable {
     /// local guards and cancellation stay correctly separate.
     private func providerStreamBoundary<T>(_ body: () async throws -> T) async throws -> T {
         do {
-            return try await body()
+            try Task.checkCancellation()
+            let output = try await body()
+            try Task.checkCancellation()
+            return output
         } catch let abort as ProviderStreamAbort {
             throw abort
         } catch let guardAbort as LocalGuardAbort {

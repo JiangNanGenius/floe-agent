@@ -2,17 +2,25 @@
 
 import AppKit
 import FloeAgentRuntime
+import FloeMacSelfCore
 import FloeSecurity
 import SwiftUI
 
 struct MacWorkspaceApprovalView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let approval: HostAgentApproval
+    @State private var grantScope: FloeMacFileGrantScope?
+    @State private var scopeOwner: HostAgentApproval?
+
+    private var selectedScope: Binding<FloeMacFileGrantScope?> {
+        Binding(get: { scopeOwner == approval ? grantScope : nil }, set: { grantScope = $0; scopeOwner = approval })
+    }
 
     var body: some View {
         var card = ApprovalCardView(
             approval: approval.cardRequest,
             singleUseOnly: true,
+            approveTitleOverride: selectedScope.wrappedValue == nil ? nil : "action.approve",
             canApprove: approval.canAllow,
             isResolving: workspace.isStopping || workspace.isResolvingApproval || workspace.isTerminating,
             displayedScope: fileScope,
@@ -20,7 +28,9 @@ struct MacWorkspaceApprovalView: View {
             evidenceOverride: AnyView(fileEvidence)
         ) { decision in
             switch decision {
-            case .allow: Task { await workspace.resolveApproval(approval, allow: true) }
+            case .allow:
+                let scope = selectedScope.wrappedValue
+                Task { await workspace.resolveApproval(approval, allow: true, remember: scope) }
             case .deny: Task { await workspace.resolveApproval(approval, allow: false) }
             default: break
             }
@@ -48,6 +58,13 @@ struct MacWorkspaceApprovalView: View {
     }
 
     @ViewBuilder private var fileEvidence: some View {
+        if approval.canAllow, approval.path != nil, MacAgentWorkspaceTools.writeToolNames.contains(approval.toolName) {
+            Picker("mac.permissions.remember", selection: selectedScope) {
+                Text("mac.permissions.once").tag(nil as FloeMacFileGrantScope?)
+                Text("mac.permissions.taskFile").tag(Optional(FloeMacFileGrantScope.task))
+                Text("mac.permissions.projectFile").tag(Optional(FloeMacFileGrantScope.workspace))
+            }.pickerStyle(.menu).controlSize(.small)
+        }
         if approval.toolName == DelegateTool.name, let task = approval.text {
             Text(verbatim: task).font(.callout).lineLimit(6).textSelection(.enabled)
             DisclosureGroup("mac.child.details") {

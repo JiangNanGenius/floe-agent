@@ -379,6 +379,15 @@ public actor FloeMacSelfRuntime {
             )
         }
         let resolvedTools = try FloeMacSelfCapabilityResolver.resolveTools(tools, model: resolvedProvider.model)
+        // Reject a forged or stale root before creating an admission or a task.
+        // The prepared transaction and the executor both recheck it against later changes.
+        if let boundary = resolvedTools.boundary {
+            guard let workspace = try await stores.workspaces.workspace(id: boundary.workspaceID) else {
+                throw FloeMacSelfCoreError.invalidTaskBoundary("the tool workspace is unavailable")
+            }
+            _ = try FloeMacSelfWorkspaceLease.verifiedRoot(workspace: workspace,
+                boundaryRoot: boundary.workspaceRootURL, privateTaskRootBase: options.privateTaskRootBaseURL)
+        }
         if request.mode == .plan, resolvedTools.enabled {
             try FloeMacSelfCapabilityResolver.validatePlanCeiling(
                 allowedToolNames: resolvedTools.allowedToolNames,
@@ -686,12 +695,12 @@ public actor FloeMacSelfRuntime {
             // boundary, approval capability or child/queue behavior changes.
             let questionCenter = try self.userQuestionCenter()
             let questionEligible = request.allowsUserQuestions && resolvedProvider.model.capabilities.contains(.tools)
+            var launchStatusPayloads: [String] = []
             if questionEligible {
                 let inputMode = request.mode == .chat && !request.chatFastMode ? "agent" : request.mode.rawValue
                 let owner = QuestionInputOwner(questionWorkspaceID: prepared.workspace.id, inputMode: inputMode)
                 let payload = try JSONEncoder().encode(owner)
-                _ = try await stores.runs.appendEvent(runID: runID, kind: .status,
-                                                       payloadJSON: String(decoding: payload, as: UTF8.self))
+                launchStatusPayloads.append(String(decoding: payload, as: UTF8.self))
             }
             let questionOnlyChat = !resolvedTools.enabled && questionEligible
             let baseExecutor: any ToolExecutor = questionEligible
@@ -734,13 +743,13 @@ public actor FloeMacSelfRuntime {
                 if let requested = request.chatReasoningPreference, requested != (stored ?? .fast) {
                     try await preferences.updateChatReasoning(requested, conversationID: conversationID)
                 }
-                let resolution = await ChatReasoningCoordinator().resolve(
-                    runID: prepared.run.id, provider: resolvedProvider.provider, model: turnModel,
-                    preference: preference, recorder: { runID, decision in
-                        _ = try? await stores.runs.appendEvent(runID: runID, kind: .status,
-                                                               payloadJSON: decision.payloadJSON())
-                    }
+                let coordinator = ChatReasoningCoordinator()
+                let resolution = await coordinator.resolve(
+                    runID: prepared.run.id, provider: resolvedProvider.provider, model: turnModel, preference: preference
                 )
+                if let decision = await coordinator.decision(runID: prepared.run.id) {
+                    launchStatusPayloads.append(decision.payloadJSON())
+                }
                 turnModel = resolution.model
                 reasoningPolicy = resolution.policy
             }
@@ -895,6 +904,7 @@ public actor FloeMacSelfRuntime {
                 verifyWorkspaceLease: verifyWorkspaceLease,
                 questionCenter: questionCenter,
                 questionAnsweringEnabled: questionEligible && runtimeToolsEnabled,
+                launchStatusPayloads: launchStatusPayloads,
                 eventBufferLimit: options.eventBufferLimit,
                 beforeInputRecheck: preparedInputTestHook,
                 beforeServiceStart: dispatchTestHook,
@@ -2328,6 +2338,18 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    public func taskApprovalMode(conversationID: UUID) async throws -> TaskApprovalMode {
+        try await requireStores().workspaces.taskPolicy(conversationID: conversationID).resolvedApprovalMode
+    }
+
+    public func setTaskApprovalMode(_ mode: TaskApprovalMode, conversationID: UUID) async throws {
+        try await requireStores().workspaces.setApprovalMode(mode, conversationID: conversationID)
+    }
+
+    public func approvalGrantStore() throws -> FloeMacSelfApprovalGrants {
+        try FloeMacSelfApprovalGrants(store: requireStores().workspaces)
+    }
+
     private func requireStores() throws -> FloeMacSelfStores {
         try ensureOpen()
         guard let stores else {
@@ -2520,6 +2542,10 @@ public struct FloeMacSelfSessionHandle: Sendable {
 
     public func summary() async -> FloeMacSelfSessionSummary {
         await session.summary()
+    }
+
+    public func updateApprovalPolicy(_ policy: any ApprovalPolicy) async -> Bool {
+        await session.updateApprovalPolicy(policy)
     }
 
     public func resolveApproval(

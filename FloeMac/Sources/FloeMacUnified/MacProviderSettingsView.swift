@@ -228,6 +228,7 @@ struct MacProviderSettingsView: View {
                 Toggle(MacProviderText.t("支持图片输入", "Supports Image Input"),
                        isOn: capabilityBinding(\.supportsImages, bit: .vision))
                 Toggle("mac.agent.modelSupportsTools", isOn: capabilityBinding(\.supportsTools, bit: .tools))
+                Toggle("mac.permissions.modelEligible", isOn: capabilityBinding(\.supportsApproval, bit: .approval))
             }
             Section {
                 TextField("mac.provider.contextTokens", value: $draft.limits.contextTokens, format: .number)
@@ -357,6 +358,11 @@ struct MacProviderSettingsView: View {
                 draft.supportsImages = model.capabilities.contains(.vision)
             } else if !selected {
                 draft.supportsImages = saved?.capabilities.contains(.vision) == true
+            }
+            if !owned.contains(.approval) {
+                draft.supportsApproval = model.supportsApprovalSurface
+            } else if !selected {
+                draft.supportsApproval = saved?.supportsApprovalSurface == true
             }
             if !owned.contains(.tools) {
                 draft.supportsTools = model.capabilities.contains(.tools)
@@ -597,14 +603,16 @@ struct MacProviderSettingsView: View {
                                              modelID: draft.modelID, key: draft.key,
                                              supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
                                              presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP,
-                                             catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities)
+                                             catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities,
+                                             supportsApproval: draft.editedCapabilities.contains(.approval) ? draft.supportsApproval : nil)
         } else {
             saved = workspace.addProvider(name: displayName,
                                           endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                           modelID: draft.modelID, key: draft.key,
                                           supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
                                           presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP,
-                                          catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities)
+                                          catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities,
+                                             supportsApproval: draft.editedCapabilities.contains(.approval) ? draft.supportsApproval : nil)
         }
         if saved { closeEditor() }
     }
@@ -635,11 +643,12 @@ private struct MacProviderDraft: Equatable {
     var allowsPlainHTTP: Bool
     var supportsImages: Bool
     var supportsTools: Bool
+    var supportsApproval: Bool
     var limits: ModelLimits
 
     init(name: String = "", endpoint: String = "",
          protocolKind: ModelProtocol = .openAIChatCompletions,
-         modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool? = nil,
+         modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool? = nil, supportsApproval: Bool? = nil,
          presetID: ProviderTemplateID? = .custom,
          limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false) {
         self.name = name
@@ -649,6 +658,7 @@ private struct MacProviderDraft: Equatable {
         self.key = key
         self.allowsPlainHTTP = allowsPlainHTTP
         self.supportsImages = supportsImages
+        self.supportsApproval = supportsApproval ?? ModelCapabilities.defaultTextModel(for: protocolKind).contains(.approval)
         self.supportsTools = supportsTools ?? ModelCapabilities.defaultTextModel(for: protocolKind).contains(.tools)
         self.presetID = presetID
         self.limits = limits
@@ -666,7 +676,7 @@ private struct MacProviderDraft: Equatable {
                   protocolKind: record.profile.wireProtocol,
                   modelID: record.model.remoteModelID,
                   key: record.apiKey, supportsImages: record.model.capabilities.contains(.vision),
-                  supportsTools: record.model.capabilities.contains(.tools),
+                  supportsTools: record.model.capabilities.contains(.tools), supportsApproval: record.model.supportsApprovalSurface,
                   presetID: resolved.id, limits: record.model.limits, allowsPlainHTTP: record.profile.allowsPlainHTTP)
     }
 }

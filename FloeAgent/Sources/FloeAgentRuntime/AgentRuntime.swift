@@ -4380,6 +4380,9 @@ public actor FloeAgentRuntime {
                         return
                     }
                 } catch {
+                    // The stop path joins the children and owns the checkpoint.
+                    // A cancelled result read must not start a competing failure transition.
+                    guard !Task.isCancelled, !cancellationToken.isCancelled else { return }
                     await failRun(message: "Background subagent results could not be recovered: \(error.localizedDescription)", recoverable: true)
                     return
                 }

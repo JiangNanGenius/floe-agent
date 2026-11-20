@@ -554,7 +554,7 @@ private struct UnifiedMacSettingsView: View {
                 })
             }
         case .permissions:
-            HostAgentPermissionsSettings(workspace: workspace)
+            MacPermissionsSettingsView(workspace: workspace)
         case .bridge:
             BridgeSettingsView(model: model)
         }
@@ -578,21 +578,6 @@ private struct HostAgentGeneralSettings: View {
                 }
             }
             Toggle("mac.settings.verifyAnswers", isOn: $workspace.verifyAgentAnswers)
-        }
-        .formStyle(.grouped)
-    }
-}
-
-private struct HostAgentPermissionsSettings: View {
-    @ObservedObject var workspace: HostAgentWorkspace
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("mac.settings.workspaceWrites", isOn: $workspace.allowsWorkspaceWrites)
-            } footer: {
-                Text("mac.settings.workspaceWrites.detail")
-            }
         }
         .formStyle(.grouped)
     }

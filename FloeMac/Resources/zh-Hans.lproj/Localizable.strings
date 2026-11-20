@@ -222,8 +222,8 @@
 "mac.settings.appearance.dark" = "深色";
 "mac.settings.defaultMode" = "新任务默认模式";
 "mac.settings.verifyAnswers" = "复核 Agent 和目标模式的回答";
-"mac.settings.workspaceWrites" = "审批后允许修改工作区文件";
-"mac.settings.workspaceWrites.detail" = "每次修改都需要单独批准。关闭后，模型只能读取已选项目中的文件。";
+"mac.settings.workspaceWrites" = "允许任务修改项目文件";
+"mac.settings.workspaceWrites.detail" = "关闭后，之后启动的任务运行只能读取项目文件。开启时，项目文件修改遵循任务的审批模式。";
 "mac.provider.contextTokens" = "上下文上限（Token）";
 "mac.provider.backToProviders" = "模型与服务商";
 "mac.provider.noProviders" = "还没有模型服务商";
@@ -573,3 +573,28 @@
 "mac.question.provenance.default" = "默认回答";
 "mac.question.credentials.settings" = "请在设置中配置凭据。可以取消这组提问，或选择已有选项。";
 "mac.question.credentials.retry" = "回答未保存。请在设置中配置凭据。";
+
+"mac.permissions.authenticate" = "允许 Floe Agent 任务使用完全访问。";
+
+"mac.permissions.saveFailed" = "未能更改审批设置。";
+
+"mac.permissions.grantFailed" = "本次操作已批准，文件授权未能保存。";
+"mac.permissions.remember" = "允许此操作";
+"mac.permissions.once" = "仅本次";
+"mac.permissions.taskFile" = "此任务中的这个文件";
+"mac.permissions.projectFile" = "此项目中的这个文件";
+"mac.permissions.reviewing" = "审批模型正在审核此操作…";
+"mac.permissions.modelEligible" = "可用作审批模型";
+"mac.permissions.confirmDefault" = "新任务默认使用完全访问？";
+"mac.permissions.confirmTask" = "为此任务启用完全访问？";
+"mac.permissions.verifyOwner" = "继续并验证身份";
+"mac.permissions.confirmDetail" = "已启用的操作可以自动执行。项目文件范围和安全规则仍然生效。";
+"mac.permissions.reload" = "重试";
+"mac.permissions.noGrants" = "暂无已保存的文件授权";
+"mac.permissions.project" = "项目";
+"mac.permissions.task" = "任务";
+"mac.permissions.create" = "创建文件";
+"mac.permissions.edit" = "修改文本";
+"mac.permissions.revoke" = "撤销";
+"mac.permissions.loadFailed" = "未能载入已保存的授权。";
+"mac.permissions.revokeFailed" = "未能撤销此项授权。";

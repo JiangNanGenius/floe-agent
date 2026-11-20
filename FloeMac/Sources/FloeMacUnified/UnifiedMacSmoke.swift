@@ -122,6 +122,9 @@ final class UnifiedMacSmoke {
         var workspaceAndAttachmentStaging = false
         var desktopFilesLayout = false
         var conversationHistoryVerified = false
+        var approvalReviewerVerified = false
+        var filePermissionsVerified = false
+        var taskPermissionsVerified = false
         var workspaceTextEditsVerified = false
         var workspaceModelReadTools = false
         var projectWorkflow = false
@@ -189,6 +192,9 @@ final class UnifiedMacSmoke {
                     pressedApprovalButtons.insert(allow)
                     return true
                 }
+                approvalReviewerVerified = await agent.verifyApprovalReviewerSmoke()
+                filePermissionsVerified = await agent.verifySavedFilePermissionSmoke(project: project, folder: folder)
+                taskPermissionsVerified = await agent.verifyTaskPermissionSmoke(project: project, folder: folder)
                 workspaceTextEditsVerified = await agent.verifyAgentTextEditSmoke(project: project, folder: folder)
                 planning = await agent.verifyPlanningSmoke(project: project)
                 if planning.goalSaved { goalControls = await agent.verifyGoalControlsSmoke() }
@@ -274,6 +280,9 @@ final class UnifiedMacSmoke {
             "providerConnectionVerified": providerConnectionVerified,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
             "desktopFilesLayoutVerified": desktopFilesLayout,
+            "approvalReviewerVerified": approvalReviewerVerified,
+            "savedFilePermissionVerified": filePermissionsVerified,
+            "taskApprovalPolicyVerified": taskPermissionsVerified,
             "workspaceTextEditsVerified": workspaceTextEditsVerified,
             "fileEditorSaveVerified": fileEditorFailures.isEmpty,
             "fileEditorFailures": fileEditorFailures,
@@ -1064,6 +1073,10 @@ final class UnifiedMacSmoke {
         workspace.verifyAgentAnswers = false
         workspace.allowsWorkspaceWrites = true
         guard preferencesSaved else { return false }
+        model.openSettings(.permissions)
+        try? await Task.sleep(for: .milliseconds(180))
+        guard model.settingsPane == .permissions, model.smokeAgentSettingsSheet === window else { return false }
+        if let content = window.contentView { capture(content, extension: "settings-permissions.png") }
         model.openSettings(.models)
         while model.settingsPane != .models && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))

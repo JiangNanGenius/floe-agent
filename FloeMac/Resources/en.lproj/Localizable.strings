@@ -222,8 +222,8 @@
 "mac.settings.appearance.dark" = "Dark";
 "mac.settings.defaultMode" = "Default Mode for New Tasks";
 "mac.settings.verifyAnswers" = "Review Agent and Goal Answers";
-"mac.settings.workspaceWrites" = "Allow Workspace Edits After Approval";
-"mac.settings.workspaceWrites.detail" = "Every edit requires approval for that operation. Turn this off to give the model read-only access to the selected project.";
+"mac.settings.workspaceWrites" = "Allow Project File Edits";
+"mac.settings.workspaceWrites.detail" = "Turn this off to make subsequent runs read-only. When enabled, each task’s approval mode governs project file changes.";
 "mac.provider.contextTokens" = "Context Limit (Tokens)";
 "mac.provider.backToProviders" = "Models & Providers";
 "mac.provider.noProviders" = "No Model Providers";
@@ -572,3 +572,28 @@
 "mac.question.provenance.default" = "Default answer";
 "mac.question.credentials.settings" = "Configure credentials in Settings. You can cancel these questions or choose an existing option.";
 "mac.question.credentials.retry" = "Your answer was not saved. Configure credentials in Settings.";
+
+"mac.permissions.authenticate" = "Allow Full Access for Floe Agent tasks.";
+
+"mac.permissions.saveFailed" = "Couldn’t change the approval setting.";
+
+"mac.permissions.grantFailed" = "The action was approved once. The file permission could not be saved.";
+"mac.permissions.remember" = "Allow this operation";
+"mac.permissions.once" = "Once";
+"mac.permissions.taskFile" = "For this file in this task";
+"mac.permissions.projectFile" = "For this file in this project";
+"mac.permissions.reviewing" = "Approval model is reviewing this action…";
+"mac.permissions.modelEligible" = "Available for approval reviews";
+"mac.permissions.confirmDefault" = "Use Full Access for new tasks?";
+"mac.permissions.confirmTask" = "Enable Full Access for this task?";
+"mac.permissions.verifyOwner" = "Continue and Verify Identity";
+"mac.permissions.confirmDetail" = "Enabled actions can run without individual approval. Project file limits and safety rules still apply.";
+"mac.permissions.reload" = "Retry";
+"mac.permissions.noGrants" = "No saved file permissions";
+"mac.permissions.project" = "Project";
+"mac.permissions.task" = "Task";
+"mac.permissions.create" = "Create file";
+"mac.permissions.edit" = "Edit text";
+"mac.permissions.revoke" = "Revoke";
+"mac.permissions.loadFailed" = "Couldn’t load saved permissions.";
+"mac.permissions.revokeFailed" = "Couldn’t revoke this permission.";
