@@ -29,6 +29,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
     private let preferences: UserDefaults
     private(set) var agent: HostAgentWorkspace?
     private(set) var images: MacImageGeneration?
+    private(set) var videos: MacVideoGeneration?
+    private(set) var creativeLibrary: MacCreativeLibrary?
     private var agentWindow: NSWindow?
     private var taskMenuItem: NSMenuItem?
     private var spaceMenuItem: NSMenuItem?
@@ -45,7 +47,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
     }
 
     func openAgent(openSettings: @escaping () -> Void, openImageSettings: @escaping () -> Void,
-                   openModelSettings: @escaping () -> Void, settingsContent: @escaping () -> AnyView) {
+                   openVideoSettings: @escaping () -> Void, openModelSettings: @escaping () -> Void, settingsContent: @escaping () -> AnyView) {
         if agentWindow == nil {
             guard let root = testSupport ?? FileManager.default.urls(for: .applicationSupportDirectory,
                                                                       in: .userDomainMask).first,
@@ -63,8 +65,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                                                useKeychain: testSupport == nil, preferences: preferences,
                                                admitWork: admitWork)
             agent = workspace
-            let directory = try? HostAgentDatabase.committedSyncStoreURL(applicationSupport: root, namespace: namespace)
-                .deletingLastPathComponent()
+            let directory = try? HostAgentDatabase.prepareStorageDirectory(applicationSupport: root, namespace: namespace)
             let drafts = MacWorkspaceDraftStore(directory: directory?.appendingPathComponent("Drafts", isDirectory: true))
             draftStore = drafts
             let images = directory.map {
@@ -72,6 +73,16 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                                    useKeychain: testSupport == nil, admitWork: admitWork)
             }
             self.images = images
+            let videos = directory.map {
+                MacVideoGeneration(directory: $0.appendingPathComponent("Videos", isDirectory: true), namespace: namespace,
+                                   useKeychain: testSupport == nil, admitWork: admitWork)
+            }
+            let library = directory.map {
+                MacCreativeLibrary(directory: $0.appendingPathComponent("Canvases", isDirectory: true), preferences: preferences, admitWork: admitWork)
+            }
+            self.videos = videos
+            self.creativeLibrary = library
+            videos?.resume()
             workspace.loadAttachmentDraft = { [weak drafts] in drafts?.attachments(for: $0) ?? [] }
             workspace.saveAttachmentDraft = { [weak drafts] id, attachments in drafts?.setAttachments(attachments, for: id) }
             let host = NSHostingController(rootView: MacWorkspaceRootView(
@@ -85,6 +96,13 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                                                              attachToTask: attach))
                     }
                     return AnyView(ContentUnavailableView("mac.images.unavailable", systemImage: "photo"))
+                },
+                creativeContent: {
+                    guard let library, let videos, let images else {
+                        return AnyView(ContentUnavailableView("mac.creative.error", systemImage: "externaldrive.badge.exclamationmark"))
+                    }
+                    return AnyView(MacCreativeWorkbenchView(library: library, images: images, videos: videos,
+                                                            imageSettings: openImageSettings, videoSettings: openVideoSettings))
                 },
                 remembersFileRoot: testSupport == nil, draftStore: drafts
             ))
@@ -230,6 +248,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         agentWindow = nil
         draftStore = nil
         images = nil
+        videos = nil
+        creativeLibrary = nil
         self.agent = nil
         return true
     }

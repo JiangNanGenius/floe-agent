@@ -7,6 +7,9 @@ name: FloeMacOTA
 
 packages:
   # Published Bridge 1.1.6 pins Sparkle 2.10.1 at this exact revision.
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    exactVersion: 0.9.20
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     revision: ab7d71291238df6e0492143b120c9b696a35f603
@@ -23,6 +26,7 @@ targets:
       - path: Sources/FloeMacHost/HostAgentWorkspace.swift
       - path: Sources/FloeMacHost/HostAgentWorkspaceView.swift
       - path: Sources/FloeMacUnified
+      - path: ../FloeAgent/Sources/FloeWorkspace/CanvasBackupPackage.swift
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
@@ -38,6 +42,7 @@ targets:
       - path: ../FloeAgent/FloeApp/Chat/UserMessageBubble.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/CodeBlockView.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/MarkdownRendererView.swift
+      - path: Resources/Licenses/ZIPFoundation.txt
       - path: Resources/en.lproj/Localizable.strings
       - path: Resources/zh-Hans.lproj/Localizable.strings
       - path: Resources/en.lproj/InfoPlist.strings
@@ -66,6 +71,8 @@ targets:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FLOE_UNIFIED_MAC FLOE_MAC_HOST_SMOKE"
     dependencies:
+      - package: ZIPFoundation
+        product: ZIPFoundation
       - package: Sparkle
         product: Sparkle
         # Xcode embeds the binary SwiftPM framework automatically. A second

@@ -23,6 +23,7 @@ enum MacAuxiliaryRole: CaseIterable {
 struct MacAuxiliaryModelsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let openImageModelSettings: () -> Void
+    let openVideoModelSettings: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -65,6 +66,10 @@ struct MacAuxiliaryModelsView: View {
                 Button("mac.aux.image") {
                     dismiss()
                     openImageModelSettings()
+                }
+                Button("mac.creative.videoModel") {
+                    dismiss()
+                    openVideoModelSettings()
                 }
             }
         }

@@ -104,7 +104,7 @@ final class BridgeAppModel: ObservableObject {
     #if FLOE_UNIFIED_MAC
     @Published private(set) var macWorkspace: UnifiedMacWorkspace?
     @Published var settingsPane: SettingsPane = .general
-    @Published var settingsShowsImageModel = false
+    @Published var mediaSettings: MediaSettings?
     enum Appearance: String, CaseIterable { case system, light, dark }
     @Published var appearance: Appearance = .system {
         didSet {
@@ -310,7 +310,9 @@ final class BridgeAppModel: ObservableObject {
         if let error, service == nil { return error }
         return listenerReady ? String(localized: "Ready to connect") : String(localized: "Starting…")
     }
-    func openSettings(_ pane: SettingsPane? = nil, imageModel: Bool = false) {
+    enum MediaSettings { case image, video }
+
+    func openSettings(_ pane: SettingsPane? = nil, media: MediaSettings? = nil) {
         // A MenuBarExtra label is not a persistent settings presentation
         // host. Own the window explicitly and present after menu tracking
         // returns, so opening from Finder or the connection URL is reliable.
@@ -320,7 +322,7 @@ final class BridgeAppModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             pendingSettingsPresentation = nil
             #if FLOE_UNIFIED_MAC
-            if pane == .models { settingsShowsImageModel = imageModel }
+            if pane == .models { mediaSettings = media }
             #endif
             presentSettingsWindow(pane)
         }
@@ -348,7 +350,8 @@ final class BridgeAppModel: ObservableObject {
         }
         NSApp.setActivationPolicy(.regular)
         macWorkspace?.openAgent(openSettings: { [weak self] in self?.openSettings() },
-                                openImageSettings: { [weak self] in self?.openSettings(.models, imageModel: true) },
+                                openImageSettings: { [weak self] in self?.openSettings(.models, media: .image) },
+                                openVideoSettings: { [weak self] in self?.openSettings(.models, media: .video) },
                                 openModelSettings: { [weak self] in self?.openSettings(.models) },
                                 settingsContent: { [weak self] in
             guard let self else { return AnyView(EmptyView()) }
@@ -510,7 +513,7 @@ private struct UnifiedMacSettingsView: View {
                         get: { model.settingsPane },
                         set: { if let pane = $0 {
                             model.settingsPane = pane
-                            model.settingsShowsImageModel = false
+                            model.mediaSettings = nil
                         } }
                     )) {
                         ForEach(BridgeAppModel.SettingsPane.allCases, id: \.self) { pane in
@@ -538,19 +541,34 @@ private struct UnifiedMacSettingsView: View {
         case .general:
             HostAgentGeneralSettings(model: model, workspace: workspace)
         case .models:
-            if model.settingsShowsImageModel, let images = model.macWorkspace?.images {
+            if let media = model.mediaSettings, let owner = model.macWorkspace {
                 VStack(alignment: .leading, spacing: 0) {
-                    Button { model.settingsShowsImageModel = false } label: {
+                    Button { model.mediaSettings = nil } label: {
                         Label("mac.provider.backToProviders", systemImage: "chevron.left")
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 20)
                     .padding(.top, 14)
-                    MacImageSettingsView(images: images)
+                    switch media {
+                    case .image:
+                        if let images = owner.images {
+                            MacMediaAccountSettings(workspace: workspace, role: .image, apply: { preset, endpoint, modelID, key in
+                                try images.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
+                            }) { MacImageSettingsView(images: images) }
+                        }
+                    case .video:
+                        if let videos = owner.videos {
+                            MacMediaAccountSettings(workspace: workspace, role: .video, apply: { preset, endpoint, modelID, key in
+                                try videos.save(.init(presetID: preset, endpoint: endpoint, modelID: modelID), apiKey: key)
+                            }) { MacVideoSettingsView(videos: videos) }
+                        }
+                    }
                 }
             } else {
                 MacProviderSettingsView(workspace: workspace, openImageModelSettings: {
-                    model.settingsShowsImageModel = true
+                    model.mediaSettings = .image
+                }, openVideoModelSettings: {
+                    model.mediaSettings = .video
                 })
             }
         case .permissions:

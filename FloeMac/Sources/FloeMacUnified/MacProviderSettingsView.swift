@@ -18,6 +18,7 @@ import SwiftUI
 struct MacProviderSettingsView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let openImageModelSettings: () -> Void
+    let openVideoModelSettings: () -> Void
 
     @State private var editingID: UUID?
     @State private var showsEditor = false
@@ -102,7 +103,8 @@ struct MacProviderSettingsView: View {
             }
         }
         .sheet(isPresented: $showsAuxiliary) {
-            MacAuxiliaryModelsView(workspace: workspace, openImageModelSettings: openImageModelSettings)
+            MacAuxiliaryModelsView(workspace: workspace, openImageModelSettings: openImageModelSettings,
+                                   openVideoModelSettings: openVideoModelSettings)
         }
         .sheet(isPresented: Binding(
             get: { optionsRecord != nil },
@@ -184,6 +186,12 @@ struct MacProviderSettingsView: View {
             .buttonStyle(.borderless)
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
+            Button(action: openVideoModelSettings) {
+                Label("mac.creative.videoModel", systemImage: "film")
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 8)
             Button { showsAuxiliary = true } label: {
                 Label(MacProviderText.t("辅助模型", "Auxiliary Models"), systemImage: "wand.and.stars")
             }

@@ -308,6 +308,9 @@ final class HostAgentWorkspace: ObservableObject {
     var smokeProjectNewTaskFrames: [UUID: CGRect] = [:]
     var smokeProjectNameFrames: [UUID: CGRect] = [:]
     var smokeSpacePage: MacSpacePage?
+    var smokeCreativeMounted = false
+    var smokeMediaSettingsRole: String?
+    var smokeCreativeFrame: CGRect?
     var smokeSpaceFrame: CGRect?
     var smokeSpacePickerFrame: CGRect?
     var smokeInspectorShown = false

@@ -28,6 +28,32 @@ final class MacImageGeneration: ObservableObject {
         let filename: String
     }
 
+    /// User-controlled options for one generation run. Values mirror the
+    /// shared iPad `ImageGenerationPresetResolver` contract; the service
+    /// clamps and re-validates them against the provider contract before any
+    /// billable request is sent.
+    struct GenerationOptions: Equatable {
+        /// Requested candidate count; clamped to the provider contract.
+        var count: Int
+        /// Aspect ratio from the contract; nil keeps the provider default.
+        var aspectRatio: String?
+        /// Resolution tier from the contract; nil keeps the provider default.
+        var resolution: String?
+        /// Quality tier from the contract; nil keeps the provider default.
+        var quality: String?
+        /// Reference images for editing; empty performs a pure generation.
+        var referenceImages: [Data]
+
+        init(count: Int = 1, aspectRatio: String? = nil, resolution: String? = nil,
+             quality: String? = nil, referenceImages: [Data] = []) {
+            self.count = count
+            self.aspectRatio = aspectRatio
+            self.resolution = resolution
+            self.quality = quality
+            self.referenceImages = referenceImages
+        }
+    }
+
     /// Failure surface for `save(_:apiKey:)`; generation failures are
     /// reported through `notice` instead of thrown errors.
     enum MacImageGenerationError: Error, Equatable {
@@ -73,6 +99,8 @@ final class MacImageGeneration: ObservableObject {
     private static let maximumHistoryCount = 200
     private static let maximumHistoryBytes = 1_048_576
     private static let maximumImageBytes = 32 * 1_048_576
+    /// One reference image stays within the iPad Files staging bound.
+    private static let maximumReferenceImageBytes = 12 * 1_048_576
 
     init(directory: URL, namespace: String, useKeychain: Bool,
          admitWork: @escaping HostAgentWorkspace.AdmitWork) {
@@ -84,6 +112,54 @@ final class MacImageGeneration: ObservableObject {
         self.admitWork = admitWork
         loadPersistedState()
         hasCredential = currentKey() != nil
+    }
+
+    // MARK: - Shared workbench controls
+
+    /// Parameter contract of the configured generate route, derived from the
+    /// shared iPad resolver. Nil when the route cannot generate; the
+    /// workbench hides the manual controls instead of offering dead pickers.
+    var parameterContract: ImageGenerationPresetResolver.ParameterContract? {
+        routeContracts()?.generate
+    }
+
+    /// How many reference images the configured route accepts for editing.
+    /// Zero means references are unsupported and the workbench hides the
+    /// reference input.
+    var maximumReferenceImages: Int {
+        max(0, routeContracts()?.edit.maximumReferenceImages ?? 0)
+    }
+
+    private struct RouteContracts {
+        let generate: ImageGenerationPresetResolver.ParameterContract
+        let edit: ImageGenerationPresetResolver.ParameterContract
+    }
+
+    /// One validated route plus both operation contracts. Building this is
+    /// cheap (catalog lookups only) and keeps every control honest.
+    private func routeContracts() -> RouteContracts? {
+        guard let config = configuration,
+              let endpointURL = URL(string: config.endpoint) else { return nil }
+        let route = Self.makeRoute(presetID: config.presetID, endpoint: endpointURL, modelID: config.modelID,
+                                   allowLoopbackHTTP: Self.admitsLoopbackHTTP(with: vault))
+        let adapter = ImageProviderAdapterFactory().adapter(for: route.profile)
+        guard let adapter, adapter.supports(.generate, for: route.profile),
+              ProviderConfigurationValidation.issues(for: route.profile).isEmpty,
+              ProviderConfigurationValidation.issues(for: route.model).isEmpty else { return nil }
+        return RouteContracts(
+            generate: ImageGenerationPresetResolver.parameterContract(
+                provider: route.profile, model: route.model, operation: .generate),
+            edit: ImageGenerationPresetResolver.parameterContract(
+                provider: route.profile, model: route.model, operation: .edit))
+    }
+
+    /// Loads one verified reference image from a local file (for example a
+    /// creative-canvas export on this Mac). Remote URLs are not fetched here.
+    func referenceImageData(from url: URL) -> Data? {
+        guard url.isFileURL,
+              let data = try? Self.readFile(url, limit: Self.maximumReferenceImageBytes),
+              Self.verifiedImageFormat(data) != nil else { return nil }
+        return data
     }
 
     // MARK: - Configuration
@@ -146,7 +222,16 @@ final class MacImageGeneration: ObservableObject {
 
     // MARK: - Generation
 
+    /// Single-image generation with provider defaults; unchanged behavior for
+    /// existing callers and the packaged smoke fixture.
     func generate(prompt: String) {
+        generate(prompt: prompt, options: GenerationOptions())
+    }
+
+    /// Bounded candidate batch through the shared iPad batch runner. The
+    /// runner never replays a successful request, so a partial provider
+    /// failure cannot produce duplicate billable submits.
+    func generate(prompt: String, options: GenerationOptions) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isGenerating else { return }
         guard let config = configuration, let apiKey = currentKey() else {
@@ -167,8 +252,28 @@ final class MacImageGeneration: ObservableObject {
             notice = String(localized: "mac.images.invalidConfiguration")
             return
         }
+        // References turn the run into an edit operation; the shared contract
+        // decides whether the route accepts them at all.
+        let operation: RemoteImageOperation = options.referenceImages.isEmpty ? .generate : .edit
+        guard operation == .generate || adapter.supports(.edit, for: route.profile) else {
+            notice = String(localized: "mac.images.invalidConfiguration")
+            return
+        }
+        let contract = ImageGenerationPresetResolver.parameterContract(
+            provider: route.profile, model: route.model, operation: operation)
+        guard contract.countStrategy != .unsupported else {
+            notice = String(localized: "mac.images.invalidConfiguration")
+            return
+        }
+        let count = min(max(1, options.count), max(1, contract.maximumCount))
+        guard options.referenceImages.count <= max(0, contract.maximumReferenceImages) else {
+            notice = MacImageWorkbenchText.referenceLimitExceeded(contract.maximumReferenceImages)
+            return
+        }
         let selection = ImageGenerationPresetResolver.applyingDefaults(
-            ImageGenerationSelection(), provider: route.profile, model: route.model, operation: .generate)
+            ImageGenerationSelection(aspectRatio: options.aspectRatio, resolution: options.resolution,
+                                     quality: options.quality),
+            provider: route.profile, model: route.model, operation: operation)
         guard let release = admit() else { return }
         isGenerating = true
         notice = nil
@@ -179,19 +284,30 @@ final class MacImageGeneration: ObservableObject {
             do {
                 try ImageGenerationPresetResolver.validateSelection(
                     selection, provider: route.profile, model: route.model,
-                    operation: .generate, count: 1, referenceCount: 0)
-                let result = try await adapter.perform(RemoteImageRequest(
-                    operation: .generate, prompt: text, selection: selection, count: 1,
-                    modelRemoteID: modelID), provider: route.profile,
-                    credentials: ProviderCredentials(apiKey: apiKey))
+                    operation: operation, count: count, referenceCount: options.referenceImages.count)
+                let plan = try ImageGenerationBatchPlan(contract: contract, requestedCount: count)
+                let outcome = try await ImageGenerationBatchRunner.run(plan: plan) { requestCount in
+                    try Task.checkCancellation()
+                    let result = try await adapter.perform(RemoteImageRequest(
+                        operation: operation, prompt: text, sourceImages: options.referenceImages,
+                        selection: selection, count: requestCount, modelRemoteID: modelID),
+                        provider: route.profile, credentials: ProviderCredentials(apiKey: apiKey))
+                    return ImageGenerationBatchResponse(
+                        images: result.images, revisedPrompt: result.revisedPrompt,
+                        metadata: result.metadata)
+                }
                 try Task.checkCancellation()
-                guard let data = result.images.first else { throw MacImageGenerationError.unsupportedResult }
-                let item = try storeResult(data: data, prompt: text)
-                history.insert(item, at: 0)
+                let items = try storeResults(data: outcome.images, prompt: text)
+                history.insert(contentsOf: items, at: 0)
                 if history.count > Self.maximumHistoryCount {
                     history = Array(history.prefix(Self.maximumHistoryCount))
                 }
-                notice = nil
+                if outcome.partialFailure {
+                    notice = MacImageWorkbenchText.partialFailure(saved: items.count,
+                                                                  missed: outcome.failedCount)
+                } else {
+                    notice = nil
+                }
             } catch {
                 applyGenerationFailure(error)
             }
@@ -229,6 +345,9 @@ final class MacImageGeneration: ObservableObject {
             notice = String(localized: "mac.images.unsupportedResult")
         case MacImageGenerationError.storageFailed:
             notice = String(localized: "mac.images.storageFailed")
+        case let batchError as ImageGenerationBatchError:
+            notice = batchError.errorDescription
+                ?? String(localized: "mac.images.failed")
         case RemoteImageError.providerRejected(let code, _):
             notice = String(localized: "mac.images.providerRejected \(code)")
         default:
@@ -238,29 +357,41 @@ final class MacImageGeneration: ObservableObject {
 
     // MARK: - Result persistence
 
-    /// Verifies provider bytes, writes the image atomically, then commits the
-    /// history record. The image lands under a fresh id so a failed or
-    /// superseded run can never clobber a previous result.
-    private func storeResult(data: Data, prompt: String) throws -> ResultItem {
-        guard data.count <= Self.maximumImageBytes,
-              let format = Self.verifiedImageFormat(data) else {
-            throw MacImageGenerationError.unsupportedResult
-        }
+    /// Verifies every provider payload, writes each image atomically under a
+    /// fresh id, then commits the history index once. A failed or superseded
+    /// run can never clobber a previous result, and a staging or index failure
+    /// removes every staged blob so no half-published batch survives.
+    private func storeResults(data: [Data], prompt: String) throws -> [ResultItem] {
+        guard !data.isEmpty else { throw MacImageGenerationError.unsupportedResult }
         do { try Self.ensurePrivateDirectory(directory) } catch { throw MacImageGenerationError.storageFailed }
-        let id = UUID()
-        let item = ResultItem(id: id, prompt: prompt, createdAt: Date(),
-                              filename: "\(id.uuidString).\(format.fileExtension)")
-        var results = history
-        results.insert(item, at: 0)
+        var staged: [ResultItem] = []
+        func discardStaged() {
+            for item in staged { try? FileManager.default.removeItem(at: imageURL(for: item)) }
+        }
+        for bytes in data {
+            guard bytes.count <= Self.maximumImageBytes,
+                  let format = Self.verifiedImageFormat(bytes) else {
+                discardStaged()
+                throw MacImageGenerationError.unsupportedResult
+            }
+            let id = UUID()
+            let item = ResultItem(id: id, prompt: prompt, createdAt: Date(),
+                                  filename: "\(id.uuidString).\(format.fileExtension)")
+            do { try Self.writeFile(bytes, to: imageURL(for: item)) }
+            catch {
+                discardStaged()
+                throw MacImageGenerationError.storageFailed
+            }
+            staged.append(item)
+        }
+        var results = staged + history
         results = Array(results.prefix(Self.maximumHistoryCount))
-        do {
-            try Self.writeFile(data, to: imageURL(for: item))
-            try persistHistory(results)
-        } catch {
-            try? FileManager.default.removeItem(at: imageURL(for: item))
+        do { try persistHistory(results) }
+        catch {
+            discardStaged()
             throw MacImageGenerationError.storageFailed
         }
-        return item
+        return staged
     }
 
     private struct HistoryEnvelope: Codable {
@@ -342,9 +473,12 @@ final class MacImageGeneration: ObservableObject {
         if allowLoopbackHTTP, endpoint.host == "127.0.0.1" {
             profile.allowsPlainHTTP = true
         }
+        // Editing capability is advertised so the shared reference contract
+        // can resolve; providers without an edit adapter still report a zero
+        // reference limit and the workbench hides the reference input.
         let model = ModelProfile(providerID: profile.id, remoteModelID: modelID, displayName: modelID,
-                                 limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0),
-                                 capabilities: [.imageGeneration])
+                                  limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0),
+                                  capabilities: [.imageGeneration, .imageEditing])
         return (profile, model)
     }
 
@@ -418,6 +552,44 @@ final class MacImageGeneration: ObservableObject {
         guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {
             throw CocoaError(.fileReadNoPermission)
         }
+    }
+}
+
+/// EN / zh-CN inline strings for the shared image workbench controls and
+/// batch notices, following the `MacProviderText` convention: the Mac host
+/// mirrors the system language without adding catalog keys.
+enum MacImageWorkbenchText {
+    static var isChinese: Bool {
+        Locale.preferredLanguages.first?.hasPrefix("zh") == true
+    }
+
+    static func t(_ zh: String, _ en: String) -> String {
+        isChinese ? zh : en
+    }
+
+    static var aspectRatio: String { t("宽高比", "Aspect Ratio") }
+    static var resolution: String { t("分辨率", "Resolution") }
+    static var quality: String { t("画质", "Quality") }
+    static var count: String { t("数量", "Count") }
+    static var `default`: String { t("默认", "Default") }
+    static var referenceImages: String { t("参考图片", "Reference Images") }
+    static var addReference: String { t("添加参考…", "Add Reference…") }
+    static var removeReference: String { t("移除参考", "Remove Reference") }
+    static var referenceUnreadable: String {
+        t("无法读取该图片，请换一张 PNG、JPEG、GIF 或 WebP。", "Couldn't read that image; choose a PNG, JPEG, GIF or WebP.")
+    }
+    static var referenceLimitReached: String {
+        t("参考图片已达上限。", "The reference image limit is reached.")
+    }
+
+    static func referenceLimitExceeded(_ limit: Int) -> String {
+        t("参考图片超过该模型上限（最多 \(limit) 张）。",
+          "Too many reference images for this model (maximum \(limit)).")
+    }
+
+    static func partialFailure(saved: Int, missed: Int) -> String {
+        t("已保存 \(saved) 张图片，\(missed) 张未生成。",
+          "Saved \(saved) images; \(missed) could not be generated.")
     }
 }
 

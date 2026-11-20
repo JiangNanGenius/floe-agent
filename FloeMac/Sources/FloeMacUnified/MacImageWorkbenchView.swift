@@ -10,11 +10,24 @@ struct MacImageWorkbenchView: View {
     @ObservedObject var images: MacImageGeneration
     let openSettings: () -> Void
     var attachToTask: ((URL) -> Bool)?
+    var initialReference: URL? = nil
     @State private var prompt = ""
     @State private var selectedID: UUID?
     @State private var preview: NSImage?
     @State private var exportFailed = false
     @State private var attachmentFailed = false
+    @State private var count = 1
+    @State private var aspectRatio: String?
+    @State private var resolution: String?
+    @State private var quality: String?
+    @State private var references: [ReferenceItem] = []
+    @State private var referenceError: String?
+
+    private struct ReferenceItem: Identifiable {
+        let id = UUID()
+        let data: Data
+        let name: String
+    }
 
     private var selection: MacImageGeneration.ResultItem? {
         images.history.first(where: { $0.id == selectedID }) ?? images.history.first
@@ -26,6 +39,61 @@ struct MacImageWorkbenchView: View {
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...5)
                 .disabled(images.isGenerating)
+            if let contract = images.parameterContract {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 8) {
+                    if !contract.aspectRatio.isEmpty {
+                        GridRow {
+                            Text(MacImageWorkbenchText.aspectRatio).foregroundStyle(.secondary)
+                            Picker("", selection: $aspectRatio) {
+                                Text(MacImageWorkbenchText.default).tag(Optional<String>.none)
+                                ForEach(contract.aspectRatio, id: \.self) { value in
+                                    Text(value).tag(Optional(value))
+                                }
+                            }
+                            .fixedSize()
+                            .labelsHidden()
+                        }
+                    }
+                    if !contract.resolution.isEmpty {
+                        GridRow {
+                            Text(MacImageWorkbenchText.resolution).foregroundStyle(.secondary)
+                            Picker("", selection: $resolution) {
+                                Text(MacImageWorkbenchText.default).tag(Optional<String>.none)
+                                ForEach(contract.resolution, id: \.self) { value in
+                                    Text(value).tag(Optional(value))
+                                }
+                            }
+                            .fixedSize()
+                            .labelsHidden()
+                        }
+                    }
+                    if !contract.quality.isEmpty {
+                        GridRow {
+                            Text(MacImageWorkbenchText.quality).foregroundStyle(.secondary)
+                            Picker("", selection: $quality) {
+                                Text(MacImageWorkbenchText.default).tag(Optional<String>.none)
+                                ForEach(contract.quality, id: \.self) { value in
+                                    Text(value).tag(Optional(value))
+                                }
+                            }
+                            .fixedSize()
+                            .labelsHidden()
+                        }
+                    }
+                    if contract.maximumCount > 1 {
+                        GridRow {
+                            Text(MacImageWorkbenchText.count).foregroundStyle(.secondary)
+                            Stepper(value: $count, in: 1...max(1, contract.maximumCount)) {
+                                Text("\(count)")
+                            }
+                            .fixedSize()
+                        }
+                    }
+                }
+            }
+            if images.maximumReferenceImages > 0 {
+                referenceSection
+            }
             HStack {
                 Button(action: openSettings) {
                     Label(images.configuration?.modelID ?? String(localized: "mac.images.configure"), systemImage: "slider.horizontal.3")
@@ -35,9 +103,14 @@ struct MacImageWorkbenchView: View {
                     ProgressView().controlSize(.small)
                     Button("host.chat.stop") { images.cancel() }
                 } else {
-                    Button("mac.images.generate") { images.generate(prompt: prompt) }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(images.configuration == nil || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("mac.images.generate") {
+                        images.generate(prompt: prompt, options: .init(
+                            count: count, aspectRatio: aspectRatio, resolution: resolution,
+                            quality: quality, referenceImages: references.map(\.data)))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(images.configuration == nil || images.parameterContract == nil
+                              || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             if let notice = images.notice {
@@ -88,15 +161,98 @@ struct MacImageWorkbenchView: View {
         }
         .padding(18)
         .onChange(of: images.history.first?.id, initial: true) { _, id in selectedID = id }
+        .onChange(of: images.configuration?.endpoint, initial: true) { _, _ in normalizeControls() }
         .onChange(of: selection?.id, initial: true) { _, _ in
             preview = selection.flatMap { images.imageData(for: $0).flatMap(NSImage.init(data:)) }
         }
+        .onAppear { if let initialReference, references.isEmpty { addReference(from: initialReference) } }
         .alert("mac.images.exportFailed", isPresented: $exportFailed) {
             Button("OK", role: .cancel) {}
         }
         .alert("mac.workspace.attachFailed", isPresented: $attachmentFailed) {
             Button("OK", role: .cancel) {}
         }
+    }
+
+    /// Reference image picker plus an optional local canvas URL input. Every
+    /// value is re-verified and re-clamped against the shared contract before
+    /// it can join a generation.
+    private var referenceSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("\(MacImageWorkbenchText.referenceImages) (\(references.count)/\(images.maximumReferenceImages))")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(MacImageWorkbenchText.addReference) { pickReferences() }
+                    .disabled(images.isGenerating || references.count >= images.maximumReferenceImages)
+            }
+            if !references.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(references) { item in
+                            VStack(spacing: 2) {
+                                Image(nsImage: NSImage(data: item.data) ?? NSImage())
+                                    .resizable().scaledToFill()
+                                    .frame(width: 56, height: 56)
+                                    .clipped()
+                                    .cornerRadius(6)
+                                    .accessibilityLabel(item.name)
+                                Button(MacImageWorkbenchText.removeReference) {
+                                    references.removeAll { $0.id == item.id }
+                                }
+                                .font(.caption)
+                            }
+                        }
+                    }
+                }
+            }
+            if let referenceError {
+                Text(referenceError).font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+
+    @MainActor
+    private func normalizeControls() {
+        let contract = images.parameterContract
+        count = min(max(count, 1), max(1, contract?.maximumCount ?? 1))
+        if let aspectRatio, contract?.aspectRatio.contains(aspectRatio) != true {
+            self.aspectRatio = nil
+        }
+        if let resolution, contract?.resolution.contains(resolution) != true {
+            self.resolution = nil
+        }
+        if let quality, contract?.quality.contains(quality) != true {
+            self.quality = nil
+        }
+        let limit = images.maximumReferenceImages
+        if references.count > limit {
+            references = Array(references.prefix(limit))
+        }
+    }
+
+    private func pickReferences() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .webP]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK else { return }
+            for url in panel.urls { addReference(from: url) }
+        }
+    }
+
+    private func addReference(from url: URL) {
+        guard let data = images.referenceImageData(from: url) else {
+            referenceError = MacImageWorkbenchText.referenceUnreadable
+            return
+        }
+        guard references.count < images.maximumReferenceImages else {
+            referenceError = MacImageWorkbenchText.referenceLimitReached
+            return
+        }
+        references.append(ReferenceItem(data: data, name: url.lastPathComponent))
+        referenceError = nil
     }
 
     private func export(_ item: MacImageGeneration.ResultItem) {

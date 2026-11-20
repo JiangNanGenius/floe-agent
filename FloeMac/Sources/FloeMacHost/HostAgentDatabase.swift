@@ -11,15 +11,8 @@ enum HostAgentDatabase {
         let parent = applicationSupport
         let directory = parent.appendingPathComponent(directoryName, isDirectory: true)
         let databaseName = "floe.sqlite"
-        let parentFD = try openDirectory(parent)
-        defer { Darwin.close(parentFD) }
-        guard mkdirat(parentFD, directoryName, 0o700) == 0 || errno == EEXIST else {
-            throw StorageError.directoryCreate
-        }
-        let directoryFD = openat(parentFD, directoryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard directoryFD >= 0 else { throw StorageError.directoryOpen }
+        let (directoryFD, directoryIdentity) = try openPrivateDirectory(parent: parent, name: directoryName)
         defer { Darwin.close(directoryFD) }
-        let directoryIdentity = try checkedIdentity(directoryFD, type: S_IFDIR, permissions: 0o700)
         let fileFlags = O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
         var databaseFD = openat(directoryFD, databaseName, fileFlags | O_CREAT | O_EXCL, 0o600)
         if databaseFD < 0 && errno == EEXIST {
@@ -81,6 +74,25 @@ enum HostAgentDatabase {
         defer { Darwin.close(descriptor) }
         _ = try checkedIdentity(descriptor, type: S_IFREG, permissions: 0o600)
         return try DatabaseManager(path: directory.appendingPathComponent(filename))
+    }
+
+    /// Media storage and the task database share this root. The first caller
+    /// creates it under the exact same ownership and permission checks.
+    static func prepareStorageDirectory(applicationSupport: URL, namespace: String) throws -> URL {
+        let name = directoryName(for: namespace)
+        let (fd, _) = try openPrivateDirectory(parent: applicationSupport, name: name)
+        Darwin.close(fd)
+        return applicationSupport.appendingPathComponent(name, isDirectory: true)
+    }
+
+    private static func openPrivateDirectory(parent: URL, name: String) throws -> (Int32, FloeMacSelfFileIdentity) {
+        let parentFD = try openDirectory(parent)
+        defer { Darwin.close(parentFD) }
+        guard mkdirat(parentFD, name, 0o700) == 0 || errno == EEXIST else { throw StorageError.directoryCreate }
+        let fd = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw StorageError.directoryOpen }
+        do { return (fd, try checkedIdentity(fd, type: S_IFDIR, permissions: 0o700)) }
+        catch { Darwin.close(fd); throw error }
     }
 
     private static func directoryName(for namespace: String) -> String {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #if FLOE_MAC_HOST_SMOKE
+import AVKit
 import AppKit
 import CloudKit
 import CoreText
@@ -84,6 +85,16 @@ final class UnifiedMacSmoke {
             finish(["agentModeRestoredOnRelaunch": startedInAgent, "pid": getpid()])
             return
         }
+        if CommandLine.arguments.contains("--creative-only") {
+            model.openAgentWorkspace()
+            guard let agent = model.macWorkspace?.agent else { finish(["creative": false, "details": ["Agent did not open"]]); return }
+            await agent.prepare()
+            guard agent.isReady else { finish(["creative": false, "details": ["Task database did not open"]]); return }
+            let images = await verifyImageGeneration()
+            let creative = images ? await verifyCreative(model) : false
+            finish(["images": images, "creative": creative, "details": settingsDiagnostics])
+            return
+        }
         if CommandLine.arguments.contains("--icloud-model-sync-smoke") {
             await verifyCloudKitModelSync()
             return
@@ -135,6 +146,7 @@ final class UnifiedMacSmoke {
         var auxiliaryPanelVerified = false
         var providerConnectionVerified = false
         var standardTaskMenus = false
+        var creative = false
         var imageGeneration = false
         var agentApproval = (allowed: false, denied: false)
         var planning = (planSaved: false, goalSaved: false)
@@ -285,6 +297,7 @@ final class UnifiedMacSmoke {
             }
             standardTaskMenus = await verifyTaskMenus(model: model, workspace: agent)
             imageGeneration = await verifyImageGeneration()
+            if CommandLine.arguments.contains("--creative-fixture") { creative = await verifyCreative(model) }
         }
         let spaceNavigation = await exerciseSpaceNavigation(model: model)
         let toolbox = await exerciseToolbox(model: model)
@@ -301,6 +314,7 @@ final class UnifiedMacSmoke {
             "unifiedSettingsVerified": unifiedSettings,
             "standardTaskMenuVerified": standardTaskMenus,
             "imageGenerationVerified": imageGeneration,
+            "creativeMediaVerified": creative,
             "settingsDiagnostics": settingsDiagnostics,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
@@ -574,6 +588,168 @@ final class UnifiedMacSmoke {
                                            useKeychain: false, admitWork: { {} })
         return !reloaded.hasCredential && reloaded.history.first?.id == item.id
             && reloaded.imageData(for: item).flatMap(NSImage.init(data:))?.isValid == true
+    }
+
+    private func verifyCreative(_ model: BridgeAppModel) async -> Bool {
+        guard let endpoint = projectTaskFixtureEndpoint, let owner = model.macWorkspace,
+              let videos = owner.videos, let library = owner.creativeLibrary, let agent = owner.agent else { return false }
+        do {
+            guard let batch = owner.images else { return false }
+            try batch.save(.init(presetID: .openAI, endpoint: endpoint.absoluteString, modelID: "gpt-image-1"),
+                           apiKey: "floe-image-fixture")
+            batch.generate(prompt: "Storyboard candidates", options: .init(count: 2))
+            let imageDeadline = ContinuousClock.now + .seconds(8)
+            while batch.isGenerating && ContinuousClock.now < imageDeadline { try await Task.sleep(for: .milliseconds(50)) }
+            let candidates = batch.history.filter { $0.prompt == "Storyboard candidates" }
+            guard candidates.count == 2, Set(candidates.map(\.id)).count == 2,
+                  candidates.allSatisfy({ NSImage(contentsOf: batch.imageURL(for: $0))?.isValid == true })
+            else {
+                settingsDiagnostics.append("Batch image fixture: " + (batch.notice ?? "missing candidates"))
+                return false
+            }
+            try videos.save(.init(presetID: .volcengineArk, endpoint: endpoint.absoluteString,
+                                  modelID: "doubao-seedance-2-5-260628"), apiKey: "floe-video-fixture")
+            videos.generate(prompt: "Synthetic clip", options: .init(aspectRatio: "16:9", durationSeconds: 5),
+                            referenceImage: batch.imageURL(for: candidates[0]))
+            let deadline = ContinuousClock.now + .seconds(16)
+            while videos.isGenerating && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(60)) }
+            guard let item = videos.history.first, let url = videos.videoURL(for: item),
+                  try await AVURLAsset(url: url).load(.isPlayable) else {
+                settingsDiagnostics.append("Video fixture: " + (videos.notice ?? "no saved playable video"))
+                return false
+            }
+            let videoDirectory = library.directory.deletingLastPathComponent().appendingPathComponent("Videos")
+            let reopenedVideos = MacVideoGeneration(directory: videoDirectory, namespace: "fixture.no-keychain",
+                                                     useKeychain: false, admitWork: { {} })
+            guard reopenedVideos.history.first?.id == item.id, reopenedVideos.videoURL(for: item) == url else { return false }
+            guard try await verifyVideoRecovery(in: videoDirectory, configuration: item.configuration, savedID: item.id) else { return false }
+            let imageDirectory = root.appendingPathComponent("Generated Images Fixture", isDirectory: true)
+            let images = MacImageGeneration(directory: imageDirectory, namespace: "fixture.no-keychain", useKeychain: false, admitWork: { {} })
+            guard let image = images.history.first else { return false }
+            try library.create(name: "First board")
+            try library.rename("Storyboard")
+            try library.addText("Scene one")
+            guard let textID = library.page?.nodes.first?.id else { return false }
+            try library.setText("Opening shot", id: textID)
+            try library.move(textID, x: 36, y: 42)
+            try library.addMedia(images.imageURL(for: image), kind: .image, title: "Reference")
+            try library.addMedia(url, kind: .video, title: "First take")
+            let reopened = MacCreativeLibrary(directory: library.directory, preferences: preferences, admitWork: { {} })
+            guard reopened.selectedID == library.selectedID, reopened.selected?.name == "Storyboard",
+                  let nodes = reopened.page?.nodes, nodes.map(\.kind) == [.text, .image, .video],
+                  nodes[0].text == "Opening shot", nodes[0].position == .init(x: 36, y: 42),
+                  let savedImage = reopened.assetURL(nodes[1]), NSImage(contentsOf: savedImage)?.isValid == true,
+                  let savedVideo = reopened.assetURL(nodes[2]), try Data(contentsOf: savedVideo) == Data(contentsOf: url),
+                  clickWorkbenchButton(ids: ["workspace.creative"], frame: agent.smokeCreativeFrame, screenshot: nil)
+            else { return false }
+            let mounted = ContinuousClock.now + .seconds(3)
+            while !agent.smokeCreativeMounted && ContinuousClock.now < mounted { try await Task.sleep(for: .milliseconds(40)) }
+            guard agent.smokeCreativeMounted, let view = visibleWorkbench?.contentView else { return false }
+            capture(view, extension: "creative.png")
+            for (index, tab) in [(1, "image"), (2, "video")] {
+                view.layoutSubtreeIfNeeded()
+                refreshButtonFrames(in: view)
+                guard let frame = library.smokeTabFrame, let window = view.window, !frame.isEmpty else { return false }
+                let point = NSPoint(x: frame.minX + frame.width * (CGFloat(index) + 0.5) / 3, y: frame.midY)
+                guard clickWindowLocation(point, in: window) else { return false }
+                let limit = ContinuousClock.now + .seconds(2)
+                while library.smokeTab != tab && ContinuousClock.now < limit { try await Task.sleep(for: .milliseconds(40)) }
+                guard library.smokeTab == tab else {
+                    settingsDiagnostics.append("Creative tab did not open: " + tab)
+                    return false
+                }
+                try await Task.sleep(for: .milliseconds(120))
+                if tab == "video" {
+                    func findPlayer(_ root: NSView) -> AVPlayer? {
+                        if let video = root as? AVPlayerView { return video.player }
+                        for child in root.subviews { if let player = findPlayer(child) { return player } }
+                        return nil
+                    }
+                    guard let player = findPlayer(view) else { return false }
+                    player.isMuted = true
+                    player.play()
+                    let until = ContinuousClock.now + .seconds(4)
+                    while player.currentTime().seconds < 0.1 && ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(50)) }
+                    player.pause()
+                    guard player.currentTime().seconds >= 0.1 else {
+                        settingsDiagnostics.append("The embedded player did not advance the clip.")
+                        return false
+                    }
+                }
+                capture(view, extension: "creative-" + tab + ".png")
+            }
+            let package = root.appendingPathComponent("Storyboard.floeCanvas")
+            try await library.exportSelected(to: package)
+            let roundTrip = MacCreativeLibrary(directory: root.appendingPathComponent("Restored canvases"), preferences: preferences, admitWork: { {} })
+            try await roundTrip.importCanvas(from: package)
+            guard roundTrip.selectedID != library.selectedID, let imported = roundTrip.page?.nodes,
+                  imported.count == 3, let clip = roundTrip.assetURL(imported[2]),
+                  try Data(contentsOf: clip) == Data(contentsOf: url) else { return false }
+            defer { model.closeSettingsWindow() }
+            for role: BridgeAppModel.MediaSettings in [.image, .video] {
+                let expected = role == .image ? "image" : "video"
+                model.openSettings(.models, media: role)
+                let timeout = ContinuousClock.now + .seconds(3)
+                while agent.smokeMediaSettingsRole != expected && ContinuousClock.now < timeout {
+                    try await Task.sleep(for: .milliseconds(40))
+                }
+                guard agent.smokeMediaSettingsRole == expected, let view = model.smokeAgentSettingsSheet?.contentView else {
+                    settingsDiagnostics.append("Missing media settings pane: " + expected)
+                    return false
+                }
+                capture(view, extension: "creative-" + expected + "-settings.png")
+            }
+            return true
+        } catch {
+            settingsDiagnostics.append("Creative fixture: " + error.localizedDescription)
+            return false
+        }
+    }
+
+    private func verifyVideoRecovery(in directory: URL, configuration: MacVideoGeneration.Configuration, savedID: UUID) async throws -> Bool {
+        let pendingDirectory = root.appendingPathComponent("Video Recovery Fixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: pendingDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let bytes = try Data(contentsOf: directory.appendingPathComponent("history.json"))
+        guard !String(decoding: bytes, as: UTF8.self).contains("fixture-media-signature"),
+              !String(decoding: bytes, as: UTF8.self).contains("floe-video-fixture"),
+              var envelope = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              var entries = envelope["results"] as? [[String: Any]], !entries.isEmpty else {
+            settingsDiagnostics.append("Video history contains credentials or an unexpected schema.")
+            return false
+        }
+        // Capture the state of the same submitted provider job before its download.
+        entries[0]["state"] = "submitted"
+        entries[0].removeValue(forKey: "filename")
+        envelope["results"] = entries
+        try JSONSerialization.data(withJSONObject: envelope).write(to: pendingDirectory.appendingPathComponent("history.json"))
+        var leases = 0
+        let resumed = MacVideoGeneration(directory: pendingDirectory, namespace: "fixture.no-keychain", useKeychain: false) {
+            leases += 1
+            return { leases -= 1 }
+        }
+        try resumed.save(configuration, apiKey: "floe-video-fixture")
+        resumed.resume()
+        resumed.resume()
+        let timeout = ContinuousClock.now + .seconds(10)
+        while resumed.history.first?.state != .ready && ContinuousClock.now < timeout { try await Task.sleep(for: .milliseconds(50)) }
+        guard let restored = resumed.history.first, restored.id == savedID, resumed.videoURL(for: restored) != nil,
+              leases == 0 else {
+            settingsDiagnostics.append("Submitted video fixture did not resume and release its activity lease.")
+            return false
+        }
+        resumed.generate(prompt: "Cancel fixture", options: .init())
+        let cancellation = ContinuousClock.now + .seconds(5)
+        while (resumed.history.first?.prompt != "Cancel fixture" || resumed.history.first?.providerTaskID == nil)
+                && ContinuousClock.now < cancellation { try await Task.sleep(for: .milliseconds(50)) }
+        resumed.cancel()
+        let stop = ContinuousClock.now + .seconds(5)
+        while resumed.isGenerating && ContinuousClock.now < stop { try await Task.sleep(for: .milliseconds(50)) }
+        guard resumed.history.first?.state == .cancelled, leases == 0 else {
+            settingsDiagnostics.append("Video cancellation did not reach its terminal state.")
+            return false
+        }
+        return true
     }
 
     private func verifyTaskMenus(model: BridgeAppModel, workspace: HostAgentWorkspace) async -> Bool {

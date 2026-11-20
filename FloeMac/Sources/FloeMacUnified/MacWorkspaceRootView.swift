@@ -12,7 +12,7 @@ enum MacSpacePage: Hashable {
 
 private enum MacWorkspaceDestination: Hashable {
     case newTask(UUID?)
-    case taskCenter, space(MacSpacePage), images, conversation(UUID)
+    case taskCenter, space(MacSpacePage), creative, images, conversation(UUID)
 }
 
 struct MacWorkspaceRootView: View {
@@ -22,6 +22,7 @@ struct MacWorkspaceRootView: View {
     let openToolbox: (String) -> Void
     let settingsContent: () -> AnyView
     let imageContent: (((URL) -> Bool)?) -> AnyView
+    let creativeContent: () -> AnyView
     var remembersFileRoot = true
     @ObservedObject var draftStore: MacWorkspaceDraftStore
     @AppStorage("floe.mac.workspace.lastConversation") private var lastConversation = ""
@@ -321,6 +322,11 @@ struct MacWorkspaceRootView: View {
                     #if FLOE_MAC_HOST_SMOKE
                     .background(MacWorkbenchButtonFrameReader { workspace.smokeSpaceFrame = $0 })
                     #endif
+                sidebarLink(.creative, title: "mac.creative.title", icon: "paintpalette")
+                    .accessibilityIdentifier("workspace.creative")
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { workspace.smokeCreativeFrame = $0 })
+                    #endif
             }
             .padding(8)
             Divider().padding(.horizontal, 14)
@@ -602,6 +608,7 @@ struct MacWorkspaceRootView: View {
         case .conversation(let id): workspace.conversations.first { $0.id == id }?.workbenchDisplayTitle
             ?? String(localized: "mac.workspace.untitledTask")
         case .space: String(localized: "space.title")
+        case .creative: String(localized: "mac.creative.title")
         case .images: String(localized: "mac.settings.images")
         default: String(localized: "mac.workspace.taskCenter")
         }
@@ -797,6 +804,12 @@ struct MacWorkspaceRootView: View {
         case .space(.toolbox):
             MacWorkspaceToolboxView(findRequest: toolboxFindRequest, openToolbox: openToolbox)
         case .space(.files): EmptyView()
+        case .creative:
+            creativeContent()
+                #if FLOE_MAC_HOST_SMOKE
+                .onAppear { workspace.smokeCreativeMounted = true }
+                .onDisappear { workspace.smokeCreativeMounted = false }
+                #endif
         case .images:
             imageWorkbench
         default:
