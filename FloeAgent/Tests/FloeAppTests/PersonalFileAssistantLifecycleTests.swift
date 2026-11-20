@@ -368,7 +368,10 @@ import FloePersistence
         #expect(try await f.library.records().map(\.id) == [busy.id])
         #expect(try await environment.conversationStore.conversation(id: busyAssistant) != nil)
         #expect(try await environment.conversationStore.conversation(id: ordinary) != nil)
-        #expect(environment.conversationCenter.conversations.contains { $0.id == busyAssistant })
+        let center = environment.conversationCenter
+        #expect(center.fileAssistantConversations.contains { $0.id == busyAssistant })
+        #expect(!center.conversations.contains { $0.id == busyAssistant })
+        #expect(center.conversations.contains { $0.id == ordinary })
     }
 
     @Test func nativeFileActionsHideRestoreAndPurgeTheActualConversation() async throws {
