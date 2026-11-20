@@ -70,9 +70,16 @@ struct GameWorkspaceImportIntegrationTests {
             #expect(!registry.hasSavedChatGame(conversationID: owner, workspaceID: workspace.id))
             let entry = lease.url.appendingPathComponent("index.html")
             let story = """
-                <!doctype html><html><body><p>Forest clearing</p>
-                <tw-storydata name="Forest" startnode="1" creator="Twine" creator-version="2.8.1" ifid="8E7C4F3A-1D2B-4C5E-9F60-112233445566" format="SugarCube" format-version="2.37.3">
-                <tw-passagedata pid="1" name="Start">Forest clearing</tw-passagedata></tw-storydata></body></html>
+                <!doctype html><html><body><main></main><button>Walk on</button>
+                <tw-storydata hidden name="Forest" startnode="1" creator="Twine" creator-version="2.8.1" ifid="8E7C4F3A-1D2B-4C5E-9F60-112233445566" format="SugarCube" format-version="2.37.3">
+                <tw-passagedata pid="1" name="Start">Forest clearing</tw-passagedata>
+                <tw-passagedata pid="2" name="End">Home</tw-passagedata></tw-storydata>
+                <script>
+                const passages = document.querySelectorAll('tw-passagedata');
+                const main = document.querySelector('main');
+                main.textContent = passages[0].textContent;
+                document.querySelector('button').onclick = () => { main.textContent = passages[1].textContent; };
+                </script></body></html>
                 """
             try Data(story.utf8).write(to: entry)
             let discovered = try await service.resolve(context)
