@@ -7,9 +7,13 @@
 // text plus a copy action when expanded. Animation honors Reduce Motion
 // via FloeTheme.motionAnimation.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#else
+import AppKit
+#endif
 
 /// Shown only until the first response content, never beside live reasoning.
 struct ModelResponseWaitingView: View {
@@ -92,7 +96,12 @@ struct ReasoningBlockView: View {
                 HStack {
                     Spacer()
                     Button {
+                        #if os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                        #else
                         UIPasteboard.general.string = text
+                        #endif
                         didCopy = true
                         Task {
                             try? await Task.sleep(for: .seconds(2))
@@ -222,11 +231,20 @@ private struct LongReasoningReader: View {
         .onAppear { layout.submit(text) }
         .onChange(of: text) { _, source in layout.submit(source) }
         .onDisappear { layout.stop() }
-        .fullScreenCover(isPresented: $fullscreen) {
+        #if os(macOS)
+        .sheet(isPresented: $fullscreen) { expandedReader.frame(minWidth: 450, minHeight: 320) }
+        #else
+        .fullScreenCover(isPresented: $fullscreen) { expandedReader }
+        #endif
+    }
+
+    private var expandedReader: some View {
             NavigationStack {
                 reader.padding()
                     .navigationTitle("chat.reasoning_block_view.full_reasoning")
+                    #if !os(macOS)
                     .navigationBarTitleDisplayMode(.inline)
+                    #endif
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("workspace.workspace_canvas_view.done") { fullscreen = false }
@@ -234,7 +252,6 @@ private struct LongReasoningReader: View {
                         }
                     }
             }
-        }
     }
 
     private var reader: some View {

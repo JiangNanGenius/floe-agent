@@ -178,6 +178,8 @@ struct MacWorkspaceTaskCenter: View {
                 HStack(alignment: .center, spacing: 10) {
                     if workspace.hasPendingApproval(in: record.id) {
                         Image(systemName: "hand.raised.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                    } else if workspace.isWaitingForAnswer(in: record.id) {
+                        Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange).accessibilityHidden(true)
                     } else if sendingHere {
                         ProgressView().controlSize(.mini)
                             .accessibilityHidden(true)
@@ -199,7 +201,7 @@ struct MacWorkspaceTaskCenter: View {
                                 .font(.body)
                                 .lineLimit(1)
                         }
-                        caption(run: run, sendingHere: sendingHere)
+                        caption(run: run, taskID: record.id, sendingHere: sendingHere)
                             .font(.caption)
                             .lineLimit(1)
                     }
@@ -237,8 +239,14 @@ struct MacWorkspaceTaskCenter: View {
         .accessibilityIdentifier("workspace.task.row.\(record.id.uuidString)")
     }
 
-    private func caption(run: RunRecord?, sendingHere: Bool) -> Text {
+    private func caption(run: RunRecord?, taskID: UUID, sendingHere: Bool) -> Text {
         if sendingHere {
+            if workspace.hasPendingApproval(in: taskID) {
+                return Text(t("等待审批", "Awaiting approval")).foregroundStyle(Color.orange)
+            }
+            if workspace.isWaitingForAnswer(in: taskID) {
+                return Text(t("等待你回答", "Waiting for your answer")).foregroundStyle(Color.orange)
+            }
             var text = Text(t("运行中", "Running")).foregroundStyle(Color.blue)
             if let run, let duration = durationText(startedAt: run.startedAt, endedAt: run.endedAt) {
                 text = text + Text(" · ").foregroundStyle(.secondary)

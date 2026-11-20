@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import FloeAgentRuntime
 import FloeSecurity
 import SwiftUI
 
@@ -31,19 +32,28 @@ struct MacWorkspaceApprovalView: View {
     }
 
     private var fileScope: String? {
+        if approval.toolName == DelegateTool.name {
+            return workspace.workspaces.first { $0.id == approval.workspaceID }?.name
+        }
         guard let path = approval.path else { return nil }
         guard let project = workspace.workspaces.first(where: { $0.id == approval.workspaceID }) else { return path }
         return "\(project.name) / \(path)"
     }
 
     private var action: String {
+        if approval.toolName == DelegateTool.name { return String(localized: "mac.child.approve") }
         if approval.previousText != nil { return String(localized: "mac.agent.replaceTextApproval") }
         if approval.path != nil { return String(localized: "mac.agent.createFileApproval") }
         return String(localized: "mac.agent.approvalRequired")
     }
 
     @ViewBuilder private var fileEvidence: some View {
-        if let previous = approval.previousText, let replacement = approval.text {
+        if approval.toolName == DelegateTool.name, let task = approval.text {
+            Text(verbatim: task).font(.callout).lineLimit(6).textSelection(.enabled)
+            DisclosureGroup("mac.child.details") {
+                ScrollView { preview(task) }.frame(maxHeight: 135)
+            }
+        } else if let previous = approval.previousText, let replacement = approval.text {
             DisclosureGroup("mac.agent.reviewReplacement") {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {

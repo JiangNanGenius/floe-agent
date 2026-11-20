@@ -130,27 +130,11 @@ final class AppUserQuestionIntegration: ObservableObject, UserQuestionNotificati
     static func individualAnswers(
         _ delivery: UserQuestionAnswerDelivery, request: UserQuestionWaitingSnapshot
     ) throws -> [UserQuestionAnswerDelivery] {
-        guard delivery.requestID == request.requestID,
-              delivery.conversationID == request.conversationID,
-              delivery.runID == request.runID else { throw UserQuestionError.runMismatch }
-        return delivery.answers.map { answer in
-            UserQuestionAnswerDelivery(requestID: delivery.requestID,
-                conversationID: delivery.conversationID, runID: delivery.runID,
-                answers: [answer], createdAt: delivery.createdAt,
-                text: UserQuestionFormatting.deliveryText(request: request, answers: [answer]))
-        }
+        try delivery.individualAnswers(for: request)
     }
 
     static func inputID(for delivery: UserQuestionAnswerDelivery) throws -> UUID {
-        guard delivery.answers.count == 1 else {
-            throw FloeError.validationFailed("Question answers require a stable per-question delivery identity")
-        }
-        let identity = delivery.requestID + ":" + delivery.answers[0].questionID
-        let hex = Array(FloeDigest.sha256Hex(Data(identity.utf8)).prefix(32))
-        let raw = [String(hex[0..<8]), String(hex[8..<12]), String(hex[12..<16]),
-                   String(hex[16..<20]), String(hex[20..<32])].joined(separator: "-")
-        guard let id = UUID(uuidString: raw) else { throw UserQuestionError.invalidRequest("Invalid delivery identity") }
-        return id
+        try delivery.inputID()
     }
 
     private func presentBackgroundQuestions() async {

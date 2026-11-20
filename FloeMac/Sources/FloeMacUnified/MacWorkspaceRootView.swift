@@ -498,9 +498,11 @@ struct MacWorkspaceRootView: View {
                 }
                 if case .conversation(let id) = route, workspace.isTaskRunning(id) {
                     Spacer(minLength: 0)
-                    Image(systemName: workspace.hasPendingApproval(in: id) ? "hand.raised.fill" : "circle.fill")
+                    let approval = workspace.hasPendingApproval(in: id)
+                    let question = workspace.isWaitingForAnswer(in: id)
+                    Image(systemName: approval ? "hand.raised.fill" : (question ? "questionmark.bubble.fill" : "circle.fill"))
                         .font(.caption2)
-                        .foregroundStyle(workspace.hasPendingApproval(in: id) ? .orange : .accentColor)
+                        .foregroundStyle(approval || question ? .orange : .accentColor)
                         .accessibilityHidden(true)
                 }
             }

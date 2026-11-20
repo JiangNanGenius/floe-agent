@@ -16,13 +16,18 @@ targets:
     sources:REPLACE:
       - path: ../FloeMacBridge/Sources/FloeMacBridgeApp
       - path: ../FloeMacBridge/Sources/CBridgePTY/pty.c
+      - path: Sources/FloeMacHost/HostAgentQuestion.swift
       - path: Sources/FloeMacHost/HostAgentDatabase.swift
+      - path: Sources/FloeMacHost/HostChildSubagentController.swift
       - path: Sources/FloeMacHost/HostAgentWorkspace.swift
       - path: Sources/FloeMacHost/HostAgentWorkspaceView.swift
       - path: Sources/FloeMacUnified
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
+      - path: ../FloeAgent/FloeApp/Chat/ReasoningBlockView.swift
+      - path: ../FloeAgent/FloeApp/Chat/UserQuestionCardView.swift
+      - path: ../FloeAgent/FloeApp/Chat/RunningInputModePolicy.swift
       - path: ../FloeAgent/FloeApp/Chat/ApprovalCardView.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadPlanReview.swift
       - path: ../FloeAgent/FloeApp/Chat/ErrorEventView.swift

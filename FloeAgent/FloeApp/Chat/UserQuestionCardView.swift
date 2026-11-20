@@ -11,7 +11,7 @@
 // recognizer; this view never starts its own ASR. On a transcript the primary
 // calls `model.applyDictatedText(_:)`.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || canImport(AppKit))
 import SwiftUI
 import Combine
 import FloeModels
@@ -317,6 +317,9 @@ public enum UserQuestionCardAction: Equatable, Sendable {
 }
 
 public struct UserQuestionCardView: View {
+    #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+    @MainActor static var smokeActionFrames: [String: CGRect] = [:]
+    #endif
     @ObservedObject private var model: UserQuestionCardModel
     private let onSubmit: (UserQuestionAnswerTarget, UserQuestionAnswer) -> Void
     private let onCancel: (UserQuestionAnswerTarget) -> Void
@@ -434,6 +437,9 @@ public struct UserQuestionCardView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("user_question.option.\(option.id)")
+                #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { frame in Self.smokeActionFrames["user_question.option.\(option.id)"] = frame })
+                #endif
                 .accessibilityAddTraits(model.isSelected(option.id) ? .isSelected : [])
             }
             customAnswerRow(question)
@@ -586,6 +592,9 @@ public struct UserQuestionCardView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!model.canContinue || model.isSubmitting)
             .accessibilityIdentifier("user_question.continue")
+            #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { frame in Self.smokeActionFrames["user_question.continue"] = frame })
+            #endif
         }
     }
 }

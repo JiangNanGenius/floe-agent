@@ -209,11 +209,18 @@ public enum MacAgentWorkspaceTools {
     ///     (agent/goal) text writes are added; every write
     ///     still requires exactly one human approval through the session's
     ///     pending-approval card.
+    ///   - delegationRegistry: When non-nil (normal project Agent/Goal runs
+    ///     only; never chat/plan), the binding additionally advertises the
+    ///     delegation tools (`delegate`, `delegate.wait`) as private
+    ///     instances bound to that child-subagent registry, so the task can
+    ///     hand read-only investigation subtasks to owned background
+    ///     children. No global registry/catalog entry is created or replaced.
     /// - Returns: A binding ready for `FloeMacSelfRuntime.startSession`.
     public static func binding(
         workspace: WorkspaceRecord,
         readOnly: Bool,
-        chatOnly: Bool = false
+        chatOnly: Bool = false,
+        delegationRegistry: SubagentRunnerRegistry? = nil
     ) throws -> FloeMacSelfToolBinding {
         guard workspace.kind == .project else {
             throw MacAgentWorkspaceToolsError.workspaceKindUnsupported(workspace.kind.rawValue)
@@ -240,12 +247,22 @@ public enum MacAgentWorkspaceTools {
             )
         }
 
-        let executor = MacAgentWorkspaceToolExecutor(
+        let baseExecutor = MacAgentWorkspaceToolExecutor(
             workspaceRootURL: root,
             readOnly: readOnly || chatOnly
         )
-        let allowed = chatOnly ? readToolNames.intersection(ConversationToolAccess.chatNames)
+        var allowed = chatOnly ? readToolNames.intersection(ConversationToolAccess.chatNames)
             : (readOnly ? readToolNames : readToolNames.union(writeToolNames))
+        let executor: any ToolExecutor
+        if let delegationRegistry, !chatOnly {
+            allowed.formUnion(FloeMacDelegatingProjectToolExecutor.defaultDelegatingNames)
+            executor = FloeMacDelegatingProjectToolExecutor(
+                project: baseExecutor,
+                runners: delegationRegistry
+            )
+        } else {
+            executor = baseExecutor
+        }
         let gate = (try? CatastrophicActionGate.withBundledPatterns())
             ?? CatastrophicActionGate.failClosed(
                 reason: "Mac workspace tool gate corpus unavailable"
@@ -273,6 +290,28 @@ public enum MacAgentWorkspaceTools {
             allowedToolNames: allowed,
             hostGate: hostGate
         )
+    }
+
+    /// Reveal the current regular file only while the original project bookmark and verified descriptor are held.
+    static func withProjectFile(_ workspace: WorkspaceRecord, path: String, use: (URL) -> Void) throws {
+        guard workspace.kind == .project else { throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable }
+        var stale = false
+        let resolved = try URL(resolvingBookmarkData: workspace.rootBookmark, options: [.withoutUI],
+                               relativeTo: nil, bookmarkDataIsStale: &stale)
+        guard !stale else { throw MacAgentWorkspaceToolsError.workspaceBookmarkUnavailable }
+        let scoped = resolved.startAccessingSecurityScopedResource()
+        defer { if scoped { resolved.stopAccessingSecurityScopedResource() } }
+        let url = resolved.resolvingSymlinksInPath().standardizedFileURL
+        try validateWorkspaceRoot(url)
+        let root = MacAgentWorkspaceRoot(url)
+        let (physical, relative) = try macWorkspacePinSetup(root: root, path: path)
+        try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physical, relative: relative, root: root) { pin in
+            let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(pin, physicalRoot: physical, displayPath: path)
+            defer { Darwin.close(descriptor) }
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(descriptor, F_GETPATH, &buffer) == 0 else { throw MacAgentWorkspaceToolsError.notFound(path) }
+            use(URL(fileURLWithFileSystemRepresentation: buffer, isDirectory: false, relativeTo: nil))
+        }
     }
 
     /// The same root checks the self-core composition applies at session
@@ -1938,6 +1977,11 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
         expectedAuthorizationIdentity: String?,
         context: ToolContext
     ) async throws -> ToolResult {
+        if context.callOrigin?.kind == .delegatedChild,
+           !MacAgentWorkspaceTools.readToolNames.contains(call.toolName) {
+            return ToolResult(callID: call.id, status: .denied,
+                              outputSummary: "Project subtasks have read-only access.", outputDigest: "")
+        }
         guard let tool = tools[call.toolName] else {
             return ToolResult(
                 callID: call.id,

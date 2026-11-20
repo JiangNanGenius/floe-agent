@@ -8,6 +8,7 @@
 // silently half-wired.
 
 import Foundation
+import FloeCore
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
@@ -172,6 +173,9 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
     /// grants a tool; the tool binding still requires the explicit ceiling.
     /// Plan and Goal launches always use the full task envelope.
     public let chatFastMode: Bool
+    public let chatReasoningPreference: ChatReasoningPreference?
+    /// The host supplies an interactive question surface for this session.
+    public let allowsUserQuestions: Bool
     public let verifyFinalAnswer: Bool
     /// Host-authored acceptance criteria for a new durable Goal (mode
     /// `.goal`). 1...12 items, each non-empty and bounded; these become the
@@ -202,6 +206,8 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         context: FloeMacSelfRunContext = FloeMacSelfRunContext(),
         attachments: [FloeMacSelfSessionAttachment] = [],
         chatFastMode: Bool = true,
+        chatReasoningPreference: ChatReasoningPreference? = nil,
+        allowsUserQuestions: Bool = false,
         verifyFinalAnswer: Bool = false,
         goalCriteria: [String] = [],
         goalBudgets: GoalBudgets? = nil,
@@ -220,6 +226,8 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         self.context = context
         self.attachments = attachments
         self.chatFastMode = chatFastMode
+        self.chatReasoningPreference = chatReasoningPreference
+        self.allowsUserQuestions = allowsUserQuestions
         self.verifyFinalAnswer = verifyFinalAnswer
         self.goalCriteria = goalCriteria
         self.goalBudgets = goalBudgets

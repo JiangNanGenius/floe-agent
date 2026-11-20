@@ -198,6 +198,11 @@ enum FloeMacSelfCapabilityResolver {
             guard !name.isEmpty, name.utf8.count <= maximumToolNameBytes else {
                 throw FloeMacSelfCoreError.toolCapabilityUnavailable("a tool name is invalid")
             }
+            // A project binding must never supply a substitute question runner.
+            // The runtime adds the app-owned descriptor after validating this binding.
+            guard name != UserAskTool.name else {
+                throw FloeMacSelfCoreError.toolCapabilityUnavailable("user.ask is supplied by the app")
+            }
             guard let descriptor = binding.executor.descriptor(named: name) else {
                 throw FloeMacSelfCoreError.toolCapabilityUnavailable(
                     "the executor has no descriptor for \(name)"
@@ -216,11 +221,6 @@ enum FloeMacSelfCapabilityResolver {
             guard descriptor.executionBoundary != .childOnly else {
                 throw FloeMacSelfCoreError.toolCapabilityUnavailable(
                     "\(name) is only valid inside a delegated child run"
-                )
-            }
-            guard name != "user.ask" else {
-                throw FloeMacSelfCoreError.toolCapabilityUnavailable(
-                    "user.ask requires the App question coordinator, which this stage has not wired"
                 )
             }
         }

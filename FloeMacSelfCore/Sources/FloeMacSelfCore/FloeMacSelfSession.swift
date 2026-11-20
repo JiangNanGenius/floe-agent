@@ -47,6 +47,12 @@ actor FloeMacSelfSession {
     /// Re-reads the durable workspace row and re-proves the persisted root
     /// still equals the admitted boundary root. Nil for tool-free sessions.
     private let verifyWorkspaceLease: (@Sendable () async throws -> Void)?
+    /// The one durable question owner this session answers through. Nil only
+    /// for plan sessions (questions never enter the plan ceiling).
+    private let questionCenter: FloeMacSelfQuestionCenter?
+    /// True when this session's executor can dispatch `user.ask` (project
+    /// tool sessions and question-only standalone chats).
+    private let questionAnsweringEnabled: Bool
     private let beforeInputRecheck: (@Sendable () async -> Void)?
     private let beforeServiceStart: (@Sendable () async -> Void)?
     private let afterCancellationAttempt: (@Sendable () async -> Void)?
@@ -82,6 +88,8 @@ actor FloeMacSelfSession {
         steerModelID: UUID?,
         verifyPreparedInput: @escaping @Sendable (PersistedMessage) throws -> Void,
         verifyWorkspaceLease: (@Sendable () async throws -> Void)? = nil,
+        questionCenter: FloeMacSelfQuestionCenter? = nil,
+        questionAnsweringEnabled: Bool = false,
         eventBufferLimit: Int,
         beforeInputRecheck: (@Sendable () async -> Void)? = nil,
         beforeServiceStart: (@Sendable () async -> Void)? = nil,
@@ -104,6 +112,8 @@ actor FloeMacSelfSession {
         self.steerModelID = steerModelID
         self.verifyPreparedInput = verifyPreparedInput
         self.verifyWorkspaceLease = verifyWorkspaceLease
+        self.questionCenter = questionCenter
+        self.questionAnsweringEnabled = questionAnsweringEnabled
         self.beforeInputRecheck = beforeInputRecheck
         self.beforeServiceStart = beforeServiceStart
         self.afterCancellationAttempt = afterCancellationAttempt
@@ -559,6 +569,40 @@ actor FloeMacSelfSession {
         }
     }
 
+    // MARK: - Queue guidance withdrawal (host demote hook)
+
+    /// Withdraws one accepted-but-unconsumed guidance row from this exact run
+    /// so the host can demote it back to the ordinary message queue. This is
+    /// the Mac mirror of the iPad `ConversationCenter.withdrawPendingGuidance`
+    /// boundary and it fails closed everywhere: it returns true only when the
+    /// row is durably `queued` again. False means the row was already consumed
+    /// (the runtime won the race and owns the text), already changed status,
+    /// bound to another run/conversation, or this session is finished — in
+    /// every false case the durable row keeps its honest status, nothing is
+    /// removed from model context, and the unsent content is never lost.
+    func withdrawSteerForQueueDemotion(id: UUID) async -> Bool {
+        guard !tornDown, !runFinished else { return false }
+        // Durable validation first: only a steerPending row bound to this
+        // exact run may migrate back. A consumed row stays consumed; the
+        // queue demote must never disguise a sent message as a queued one.
+        guard let row = try? await runningInputStore.input(id: id),
+              row.conversationID == identity.conversationID,
+              row.status == .steerPending,
+              row.targetRunID == identity.runID else { return false }
+        // Atomically withdraw only guidance not yet copied into model
+        // context; a false result means consumption won the race.
+        guard await service.withdrawSteer(id: id) else { return false }
+        // Preserve the original content/metadata as an ordinary queued row.
+        // restoreQueued keeps goal rows' target run binding and the original
+        // model/workspace/execution mode, so a later startNextQueued relaunch
+        // is identical to a never-steered row. If this write fails the row
+        // stays steerPending but the runtime no longer holds it; the
+        // confirmed-terminal sweep requeues it, so report the honest status.
+        try? await runningInputStore.restoreQueued(id: id)
+        let final = try? await runningInputStore.input(id: id)
+        return final?.status == .queued
+    }
+
     // MARK: - Cancellation and termination
 
     func cancelAndWait(timeout: TimeInterval) async -> FloeMacSelfCancelReceipt {
@@ -929,6 +973,115 @@ actor FloeMacSelfSession {
         let deadline = ContinuousClock.now + .seconds(max(0.05, timeout))
         while terminalObserver.snapshot == nil && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+// MARK: - User questions (owner/run/call fencing)
+//
+// The session never reimplements question settlement: the durable store's
+// CAS transaction remains the only writer. This region only fences a human
+// answer against stop/settlement exactly like a steer decision (the same
+// decision-token serialization; no fence change), validates the owning
+// conversation and run against the session's immutable identity, and maps
+// the store's canonical receipts/errors onto the command contract. A late
+// answer after settlement receives the original receipt with
+// `accepted == false`, so a duplicate tap or a stale card can never settle
+// the same question twice.
+extension FloeMacSelfSession {
+
+    /// Live runtime wait projection for one question event. The durable
+    /// question lives only in the store; `waitingUserQuestion` is the RAM
+    /// projection the runtime parks on.
+    func setUserQuestionProjection(_ snapshot: UserQuestionWaitingSnapshot) async {
+        if snapshot.hasBlockingPending {
+            await service.setUserQuestionWait(snapshot)
+        } else if await service.snapshot().pendingUserQuestion?.requestID == snapshot.requestID {
+            await service.setUserQuestionWait(nil)
+        }
+    }
+
+    /// Settles one human answer through the durable store. Ownership fencing
+    /// is layered: conversation/run here, request/question/run binding plus
+    /// the CAS revision inside the store's transaction.
+    func resolveQuestion(
+        _ command: FloeMacSelfQuestionAnswerCommand
+    ) async -> FloeMacSelfQuestionResolution {
+        guard !tornDown else { return .rejected(.sessionEnded) }
+        guard command.conversationID == identity.conversationID else {
+            return .rejected(.conversationMismatch)
+        }
+        guard command.runID == identity.runID else { return .rejected(.runMismatch) }
+        guard questionAnsweringEnabled else { return .rejected(.toolsDisabled) }
+        guard let questionCenter else { return .rejected(.sessionEnded) }
+        let token = fence.beginSteerDecision()
+        do {
+            guard let snapshot = try await questionCenter.store.snapshot(requestID: command.requestID) else {
+                return .notPending(nil)
+            }
+            guard snapshot.conversationID == command.conversationID else { return .rejected(.conversationMismatch) }
+            guard snapshot.runID == command.runID else { return .rejected(.runMismatch) }
+            guard let question = snapshot.questions.first(where: { $0.questionID == command.questionID }) else {
+                return .notPending(nil)
+            }
+            if question.status != .pending {
+                return .notPending(UserQuestionAnswerReceipt(target: command.target, status: question.status,
+                    revision: question.revision, accepted: false, alreadySettled: true,
+                    answer: question.answerRecord(), requestState: snapshot.state))
+            }
+        } catch {
+            return .rejected(.sessionEnded)
+        }
+        guard let token else { return .rejected(.sessionEnded) }
+        guard fence.validateSteerDecision(token), !runFinished, !tornDown else {
+            return .rejected(.sessionEnded)
+        }
+
+        do {
+            let receipt = try await questionCenter.submitHumanAnswer(
+                target: command.target,
+                answer: command.answer
+            )
+            if receipt.accepted { return .accepted(receipt) }
+            // The store preserved the original settlement; this answer did
+            // not settle anything.
+            return .notPending(receipt)
+        } catch let error as UserQuestionError {
+            switch error {
+            case .runMismatch:
+                return .rejected(.runMismatch)
+            case .staleRevision:
+                return .rejected(.staleQuestion)
+            case .invalidAnswer, .invalidRequest:
+                return .rejected(.invalidAnswer)
+            case .notFound:
+                return .notPending(nil)
+            case .missingToolCallID, .missingConversation, .requestConflict,
+                 .requestCancelled:
+                return .rejected(.sessionEnded)
+            }
+        } catch {
+            return .rejected(.invalidAnswer)
+        }
+    }
+
+    /// Explicitly cancels one question request owned by this exact run.
+    /// Pending questions become cancelled with no answer body; a required
+    /// wait returns a cancelled tool receipt to the parked run. Returns false
+    /// when the request is unknown or belongs to another run/task.
+    func cancelQuestion(requestID: String) async -> Bool {
+        guard !tornDown, !runFinished, !fence.isStopRequested,
+              let questionCenter, questionAnsweringEnabled else { return false }
+        guard let snapshot = try? await questionCenter.store.snapshot(requestID: requestID),
+              snapshot.conversationID == identity.conversationID,
+              snapshot.runID == identity.runID else { return false }
+        guard let token = fence.beginSteerDecision() else { return false }
+        guard fence.validateSteerDecision(token), !runFinished, !tornDown else { return false }
+        do {
+            try await questionCenter.cancelRequest(requestID: requestID)
+            return true
+        } catch {
+            return false
         }
     }
 }

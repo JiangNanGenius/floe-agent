@@ -22,6 +22,7 @@ struct HostAgentWorkspaceView: View {
     @State private var standaloneDraft = ""
     #if FLOE_UNIFIED_MAC
     @StateObject private var search: MacConversationSearchModel
+    @State private var awayFromLatest = false
     @FocusState private var promptFocused: Bool
     @State private var attachmentSelection: UUID?
     @State private var choosingAttachments = false
@@ -29,6 +30,7 @@ struct HostAgentWorkspaceView: View {
     @State private var criterion = ""
     @State private var goalToEdit: ConversationGoal?
     @State private var goalForConfirmation: ConversationGoal?
+    @State private var editingQueuedInput: PendingUserInput?
     @State private var hiddenPlanConfirmations: Set<ThreadPlanConfirmationPresentationKey> = []
     private var mode: HostAgentMode { workspace.composerMode }
     #else
@@ -77,6 +79,21 @@ struct HostAgentWorkspaceView: View {
         }
     }
 
+    #if FLOE_UNIFIED_MAC
+    /// Status caption for a non-queued queue row. Queued rows stay quiet;
+    /// a guidance row waiting for a safe insertion point, or mid-promotion,
+    /// tells the user what is happening in aligned bilingual copy.
+    private func queueStatusText(_ status: PendingUserInputStatus) -> String {
+        switch status {
+        case .queued: ""
+        case .promoting: String(localized: "mac.agent.guidanceConverting")
+        case .steerPending: String(localized: "mac.agent.guidanceWaiting")
+        case .consumed: String(localized: "mac.agent.guidanceSent")
+        case .cancelled: String(localized: "mac.agent.guidanceCancelled")
+        }
+    }
+    #endif
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             #if !FLOE_UNIFIED_MAC
@@ -122,19 +139,73 @@ struct HostAgentWorkspaceView: View {
                 }
                 pendingPlanReview
                 if let goal = workspace.goal { goalCard(goal) }
+                if let id = workspace.selectedID {
+                    MacChildTasksView(controller: workspace.childSubagents, conversationID: id)
+                }
                 if let id = workspace.selectedID, let inputs = workspace.queuedInputs[id], !inputs.isEmpty {
                     DisclosureGroup {
+                        let queued = inputs.filter { $0.status == .queued }
                         ForEach(inputs) { input in
-                            HStack {
-                                Text(verbatim: input.content).lineLimit(2).textSelection(.enabled)
-                                Spacer()
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(verbatim: input.content).lineLimit(2).textSelection(.enabled)
+                                    if input.status != .queued {
+                                        Text(queueStatusText(input.status))
+                                            .font(.caption)
+                                            .foregroundStyle(FloeTheme.pending)
+                                    }
+                                }
+                                Spacer(minLength: 4)
                                 if let text = CredentialMessagePart.clipboardText(input.content) {
                                     ChatMessageCopyButton(text: text)
                                 }
-                                Button("mac.agent.removeQueued", systemImage: "xmark") {
-                                    Task { await workspace.cancelQueued(input) }
+                                if input.status == .queued || input.status == .steerPending {
+                                    let queuedIndex = queued.firstIndex(where: { $0.id == input.id })
+                                    Menu {
+                                        Button("mac.agent.editQueued", systemImage: "pencil") {
+                                            editingQueuedInput = input
+                                        }
+                                        Button("mac.agent.moveQueuedUp", systemImage: "arrow.up") {
+                                            Task { await workspace.moveQueued(input, offset: -1) }
+                                        }
+                                        .disabled(queuedIndex == nil || queuedIndex == queued.startIndex)
+                                        Button("mac.agent.moveQueuedDown", systemImage: "arrow.down") {
+                                            Task { await workspace.moveQueued(input, offset: 1) }
+                                        }
+                                        .disabled(queuedIndex == nil || queuedIndex == queued.indices.last)
+                                        // Both directions come from one policy:
+                                        // a queued row can convert into guidance
+                                        // for the active run, an accepted
+                                        // guidance row can return to the queue —
+                                        // but only while it has NOT been
+                                        // consumed. Consumed rows offer no mode
+                                        // action at all.
+                                        let modeActions = RunningInputModePolicy.modeActions(
+                                            status: input.status, canSteer: workspace.canSteer)
+                                        if modeActions.contains(.promoteToSteer) {
+                                            Button("mac.agent.convertToGuidance",
+                                                   systemImage: "arrow.triangle.turn.up.right.diamond") {
+                                                Task { await workspace.promoteQueuedToGuidance(input) }
+                                            }
+                                            .disabled(!workspace.canSteer)
+                                        }
+                                        if modeActions.contains(.demoteToQueue) {
+                                            Button("mac.agent.backToQueue", systemImage: "arrow.uturn.left") {
+                                                Task { await workspace.demoteQueuedGuidance(input) }
+                                            }
+                                        }
+                                        Divider()
+                                        Button("mac.agent.removeQueued", systemImage: "trash", role: .destructive) {
+                                            Task { await workspace.cancelQueued(input) }
+                                        }
+                                    } label: {
+                                        Image(systemName: "ellipsis.circle")
+                                            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                                    }
+                                    .accessibilityLabel("mac.agent.queueMessageActions")
+                                } else {
+                                    ProgressView().controlSize(.small)
                                 }
-                                .labelStyle(.iconOnly)
                             }
                         }
                         if !workspace.isSending {
@@ -234,6 +305,12 @@ struct HostAgentWorkspaceView: View {
         .sheet(item: $goalForConfirmation) { goal in
             MacGoalConfirmationView(goal: goal) { steps, criteria in
                 await workspace.confirmGoal(goal, completedSteps: steps, confirmedCriteria: criteria)
+            }
+        }
+        .sheet(item: $editingQueuedInput) { input in
+            MacQueuedInputEditor(input: input) { text in
+                let target = input
+                Task { await workspace.editQueued(target, content: text) }
             }
         }
         #else
@@ -365,6 +442,7 @@ struct HostAgentWorkspaceView: View {
                     HStack(spacing: 8) {
                         composerContext(openModelSettings).disabled(workspace.isSending)
                         modeControl.disabled(workspace.isSending)
+                        if let provider = workspace.composerProvider { reasoningMenu(provider.model) }
                         if workspace.isSending { runningInputControl }
                     }
                 }
@@ -529,6 +607,40 @@ struct HostAgentWorkspaceView: View {
         return goal
     }
 
+    private func reasoningMenu(_ model: ModelProfile) -> some View {
+        let inChat = mode == .chat
+        let current = inChat ? workspace.chatReasoning.rawValue : model.effectiveReasoningEffort.rawValue
+        return Menu {
+            if inChat {
+                ForEach(ChatReasoningPreference.allCases) { choice in
+                    Button { Task { await workspace.changeChatReasoning(choice) } } label: {
+                        reasoningChoice(choice.rawValue, selected: current)
+                    }
+                }
+            } else {
+                ForEach(ModelReasoningEffort.allCases) { choice in
+                    Button { workspace.changeModelEffort(choice, modelID: model.id) } label: {
+                        reasoningChoice(choice.rawValue, selected: current)
+                    }
+                }
+            }
+        } label: {
+            FloeThreadComposerChip(title: Text(LocalizedStringKey("mac.reasoning." + current)),
+                                   systemImage: "brain.head.profile")
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .disabled(workspace.isSending || workspace.isLoadingHistory || workspace.savingChatReasoning)
+        .accessibilityIdentifier("composer.reasoning")
+        .accessibilityLabel("mac.reasoning.label")
+        .help("mac.reasoning.label")
+    }
+
+    @ViewBuilder private func reasoningChoice(_ choice: String, selected: String) -> some View {
+        let title = LocalizedStringKey("mac.reasoning." + choice)
+        if choice == selected { Label(title, systemImage: "checkmark") }
+        else { Text(title) }
+    }
+
     private var modeControl: some View {
         FloeComposerModeMenu(modes: HostAgentMode.allCases,
                              selection: Binding(get: { mode }, set: { workspace.composerMode = $0 }),
@@ -553,6 +665,12 @@ struct HostAgentWorkspaceView: View {
                             Text(step.toolName).font(.callout.monospaced())
                             Spacer()
                             Text(toolStateTitle(step.state)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let path = step.outputPath, step.outputWorkspaceID == workspace.selectedConversationWorkspace?.id {
+                            Button {
+                                workspace.withOutputFile(step) { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+                            } label: { Label(path, systemImage: "doc") }
+                            .help("mac.run.revealFile")
                         }
                         if let summary = step.summary, !summary.isEmpty {
                             Text(summary).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -705,6 +823,9 @@ struct HostAgentWorkspaceView: View {
                                             }
                                         })
                                     } else if message.role == "assistant" {
+                                        ForEach(message.parts.filter { $0.kind == .reasoning }) { part in
+                                            if let text = part.text, !text.isEmpty { ReasoningBlockView(text: text) }
+                                        }
                                         MarkdownRendererView(source: message.content)
                                     } else {
                                         Text(verbatim: message.content).foregroundStyle(.secondary)
@@ -724,6 +845,15 @@ struct HostAgentWorkspaceView: View {
                                         }
                                     }
                                 }
+                                .task(id: message.runID) {
+                                    if message.role == "user", let runID = message.runID {
+                                        await workspace.loadVisibleToolActivity(runID: runID, conversationID: message.conversationID)
+                                    }
+                                }
+                                if message.role == "user", let runID = message.runID,
+                                   let questions = workspace.settledQuestions[runID] {
+                                    MacQuestionHistoryView(requests: questions)
+                                }
                                 if message.role == "user", let runID = message.runID,
                                    let steps = workspace.runToolActivity[runID], !steps.isEmpty {
                                     toolActivityCard(steps)
@@ -734,12 +864,35 @@ struct HostAgentWorkspaceView: View {
                                 let steps = workspace.liveToolActivity
                                 if !steps.isEmpty { toolActivityCard(steps) }
                             }
+                            if let question = workspace.pendingQuestion {
+                                HostAgentQuestionCardView(question: question, submit: { target, answer in
+                                    await workspace.answerQuestion(target: target, answer: answer)
+                                }, cancel: { requestID in
+                                    await workspace.declineQuestion(requestID: requestID)
+                                }, draftChanged: { target, draft in
+                                    Task { await workspace.saveQuestionDraft(target: target, answer: draft) }
+                                })
+                                .id(question.cardIdentity)
+                            }
                             if let approval = workspace.pendingApproval {
                                 MacWorkspaceApprovalView(workspace: workspace, approval: approval)
+                                    .id(approval.callID)
+                            }
+                            if let attempt = workspace.reconnectAttempt {
+                                Label { Text("mac.agent.reconnecting \(attempt)") } icon: { Image(systemName: "arrow.clockwise") }
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if !workspace.liveReasoning.isEmpty {
+                                ReasoningBlockView(text: workspace.liveReasoning, isStreaming: workspace.streamedText.isEmpty)
+                            } else if workspace.awaitingModel && workspace.reconnectAttempt == nil && workspace.streamedText.isEmpty {
+                                ModelResponseWaitingView()
                             }
                             if !workspace.streamedText.isEmpty {
                                 MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
                             }
+                        }
+                        .overlay(alignment: .bottom) {
+                            Color.clear.frame(height: 1).id("mac.thread.latest").allowsHitTesting(false)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 12)
@@ -749,8 +902,26 @@ struct HostAgentWorkspaceView: View {
                     }
                 }
                 .defaultScrollAnchor(.bottom)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentSize.height - geometry.visibleRect.maxY > 140
+                } action: { _, away in awayFromLatest = away }
+                .overlay(alignment: .bottomTrailing) {
+                    if awayFromLatest {
+                        Button { scroll.scrollTo("mac.thread.latest", anchor: .bottom) } label: {
+                            Label("mac.thread.latest", systemImage: "arrow.down")
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .padding(8)
+                    }
+                }
                 .onChange(of: workspace.pendingApproval?.callID) { _, callID in
                     if let callID { scroll.scrollTo(callID, anchor: .bottom) }
+                }
+                .onChange(of: workspace.lastSteer) { _, _ in
+                    if let callID = workspace.pendingApproval?.callID { scroll.scrollTo(callID, anchor: .bottom) }
+                }
+                .onChange(of: workspace.pendingQuestion?.cardIdentity) { _, identity in
+                    if let identity { scroll.scrollTo(identity, anchor: .bottom) }
                 }
                 .onChange(of: search.focusedMessageID) { _, id in
                     if let id { scroll.scrollTo(id, anchor: .center) }
@@ -955,3 +1126,43 @@ struct HostAgentProviderForm: View {
         .padding()
     }
 }
+
+#if FLOE_UNIFIED_MAC
+/// Editor sheet for one queued or accepted-guidance message. Saving routes
+/// through the workspace so a guidance row is withdrawn before its text
+/// changes; the runtime never consumes an edited message.
+private struct MacQueuedInputEditor: View {
+    let input: PendingUserInput
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+
+    init(input: PendingUserInput, onSave: @escaping (String) -> Void) {
+        self.input = input
+        self.onSave = onSave
+        _text = State(initialValue: input.content)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("mac.agent.editQueuedMessage")
+                .font(.headline)
+            TextField("mac.agent.queueMessage", text: $text, axis: .vertical)
+                .lineLimit(3...10)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("host.chat.cancel", role: .cancel) { dismiss() }
+                Button("host.chat.save") {
+                    onSave(text)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 420)
+    }
+}
+#endif

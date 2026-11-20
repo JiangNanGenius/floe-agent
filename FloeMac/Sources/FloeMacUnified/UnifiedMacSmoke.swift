@@ -201,6 +201,9 @@ final class UnifiedMacSmoke {
                         projectWorkflow = await agent.verifyProjectTaskWorkflowSmoke(project: project,
                             folder: folder, attachment: document, endpoint: endpoint, chooseMode: { mode in
                                 await selectComposerMode(mode, workspace: agent)
+                            }, answerQuestion: {
+                                guard CommandLine.arguments.contains("--project-question-fixture") else { return true }
+                                return await self.answerProjectQuestion()
                             }) {
                                 guard clickWorkbenchButton(ids: ["thread.plan.close"], frame: agent.smokeClosePlanFrame,
                                                            screenshot: "project-task-plan.png") else { return false }
@@ -213,6 +216,11 @@ final class UnifiedMacSmoke {
                             } approve: {
                                 guard await enterSteerDuringApproval(workspace: agent) else { return false }
                                 return clickApproval(in: agent, allow: true, screenshot: "project-task-approval.png")
+                            } newProjectTask: {
+                                await openNewProjectTask(workspace: agent, projectID: project.id)
+                            } approveSubtask: {
+                                try? await Task.sleep(for: .milliseconds(160))
+                                return clickApproval(in: agent, allow: true, screenshot: "project-subtask-approval.png")
                             }
                     }
                 }
@@ -262,6 +270,7 @@ final class UnifiedMacSmoke {
             "deletedFixtureTask": deletedFixtureTask,
             "composerDraftsReloaded": verifyDraftStorage(),
             "providerCatalogFetched": catalog,
+            "providerCatalogPreservedOverrides": verifyCatalogOverrides(),
             "providerConnectionVerified": providerConnectionVerified,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
             "desktopFilesLayoutVerified": desktopFilesLayout,
@@ -399,6 +408,23 @@ final class UnifiedMacSmoke {
         let cleared = MacWorkspaceDraftStore(directory: directory)
         return readBack && !first.saveFailed && !reopened.saveFailed
             && cleared.text(for: conversation).isEmpty && cleared.attachments(for: conversation).isEmpty
+    }
+
+    private func verifyCatalogOverrides() -> Bool {
+        guard var saved = try? HostAgentProvider(endpoint: "https://fixture.invalid/v1",
+            protocolKind: .openAIChatCompletions, modelID: "fixture-reasoning", apiKey: "",
+            supportsImages: true) else { return false }
+        saved.model.explicitCapabilities = [.tools, .vision, .imageGeneration]
+        saved.model.reasoningEffort = .high
+        var discovered = saved.model
+        discovered.displayName = "Fixture model"
+        discovered.capabilities = [.text, .tools, .imageGeneration]
+        discovered.reasoningMetadata = .init(supportsReasoningEffort: true)
+        saved.applyCatalogModel(discovered)
+        discovered.reasoningMetadata = nil
+        saved.applyCatalogModel(discovered)
+        return saved.model.displayName == "Fixture model" && saved.model.capabilities == [.text, .vision]
+            && saved.model.reasoningMetadata?.supportsReasoningEffort == true && saved.model.reasoningEffort == .high
     }
 
     private func verifyProviderCatalog(in workspace: HostAgentWorkspace) async -> Bool {
@@ -702,6 +728,20 @@ final class UnifiedMacSmoke {
         return true
     }
 
+    private func answerProjectQuestion() async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while ContinuousClock.now < deadline {
+            if UserQuestionCardView.smokeActionFrames["user_question.option.report"] != nil,
+               clickWorkbenchButton(ids: ["user_question.option.report"], frame: UserQuestionCardView.smokeActionFrames["user_question.option.report"], screenshot: nil) {
+                try? await Task.sleep(for: .milliseconds(160))
+                return clickWorkbenchButton(ids: ["user_question.continue"], frame: UserQuestionCardView.smokeActionFrames["user_question.continue"], screenshot: "project-question.png")
+            }
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+        settingsDiagnostics.append("The project question did not expose its report option.")
+        return false
+    }
+
     private func enterSteerDuringApproval(workspace: HostAgentWorkspace) async -> Bool {
         guard let window = visibleWorkbench, let content = window.contentView, let id = workspace.selectedID,
               workspace.canSteer else { return false }
@@ -725,7 +765,22 @@ final class UnifiedMacSmoke {
         while workspace.queuedInputs[id]?.first?.content != next && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
-        guard workspace.queuedInputs[id]?.first?.content == next,
+        guard let original = workspace.queuedInputs[id]?.first, original.content == next else { return false }
+        await workspace.editQueued(original, content: "Edited queue fixture")
+        guard let edited = workspace.queuedInputs[id]?.first, edited.id == original.id,
+              edited.content == "Edited queue fixture" else { return false }
+        await workspace.editQueued(edited, content: next)
+        guard await submit("Discard this queue fixture") else { return false }
+        deadline = ContinuousClock.now + .seconds(2)
+        while workspace.queuedInputs[id]?.count != 2 && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard let discard = workspace.queuedInputs[id]?.last, discard.id != original.id else { return false }
+        await workspace.moveQueued(discard, offset: -1)
+        guard workspace.queuedInputs[id]?.map(\.id) == [discard.id, original.id] else { return false }
+        await workspace.cancelQueued(discard)
+        guard workspace.queuedInputs[id]?.map(\.id) == [original.id],
+              workspace.queuedInputs[id]?.first?.content == next,
               await selectMenuChoice(frame: workspace.smokeRunningModeFrame, titles: titles, target: titles[1]),
               workspace.runningInputMode == .steer, await submit(guidance) else { return false }
         deadline = ContinuousClock.now + .seconds(2)

@@ -1059,6 +1059,32 @@ public struct UserQuestionAnswerDelivery: Sendable, Hashable, Codable, Identifia
     }
 }
 
+public extension UserQuestionAnswerDelivery {
+    func individualAnswers(for request: UserQuestionWaitingSnapshot) throws -> [UserQuestionAnswerDelivery] {
+        guard self.requestID == request.requestID,
+              self.conversationID == request.conversationID,
+              self.runID == request.runID else { throw UserQuestionError.runMismatch }
+        return self.answers.map { answer in
+            UserQuestionAnswerDelivery(requestID: self.requestID,
+                conversationID: self.conversationID, runID: self.runID,
+                answers: [answer], createdAt: self.createdAt,
+                text: UserQuestionFormatting.deliveryText(request: request, answers: [answer]))
+        }
+    }
+
+    func inputID() throws -> UUID {
+        guard self.answers.count == 1 else {
+            throw FloeError.validationFailed("Question answers require a stable per-question delivery identity")
+        }
+        let identity = self.requestID + ":" + self.answers[0].questionID
+        let hex = Array(FloeDigest.sha256Hex(Data(identity.utf8)).prefix(32))
+        let raw = [String(hex[0..<8]), String(hex[8..<12]), String(hex[12..<16]),
+                   String(hex[16..<20]), String(hex[20..<32])].joined(separator: "-")
+        guard let id = UUID(uuidString: raw) else { throw UserQuestionError.invalidRequest("Invalid delivery identity") }
+        return id
+    }
+}
+
 public enum UserQuestionEvent: Sendable, Hashable {
     case presented(UserQuestionWaitingSnapshot)
     case settled(UserQuestionWaitingSnapshot)

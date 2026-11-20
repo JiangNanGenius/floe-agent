@@ -63,6 +63,10 @@ public actor FloeMacSelfRuntime {
 
     private var stores: FloeMacSelfStores?
     private var admissions: FloeMacSelfAdmissionStore?
+    /// The one durable user-question owner for this database. Created at
+    /// bootstrap; every session binds its coordinator-backed `user.ask`
+    /// runner and recovery seam to this exact instance.
+    private var questionCenter: FloeMacSelfQuestionCenter?
     private var bootstrapReceipt: FloeMacSelfBootstrapReceipt?
     private var bootstrapTask: Task<FloeMacSelfBootstrapReceipt, Error>?
     private var shutdownTask: Task<FloeMacSelfShutdownReceipt, Error>?
@@ -90,6 +94,32 @@ public actor FloeMacSelfRuntime {
     ) {
         dispatchTestHook = beforeServiceStart
         cancellationAttemptTestHook = afterCancellationAttempt
+    }
+
+    // MARK: - Owned background project subagents (shared iOS v1.8.57 delegation)
+
+    /// One child-subagent runtime per database owner, installed by the host
+    /// before the first tool-enabled session that may delegate. Never
+    /// replaced once set: a live session's lifecycle closures stay bound to
+    /// the runtime that admitted the run, and separate runtimes never
+    /// overwrite each other's delegation handlers.
+    private var childSubagentRuntime: FloeMacChildSubagentRuntime?
+
+    /// Installs the shared child-subagent runtime. Later installs are
+    /// ignored while sessions can observe the first one.
+    public func installChildSubagentRuntime(_ runtime: FloeMacChildSubagentRuntime) {
+        if childSubagentRuntime == nil {
+            childSubagentRuntime = runtime
+        }
+    }
+
+    /// Durable delegated-child identity/transcript/checkpoint store over this
+    /// runtime's single database writer. The host hands it to the child
+    /// runtime; it opens no second connection.
+    public func childRunStoring() throws -> any ChildRunStoring {
+        try ensureOpen()
+        try requireAuthority()
+        return SQLiteChildRunStore(database: database)
     }
 
     /// Fail-closed convenience initializer. It performs the same owner and
@@ -285,6 +315,7 @@ public actor FloeMacSelfRuntime {
         // bootstrap fails closed instead of claiming readiness.
         do {
             try await preparedStores.runningInputs.recoverTransientInputs()
+            _ = try await SQLiteChildRunStore(database: database).reconcileInterruptedOnLaunch()
         } catch {
             throw FloeMacSelfCoreError.persistenceUnavailable(
                 FloeMacSelfErrorIdentity.render(error)
@@ -292,6 +323,15 @@ public actor FloeMacSelfRuntime {
         }
         stores = preparedStores
         admissions = FloeMacSelfAdmissionStore(database: database, authorityLock: authorityLock)
+        // The question center binds the existing durable store/coordinator
+        // pair to this database. Register the runtime's live-wait projection
+        // before any host subscriber: bootstrap precedes `isReady`, so the
+        // host always subscribes later and sees the same ordered events.
+        let center = FloeMacSelfQuestionCenter(database: database)
+        await center.subscribeEvents { [weak self] event in
+            await self?.routeQuestionEvent(event)
+        }
+        questionCenter = center
         let receipt = FloeMacSelfBootstrapReceipt(
             schemaVersion: version,
             appliedMigrationCount: migrations.count,
@@ -640,16 +680,42 @@ public actor FloeMacSelfRuntime {
                 resolvedWorkspaceRoot = nil
             }
 
-            let availableToolNames: Set<String> = resolvedTools.enabled
-                ? resolvedTools.allowedToolNames
-                : Set<String>()
+            // Project sessions and plans can ask the user for clarification;
+            // a standalone chat without a project gets a question-only
+            // surface over the existing denied executor, so no workspace
+            // boundary, approval capability or child/queue behavior changes.
+            let questionCenter = try self.userQuestionCenter()
+            let questionEligible = request.allowsUserQuestions && resolvedProvider.model.capabilities.contains(.tools)
+            if questionEligible {
+                let inputMode = request.mode == .chat && !request.chatFastMode ? "agent" : request.mode.rawValue
+                let owner = QuestionInputOwner(questionWorkspaceID: prepared.workspace.id, inputMode: inputMode)
+                let payload = try JSONEncoder().encode(owner)
+                _ = try await stores.runs.appendEvent(runID: runID, kind: .status,
+                                                       payloadJSON: String(decoding: payload, as: UTF8.self))
+            }
+            let questionOnlyChat = !resolvedTools.enabled && questionEligible
+            let baseExecutor: any ToolExecutor = questionEligible
+                ? FloeMacSelfQuestionToolExecutor(
+                    wrapping: resolvedTools.executor,
+                    coordinator: questionCenter.coordinator
+                )
+                : resolvedTools.executor
+            let availableToolNames: Set<String> = {
+                guard questionEligible else { return resolvedTools.allowedToolNames }
+                if questionOnlyChat { return [UserAskTool.name] }
+                guard resolvedTools.enabled else { return resolvedTools.allowedToolNames }
+                return resolvedTools.allowedToolNames.union([UserAskTool.name])
+            }()
+            let runtimeToolsEnabled = resolvedTools.enabled || questionOnlyChat
             let runContext = ConversationRunService.RunContext(
                 workspaceName: request.context.workspaceName ?? prepared.workspace.name,
                 selectedRelativePath: request.context.selectedRelativePath,
                 executionTarget: request.context.executionTarget
-                    ?? (resolvedTools.enabled
-                        ? "macOS native host"
-                        : "macOS chat (tools disabled)"),
+                    ?? (questionOnlyChat
+                        ? "macOS chat (questions)"
+                        : (resolvedTools.enabled
+                            ? "macOS native host"
+                            : "macOS chat (tools disabled)")),
                 availableToolNames: availableToolNames,
                 contentOverlay: .empty,
                 workspaceAttachmentPaths: [],
@@ -658,29 +724,71 @@ public actor FloeMacSelfRuntime {
                 projectInstructions: request.context.projectInstructions
             )
 
-            let configuration = FloeAgentRuntime.Configuration(
+            var turnModel = resolvedProvider.model
+            var reasoningPolicy: ProviderReasoningPolicy = .modelDefault
+            if effectiveChatFastMode {
+                let conversationID = prepared.conversation.id
+                let preferences = SQLiteChatPreferenceStore(database: database)
+                let stored = try await preferences.preferences(conversationID: conversationID)?.chatReasoning
+                let preference = request.chatReasoningPreference ?? stored ?? .fast
+                if let requested = request.chatReasoningPreference, requested != (stored ?? .fast) {
+                    try await preferences.updateChatReasoning(requested, conversationID: conversationID)
+                }
+                let resolution = await ChatReasoningCoordinator().resolve(
+                    runID: prepared.run.id, provider: resolvedProvider.provider, model: turnModel,
+                    preference: preference, recorder: { runID, decision in
+                        _ = try? await stores.runs.appendEvent(runID: runID, kind: .status,
+                                                               payloadJSON: decision.payloadJSON())
+                    }
+                )
+                turnModel = resolution.model
+                reasoningPolicy = resolution.policy
+            }
+            var configuration = FloeAgentRuntime.Configuration(
                 conversationID: prepared.conversation.id,
                 provider: resolvedProvider.provider,
-                model: resolvedProvider.model,
+                model: turnModel,
                 conversationMode: request.mode,
                 allowedToolNames: availableToolNames,
                 workspaceRootURL: resolvedWorkspaceRoot,
                 allowedWorkspacePaths: resolvedTools.boundary?.allowedWorkspacePaths ?? [],
-                toolsEnabled: resolvedTools.enabled,
+                toolsEnabled: runtimeToolsEnabled,
                 goalBudgets: request.mode == .goal ? request.goalBudgets : nil,
                 verifyFinalAnswer: request.verifyFinalAnswer && !effectiveChatFastMode && request.mode != .plan,
                 chatFastMode: effectiveChatFastMode,
+                reasoningPolicy: reasoningPolicy,
                 environmentID: nil,
                 executionBinding: nil,
                 remoteExecutionEnvironment: false,
-                localLinuxGuestEnvironment: false
+                localLinuxGuestEnvironment: false,
+                // The durable question seam: terminal fences cancel pending
+                // questions and checkpoint repair resumes an interrupted ask.
+                userQuestionRecovery: questionCenter.coordinator
             )
 
+            if let childSubagentRuntime, await childSubagentRuntime.isBound(runID) {
+                // Per-(run, conversation) child lifecycle wiring: settle
+                // undelivered background children into parent evidence before
+                // completion, mark delivery after the checkpoint, identify
+                // background owners per child call, and reach exactly this
+                // run's children on parent stop/cancel. Every closure no-ops
+                // for runs the child runtime does not own.
+                let lifecycle = await childSubagentRuntime.sessionLifecycle(
+                    for: runID,
+                    conversationID: resolvedConversationID
+                )
+                configuration.settleBackgroundChildren = lifecycle.settle
+                configuration.markBackgroundChildrenDelivered = lifecycle.markDelivered
+                configuration.isBackgroundChild = lifecycle.isBackground
+                configuration.cancelBackgroundChildren = lifecycle.cancelAll
+                configuration.markBackgroundChildrenInterrupted = lifecycle.markInterrupted
+            }
+
             let executor: any ToolExecutor
-            if resolvedTools.enabled {
+            if runtimeToolsEnabled {
                 let fenced = FloeMacSelfFencedToolExecutor(
-                    wrapping: resolvedTools.executor,
-                    allowedToolNames: resolvedTools.allowedToolNames,
+                    wrapping: baseExecutor,
+                    allowedToolNames: availableToolNames,
                     fence: fence,
                     epoch: taskEpoch
                 )
@@ -785,6 +893,8 @@ public actor FloeMacSelfRuntime {
                 steerModelID: resolvedProvider.model.id,
                 verifyPreparedInput: verifyPreparedInput,
                 verifyWorkspaceLease: verifyWorkspaceLease,
+                questionCenter: questionCenter,
+                questionAnsweringEnabled: questionEligible && runtimeToolsEnabled,
                 eventBufferLimit: options.eventBufferLimit,
                 beforeInputRecheck: preparedInputTestHook,
                 beforeServiceStart: dispatchTestHook,
@@ -1033,6 +1143,7 @@ public actor FloeMacSelfRuntime {
             context: request.context,
             attachments: [],
             chatFastMode: request.chatFastMode,
+            allowsUserQuestions: request.allowsUserQuestions,
             verifyFinalAnswer: request.verifyFinalAnswer,
             goalCriteria: [],
             goalBudgets: nil,
@@ -1385,6 +1496,15 @@ public actor FloeMacSelfRuntime {
     /// Throws `notBootstrapped` before `bootstrap()`.
     public func runningInputStore() throws -> any RunningInputStore {
         try requireStores().runningInputs
+    }
+
+    /// The one durable user-question owner bound to this database. The host
+    /// projects cards from this center; sessions answer through their exact
+    /// handles. Throws `notBootstrapped` before `bootstrap()`.
+    public func userQuestionCenter() throws -> FloeMacSelfQuestionCenter {
+        try ensureOpen()
+        guard let questionCenter else { throw FloeMacSelfCoreError.notBootstrapped }
+        return questionCenter
     }
 
     /// Every durable workspace in deterministic name order. This is the
@@ -2025,6 +2145,18 @@ public actor FloeMacSelfRuntime {
         return owner
     }
 
+    public func chatReasoning(conversationID: UUID) async throws -> ChatReasoningPreference {
+        _ = try requireStores()
+        return try await SQLiteChatPreferenceStore(database: database)
+            .preferences(conversationID: conversationID)?.chatReasoning ?? .fast
+    }
+
+    public func setChatReasoning(_ preference: ChatReasoningPreference, conversationID: UUID) async throws {
+        _ = try requireStores()
+        try await SQLiteChatPreferenceStore(database: database)
+            .updateChatReasoning(preference, conversationID: conversationID)
+    }
+
     public func conversationMessages(
         conversationID: UUID,
         limit: Int = 100
@@ -2116,6 +2248,61 @@ public actor FloeMacSelfRuntime {
     }
 
     // MARK: - Helpers
+
+    /// Projects coordinator events into the exact live session's runtime
+    /// wait state (`waitingUserQuestion` is a RAM projection; the durable
+    /// question lives only in the store). Runs before host subscribers so
+    /// the service snapshot is truthful by the time the UI observes the
+    /// same event.
+    private func routeQuestionEvent(_ event: UserQuestionEvent) async {
+        switch event {
+        case .presented(let snapshot), .settled(let snapshot):
+            guard let session = sessions[snapshot.runID] else { return }
+            await session.setUserQuestionProjection(snapshot)
+        case .answerAvailable(let delivery):
+            // Restore retries a failed durable enqueue.
+            try? await deliverOptionalQuestionAnswers(conversationID: delivery.conversationID)
+        }
+    }
+
+    private struct QuestionInputOwner: Codable {
+        let questionWorkspaceID: UUID
+        let inputMode: String
+    }
+
+    /// Acknowledge each answer only after its stable ID exists in the same queue
+    /// used for normal guidance. The original project, mode and model survive a relaunch.
+    public func deliverOptionalQuestionAnswers(conversationID: UUID) async throws {
+        let center = try userQuestionCenter()
+        let stores = try requireStores()
+        for delivery in try await center.pendingDeliveries(conversationID: conversationID) {
+            guard let request = try await center.store.snapshot(requestID: delivery.requestID),
+                  let run = try await stores.runs.run(id: delivery.runID),
+                  run.conversationID == conversationID, let modelID = run.modelID else { continue }
+            let events = try await stores.runs.events(runID: run.id, afterSequence: -1, limit: 64)
+            guard let owner = events.lazy.filter({ $0.kind == .status }).compactMap({
+                try? JSONDecoder().decode(QuestionInputOwner.self, from: Data($0.payloadJSON.utf8))
+            }).first else { continue }
+            for single in try delivery.individualAnswers(for: request) {
+                let id = try single.inputID()
+                let row = PendingUserInput(id: id, conversationID: conversationID, targetRunID: run.id,
+                                           content: single.text, mode: .steer, selectedModelID: modelID,
+                                           workspaceID: owner.questionWorkspaceID, executionMode: owner.inputMode,
+                                           createdAt: single.createdAt)
+                if try await stores.runningInputs.input(id: id) == nil {
+                    do { _ = try await stores.runningInputs.enqueue(row) }
+                    catch { guard try await stores.runningInputs.input(id: id) != nil else { throw error } }
+                }
+                guard let saved = try await stores.runningInputs.input(id: id),
+                      saved.conversationID == conversationID, saved.workspaceID == owner.questionWorkspaceID,
+                      saved.selectedModelID == modelID else { continue }
+                if saved.status == .queued, let session = sessions[run.id] {
+                    _ = try? await session.steer(text: single.text, inputID: id, executionMode: owner.inputMode)
+                }
+                try await center.coordinator.acknowledgeDeliveries(questionIDs: single.answers.map(\.questionID))
+            }
+        }
+    }
 
     private func ensureOpen() throws {
         if closed {
@@ -2302,7 +2489,10 @@ public struct FloeMacSelfSessionHandle: Sendable {
     public let identity: FloeMacSelfSessionIdentity
 
     private let runtime: FloeMacSelfRuntime
-    private let session: FloeMacSelfSession
+    /// Module-internal so queue-only hook extensions (see
+    /// FloeMacSelfSessionHandleQueue.swift) can address this exact session
+    /// without widening the public handle surface.
+    let session: FloeMacSelfSession
 
     init(
         runtime: FloeMacSelfRuntime,
@@ -2377,6 +2567,30 @@ public struct FloeMacSelfSessionHandle: Sendable {
     /// `.dispatchUnknown` and retains the durable admission.
     public func cancelAndWait(timeout: TimeInterval = 30) async -> FloeMacSelfCancelReceipt {
         await session.cancelAndWait(timeout: timeout)
+    }
+
+    /// Settles one question answer for this exact run. The command must echo
+    /// this handle's conversation/run identities plus the durable
+    /// request/question ids and the card's expected revision; anything else
+    /// is rejected without touching the store. `accepted` means this exact
+    /// answer settled the question; `notPending` means it was already
+    /// settled elsewhere (duplicate tap, cancel, expiry or terminal fence).
+    public func resolveQuestion(
+        _ command: FloeMacSelfQuestionAnswerCommand
+    ) async -> FloeMacSelfQuestionResolution {
+        guard command.conversationID == identity.conversationID,
+              command.runID == identity.runID else {
+            return .rejected(command.conversationID == identity.conversationID
+                ? .runMismatch
+                : .conversationMismatch)
+        }
+        return await session.resolveQuestion(command)
+    }
+
+    /// Explicitly cancels one question request owned by this exact run.
+    /// False means the request is unknown or belongs to another run/task.
+    public func cancelQuestion(requestID: String) async -> Bool {
+        await session.cancelQuestion(requestID: requestID)
     }
 
     public func waitForTerminal(timeout: TimeInterval = 30) async -> FloeMacSelfTerminalReceipt? {

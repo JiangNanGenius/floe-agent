@@ -514,7 +514,7 @@ struct ApprovalAndToolsTests {
             let callB = try SelfCoreFixture.fixtureCall(id: "call-session-b")
             let (providerB, _) = fixture.makeProvider(scripts: [
                 [.toolRequest(callB), .completed(.init(stopReason: .toolUse))],
-                [.textDelta(.init(text: "B finished.")), .completed(.init(stopReason: .endTurn))],
+                [.textDelta(.init(text: "The action was denied.")), .completed(.init(stopReason: .endTurn))],
             ])
             let (toolsB, executorB, _) = try fixture.makeToolBinding(workspaceID: workspaceID)
             let handleB = try await fixture.runtime.startSession(

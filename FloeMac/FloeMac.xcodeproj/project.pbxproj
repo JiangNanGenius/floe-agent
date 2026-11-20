@@ -16,6 +16,7 @@
 		05C48107958C1871EDCFBBC0 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = DF1F38BF874A79BFB1D38E35 /* InfoPlist.strings */; };
 		11B336EF9B207259D441B41C /* BridgeHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0667F06FF34DCA3953F508 /* BridgeHTTPServer.swift */; };
 		14B1FD95AF79DC93299EA949 /* LoopbackProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AC9F73554F7D4EFE31E3588 /* LoopbackProbe.swift */; };
+		1645A681E6F8C9E1253FF387 /* HostChildSubagentController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F055F84C292AF7681CAE68A /* HostChildSubagentController.swift */; };
 		17B59DC20B57683B4DC7F1CB /* BridgeServiceMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF63B9098AE692E03DD5E1BE /* BridgeServiceMain.swift */; };
 		201D2D700ACCCBDEA0A92F1B /* AgentUIComponentController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B9F69159F7D728516DEA3E6 /* AgentUIComponentController.swift */; };
 		2229A50140FB8F68B7736EFC /* BridgeSensitiveEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28769D7C358F708CD28F3EB1 /* BridgeSensitiveEnvironment.swift */; };
@@ -74,6 +75,7 @@
 		AD60C76816FB77AC74765A9A /* BridgeWorkspaceTransferPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8099634677E129D0B06F733 /* BridgeWorkspaceTransferPolicy.swift */; };
 		B1AB2933A2EF52B69053D891 /* BridgeStoreLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30DFE8772831F5BB661F6F0 /* BridgeStoreLock.swift */; };
 		B2541C4D66FF823829511CCF /* FloeBridgeIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = D047D22EC8067E99B6A2E7D8 /* FloeBridgeIcon.png */; };
+		B3AB9BCA2B8BFE8236BFDEE3 /* HostAgentQuestion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5331E4E7C294D614E74489E6 /* HostAgentQuestion.swift */; };
 		B66C8AC43369355B3C142356 /* ModePreferenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D08953C427BDC5F2F73E7961 /* ModePreferenceStore.swift */; };
 		BA357A57B67C46C3DBBF067D /* FixtureRootLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AD9B06AB83B004755266366 /* FixtureRootLocation.swift */; };
 		BC2DB4D77FDFB360CE2E4FE3 /* BridgeAbsoluteFileRead.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2F71F2A975D0FE3EDCEED04 /* BridgeAbsoluteFileRead.swift */; };
@@ -147,10 +149,12 @@
 		46153038F7E11EB3D9E5509D /* BridgeCapabilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeCapabilities.swift; sourceTree = "<group>"; };
 		474880833E646F4427149472 /* BridgeConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConfiguration.swift; sourceTree = "<group>"; };
 		5315FA5FA27EB7CC8D6E1C83 /* libFloeMacBridgeProtocolKit.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libFloeMacBridgeProtocolKit.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		5331E4E7C294D614E74489E6 /* HostAgentQuestion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAgentQuestion.swift; sourceTree = "<group>"; };
 		59F1CDC1138F509165DF2060 /* HostAgentWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAgentWorkspace.swift; sourceTree = "<group>"; };
 		5AD9B06AB83B004755266366 /* FixtureRootLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureRootLocation.swift; sourceTree = "<group>"; };
 		5CA1C724E494E9F1FCE9DEB9 /* UserBridgeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserBridgeGuard.swift; sourceTree = "<group>"; };
 		5DB1D72461F4F9E2D039F415 /* HostAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAppDelegate.swift; sourceTree = "<group>"; };
+		5F055F84C292AF7681CAE68A /* HostChildSubagentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostChildSubagentController.swift; sourceTree = "<group>"; };
 		6725780E00E5E3922DCA047E /* BridgeSafeFileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeSafeFileSystem.swift; sourceTree = "<group>"; };
 		67AFE4F10C82802F7CD0ED9C /* HostModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostModel.swift; sourceTree = "<group>"; };
 		6EBA996005C492C924E98F81 /* BridgeControlClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeControlClient.swift; sourceTree = "<group>"; };
@@ -256,9 +260,11 @@
 				957F3FD4E4481AA8705F01BF /* BridgeEndpointInspector.swift */,
 				375CCA54C938A1A154598266 /* BridgeIdentityPin.swift */,
 				1F79FB2B8F3DD93BB8C36CC2 /* HostAgentDatabase.swift */,
+				5331E4E7C294D614E74489E6 /* HostAgentQuestion.swift */,
 				59F1CDC1138F509165DF2060 /* HostAgentWorkspace.swift */,
 				770511157F78731D1EA7E6E1 /* HostAgentWorkspaceView.swift */,
 				5DB1D72461F4F9E2D039F415 /* HostAppDelegate.swift */,
+				5F055F84C292AF7681CAE68A /* HostChildSubagentController.swift */,
 				92C8CAF9C58FA8DFFB64AD30 /* HostFixturePolicy.swift */,
 				37E5B2B670E881D5AA1DF8D3 /* HostMain.swift */,
 				67AFE4F10C82802F7CD0ED9C /* HostModel.swift */,
@@ -764,9 +770,11 @@
 				6ECCA5AB1EDE84C5FD5F29C1 /* BridgeIdentityPin.swift in Sources */,
 				BA357A57B67C46C3DBBF067D /* FixtureRootLocation.swift in Sources */,
 				37FFBDC13308505B654F37A7 /* HostAgentDatabase.swift in Sources */,
+				B3AB9BCA2B8BFE8236BFDEE3 /* HostAgentQuestion.swift in Sources */,
 				8C88A0354E6288637ECBC111 /* HostAgentWorkspace.swift in Sources */,
 				297AEA1571E4622867780C08 /* HostAgentWorkspaceView.swift in Sources */,
 				FE808EA90E36FA826136D53D /* HostAppDelegate.swift in Sources */,
+				1645A681E6F8C9E1253FF387 /* HostChildSubagentController.swift in Sources */,
 				A5B959AA1C315E6538F67C76 /* HostFixturePolicy.swift in Sources */,
 				9D0819C1FEB1D7A1D2CCF4CF /* HostMain.swift in Sources */,
 				019E5B9E12B5BC00A28E731B /* HostModel.swift in Sources */,

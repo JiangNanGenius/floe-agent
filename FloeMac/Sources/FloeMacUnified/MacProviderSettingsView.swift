@@ -225,8 +225,9 @@ struct MacProviderSettingsView: View {
                 discoveryStatus
                 discoveredModelList
                 TextField("host.chat.modelID", text: $draft.modelID)
-                Toggle(MacProviderText.t("支持图片输入", "Supports Image Input"), isOn: $draft.supportsImages)
-                Toggle("mac.agent.modelSupportsTools", isOn: $draft.supportsTools)
+                Toggle(MacProviderText.t("支持图片输入", "Supports Image Input"),
+                       isOn: capabilityBinding(\.supportsImages, bit: .vision))
+                Toggle("mac.agent.modelSupportsTools", isOn: capabilityBinding(\.supportsTools, bit: .tools))
             }
             Section {
                 TextField("mac.provider.contextTokens", value: $draft.limits.contextTokens, format: .number)
@@ -341,10 +342,27 @@ struct MacProviderSettingsView: View {
     private func discoveredModelRow(_ model: ModelProfile) -> some View {
         let selected = draft.modelID == model.remoteModelID
         return Button {
-            if !selected { draft.limits = model.limits }
+            let saved = workspace.providers.first {
+                $0.profile.id == editingID && $0.profile.baseURL.absoluteString == draft.endpoint
+                    && $0.profile.wireProtocol == draft.protocolKind && $0.model.remoteModelID == model.remoteModelID
+            }?.model
+            if !selected {
+                draft.limits = saved?.limits ?? model.limits
+                draft.editedCapabilities = []
+            }
+            draft.catalogSelection = .init(model: model, endpoint: draft.endpoint, wireProtocol: draft.protocolKind)
             draft.modelID = model.remoteModelID
-            draft.supportsImages = model.capabilities.contains(.vision)
-            draft.supportsTools = model.capabilities.contains(.tools)
+            let owned = (saved?.explicitCapabilities ?? []).union(draft.editedCapabilities)
+            if !owned.contains(.vision) {
+                draft.supportsImages = model.capabilities.contains(.vision)
+            } else if !selected {
+                draft.supportsImages = saved?.capabilities.contains(.vision) == true
+            }
+            if !owned.contains(.tools) {
+                draft.supportsTools = model.capabilities.contains(.tools)
+            } else if !selected {
+                draft.supportsTools = saved?.capabilities.contains(.tools) == true
+            }
         } label: {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -406,6 +424,14 @@ struct MacProviderSettingsView: View {
     }
 
     // MARK: - Discovery wiring
+
+    private func capabilityBinding(_ key: WritableKeyPath<MacProviderDraft, Bool>,
+                                   bit: ModelCapabilities) -> Binding<Bool> {
+        Binding(get: { draft[keyPath: key] }, set: { value in
+            draft[keyPath: key] = value
+            draft.editedCapabilities.insert(bit)
+        })
+    }
 
     private var allowsLocalHTTP: Bool {
         guard let url = URL(string: draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
@@ -570,13 +596,15 @@ struct MacProviderSettingsView: View {
                                              endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                              modelID: draft.modelID, key: draft.key,
                                              supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
-                                             presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP)
+                                             presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP,
+                                             catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities)
         } else {
             saved = workspace.addProvider(name: displayName,
                                           endpoint: draft.endpoint, protocolKind: draft.protocolKind,
                                           modelID: draft.modelID, key: draft.key,
                                           supportsImages: draft.supportsImages, supportsTools: draft.supportsTools,
-                                          presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP)
+                                          presetID: presetID, limits: draft.limits, allowsPlainHTTP: draft.allowsPlainHTTP,
+                                          catalogModel: draft.selectedCatalogModel, explicit: draft.editedCapabilities)
         }
         if saved { closeEditor() }
     }
@@ -585,6 +613,19 @@ struct MacProviderSettingsView: View {
 // MARK: - Draft
 
 private struct MacProviderDraft: Equatable {
+    struct CatalogSelection: Equatable {
+        let model: ModelProfile
+        let endpoint: String
+        let wireProtocol: ModelProtocol
+    }
+    var catalogSelection: CatalogSelection?
+    var editedCapabilities: ModelCapabilities = []
+    var selectedCatalogModel: ModelProfile? {
+        guard let selection = catalogSelection, selection.endpoint == endpoint,
+              selection.wireProtocol == protocolKind, selection.model.remoteModelID == modelID else { return nil }
+        return selection.model
+    }
+
     var name: String
     var presetID: ProviderTemplateID?
     var endpoint: String
@@ -598,7 +639,7 @@ private struct MacProviderDraft: Equatable {
 
     init(name: String = "", endpoint: String = "",
          protocolKind: ModelProtocol = .openAIChatCompletions,
-         modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool = false,
+         modelID: String = "", key: String = "", supportsImages: Bool = false, supportsTools: Bool? = nil,
          presetID: ProviderTemplateID? = .custom,
          limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false) {
         self.name = name
@@ -608,7 +649,7 @@ private struct MacProviderDraft: Equatable {
         self.key = key
         self.allowsPlainHTTP = allowsPlainHTTP
         self.supportsImages = supportsImages
-        self.supportsTools = supportsTools
+        self.supportsTools = supportsTools ?? ModelCapabilities.defaultTextModel(for: protocolKind).contains(.tools)
         self.presetID = presetID
         self.limits = limits
     }
