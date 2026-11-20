@@ -148,11 +148,20 @@ actor PrintProjectDisk {
     }
     func mesh(_ document: PrintProjectDocument) throws -> PrintMesh {
         if let objects = document.objects {
+            let plateObjects = objects.filter { $0.plateID == document.plateID }
+            var remainingUses = plateObjects.reduce(into: [String: Int]()) {
+                $0[$1.meshAsset, default: 0] += 1
+            }
+            var repeatedMeshes: [String: PrintMesh] = [:]
             var positions = [Float]()
-            for object in objects where object.plateID == document.plateID {
-                let part = try meshAsset(object.meshAsset)
+            for object in plateObjects {
+                try Task.checkCancellation()
+                let name = object.meshAsset
+                let part = try repeatedMeshes[name] ?? meshAsset(name)
                 guard positions.count + part.positions.count <= 9_000_000 else { throw PrintError.sizeLimit }
                 positions += part.positions
+                remainingUses[name, default: 1] -= 1
+                repeatedMeshes[name] = remainingUses[name] == 0 ? nil : part
             }
             return try PrintMesh(positions: positions)
         }

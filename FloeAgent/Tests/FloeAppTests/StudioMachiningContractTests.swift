@@ -163,6 +163,17 @@ import FloeTestSupport
             #expect(result.0.source == committed.source && result.0.cam?.partMesh == actual.cam?.partMesh)
             #expect(result.1.inputSHA256 == (try result.0.fingerprint()))
             #expect(result.1.result.paths.contains { $0.operationID == operation.id && $0.toolID == tool.id && !$0.points.isEmpty })
+            let forExport = try await inspect(id,context)
+            context.toolCallID = "export-verified-gcode"
+            let exported = try await invoke("studio.machining", ["projectID":id.uuidString,
+                "action":"exportGCode","expectedRevision":forExport.revision], context)
+            let receipt = try json(exported)
+            let name = try #require(receipt["fileName"] as? String)
+            #expect(name.hasSuffix(".nc"))
+            #expect(exported.outputFiles.count == 1)
+            let program = try Data(contentsOf: directory.appendingPathComponent("nc").appendingPathComponent(name))
+            #expect(StudioToolOutput.hash(program) == (receipt["sha256"] as? String))
+            #expect(String(decoding: program, as: UTF8.self).contains("G1 X"))
             await expectForeignDenial("studio.machining",["projectID":id.uuidString,"action":"inspect"],other)
             // A real CAD change must fence export of the old result, even if
             // the caller freshly reads the outer document revision.
@@ -170,6 +181,9 @@ import FloeTestSupport
             let changed = try await inspect(id,context)
             context.toolCallID = "reject-old-source-export"
             do { _ = try await invoke("studio.machining",["projectID":id.uuidString,"action":"exportToolpath","expectedRevision":changed.revision],context);Issue.record("Old-source toolpath was exported") }
+            catch ManufacturingError.stale {}
+            context.toolCallID = "reject-old-source-gcode"
+            do { _ = try await invoke("studio.machining", ["projectID":id.uuidString,"action":"exportGCode","expectedRevision":changed.revision],context);Issue.record("Old-source G-code was exported") }
             catch ManufacturingError.stale {}
             #expect(try Data(contentsOf:archive) == archiveBytes)
         }

@@ -3,6 +3,8 @@
 import Foundation
 import Observation
 import FloeManufacturingCore
+import FloeManufacturingNC
+import FloeNCProgram
 
 func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en }
 
@@ -191,6 +193,45 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
     private func install(_ study: ManufacturingStudy, _ artifact: ManufacturingArtifact) {
         invalidate(); self.study = study; self.artifact = artifact; state = .completed; progress = 1
     }
+    public func exportGCode(options: ManufacturingNCOptions? = nil,
+                            validateSource: (@MainActor () async throws -> Void)? = nil) async throws -> URL {
+        let original = study, epoch = generation
+        guard let artifact, !isBusy else { throw ManufacturingError.stale }
+        let folder = directory.appendingPathComponent("nc", isDirectory: true)
+        let settings = folder.appendingPathComponent("post-options.json")
+        let selected: ManufacturingNCOptions
+        if let options {
+            selected = options
+        } else if FileManager.default.fileExists(atPath: settings.path) {
+            let values = try settings.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  let size = values.fileSize, size <= 32_768 else { throw ManufacturingError.invalid("post settings") }
+            selected = try JSONDecoder().decode(ManufacturingNCOptions.self, from: Data(contentsOf: settings))
+        } else {
+            selected = .init()
+        }
+        let token = NCCancellation()
+        let output = try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) {
+                try ManufacturingNCPost.generate(study: original, artifact: artifact, options: selected, cancellation: token)
+            }.value
+        } onCancel: { token.cancel() }
+        try await validateSource?()
+        try Task.checkCancellation()
+        guard generation == epoch, try study.fingerprint() == output.receipt.sourceInputSHA256 else {
+            throw ManufacturingError.stale
+        }
+        let lease = try storageLeaseProvider?()
+        defer { withExtendedLifetime(lease) {} }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let stem = "post-" + output.receipt.canonicalSHA256
+        let url = folder.appendingPathComponent(stem + ".nc")
+        try NCArchive.encoder.encode(output.receipt).write(to: folder.appendingPathComponent(stem + "-receipt.json"), options: .atomic)
+        if options != nil { try NCArchive.encoder.encode(selected).write(to: settings, options: .atomic) }
+        try Data(output.source.utf8).write(to: url, options: .atomic)
+        return url
+    }
+
     public func export(stl: Bool) throws -> URL {
         let lease = try storageLeaseProvider?(); defer { withExtendedLifetime(lease) {} }
         guard let artifact, artifact.inputSHA256 == (try study.fingerprint()) else { throw ManufacturingError.stale }

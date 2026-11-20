@@ -17,6 +17,27 @@ import FloePrintCore
             [1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]]
         return try PrintMesh(positions: faces.flatMap { $0.flatMap { vertices[$0] } })
     }
+    @Test func sharedMeshIncludesEachInstanceInPlateOrderAndRechecksDiskOnNextRead() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let disk = PrintProjectDisk(root: folder)
+        let first = try box(low: [0, 0, 0], high: [2, 2, 2])
+        let second = try box(low: [3, 0, 0], high: [4, 1, 1])
+        let a = try await disk.storeMesh(first)
+        let b = try await disk.storeMesh(second)
+        var document = PrintProjectDocument(projectID: UUID())
+        document.objects = [
+            .init(plateID: document.plateID, name: "A", meshAsset: a),
+            .init(plateID: UUID(), name: "Other plate", meshAsset: "absent.mesh"),
+            .init(plateID: document.plateID, name: "B", meshAsset: b),
+            .init(plateID: document.plateID, name: "A2", meshAsset: a)
+        ]
+        let assembled = try await disk.mesh(document)
+        #expect(assembled.positions == first.positions + second.positions + first.positions)
+        try Data([0, 0, 0, 0]).write(to: folder.appendingPathComponent(a))
+        await #expect(throws: PrintError.self) { try await disk.mesh(document) }
+    }
+
     private func bounds(_ mesh: PrintMesh) -> (low: [Float], high: [Float]) {
         var low = [Float](repeating: .infinity,count:3), high = [Float](repeating: -.infinity,count:3)
         for i in stride(from:0,to:mesh.positions.count,by:3) {

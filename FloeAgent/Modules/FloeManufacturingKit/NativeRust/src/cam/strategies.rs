@@ -306,6 +306,9 @@ fn pocket(ctx: &StratCtx) -> Result<StratResult, String> {
     if rows.is_empty() {
         return Err(format!("cam op '{}': pocket raster produced no rows", op.id));
     }
+    // Clipped raster rows do not follow the wall between row ends. Trace the
+    // tool-centre offset at each depth, preserving the requested wall stock.
+    let wall = circle_offset_loop((centre[0], centre[1]), radius - inset)?;
     let total_rows = rows.len() * layers.len();
     for (li, &w) in layers.iter().enumerate() {
         for (ri, row) in rows.iter().enumerate() {
@@ -315,6 +318,7 @@ fn pocket(ctx: &StratCtx) -> Result<StratResult, String> {
                 gen_progress(ctx, (li * rows.len() + ri) as f64 / (total_rows.max(1) as f64))?;
             }
         }
+        out.push_row(&wall, w, &mp).map_err(|e| format!("cam op '{}': {e}", op.id))?;
     }
     out.limits.push("circular pocket only (explicit 2D feature; no partMesh dependency)".into());
     Ok(out)
@@ -911,6 +915,36 @@ mod tests {
         o.center_uv_mm = Some([0.0, 0.0]);
         o.radius_mm = Some(1.0e300);
         assert!(generate(&ctx(&o, &flat_tool(), None)).is_err());
+    }
+
+    #[test]
+    fn pocket_finishes_each_wall_at_the_requested_allowance() {
+        let mut o = op("pocket");
+        o.center_uv_mm = Some([1.0, -2.0]);
+        o.radius_mm = Some(6.0);
+        o.wall_stock_mm = Some(0.5);
+        o.depth_mm = Some(2.0);
+        o.step_down_mm = Some(1.0);
+        o.step_over_mm = Some(1.5);
+        let r = generate(&ctx(&o, &flat_tool(), None)).unwrap();
+        for depth in [1.0, 2.0] {
+            let row = r.moves.split(|m| m.move_type == CamMoveType::Retract)
+                .filter(|row| row.iter().any(|m| m.point.z == depth)).last().unwrap();
+            let wall = &row[1..]; // after rapid, from plunge to last cutting move
+            assert!(wall.len() >= 24);
+            assert!((wall[0].point - wall.last().unwrap().point).norm() < 1e-9);
+            let mut angle = 0.0;
+            for pair in wall.windows(2) {
+                let a = pair[0].point;
+                let b = pair[1].point;
+                let (x, y) = (a.x - 1.0, a.y + 2.0);
+                let (u, v) = (b.x - 1.0, b.y + 2.0);
+                assert_eq!(a.z, depth);
+                assert!((x.hypot(y) - 2.5).abs() < 1e-9);
+                angle += (x * v - y * u).atan2(x * u + y * v);
+            }
+            assert!((angle.abs() - std::f64::consts::TAU).abs() < 1e-9);
+        }
     }
 
     #[test]

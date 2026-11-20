@@ -54,7 +54,11 @@ public struct PrintMesh: Sendable, Equatable {
     public init(positions: [Float]) throws {
         guard positions.count >= 9, positions.count % 9 == 0 else { throw PrintError.invalidMesh }
         guard positions.count <= 9_000_000 else { throw PrintError.sizeLimit }
-        guard positions.allSatisfy(\.isFinite) else { throw PrintError.invalidMesh }
+        var hasNegativeZero = false
+        for coordinate in positions {
+            guard coordinate.isFinite else { throw PrintError.invalidMesh }
+            if coordinate.bitPattern == 0x8000_0000 { hasNegativeZero = true }
+        }
         var hasArea = false
         for i in stride(from: 0, to: positions.count, by: 9) {
             let ax = Double(positions[i+3])-Double(positions[i])
@@ -63,10 +67,13 @@ public struct PrintMesh: Sendable, Equatable {
             let bx = Double(positions[i+6])-Double(positions[i])
             let by = Double(positions[i+7])-Double(positions[i+1])
             let bz = Double(positions[i+8])-Double(positions[i+2])
-            if abs(ay*bz-az*by) + abs(az*bx-ax*bz) + abs(ax*by-ay*bx) > 1e-10 { hasArea = true }
+            if abs(ay*bz-az*by) + abs(az*bx-ax*bz) + abs(ax*by-ay*bx) > 1e-10 {
+                hasArea = true
+                break
+            }
         }
         guard hasArea else { throw PrintError.invalidMesh }
-        self.positions = positions.map { $0 == 0 ? 0 : $0 }
+        self.positions = hasNegativeZero ? positions.map { $0 == 0 ? 0 : $0 } : positions
     }
 
     public init(binarySTL data: Data) throws {

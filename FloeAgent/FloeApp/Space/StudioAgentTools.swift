@@ -502,6 +502,7 @@ enum StudioToolOutput {
             let document = try await PersonalCADSessions.open(id: value.record.id, directory: value.url)
             let cadRevision = document.revision, cadChanges = document.exchangeChangeCount, cadContent = document.contentSHA256
             var snapshot: [String: Any]
+            var machiningFingerprint: String?
             if value.record.kind == .cad3D {
                 let cell = try await ManufacturingSessions.savedCellInspection(cadURL:document.url,projectDirectory:value.url,
                     ownerID:value.record.id,cancellation:context.cancellation)
@@ -509,12 +510,14 @@ enum StudioToolOutput {
                 guard !document.isClosed, document.revision == cadRevision, document.exchangeChangeCount == cadChanges,
                       document.contentSHA256 == cadContent else { throw ManufacturingError.stale }
                 snapshot = try JSONSerialization.jsonObject(with: document.snapshotJSON()) as? [String: Any] ?? [:]
-                var machining: [String: Any] = ["actions": ["prepare", "configure", "calculate", "exportSTL", "exportToolpath", "preparePrint"]]
+                var machining: [String: Any] = ["actions": ["prepare", "configure", "calculate", "exportSTL", "exportToolpath", "exportGCode", "preparePrint"]]
                 if let model = try ManufacturingSessions.readExistingCAD(document: document, directory: value.url.appendingPathComponent("Manufacturing"), ownerID: value.record.id) {
                     var editable = model.study
                     editable.cam?.partMesh = nil // Geometry stays owned by the CAD document.
                     machining["study"] = try JSONSerialization.jsonObject(with: editable.encoded())
-                    machining["fingerprint"] = try model.study.fingerprint()
+                    let fingerprint = try model.study.fingerprint()
+                    machiningFingerprint = fingerprint
+                    machining["fingerprint"] = fingerprint
                     machining["hasSavedResult"] = model.artifact != nil
                 }
                 machining["manufacturingCell"] = try JSONSerialization.jsonObject(with:StudioToolOutput.data(cell))
@@ -525,7 +528,7 @@ enum StudioToolOutput {
                 query: cadQuery, context: context)
             let data = try JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys])
             let revision = try StudioCADToolContract.revisionToken(
-                revision: cadRevision, changeCount: cadChanges, sha256: cadContent)
+                revision: cadRevision, changeCount: cadChanges, sha256: cadContent, machiningFingerprint: machiningFingerprint)
             return (data, revision)
         case .canvas:
             let document = try await CanvasHostServices.snapshot(record: value.record, directory: value.url)
@@ -852,6 +855,8 @@ enum StudioToolOutput {
                 _ = try await model.calculateAndWait(); file = model.archiveURL
             case (.manufacturing, "exportSTL"):
                 file = try ManufacturingSessions.open(id: id, directory: value.url.appendingPathComponent("Manufacturing")).export(stl: true)
+            case (.manufacturing, "exportGCode"):
+                file = try await ManufacturingSessions.open(id: id, directory: value.url.appendingPathComponent("Manufacturing")).exportGCode()
             case (.manufacturing, "exportToolpath"):
                 file = try ManufacturingSessions.open(id: id, directory: value.url.appendingPathComponent("Manufacturing")).export(stl: false)
             case (.printing, "slice"):
@@ -954,13 +959,22 @@ enum StudioToolOutput {
         output.outputFiles = [published.file]
         return output
     }
+    private func currentMachiningFingerprint(_ value: (record: PersonalContentRecord, url: URL),
+                                              document: FloeCADDocument) throws -> String? {
+        guard value.record.kind == .cad3D else { return nil }
+        let model = try ManufacturingSessions.readExistingCAD(document: document,
+            directory: value.url.appendingPathComponent("Manufacturing"), ownerID: value.record.id)
+        return try model?.study.fingerprint()
+    }
+
     private func renderCAD(value: (record: PersonalContentRecord, url: URL), action: String,
                            inputJSON: String?, context: ToolContext) async throws -> ToolExecutionOutput {
         let input = try StudioCADRenderInput.decode(inputJSON)
         let document = try await PersonalCADSessions.open(id: value.record.id, directory: value.url)
         let revision = document.revision, changeCount = document.exchangeChangeCount, sourceSHA256 = document.contentSHA256
         let observationRevision = try StudioCADToolContract.revisionToken(
-            revision: revision, changeCount: changeCount, sha256: sourceSHA256)
+            revision: revision, changeCount: changeCount, sha256: sourceSHA256,
+            machiningFingerprint: currentMachiningFingerprint(value, document: document))
         guard input.expectedRevision.matches(savedRevision: revision, observationRevision: observationRevision),
               !document.hasUnsavedChanges else {
             throw FloeError.validationFailed("Save or re-read this CAD original first; render uses the exact saved revision "
@@ -1071,7 +1085,8 @@ enum StudioToolOutput {
         let document = try await PersonalCADSessions.open(id: value.record.id, directory: value.url)
         let revision = document.revision, changeCount = document.exchangeChangeCount, sha = document.contentSHA256
         let observationRevision = try StudioCADToolContract.revisionToken(
-            revision: revision, changeCount: changeCount, sha256: sha)
+            revision: revision, changeCount: changeCount, sha256: sha,
+            machiningFingerprint: currentMachiningFingerprint(value, document: document))
         guard input.expectedRevision.matches(savedRevision: revision, observationRevision: observationRevision),
               !document.hasUnsavedChanges else {
             throw FloeError.validationFailed("Save or re-read this CAD original first; export uses the exact saved revision "
@@ -1313,6 +1328,11 @@ enum StudioToolOutput {
         case "prepare":
             try model.saveDraft(); file = directory.appendingPathComponent("draft.json")
         case "configure":
+            let currentFingerprint = try model.study.fingerprint()
+            guard try StudioCADToolContract.revisionToken(revision: revision, changeCount: changes,
+                sha256: content, machiningFingerprint: currentFingerprint) == expectedRevision else {
+                throw PersonalContentError.changedDocument
+            }
             guard let studyJSON, studyJSON.utf8.count <= 2 * 1_024 * 1_024 else { throw PersonalContentError.invalidProject }
             var study = try JSONDecoder().decode(ManufacturingStudy.self, from: Data(studyJSON.utf8))
             guard study.id == model.study.id, study.source == model.study.source, study.profile == model.study.profile,
@@ -1320,7 +1340,7 @@ enum StudioToolOutput {
                 throw FloeError.validationFailed("Keep the CAD-owned source, profile and geometry unchanged")
             }
             study.cam?.partMesh = model.study.cam?.partMesh
-            try model.replaceStudy(study, expectedFingerprint: model.study.fingerprint())
+            try model.replaceStudy(study, expectedFingerprint: currentFingerprint)
             file = directory.appendingPathComponent("draft.json")
         case "calculate":
             try await ManufacturingSessions.refreshCAD(document: document, model: model, ownerID: id)
@@ -1335,6 +1355,12 @@ enum StudioToolOutput {
             defer { monitor.cancel() }
             _ = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
             file = model.archiveURL
+        case "exportGCode":
+            file = try await model.exportGCode {
+                try await ManufacturingSessions.validateCADSource(document: document, model: model, ownerID: id)
+                try checkSource()
+                try context.cancellation.throwIfCancelled()
+            }
         case "exportSTL", "exportToolpath":
             try await ManufacturingSessions.validateCADSource(document: document, model: model, ownerID: id)
             try checkSource()
@@ -1791,7 +1817,7 @@ private struct StudioMachiningTool: AgentTool {
     }
     static let name = "studio.machining"
     static let toolDescription = "Cell/Virtual/Engineering / 制造单元、虚拟机床、工程分析 use research.inspect/status/configure/calculate/cancel/save/openSaved with researchJSON {family:manufacturingCell|virtualMachine|engineeringAnalysis,expectedFingerprint?,inputJSON?,operationID?,content:input|result|savedInput|savedResult,offset?,limit?}. Read actual input/result pages first; use the returned research fingerprint in addition to the CAD expectedRevision for mutations. Saved reads never calculate. openSaved explicitly replaces the inspected UI configuration with the actual saved original; cancel names the exact current operationID. These independent authored programs do not prove use of the current CAD geometry. Read saved 制造单元/多主轴/多刀塔 (manufacturing cell/multi-spindle/multi-turret) results with inspect: total schedule seconds, computed operations, transfer records and remaining workpiece volume. Use machining INSIDE the selected 3D CAD original; standalone 2D originals refuse CAM, research, simulation and preparePrint. inspect returns the same read-only studio.read CAD state: ordinary machining.study/fingerprint stay separate from machining.manufacturingCell. Every 3D CAD page also includes a compact top-level manufacturingCell with status none or saved, validated archive/input SHA, scheduleTotalSeconds, computedOperationCount, transferRecordCount and remainingWorkpieces (mm3). A cell is its independently saved program, not proof of ordinary CAM or current-CAD geometry computation. Never calculate to answer a saved-result read. prepare captures actual CAD geometry and saves the initial machining setup; then inspect, configure machine/stock/fixtures/tools/operations, calculate, inspect simulation, and export. configure takes the study JSON from inspection; preserve its id/source/profile and omit CAD-owned cam.partMesh. Every mutation requires the exact studio.read expectedRevision. preparePrint copies this CAD's current complete geometry into its print job, returns its bound work link, and is idempotent for the approved call; edit/slice that returned project through studio.edit/run. No path or demo geometry input is accepted."
-    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","description":"inspect reads saved ordinary CAM/cell; research.inspect/status read the selected independent Cell/Virtual/Engineering program without recalculation; other explicit research actions edit, run, save or cancel that program","enum":["inspect","prepare","configure","calculate","exportSTL","exportToolpath","preparePrint","research.inspect","research.status","research.configure","research.calculate","research.cancel","research.save","research.openSaved"]},"expectedRevision":{"type":"string"},"studyJSON":{"type":"string","maxLength":2097152},"researchJSON":{"type":"string","maxLength":2097152},"title":{"type":"string","minLength":1,"maxLength":160},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"required":["projectID","action"],"additionalProperties":false}"#
+    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","description":"inspect reads saved ordinary CAM/cell; research.inspect/status read the selected independent Cell/Virtual/Engineering program without recalculation; other explicit research actions edit, run, save or cancel that program","enum":["inspect","prepare","configure","calculate","exportSTL","exportToolpath","exportGCode","preparePrint","research.inspect","research.status","research.configure","research.calculate","research.cancel","research.save","research.openSaved"]},"expectedRevision":{"type":"string"},"studyJSON":{"type":"string","maxLength":2097152},"researchJSON":{"type":"string","maxLength":2097152},"title":{"type":"string","minLength":1,"maxLength":160},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"required":["projectID","action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
@@ -1803,7 +1829,7 @@ private struct StudioMachiningTool: AgentTool {
             let request = try StudioManufacturingResearchContract.Request.decode(args.researchJSON)
             try request.validate(action:action);return
         }
-        guard args.researchJSON == nil, ["inspect", "prepare", "configure", "calculate", "exportSTL", "exportToolpath", "preparePrint"].contains(args.action),
+        guard args.researchJSON == nil, ["inspect", "prepare", "configure", "calculate", "exportSTL", "exportToolpath", "exportGCode", "preparePrint"].contains(args.action),
               args.action == "inspect" || args.expectedRevision?.isEmpty == false,
               (args.studyJSON?.utf8.count ?? 0) <= 2 * 1_024 * 1_024,
               (args.offset ?? 0) >= 0, (1...12_000).contains(args.limit ?? 12_000) else {
@@ -1821,15 +1847,15 @@ private struct StudioMachiningTool: AgentTool {
 private struct StudioRunTool: AgentTool {
     struct Arguments: Decodable, Sendable { let projectID: UUID; let action: String; let inputJSON: String? }
     static let name = "studio.run"
-    static let toolDescription = "Run the actual native service and await its saved output. For music, exportWaveform returns a shareable PNG and native vision evidence of the stereo mix, or a reference note for inputJSON {trackID} even before the arrangement has notes. A CAD original uses export {expectedRevision,format,pageID?,acceptPartial?} for a verified run-owned drawing/model file: 2D supports DXF/DWG/SVG/PDF/PNG/CSV and refuses 3D formats; 3D additionally supports STEP/IGES/STL/OBJ/3MF/GLB/USDZ/OBJ bundle. render or inspectFrame {expectedRevision,pageID?} returns an actual read-only PNG artifact. An explicit pageID uses the existing saved drawing page. A standalone 2D original without pageID uses its visible coplanar sketch scene through native orthographic observation; empty or ambiguous planes refuse. A 3D original retains the saved-page route. No UI viewport, selection, live camera or save is changed. Electronics components use eda.library.search/read/bind/place/previewReplace/replace with exact returned library references; read electronicsCapabilities.library for complete requests. Search specific parts before authoring generic shapes. Electronics also uses eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.backAnnotation, eda.refillCopper or eda.export; inputJSON requires the exact expectedRevision, optional boardID for DRC/synchronization/refill, and format plus optional variant for export. Read electronicsCapabilities for actual format support; eda.backAnnotation defaults to a read-only preview. Its backAnnotationFields document exact source-bound application and paged results. Electronics inspectFrame uses expectedRevision plus optional sheetID/boardID/maximumPixelSize and renders its actual saved 2D drawing. Exports/renders return a verified run-owned outputFile reference, also carried in outputFiles, never only a private filename. inspectFrame is read-only for native image/drawing/video originals: inputJSON {expectedRevision,seconds?:number,maximumPixelSize?:64...1024} renders a real composed PNG artifact near that timeline time, without playback or UI capture. For a video source object use sourceClipID (an actual clip UUID from this original); seconds then means absolute source time and defaults to that clip sourceRange.start. It returns the upright source PNG before clip placement/rotation/grade/stabilization, matching native tracking ROI coordinates: normalized top-left. Out-of-range source times are rejected. Receipt carries actual source frame time/dimensions/SHA; no host paths. Only vision-capable models can inspect pixels; others use structured state. inspectAudio is read-only for Music, stopped Meeting recordings and native Media audio/video assets. inputJSON {} lists this authorized work's opaque audio source IDs (offset/limit page metadata only, kind=sources); inspect {sourceID,startSeconds?,endSeconds?,bins?} returns kind=waveform measured by the actual decoder. Legacy {assetID:{rawValue:String},...} stays Music-only. Sources/revisions come from this work, never a host path, permission grant or automatic playback. A video without an audio track returns its actual source error. Music renders return actual file metadata plus measured audioObservation for their first 30 seconds. Dual decks: analyzeDJBeats inputJSON {expectedMusicRevision,expectedDJRevision,deck:'a'|'b'} returns an actual source-bound BPM estimate and confidence, without inventing or applying a grid. djRecordStart uses both revisions and returns an owned recordingID; djRecordStop takes that recordingID and saves the real deck mix into this Music original's asset library. renderDJWAV/renderDJMP3 take both revisions and durationSeconds, using the actual dual-deck graph including rate, key lock, cue, loop and fader. Read musicDJ.exportMaximumSeconds; no microphone or automatic playback is involved in offline export. A recovered recording explicitly reports recovered=true. resetDJ takes expectedMusicRevision and the exact expectedSidecarSHA256 and retains the original settings before reset; stop the decks first. Saved headphone cue settings do not claim an independent audio output. Music renderWAV/renderMP3 optionally accepts inputJSON {\"tailFrames\":0} for exact content length, or an integer tailFrames up to 10 seconds at the project sample rate; omission preserves the existing 48000-frame tail. Rendering respects the saved master/track mute and mix, and never unmutes it. Chemistry calculate uses inputJSON with objectID/expectedObjectRevision/method/options on native.local: manufacturing calculate/exportSTL/exportToolpath, printing slice, music renderWAV/renderMP3, image/drawing/video exportMedia/exportOriginal, image exportORA/exportPSD, video exportOTIO. Format subsets reject unsupported content explicitly. Progress appears in the same editor; cancellation belongs to this run. Returns actual file size/hash and the work link. Native image/drawing/video originals: studio.run history returns bounded saved groups and canUndo/canRedo. undo/redo restore only the current saved journal boundary and await commit. inputJSON {expectedRevision,groupID?:UUID,limit?:1...50}; groupID if supplied must be nextUndo/nextRedo. history is read-only, undo/redo retain the existing grant and exact original owner. No paths or edit payloads. CAD undo/redo stay in studio.edit native operations."
-    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportWaveform","djRecordStart","djRecordStop","renderDJWAV","renderDJMP3","analyzeDJBeats","resetDJ","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","inspectAudio","inspectFrame","render","export","history","undo","redo","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.backAnnotation","eda.refillCopper","eda.export","eda.library.search","eda.library.read","eda.library.bind","eda.library.place","eda.library.previewReplace","eda.library.replace"]},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","action"],"additionalProperties":false}"#
+    static let toolDescription = "Run the actual native service and await its saved output. For music, exportWaveform returns a shareable PNG and native vision evidence of the stereo mix, or a reference note for inputJSON {trackID} even before the arrangement has notes. A CAD original uses export {expectedRevision,format,pageID?,acceptPartial?} for a verified run-owned drawing/model file: 2D supports DXF/DWG/SVG/PDF/PNG/CSV and refuses 3D formats; 3D additionally supports STEP/IGES/STL/OBJ/3MF/GLB/USDZ/OBJ bundle. render or inspectFrame {expectedRevision,pageID?} returns an actual read-only PNG artifact. An explicit pageID uses the existing saved drawing page. A standalone 2D original without pageID uses its visible coplanar sketch scene through native orthographic observation; empty or ambiguous planes refuse. A 3D original retains the saved-page route. No UI viewport, selection, live camera or save is changed. Electronics components use eda.library.search/read/bind/place/previewReplace/replace with exact returned library references; read electronicsCapabilities.library for complete requests. Search specific parts before authoring generic shapes. Electronics also uses eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.backAnnotation, eda.refillCopper or eda.export; inputJSON requires the exact expectedRevision, optional boardID for DRC/synchronization/refill, and format plus optional variant for export. Read electronicsCapabilities for actual format support; eda.backAnnotation defaults to a read-only preview. Its backAnnotationFields document exact source-bound application and paged results. Electronics inspectFrame uses expectedRevision plus optional sheetID/boardID/maximumPixelSize and renders its actual saved 2D drawing. Exports/renders return a verified run-owned outputFile reference, also carried in outputFiles, never only a private filename. inspectFrame is read-only for native image/drawing/video originals: inputJSON {expectedRevision,seconds?:number,maximumPixelSize?:64...1024} renders a real composed PNG artifact near that timeline time, without playback or UI capture. For a video source object use sourceClipID (an actual clip UUID from this original); seconds then means absolute source time and defaults to that clip sourceRange.start. It returns the upright source PNG before clip placement/rotation/grade/stabilization, matching native tracking ROI coordinates: normalized top-left. Out-of-range source times are rejected. Receipt carries actual source frame time/dimensions/SHA; no host paths. Only vision-capable models can inspect pixels; others use structured state. inspectAudio is read-only for Music, stopped Meeting recordings and native Media audio/video assets. inputJSON {} lists this authorized work's opaque audio source IDs (offset/limit page metadata only, kind=sources); inspect {sourceID,startSeconds?,endSeconds?,bins?} returns kind=waveform measured by the actual decoder. Legacy {assetID:{rawValue:String},...} stays Music-only. Sources/revisions come from this work, never a host path, permission grant or automatic playback. A video without an audio track returns its actual source error. Music renders return actual file metadata plus measured audioObservation for their first 30 seconds. Dual decks: analyzeDJBeats inputJSON {expectedMusicRevision,expectedDJRevision,deck:'a'|'b'} returns an actual source-bound BPM estimate and confidence, without inventing or applying a grid. djRecordStart uses both revisions and returns an owned recordingID; djRecordStop takes that recordingID and saves the real deck mix into this Music original's asset library. renderDJWAV/renderDJMP3 take both revisions and durationSeconds, using the actual dual-deck graph including rate, key lock, cue, loop and fader. Read musicDJ.exportMaximumSeconds; no microphone or automatic playback is involved in offline export. A recovered recording explicitly reports recovered=true. resetDJ takes expectedMusicRevision and the exact expectedSidecarSHA256 and retains the original settings before reset; stop the decks first. Saved headphone cue settings do not claim an independent audio output. Music renderWAV/renderMP3 optionally accepts inputJSON {\"tailFrames\":0} for exact content length, or an integer tailFrames up to 10 seconds at the project sample rate; omission preserves the existing 48000-frame tail. Rendering respects the saved master/track mute and mix, and never unmutes it. Chemistry calculate uses inputJSON with objectID/expectedObjectRevision/method/options on native.local: manufacturing calculate/exportSTL/exportToolpath (JSON)/exportGCode (verified .nc using project post settings), printing slice, music renderWAV/renderMP3, image/drawing/video exportMedia/exportOriginal, image exportORA/exportPSD, video exportOTIO. Format subsets reject unsupported content explicitly. Progress appears in the same editor; cancellation belongs to this run. Returns actual file size/hash and the work link. Native image/drawing/video originals: studio.run history returns bounded saved groups and canUndo/canRedo. undo/redo restore only the current saved journal boundary and await commit. inputJSON {expectedRevision,groupID?:UUID,limit?:1...50}; groupID if supplied must be nextUndo/nextRedo. history is read-only, undo/redo retain the existing grant and exact original owner. No paths or edit payloads. CAD undo/redo stay in studio.edit native operations."
+    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["calculate","exportSTL","exportToolpath","exportGCode","slice","renderWAV","renderMP3","exportWaveform","djRecordStart","djRecordStop","renderDJWAV","renderDJMP3","analyzeDJBeats","resetDJ","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","inspectAudio","inspectFrame","render","export","history","undo","redo","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.backAnnotation","eda.refillCopper","eda.export","eda.library.search","eda.library.read","eda.library.bind","eda.library.place","eda.library.previewReplace","eda.library.replace"]},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let coordinator: StudioCoordinator
     func validate(_ args: Arguments) throws {
         guard (args.inputJSON?.utf8.count ?? 0) <= 256 * 1_024,
-              (["calculate", "exportSTL", "exportToolpath", "slice", "renderWAV", "renderMP3", "exportWaveform", "djRecordStart", "djRecordStop", "renderDJWAV", "renderDJMP3", "analyzeDJBeats", "resetDJ", "exportMedia", "exportOriginal", "exportORA", "exportPSD", "exportOTIO", "inspectAudio", "inspectFrame", "render", "export", "history", "undo", "redo", "eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.backAnnotation", "eda.refillCopper", "eda.export"].contains(args.action)
+              (["calculate", "exportSTL", "exportToolpath", "exportGCode", "slice", "renderWAV", "renderMP3", "exportWaveform", "djRecordStart", "djRecordStop", "renderDJWAV", "renderDJMP3", "analyzeDJBeats", "resetDJ", "exportMedia", "exportOriginal", "exportORA", "exportPSD", "exportOTIO", "inspectAudio", "inspectFrame", "render", "export", "history", "undo", "redo", "eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.backAnnotation", "eda.refillCopper", "eda.export"].contains(args.action)
                 || StudioElectronicsLibraryContract.actions.contains(args.action)) else { throw FloeError.validationFailed("Unsupported native operation") }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput { try await coordinator.run(id: args.projectID, action: args.action, context: context, inputJSON: args.inputJSON) }

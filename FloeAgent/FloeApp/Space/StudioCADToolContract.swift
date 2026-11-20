@@ -21,12 +21,14 @@ struct StudioCADSaveCommand: Encodable {
 @MainActor enum StudioCADToolContract {
     typealias ReadQuery = StudioCADNativeOperations.ReadQuery
     /// A read projection (sketch/entity page, measurement or viewport) is not
-    /// a document edit. Bind the token only to the same real original identity
-    /// that guards native saves, independently of the requested projection.
-    static func revisionToken(revision: Int, changeCount: Int, sha256: String) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: [
+    /// a document edit. A CAD-owned machining study is editable independently
+    /// of the solid, so include its current fingerprint in the read token.
+    static func revisionToken(revision: Int, changeCount: Int, sha256: String, machiningFingerprint: String? = nil) throws -> String {
+        var identity: [String: Any] = [
             "savedRevision": revision, "changeCount": changeCount, "contentSHA256": sha256
-        ], options: [.sortedKeys])
+        ]
+        identity["machiningFingerprint"] = machiningFingerprint
+        let data = try JSONSerialization.data(withJSONObject: identity, options: [.sortedKeys])
         return StudioToolOutput.hash(data)
     }
     struct Identity {

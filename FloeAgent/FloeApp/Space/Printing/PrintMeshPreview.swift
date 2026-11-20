@@ -32,8 +32,17 @@ struct PrintMeshPreview: View {
             .task(id: document.revision) {
                 do {
                     var loaded = [PrintPreviewObject]()
+                    var meshes: [String: PrintMesh] = [:]
                     for object in document.objects ?? [] where object.plateID == document.plateID {
-                        loaded.append(.init(id: object.id, mesh: try await disk.meshAsset(object.meshAsset), name: object.name, toolID: object.toolID))
+                        try Task.checkCancellation()
+                        let mesh: PrintMesh
+                        if let cached = meshes[object.meshAsset] {
+                            mesh = cached
+                        } else {
+                            mesh = try await disk.meshAsset(object.meshAsset)
+                            meshes[object.meshAsset] = mesh
+                        }
+                        loaded.append(.init(id: object.id, mesh: mesh, name: object.name, toolID: object.toolID))
                     }
                     if document.objects == nil, document.meshAsset != nil { loaded = [.init(id: document.plateID, mesh: try await disk.mesh(document), name: document.meshName ?? "", toolID: 0)] }
                     try Task.checkCancellation(); objects = loaded; geometryGeneration = UUID(); diagnostic = nil
@@ -71,7 +80,18 @@ private struct PrintMeshScene: UIViewRepresentable {
     }
     func updateUIView(_ view: SCNView, context: Context) {
         context.coordinator.selectObject = selectObject
-        guard context.coordinator.identity != identity || context.coordinator.machine != machine || context.coordinator.selected != selected else { return }
+        if context.coordinator.identity == identity, context.coordinator.machine == machine {
+            guard context.coordinator.selected != selected else { return }
+            let root = view.scene?.rootNode
+            if let previous = context.coordinator.selected {
+                root?.childNode(withName: previous.uuidString, recursively: false)?.geometry?.firstMaterial?.emission.contents = UIColor.black
+            }
+            if let selected {
+                root?.childNode(withName: selected.uuidString, recursively: false)?.geometry?.firstMaterial?.emission.contents = UIColor.systemTeal.withAlphaComponent(0.15)
+            }
+            context.coordinator.selected = selected
+            return
+        }
         let oldIdentity = context.coordinator.identity
         context.coordinator.identity = identity; context.coordinator.machine = machine; context.coordinator.selected = selected
         let scene = SCNScene(), sign: Float = preset == .genericCTBV3 && machine.resin.invertedPlatform ? -1 : 1

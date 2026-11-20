@@ -229,7 +229,9 @@ public struct ManufacturingWorkbenchView: View {
             case .machine: MachineSetupEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
             case .ncPost:
                 if let artifact=model.artifact {
-                    CAMNCPostView(study:model.study,artifact:artifact,directory:model.directory.appendingPathComponent("nc")) { url in pendingNC=url;editor=nil }
+                    CAMNCPostView(study: model.study, artifact: artifact, directory: model.directory.appendingPathComponent("nc"), export: { options in
+                        try await model.exportGCode(options: options, validateSource: beforeCalculate)
+                    }) { url in pendingNC=url;editor=nil }
                 }
             case .cam: CAMEditor(study:model.study,directory:model.directory) { edited in model.invalidate(); model.study = edited }
             case .stock: EmptyView() // Owned by the stock inspector.
