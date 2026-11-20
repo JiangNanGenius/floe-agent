@@ -297,6 +297,15 @@
 "mac.workspace.toolbox" = "Toolbox";
 "mac.workspace.services" = "Services";
 "mac.workspace.findTask" = "Find a task";
+"mac.workspace.noTasksFound" = "No matching tasks";
+"mac.workspace.addProject" = "Add Project…";
+"mac.workspace.addProjectAction" = "Add Project";
+"mac.workspace.chooseProject" = "Choose Project";
+"mac.workspace.otherFolders" = "Other Folders";
+"mac.workspace.backToTask" = "Back to Task";
+"mac.workspace.toggleFiles" = "Toggle Workspace Files";
+"mac.workspace.findTool" = "Find a tool";
+"mac.workspace.noToolsFound" = "No matching tools";
 "mac.workspace.task" = "Task";
 "mac.workspace.inspector" = "Task Details";
 "mac.workspace.connections" = "Connections";

@@ -18,6 +18,10 @@ struct FloeWorkbenchProjectRow<Content: View, AddControl: View>: View {
             HStack(spacing: 8) {
                 Button(action: openWorkspace) {
                     Label(name, systemImage: "folder")
+                        #if os(macOS)
+                        .lineLimit(1)
+                        .help(name)
+                        #endif
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("sidebar.workspace.open.\(workspaceID.uuidString)")

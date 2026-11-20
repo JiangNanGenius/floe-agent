@@ -120,6 +120,7 @@ final class UnifiedMacSmoke {
         var archivedTaskRestored = false
         var deletedFixtureTask = false
         var workspaceAndAttachmentStaging = false
+        var desktopFilesLayout = false
         var conversationHistoryVerified = false
         var workspaceTextEditsVerified = false
         var workspaceModelReadTools = false
@@ -145,18 +146,7 @@ final class UnifiedMacSmoke {
             workspaceAndAttachmentStaging = await verifyWorkspaceAndAttachmentStaging(agent)
             if let window = visibleWorkbench, let content = window.contentView {
                 capture(content, extension: "png")
-                // The welcome page has exactly one trailing toolbar action.
-                // Press it before sending so the same file pane remains open
-                // when the newly created conversation is selected.
-                if !pressAccessibilityButton(content, id: "workspace.files.toggle") {
-                    let point = NSPoint(x: content.bounds.width - 29, y: content.isFlipped ? 22 : content.bounds.height - 22)
-                    _ = click(content, at: point, in: window)
-                }
-                let wideFrame = window.frame
-                window.setContentSize(NSSize(width: 780, height: 590))
-                try? await Task.sleep(for: .milliseconds(180))
-                capture(content, extension: "narrow-composer.png")
-                window.setFrame(wideFrame, display: true)
+                desktopFilesLayout = await verifyDesktopFilesLayout(window: window, content: content, workspace: agent)
             }
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
             if nativeChat, workspaceAndAttachmentStaging, let pdf = try? writePDFTextAttachment() {
@@ -219,8 +209,7 @@ final class UnifiedMacSmoke {
                 }
                 let otherFolder = root.appendingPathComponent("Second Fixture Project", isDirectory: true)
                 if (try? FileManager.default.createDirectory(at: otherFolder, withIntermediateDirectories: false)) != nil,
-                   await agent.addWorkspace(name: otherFolder.lastPathComponent, rootURL: otherFolder),
-                   let otherProject = agent.workspaces.first(where: { $0.id == agent.selectedWorkspaceID }) {
+                   let otherProject = await agent.addWorkspace(name: otherFolder.lastPathComponent, rootURL: otherFolder) {
                     concurrentTasks = await agent.verifyConcurrentTasksSmoke(project: project, folder: folder,
                         otherProject: otherProject, otherFolder: otherFolder) { projectID in
                             await openNewProjectTask(workspace: agent, projectID: projectID,
@@ -266,6 +255,7 @@ final class UnifiedMacSmoke {
             "providerCatalogFetched": catalog,
             "providerConnectionVerified": providerConnectionVerified,
             "workspaceAndAttachmentStagingVerified": workspaceAndAttachmentStaging,
+            "desktopFilesLayoutVerified": desktopFilesLayout,
             "workspaceTextEditsVerified": workspaceTextEditsVerified,
             "fileEditorSaveVerified": fileEditorFailures.isEmpty,
             "fileEditorFailures": fileEditorFailures,
@@ -536,7 +526,51 @@ final class UnifiedMacSmoke {
         while !workspace.smokeConversationSearchMounted && ContinuousClock.now < conversationDeadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        return workspace.smokeConversationSearchMounted && workspace.smokeTaskFindInvocations == 2
+        guard workspace.smokeConversationSearchMounted, workspace.smokeTaskFindInvocations == 2,
+              performMenuShortcut("f", title: String(localized: "mac.workspace.findTask"), modifiers: [.command, .shift]) else {
+            return false
+        }
+        let taskSearchDeadline = ContinuousClock.now + .seconds(2)
+        while workspace.smokeTaskFindInvocations < 3 && ContinuousClock.now < taskSearchDeadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        return workspace.smokeTaskSearchMounted && workspace.smokeTaskFindInvocations == 3
+    }
+
+    private func verifyDesktopFilesLayout(window: NSWindow, content: NSView, workspace: HostAgentWorkspace) async -> Bool {
+        guard let project = workspace.workspaces.first(where: { $0.kind == .project }) else { return false }
+        workspace.selectWorkspace(project.id)
+        let frame = window.frame
+        defer {
+            workspace.selectWorkspace(nil)
+            window.setFrame(frame, display: true)
+        }
+        let title = String(localized: "mac.workspace.toggleFiles")
+        let modifiers: NSEvent.ModifierFlags = [.command, .option]
+        func waitForState(shown: Bool, inDetail: Bool) async -> Bool {
+            let deadline = ContinuousClock.now + .seconds(2)
+            while ContinuousClock.now < deadline {
+                if (workspace.smokeInspectorShown, workspace.smokeFilesTakeDetail) == (shown, inDetail) { return true }
+                try? await Task.sleep(for: .milliseconds(35))
+            }
+            return false
+        }
+        guard performMenuShortcut("0", title: title, modifiers: modifiers),
+              await waitForState(shown: true, inDetail: false) else {
+            settingsDiagnostics.append("The desktop Files command did not open the inspector.")
+            return false
+        }
+        capture(content, extension: "wide-files.png")
+        window.setContentSize(NSSize(width: 780, height: 590))
+        guard await waitForState(shown: true, inDetail: true) else {
+            settingsDiagnostics.append("The inspector did not move into the narrow detail pane.")
+            return false
+        }
+        capture(content, extension: "narrow-files.png")
+        guard performMenuShortcut("0", title: title, modifiers: modifiers),
+              await waitForState(shown: false, inDetail: false) else { return false }
+        capture(content, extension: "narrow-composer.png")
+        return true
     }
 
     private func openNewTaskFromMenu(workspace: HostAgentWorkspace) async -> Bool {
@@ -574,12 +608,12 @@ final class UnifiedMacSmoke {
         return false
     }
 
-    private func performMenuShortcut(_ key: String, title: String) -> Bool {
+    private func performMenuShortcut(_ key: String, title: String, modifiers: NSEvent.ModifierFlags = .command) -> Bool {
         for root in NSApp.mainMenu?.items ?? [] {
             guard let menu = root.submenu else { continue }
             menu.update()
             if let index = menu.items.firstIndex(where: {
-                $0.keyEquivalent == key && $0.keyEquivalentModifierMask == .command && $0.title == title
+                $0.keyEquivalent == key && $0.keyEquivalentModifierMask == modifiers && $0.title == title && $0.isEnabled
             }) {
                 menu.performActionForItem(at: index)
                 return true
@@ -773,11 +807,11 @@ final class UnifiedMacSmoke {
         } catch {
             return false
         }
-        guard await agent.addWorkspace(name: "Fixture Project", rootURL: project),
-              let first = agent.selectedWorkspaceID,
-              await agent.addWorkspace(name: "Fixture Project", rootURL: project),
-              agent.selectedWorkspaceID == first,
-              agent.workspaces.filter({ $0.id == first }).count == 1,
+        guard let first = await agent.addWorkspace(name: "Fixture Project", rootURL: project),
+              let repeated = await agent.addWorkspace(name: "Fixture Project", rootURL: project, selectForNewTask: false),
+              repeated.id == first.id,
+              agent.selectedWorkspaceID == first.id,
+              agent.workspaces.filter({ $0.id == first.id }).count == 1,
               let staged = agent.stageAttachments([reference]).first,
               staged.displayName == "fixture.md",
               agent.stagedAttachments.count == 1 else { return false }

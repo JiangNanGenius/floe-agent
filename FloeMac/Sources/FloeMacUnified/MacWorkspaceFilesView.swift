@@ -43,10 +43,8 @@ enum MacWorkspaceFilesLayout: Sendable {
 /// Optional wiring callbacks (all default to nil, so the existing
 /// `MacWorkspaceFilesView(insertInDraft:canInsertInDraft:)` call site keeps
 /// compiling unchanged):
-/// - `onRootChanged`: fired whenever the user-granted root folder changes —
-///   after the panel choice, after restoring the persisted bookmark on launch,
-///   and with `nil` when the folder is cleared. Receives the resolved,
-///   symlink-free root URL.
+/// - `onFolderPicked`: receives the resolved root the user selects in the
+///   folder picker. Restoring a bookmark only opens the folder.
 /// - `onAttachmentsChanged`: fired with the current tracked attachment URLs
 ///   (sorted by name) every time the set changes. Attachments are verified
 ///   regular files inside the granted root; nothing outside the root is ever
@@ -106,13 +104,15 @@ struct MacWorkspaceFilesView: View {
     /// injects them here; while non-nil the UI reads this set verbatim and
     /// mutations only propose candidates through `onAttachmentsChanged`.
     var taskAttachmentURLs: Set<URL>? = nil
-    var onRootChanged: ((URL?) -> Void)? = nil
+    var onFolderPicked: ((URL) -> Void)? = nil
     var onAttachmentsChanged: (([URL]) -> Void)? = nil
     var canChangeFiles: () -> Bool = { true }
     var onPendingChanges: ((Bool) -> Void)? = nil
     var onArtifact: ((MacWorkspaceArtifactEvent) -> Void)? = nil
     var layout: MacWorkspaceFilesLayout = .adaptive
+    var findRequest: UUID? = nil
 
+    @FocusState private var filterFocused: Bool
     @Environment(\.locale) private var locale
     @AppStorage("floe.mac.workspace.files.rootBookmark") private var savedRootBookmark: Data?
     @State private var root: URL?
@@ -129,6 +129,7 @@ struct MacWorkspaceFilesView: View {
     @State private var editing: MacWorkspaceTextEditSession?
     @State private var importingText = false
     @State private var fileImportsInProgress = 0
+    @State private var dropImportStatus: String?
     @State private var showTextImportError = false
     @State private var showSaveError = false
     @State private var showConflict = false
@@ -154,7 +155,11 @@ struct MacWorkspaceFilesView: View {
             } else if loading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if failed {
-                ContentUnavailableView(t("无法读取此文件夹", "Couldn’t Read This Folder"), systemImage: "folder.badge.questionmark")
+                ContentUnavailableView {
+                    Label(t("无法读取此文件夹", "Couldn’t Read This Folder"), systemImage: "folder.badge.questionmark")
+                } actions: {
+                    Button(t("重试", "Retry")) { reloadID = UUID() }
+                }
             } else {
                 adaptiveContent
             }
@@ -164,6 +169,9 @@ struct MacWorkspaceFilesView: View {
         .task(id: reloadID) { await loadDirectory() }
         .onChange(of: hasPendingChanges, initial: true) { _, pending in onPendingChanges?(pending) }
         .onChange(of: workspaceRevision) { reloadID = UUID() }
+        .onChange(of: findRequest) { _, request in
+            if request != nil, directory != nil, !loading, !failed { filterFocused = true }
+        }
         .onChange(of: selection) { _, newSelection in
             guard newSelection.count == 1, let url = newSelection.first,
                   let entry = entries.first(where: { $0.url == url }), entry.openable else { return }
@@ -212,7 +220,8 @@ struct MacWorkspaceFilesView: View {
                     .lineLimit(1)
                     .contextMenu {
                         if directory != nil && fixedRootBookmark == nil {
-                            Button(t("清除此文件夹", "Clear Folder"), role: .destructive, action: clearFolder)
+                            Button(t("关闭文件夹", "Close Folder"), action: clearFolder)
+                                .disabled(hasPendingChanges)
                         }
                     }
                 Spacer()
@@ -228,27 +237,41 @@ struct MacWorkspaceFilesView: View {
                         .accessibilityLabel(t("刷新", "Refresh"))
                         .accessibilityIdentifier("workspace.files.reload")
                     if fixedRootBookmark == nil {
-                        Button(t("更换文件夹…", "Change Folder…"), action: chooseFolder)
-                            .accessibilityIdentifier("workspace.files.changeFolder")
+                        Button(action: chooseFolder) {
+                            Label(t("更换文件夹…", "Change Folder…"), systemImage: "folder.badge.gearshape")
+                        }
+                        .labelStyle(.iconOnly)
+                        .help(t("更换文件夹…", "Change Folder…"))
+                        .accessibilityIdentifier("workspace.files.changeFolder")
+                        .disabled(hasPendingChanges)
                     }
-                    Button { chooseFiles() } label: {
-                        Image(systemName: "doc.badge.plus")
+                    if canInsertInDraft {
+                        Button { chooseFiles() } label: { Image(systemName: "doc.badge.plus") }
+                            .help(t("添加附件…", "Add Attachments…"))
+                            .accessibilityLabel(t("添加附件…", "Add Attachments…"))
+                            .accessibilityIdentifier("workspace.files.chooseFiles")
+                        if !effectiveAttachments.isEmpty { attachmentsMenu }
                     }
-                    .help(t("选择文件…", "Choose Files…"))
-                    .accessibilityLabel(t("选择文件…", "Choose Files…"))
-                    .accessibilityIdentifier("workspace.files.chooseFiles")
-                    attachmentsMenu
                 }
             }
-            if let directory {
-                Text(verbatim: directory.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            if let directory, let root, directory != root {
+                HStack(spacing: 5) {
+                    Button(root.lastPathComponent) { navigate(to: root) }
+                        .buttonStyle(.plain)
+                        .help(root.path)
+                    Image(systemName: "chevron.right").imageScale(.small).accessibilityHidden(true)
+                    Text(verbatim: String(directory.path.dropFirst(root.path.count + (root.path.hasSuffix("/") ? 0 : 1))))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(directory.path)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
-        .padding()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .controlSize(.small)
     }
 
     @ViewBuilder private var attachmentsMenu: some View {
@@ -404,6 +427,8 @@ struct MacWorkspaceFilesView: View {
         VStack(spacing: 0) {
             TextField(t("筛选当前文件夹", "Filter This Folder"), text: $filter)
                 .textFieldStyle(.roundedBorder)
+                .focused($filterFocused)
+                .onExitCommand { filter = "" }
                 .padding(.horizontal, 8)
                 .padding(.top, 8)
                 .accessibilityIdentifier("workspace.files.filter")
@@ -424,6 +449,7 @@ struct MacWorkspaceFilesView: View {
                                         NSItemProvider(item: entry.url as NSURL,
                                                        typeIdentifier: UTType.fileURL.identifier)
                                     }
+                                    .simultaneousGesture(TapGesture(count: 2).onEnded { open(entry) })
                             } else {
                                 Label(entry.name, systemImage: entry.folder ? "folder" : "doc")
                                     .lineLimit(1)
@@ -434,22 +460,41 @@ struct MacWorkspaceFilesView: View {
                         .accessibilityIdentifier("workspace.files.row.\(entry.name)")
                     }
                 }
+                .listStyle(.inset)
+                .onKeyPress(.downArrow, phases: .down) { event in
+                    guard event.modifiers == .command, selectedEntries.count == 1,
+                          let entry = selectedEntries.first, canAccess(entry) else { return .ignored }
+                    open(entry)
+                    return .handled
+                }
             }
             Divider()
             HStack(spacing: 10) {
-                if limited {
+                if let dropImportStatus {
+                    Text(verbatim: dropImportStatus)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                } else if limited {
                     Text(t("仅显示扫描到的前 2,000 项", "Showing the first 2,000 scanned items"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if !selectedEntries.isEmpty {
-                    selectionActions(selectedEntries)
+                    Text(t("已选 \(selectedEntries.count) 项", "\(selectedEntries.count) selected"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Menu {
+                        selectionActions(selectedEntries)
+                    } label: {
+                        Label(t("操作", "Actions"), systemImage: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
                 }
             }
             .padding(8)
             .controlSize(.small)
         }
         .onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
+            guard canWriteInDirectory else { return false }
             importDroppedFiles(providers)
             return true
         }
@@ -517,8 +562,8 @@ struct MacWorkspaceFilesView: View {
             }
             if UTType(filenameExtension: entry.url.pathExtension)?.conforms(to: .text) == true {
                 Button { quoteText(entry) } label: { Image(systemName: "text.quote") }
-                    .help(t("将文本插入新任务", "Insert Text in New Task"))
-                    .accessibilityLabel(t("将文本插入新任务", "Insert Text in New Task"))
+                    .help(t("引用到任务输入框", "Quote in Task"))
+                    .accessibilityLabel(t("引用到任务输入框", "Quote in Task"))
                     .disabled(!canInsertInDraft || importingText)
             }
             Button {
@@ -531,7 +576,9 @@ struct MacWorkspaceFilesView: View {
                 Image(systemName: effectiveAttachments.contains(entry.url) ? "paperclip.fill" : "paperclip")
             }
             .help(effectiveAttachments.contains(entry.url) ? t("从附件移除", "Remove Attachment") : t("添加为附件", "Add as Attachment"))
+            .accessibilityLabel(effectiveAttachments.contains(entry.url) ? t("从附件移除", "Remove Attachment") : t("添加为附件", "Add as Attachment"))
             .accessibilityIdentifier("workspace.files.attach")
+            .disabled(!canInsertInDraft)
             Button {
                 if canAccess(entry, allowLink: true) { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
             } label: { Image(systemName: "folder") }
@@ -677,16 +724,18 @@ struct MacWorkspaceFilesView: View {
                 Button(t("编辑", "Edit")) { edit(entry) }
             }
             if UTType(filenameExtension: entry.url.pathExtension)?.conforms(to: .text) == true {
-                Button(t("将文本插入新任务", "Insert Text in New Task")) { quoteText(entry) }
+                Button(t("引用到任务输入框", "Quote in Task")) { quoteText(entry) }
                     .disabled(!canInsertInDraft || importingText)
             }
-            if effectiveAttachments.contains(entry.url) {
-                Button(t("从附件移除", "Remove Attachment")) {
-                    updateAttachments(effectiveAttachments.subtracting([entry.url]))
-                }
-            } else {
-                Button(t("添加为附件", "Add as Attachment")) {
-                    updateAttachments(effectiveAttachments.union([entry.url]))
+            if canInsertInDraft {
+                if effectiveAttachments.contains(entry.url) {
+                    Button(t("从附件移除", "Remove Attachment")) {
+                        updateAttachments(effectiveAttachments.subtracting([entry.url]))
+                    }
+                } else {
+                    Button(t("添加为附件", "Add as Attachment")) {
+                        updateAttachments(effectiveAttachments.union([entry.url]))
+                    }
                 }
             }
         }
@@ -705,7 +754,7 @@ struct MacWorkspaceFilesView: View {
                     for entry in files { open(entry) }
                 }
             }
-            if !files.isEmpty {
+            if !files.isEmpty && canInsertInDraft {
                 Button(t("添加为附件", "Add as Attachments")) {
                     updateAttachments(effectiveAttachments.union(files.map(\.url)))
                 }
@@ -720,7 +769,7 @@ struct MacWorkspaceFilesView: View {
     // MARK: - Root folder
 
     private func chooseFolder() {
-        guard fixedRootBookmark == nil else { return }
+        guard fixedRootBookmark == nil, !hasPendingChanges else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -728,7 +777,10 @@ struct MacWorkspaceFilesView: View {
         panel.canCreateDirectories = false
         panel.directoryURL = directory
         if panel.runModal() == .OK, let url = panel.url {
-            setRoot(url.resolvingSymlinksInPath().standardizedFileURL)
+            guard !hasPendingChanges else { return }
+            let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+            setRoot(resolved)
+            onFolderPicked?(resolved)
         }
     }
 
@@ -746,7 +798,6 @@ struct MacWorkspaceFilesView: View {
             editing = nil
         }
         navigate(to: resolved)
-        if fixedRootBookmark == nil { onRootChanged?(resolved) }
     }
 
     private func restoreSavedRoot() {
@@ -789,6 +840,7 @@ struct MacWorkspaceFilesView: View {
     }
 
     private func clearFolder() {
+        guard !hasPendingChanges else { return }
         root = nil
         directory = nil
         entries = []
@@ -799,7 +851,6 @@ struct MacWorkspaceFilesView: View {
         // must not propose wiping it.
         if taskAttachmentURLs == nil { updateAttachments([]) }
         savedRootBookmark = nil
-        onRootChanged?(nil)
     }
 
     private func navigate(to url: URL) {
@@ -807,6 +858,7 @@ struct MacWorkspaceFilesView: View {
         selection = []
         focused = nil
         filter = ""
+        dropImportStatus = nil
         entries = []
         reloadID = UUID()
     }
@@ -834,6 +886,7 @@ struct MacWorkspaceFilesView: View {
     }
 
     private func updateAttachments(_ urls: Set<URL>) {
+        guard taskAttachmentURLs == nil || canInsertInDraft else { return }
         let sorted = urls.sorted {
             $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
         }
@@ -854,7 +907,7 @@ struct MacWorkspaceFilesView: View {
     /// Choosing files only accepts regular files that stay inside the granted
     /// root; anything else is rejected with a scope alert.
     private func chooseFiles() {
-        guard let root else { return }
+        guard canInsertInDraft, let root else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -882,6 +935,7 @@ struct MacWorkspaceFilesView: View {
     private func importDroppedFiles(_ providers: [NSItemProvider]) {
         guard canWriteInDirectory, let root, let directory else { return }
         fileImportsInProgress += 1
+        dropImportStatus = nil
         onPendingChanges?(true)
         Task {
             defer {
@@ -897,7 +951,17 @@ struct MacWorkspaceFilesView: View {
                 }.value
                 if case .success = copied { imported += 1 }
             }
+            guard self.root == root, self.directory == directory else { return }
             if imported > 0 { reloadID = UUID() }
+            let failedCount = providers.count - imported
+            if failedCount == 0 {
+                dropImportStatus = t("已导入 \(imported) 项", "Imported \(imported) items")
+            } else if imported == 0 {
+                dropImportStatus = t("无法导入所选文件", "Couldn’t import the selected files")
+            } else {
+                dropImportStatus = t("已导入 \(imported) 项，\(failedCount) 项失败",
+                                     "Imported \(imported) items. \(failedCount) failed.")
+            }
         }
     }
 

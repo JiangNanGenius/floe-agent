@@ -298,6 +298,15 @@
 "mac.workspace.toolbox" = "工具箱";
 "mac.workspace.services" = "服务";
 "mac.workspace.findTask" = "查找任务";
+"mac.workspace.noTasksFound" = "没有匹配的任务";
+"mac.workspace.addProject" = "添加项目…";
+"mac.workspace.addProjectAction" = "添加项目";
+"mac.workspace.chooseProject" = "选择项目";
+"mac.workspace.otherFolders" = "其他文件夹";
+"mac.workspace.backToTask" = "返回任务";
+"mac.workspace.toggleFiles" = "显示或隐藏工作区文件";
+"mac.workspace.findTool" = "查找工具";
+"mac.workspace.noToolsFound" = "没有匹配的工具";
 "mac.workspace.task" = "任务";
 "mac.workspace.inspector" = "任务详情";
 "mac.workspace.connections" = "连接";

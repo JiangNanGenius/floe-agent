@@ -93,10 +93,15 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
             window.title = String(localized: "host.role.agent")
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.setContentSize(NSSize(width: 1150, height: 750))
-            window.minSize = NSSize(width: 720, height: 480)
-            if testSupport == nil { window.setFrameAutosaveName("FloeMacUnifiedAgent") }
+            window.contentMinSize = NSSize(width: 720, height: 480)
+            if testSupport == nil {
+                let frameName = "FloeMacUnifiedAgent"
+                if !window.setFrameUsingName(frameName) { window.center() }
+                window.setFrameAutosaveName(frameName)
+            } else {
+                window.center()
+            }
             window.isReleasedWhenClosed = false
-            window.center()
             agentWindow = window
             window.delegate = self
         }
@@ -125,6 +130,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         let findTask = menu.addItem(withTitle: String(localized: "mac.workspace.find"),
                                     action: #selector(findTaskFromMenu(_:)), keyEquivalent: "f")
         findTask.target = self
+        let findTitles = menu.addItem(withTitle: String(localized: "mac.workspace.findTask"),
+                                     action: #selector(findTaskTitlesFromMenu(_:)), keyEquivalent: "f")
+        findTitles.keyEquivalentModifierMask = [.command, .shift]
+        findTitles.target = self
         menu.addItem(.separator())
         let stopTask = menu.addItem(withTitle: String(localized: "host.chat.stop"),
                                     action: #selector(stopTaskFromMenu(_:)), keyEquivalent: ".")
@@ -144,6 +153,11 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                                         action: #selector(openSpaceFromMenu(_:)), keyEquivalent: "")
         toolbox.target = self
         toolbox.representedObject = MacSpacePage.toolbox
+        spaceMenu.addItem(.separator())
+        let toggleFiles = spaceMenu.addItem(withTitle: String(localized: "mac.workspace.toggleFiles"),
+                                           action: #selector(toggleFilesFromMenu(_:)), keyEquivalent: "0")
+        toggleFiles.keyEquivalentModifierMask = [.command, .option]
+        toggleFiles.target = self
         spaceItem.submenu = spaceMenu
         mainMenu.insertItem(spaceItem, at: mainMenu.index(of: item) + 1)
         spaceMenuItem = spaceItem
@@ -156,6 +170,14 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
 
     @objc private func findTaskFromMenu(_ sender: NSMenuItem) {
         performWindowAction(.findTask)
+    }
+
+    @objc private func findTaskTitlesFromMenu(_ sender: NSMenuItem) {
+        performWindowAction(.findTaskTitles)
+    }
+
+    @objc private func toggleFilesFromMenu(_ sender: NSMenuItem) {
+        performWindowAction(.toggleFiles)
     }
 
     @objc private func stopTaskFromMenu(_ sender: NSMenuItem) {
@@ -175,6 +197,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         if menuItem.action == #selector(openSpaceFromMenu(_:)) { return true }
         guard agentWindow === NSApp.keyWindow, agentWindow?.attachedSheet == nil else { return false }
         if menuItem.action == #selector(stopTaskFromMenu(_:)) { return agent.canStop }
+        if menuItem.action == #selector(toggleFilesFromMenu(_:)) { return agent.windowShowsTask }
         return true
     }
 

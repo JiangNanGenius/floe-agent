@@ -504,6 +504,7 @@ struct MacProviderSettingsView: View {
     /// loads the record or a fresh draft and schedules one debounced
     /// listing. It never touches the key.
     private func activateCurrentSelection() {
+        cancelConnectionCheck()
         workspace.cancelModelDiscovery()
         draft = selectedRecord.map(MacProviderDraft.init) ?? MacProviderDraft()
         scheduleDiscovery()

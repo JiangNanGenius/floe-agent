@@ -211,7 +211,7 @@ final class HostAgentWorkspace: ObservableObject {
     func hasPendingApproval(in id: UUID) -> Bool { liveRuns[id]?.approval != nil }
     #if FLOE_UNIFIED_MAC
     enum WindowAction {
-        case newTask, findTask, stopTask
+        case newTask, findTask, findTaskTitles, stopTask, toggleFiles
         case openSpace(MacSpacePage)
     }
     struct WindowCommand {
@@ -220,6 +220,8 @@ final class HostAgentWorkspace: ObservableObject {
     }
     @Published var windowCommand: WindowCommand?
     @Published var isSettingsPresented = false
+    var windowShowsTask = false
+    var draftSelectionID: UUID { historySelection }
     #if FLOE_MAC_HOST_SMOKE
     var smokeTaskSearchMounted = false
     var smokeTaskFindInvocations = 0
@@ -231,6 +233,8 @@ final class HostAgentWorkspace: ObservableObject {
     var smokeSpacePage: MacSpacePage?
     var smokeSpaceFrame: CGRect?
     var smokeSpacePickerFrame: CGRect?
+    var smokeInspectorShown = false
+    var smokeFilesTakeDetail = false
     #endif
     @Published var allowsWorkspaceWrites: Bool { didSet { preferences.set(allowsWorkspaceWrites, forKey: "floe.mac.workspace.allowWrites") } }
     @Published var verifyAgentAnswers: Bool { didSet { preferences.set(verifyAgentAnswers, forKey: "floe.mac.agent.verifyAnswers") } }
@@ -757,9 +761,8 @@ final class HostAgentWorkspace: ObservableObject {
     /// The runtime is idempotent per resolved root path: re-adding the same
     /// folder returns the existing record instead of creating a duplicate.
     @discardableResult
-    func addWorkspace(name: String, rootURL: URL) async -> Bool {
-        guard let runtime, isReady, !isSending, !isTerminating,
-              let release = admit() else { return false }
+    func addWorkspace(name: String, rootURL: URL, selectForNewTask: Bool = true) async -> WorkspaceRecord? {
+        guard let runtime, isReady, !isTerminating, let release = admit() else { return nil }
         defer { release() }
         do {
             let bookmark = try rootURL.bookmarkData(options: [
@@ -767,16 +770,14 @@ final class HostAgentWorkspace: ObservableObject {
             ])
             let record = try await runtime.registerWorkspace(name: name, rootBookmark: bookmark)
             workspaces = try await runtime.workspaces()
-            // Select the durable record the runtime actually bound: for an
-            // already-registered folder this is the existing workspace id.
-            selectedWorkspaceID = record.id
-            return true
+            if selectForNewTask, !isSending { selectedWorkspaceID = record.id }
+            return record
         } catch {
             notice = String(
                 localized: "host.chat.workspaceSaveFailed",
                 defaultValue: "The workspace could not be saved."
             )
-            return false
+            return nil
         }
     }
 
@@ -1019,6 +1020,14 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    private static func initialTaskTitle(_ prompt: String, provider: FloeMacSelfProviderBinding) -> String {
+        let firstLine = prompt.split(maxSplits: 1, whereSeparator: \.isNewline).first ?? ""
+        let safeText = SecretRedactor.redact(String(firstLine), secret: provider.credentials.apiKey)
+        guard !safeText.contains(SecretRedactor.replacement) else { return "" }
+        let words = safeText.split(whereSeparator: \.isWhitespace).prefix(8)
+        return String(words.joined(separator: " ").prefix(48))
+    }
+
     private func beginSend(_ text: String, runtime: FloeMacSelfRuntime,
                            provider: FloeMacSelfProviderBinding,
                            workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "",
@@ -1099,6 +1108,7 @@ final class HostAgentWorkspace: ObservableObject {
                     conversationID: currentID,
                     newConversationID: currentID == nil ? taskID : nil,
                     workspaceID: tools == nil ? workspaceID : project?.id,
+                    conversationTitle: currentID == nil ? Self.initialTaskTitle(text, provider: provider) : "",
                     goal: acceptedExecution?.goal ?? text,
                     mode: acceptedExecution?.conversationMode ?? mode.runtimeMode,
                     runID: acceptedExecution?.runID,
@@ -1897,7 +1907,8 @@ final class HostAgentWorkspace: ObservableObject {
             try? await Task.sleep(for: .milliseconds(50))
         }
         guard !isSending, notice == nil, let conversationID = selectedID,
-              messages.map(\.role) == ["user", "assistant"] else { return false }
+              messages.map(\.role) == ["user", "assistant"],
+              conversations.first(where: { $0.id == conversationID })?.title == "Synthetic Mac chat" else { return false }
         await select(conversationID)
         return heldAdmission && messages.map(\.content) == ["Synthetic Mac chat", "Synthetic persisted reply."]
     }
