@@ -60,6 +60,7 @@ final class FileTreeViewModel: ObservableObject {
     /// Root-level nodes (loaded on appear / refresh).
     @Published private(set) var rootNodes: [FileTreeNode] = []
     @Published private(set) var loadedScope: WorkspaceFileActionScope?
+    @Published private(set) var unavailableStudioRoot: String?
     @Published private(set) var managedStudioRoot: String?
     @Published private(set) var boundStudioVideos: Set<String> = []
     @Published private(set) var protectedStudioVideos: Set<String> = []
@@ -109,6 +110,7 @@ final class FileTreeViewModel: ObservableObject {
     func loadRoot() async {
         guard center.fileService != nil else {
             loadedScope = nil
+            unavailableStudioRoot = nil
             managedStudioRoot = nil
             boundStudioVideos = []
             protectedStudioVideos = []
@@ -121,18 +123,27 @@ final class FileTreeViewModel: ObservableObject {
             let scope = try WorkspaceFileActionScope(center: center)
             let page = try await center.listDirectory(relativePath: ".")
             let candidateName = "Floe Studio " + String(scope.workspaceID.uuidString.prefix(8))
-            let managed: String?
+            var managed: String?
+            var unavailable: String?
+            var protected: Set<String> = []
             if page.entries.contains(where: { $0.name == candidateName && $0.isDirectory }) {
-                managed = try await StudioWorkspaceVideoService.managedRootForNativeUI(
-                    center: center, expectedScope: scope, environment: center.environment)
-            } else { managed = nil }
-            let protected: Set<String>
-            if managed != nil {
-                protected = try await StudioWorkspaceVideoService.protectedVideoPathsForNativeUI(
-                    center: center, expectedScope: scope, environment: center.environment)
-            } else { protected = [] }
+                do {
+                    managed = try await StudioWorkspaceVideoService.managedRootForNativeUI(
+                        center: center, expectedScope: scope, environment: center.environment)
+                    if managed != nil {
+                        protected = try await StudioWorkspaceVideoService.protectedVideoPathsForNativeUI(
+                            center: center, expectedScope: scope, environment: center.environment)
+                    }
+                } catch PersonalContentError.changedDocument {
+                    // Keep the replaced Studio tree inaccessible without hiding its siblings.
+                    unavailable = candidateName
+                }
+            }
+            try Task.checkCancellation()
             try scope.validate(center)
             loadedScope = scope
+            unavailableStudioRoot = unavailable
+            if unavailable != nil { searchHits.removeAll { isUnavailableStudioPath($0.relativePath) } }
             managedStudioRoot = managed
             // This is an index hint only. The target package is verified
             // again before it enters the native editor.
@@ -144,6 +155,7 @@ final class FileTreeViewModel: ObservableObject {
         } catch {
             rootNodes = []
             loadedScope = nil
+            unavailableStudioRoot = nil
             managedStudioRoot = nil
             boundStudioVideos = []
             protectedStudioVideos = []
@@ -153,7 +165,7 @@ final class FileTreeViewModel: ObservableObject {
 
     /// Lazily loads a directory's children on first disclosure.
     func loadChildren(of node: FileTreeNode) async -> [FileTreeNode] {
-        guard node.isBrowsableDirectory, center.fileService != nil else { return [] }
+        guard node.isBrowsableDirectory, !isUnavailableStudioPath(node.relativePath), center.fileService != nil else { return [] }
         do {
             guard let scope = loadedScope else { throw WorkspaceFileDeletionError.changed }
             try scope.validate(center)
@@ -210,7 +222,13 @@ final class FileTreeViewModel: ObservableObject {
         )
     }
 
+    func isUnavailableStudioPath(_ path: String) -> Bool {
+        guard let root = unavailableStudioRoot else { return false }
+        return path == root || path.hasPrefix(root + "/")
+    }
+
     func isManagedStudioPath(_ path: String) -> Bool {
+        if isUnavailableStudioPath(path) { return true }
         guard let root = managedStudioRoot else { return false }
         return path == root || protectedStudioVideos.contains(where: { path == $0 || path.hasPrefix($0 + "/") })
     }
@@ -461,7 +479,8 @@ final class FileTreeViewModel: ObservableObject {
                 guard !Task.isCancelled, self.center.currentWorkspace?.id == workspaceID else { return }
                 guard let actionScope else { throw WorkspaceFileDeletionError.changed }
                 try actionScope.validate(self.center)
-                self.searchScope = actionScope; self.searchHits = hits
+                self.searchScope = actionScope
+                self.searchHits = hits.filter { !self.isUnavailableStudioPath($0.relativePath) }
                 self.errorMessage = nil
             } catch {
                 guard !Task.isCancelled, self.center.currentWorkspace?.id == workspaceID else { return }

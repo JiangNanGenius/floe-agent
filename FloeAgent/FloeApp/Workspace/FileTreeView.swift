@@ -270,35 +270,49 @@ struct FileTreeView: View {
             ForEach(viewModel.visibleNodes) { visible in
                 let node = visible.node
                 let scope = viewModel.loadedScope
-                HStack(spacing: 8) {
-                    if selecting {
-                        Image(systemName: selection.contains(node.relativePath) ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(selection.contains(node.relativePath) ? Color.accentColor : .secondary)
-                    }
-                    FileTreeRow(
-                        node: node,
-                        depth: visible.depth,
-                        isExpanded: viewModel.expandedDirectoryPaths.contains(node.relativePath)
-                    ) {
-                        if selecting {
-                            if !selection.insert(node.relativePath).inserted { selection.remove(node.relativePath) }
-                        } else if node.isBrowsableDirectory {
-                            Task { await viewModel.toggleDirectory(node) }
-                        } else { onSelectFile(node.relativePath) }
-                    }
-                    Menu { rowMenu(for: node, scope: scope) } label: {
-                        Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(.rect)
-                    }.buttonStyle(.borderless).accessibilityLabel("workspace.workspace_canvas_view.more")
-                        .accessibilityIdentifier("fileTree.row.menu." + node.relativePath)
+                if viewModel.isUnavailableStudioPath(node.relativePath) {
+                    Label {
+                        VStack(alignment: .leading) {
+                            Text(node.name)
+                            Text(IDELanguageRunText.t("目录位置已改变，暂时无法打开。", "This folder has moved and cannot be opened."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: { Image(systemName: "folder.badge.questionmark") }
+                } else {
+                    treeRow(node, depth: visible.depth, scope: scope)
                 }
-                .contextMenu { rowMenu(for: node, scope: scope) }
-                .listRowInsets(dense
-                    ? EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
-                    : EdgeInsets())
-                .listRowSeparator(dense ? .hidden : .visible, edges: .all)
             }
         }
         .listStyle(.plain)
+    }
+
+    private func treeRow(_ node: FileTreeNode, depth: Int, scope: WorkspaceFileActionScope?) -> some View {
+        HStack(spacing: 8) {
+            if selecting {
+                Image(systemName: selection.contains(node.relativePath) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selection.contains(node.relativePath) ? Color.accentColor : .secondary)
+            }
+            FileTreeRow(
+                node: node,
+                depth: depth,
+                isExpanded: viewModel.expandedDirectoryPaths.contains(node.relativePath)
+            ) {
+                if selecting {
+                    if !selection.insert(node.relativePath).inserted { selection.remove(node.relativePath) }
+                } else if node.isBrowsableDirectory {
+                    Task { await viewModel.toggleDirectory(node) }
+                } else { onSelectFile(node.relativePath) }
+            }
+            Menu { rowMenu(for: node, scope: scope) } label: {
+                Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(.rect)
+            }.buttonStyle(.borderless).accessibilityLabel("workspace.workspace_canvas_view.more")
+                .accessibilityIdentifier("fileTree.row.menu." + node.relativePath)
+        }
+        .contextMenu { rowMenu(for: node, scope: scope) }
+        .listRowInsets(dense
+            ? EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
+            : EdgeInsets())
+        .listRowSeparator(dense ? .hidden : .visible, edges: .all)
     }
 
     @ViewBuilder
