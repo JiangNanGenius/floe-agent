@@ -117,6 +117,18 @@ enum DesignWorkflowFixture {
         }
         #if targetEnvironment(simulator)
         let arguments = ProcessInfo.processInfo.arguments
+        // Exercise the actual in-flight affordance; an idle lease alone has no UI.
+        if !arguments.contains("--ui-test-live-browser-idle") {
+            Task { @MainActor [weak session] in
+                guard let session else { return }
+                while session.isModelControlCurrent(control.lease), !Task.isCancelled {
+                    let result = await session.execute(.init(sessionID: session.sessionID, tabID: tabID,
+                        timeoutMilliseconds: 30_000, action: .wait(.text("Fixture waiting for user interaction"))),
+                        control: control.lease)
+                    guard result.status == .timeout else { return }
+                }
+            }
+        }
         let release = arguments.contains("--ui-test-live-browser-release")
         if (release || arguments.contains("--ui-test-live-browser-request")),
            let seededPage = session.previewPageIdentity {

@@ -26,13 +26,11 @@ import FloeHeavyEditorsHostAdapter
     func grant(_ context: ToolContext) async throws -> HeavyEditorTaskGrant {
         let conversation = try await coordinator.savedConversation(context)
         let authority = try coordinator.access.get()
-        let ids = Set(try await authority.projectIDs(conversationID: conversation))
-        let records = try await library(context).records().filter { ids.contains($0.id) && $0.kind == .geography && !$0.needsRecovery }
-        var readable = Set<UUID>(), writable = Set<UUID>()
-        for record in records {
-            if try await authority.canAccess(conversationID: conversation, projectID: record.id, editing: false) { readable.insert(record.id) }
-            if try await authority.canAccess(conversationID: conversation, projectID: record.id, editing: true) { writable.insert(record.id) }
-        }
+        let permissions = try await authority.permissions(conversationID: conversation)
+        let store = try await library(context)
+        let records = permissions.isEmpty ? [] : try await store.records()
+        let readable = Set(records.lazy.filter { $0.kind == .geography && !$0.needsRecovery && permissions[$0.id] != nil }.map(\.id))
+        let writable = readable.filter { permissions[$0] == true }
         let writesExisting = ["gis.invoke", "gis.import", "gis.export"].contains(context.executionToolName ?? "")
         let canCreate = context.allowedToolNames?.contains("gis.create") != false
         try context.cancellation.throwIfCancelled()

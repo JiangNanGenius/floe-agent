@@ -288,8 +288,29 @@ final class GameWorkspaceProjectSession {
         try await refresh(reloadFiles: false)
     }
 
+    /// Builds the run extension, refreshing the selection for play first.
+    /// Independent callers that have not just refreshed keep this behavior.
     func makeRunExtension() async throws -> IDEProjectRunExtension {
-        try await refreshSelectionForPlay()
+        try await makeRunExtension(selectionRefreshedForPlay: false)
+    }
+
+    /// Builds the run extension from a selection the registry already refreshed
+    /// for play. Route planning (execution planning, playable-session reopen)
+    /// runs between that refresh and this call and may replace the whole
+    /// project session or move the revision, so a replaced session, changed
+    /// revision or emptied run selection re-runs the full authoritative
+    /// refresh instead of trusting the pre-planning snapshot. A workspace edit
+    /// still invalidates the selection: it bumps the revision tracker, which
+    /// the IDE host snapshot fence rejects before any launch.
+    func makeRunExtension(selectionRefreshedForPlay refreshed: Bool) async throws -> IDEProjectRunExtension {
+        if refreshed {
+            let current = try context
+            if selectionSnapshot?.matches(current) != true || selectionSnapshot?.runSelection == nil {
+                try await refreshSelectionForPlay()
+            }
+        } else {
+            try await refreshSelectionForPlay()
+        }
         guard let selectionSnapshot else { throw GameProjectFlowError.selectionRequired }
         let selected = try selectionSnapshot.requireRunSelection()
         guard let ideHost else { throw GameIDEBridgeError.workspaceChanged }

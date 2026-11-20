@@ -32,10 +32,25 @@ import FloeHeavyEditorsHostAdapter
     /// this index grants nothing and no execution tool name is fabricated.
     func descriptors(for context: ToolContext) async throws -> [ToolCatalog.Descriptor] {
         guard registered else { return [] }
-        let a = try await font.bridge.descriptors(for: context)
-        let b = try await score.descriptors(for: context)
-        let c = try await gis.descriptors(for: context)
-        return a + b + c
+        // Each editor has its own native store. A missing GIS binding must not
+        // discard the fonts or notation descriptors already authorized here.
+        var available: [ToolCatalog.Descriptor] = []
+        for (domain, load) in [
+            ("font", font.bridge.descriptors(for:)),
+            ("score", score.descriptors(for:)),
+            ("gis", gis.descriptors(for:))
+        ] as [(String, @MainActor (ToolContext) async throws -> [ToolCatalog.Descriptor])] {
+            try Task.checkCancellation()
+            try context.cancellation.throwIfCancelled()
+            do {
+                available += try await load(context)
+            } catch {
+                try Task.checkCancellation()
+                try context.cancellation.throwIfCancelled()
+                FloeLogger(category: .tools).warning("editorDiscoveryUnavailable domain=\(domain)")
+            }
+        }
+        return available
     }
 }
 #endif

@@ -185,6 +185,105 @@ struct BackgroundJobTests {
         #expect(try await store.job(id: orphaned.id)?.state == .interrupted)
     }
 
+    @Test("Relaunch reconciliation tells the owning task its service is gone")
+    func reconcileInterruptedServiceDeliversTerminalEvidence() async throws {
+        let (db, conversation, run) = try await fixture()
+        let store = BackgroundJobStore(database: db)
+        let orphaned = try await store.save(BackgroundJob(
+            conversationID: conversation, runID: run,
+            kind: .tool, targetTool: "exec.localService",
+            payloadJSON: Data(#"{"runtime":"node","entry":"server.js","port":8321}"#.utf8),
+            state: .running,
+            progressJSON: Data(#"{"state":"running","runtime":"node","ready":true,"previewURL":"http://127.0.0.1:8321/","stdout":"","stderr":"","truncated":false}"#.utf8)
+        ))
+        let terminalJobs = TerminalJobCollector()
+        let service = BackgroundJobService(store: store, registry: ToolRunnerRegistry(),
+            onTerminal: { job in await terminalJobs.record(job.id) })
+        #expect(try await service.reconcileInterruptedOnLaunch() == 1)
+        let saved = try #require(await service.job(id: orphaned.id))
+        #expect(saved.state == .interrupted)
+        #expect(saved.workKind == .service)
+        #expect(saved.serviceState == .interrupted, "A relaunched-away service must not keep a ready serviceState")
+        #expect(saved.servicePreviewURL == nil)
+        // The durable evidence names the real cause so the model can correct
+        // the stale readiness receipt instead of quoting it.
+        let error = try #require(saved.lastError)
+        #expect(error.contains("no longer exists"))
+        #expect(error.contains("stale"))
+        #expect(error.contains("jobs.submit"))
+        // The terminal hook reaches the app: the owning conversation receives
+        // fresh evidence on re-entry (steer/queued input + notification).
+        let delivered = try await waitForCollector(terminalJobs, id: orphaned.id)
+        #expect(delivered)
+        // Ownership is preserved: the job still belongs to its conversation,
+        // so jobs.status remains answerable only from the owning task.
+        #expect(saved.conversationID == conversation)
+        #expect(saved.environmentID == orphaned.environmentID)
+    }
+
+    @Test("jobs.status separates the service process axis from HTTP readiness")
+    func serviceStatusExposesProcessAndHTTPAxes() async throws {
+        let (db, conversation, run) = try await fixture()
+        let store = BackgroundJobStore(database: db)
+        // Start command succeeded (process running) but the port has not answered.
+        let starting = try await store.save(BackgroundJob(
+            conversationID: conversation, runID: run,
+            kind: .tool, targetTool: "exec.localService",
+            payloadJSON: Data("{}".utf8), state: .running,
+            progressJSON: Data(#"{"state":"running","runtime":"node","ready":false,"stdout":"","stderr":"","truncated":false}"#.utf8)))
+        // Verified: the published loopback port really answers HTTP.
+        let ready = try await store.save(BackgroundJob(
+            conversationID: conversation, runID: run,
+            kind: .tool, targetTool: "exec.localService",
+            payloadJSON: Data("{}".utf8), state: .running,
+            progressJSON: Data(#"{"state":"running","runtime":"node","ready":true,"previewURL":"http://127.0.0.1:8321/","stdout":"","stderr":"","truncated":false}"#.utf8)))
+        // Record written before the explicit ready axis existed: previewURL is
+        // the legacy readiness proof and must keep decoding as ready.
+        let legacy = try await store.save(BackgroundJob(
+            conversationID: conversation, runID: run,
+            kind: .tool, targetTool: "exec.localService",
+            payloadJSON: Data("{}".utf8), state: .running,
+            progressJSON: Data(#"{"state":"running","runtime":"node","previewURL":"http://127.0.0.1:8322/","stdout":"","stderr":"","truncated":false}"#.utf8)))
+        let interrupted = BackgroundJob(conversationID: conversation, runID: run, kind: .tool, targetTool: "exec.localService", payloadJSON: Data("{}".utf8), state: .interrupted, progressJSON: legacy.progressJSON)
+        _ = try await store.save(interrupted)
+        let service = BackgroundJobService(store: store, registry: ToolRunnerRegistry())
+        let tool = JobsStatusTool(service: service)
+        let context = ToolContext(runID: run, cancellation: CancellationToken())
+
+        let startingSummary = try await tool.execute(.init(jobID: starting.id.uuidString), context: context).summary
+        #expect(startingSummary.contains(#""serviceState":"starting""#))
+        #expect(startingSummary.contains(#""serviceHTTPReady":false"#))
+        #expect(startingSummary.contains(#""serviceProcessState":"running""#))
+        // The jobs.result note for an unready service forbids reporting it as started.
+        let startingNote = try await JobsResultTool(service: service).execute(
+            .init(jobID: starting.id.uuidString), context: context).summary
+        #expect(startingNote.contains("NOT verified"))
+        #expect(startingNote.contains("Do NOT report the service as started"))
+
+        let readySummary = try await tool.execute(.init(jobID: ready.id.uuidString), context: context).summary
+        #expect(readySummary.contains(#""serviceState":"running""#))
+        #expect(readySummary.contains(#""serviceHTTPReady":true"#))
+        #expect(readySummary.contains(#""serviceProcessState":"running""#))
+
+        let interruptedSummary = try await tool.execute(.init(jobID: interrupted.id.uuidString), context: context).summary
+        #expect(interruptedSummary.contains(#""serviceHTTPReady":false"#))
+        #expect(!interruptedSummary.contains("127.0.0.1:8322"))
+        #expect(!interruptedSummary.contains(#""serviceProcessState":"running""#))
+        let legacySummary = try await tool.execute(.init(jobID: legacy.id.uuidString), context: context).summary
+        #expect(legacySummary.contains(#""serviceState":"running""#))
+        #expect(legacySummary.contains(#""serviceHTTPReady":true"#))
+    }
+
+    private func waitForCollector(_ collector: TerminalJobCollector, id: UUID,
+                                  timeout: TimeInterval = 5) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await collector.contains(id) { return true }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return false
+    }
+
     @Test("Background Shell accepts long bodies without widening other job targets")
     func longShellSubmissionValidation() async throws {
         let (db, _, _) = try await fixture()

@@ -242,6 +242,22 @@ public actor FileGameProjectRepository {
         }
     }
 
+    /// Authenticated HEAD metadata without walking or hashing the working
+    /// tree. Read-only currency fences (selection validation) use this; the
+    /// next real `open` still adopts external edits and verifies the tree.
+    public func openMetadata(_ id: UUID, owner: GameProjectOwner) throws -> GameStoredProject {
+        try locked(id) { try loadStored(id, owner: owner) }
+    }
+
+    /// Metadata-only companion of `openWorkingProject` for the same fences.
+    public func openWorkingMetadata(_ id: UUID, owner: GameProjectOwner) throws -> GameWorkingProjectSnapshot {
+        try locked(id) {
+            let project = try loadStored(id, owner: owner)
+            guard workingTree != nil, let binding = capturedBindings[id] else { throw GameProjectError.invalidContext }
+            return .init(project: project, binding: binding)
+        }
+    }
+
     /// Exact base bytes for a draft/three-way rebase, without restoring that
     /// historical snapshot over the live IDE. Only reachable owned history is read.
     public func readHistorical(_ id: UUID, owner: GameProjectOwner, expectedRevision: String,

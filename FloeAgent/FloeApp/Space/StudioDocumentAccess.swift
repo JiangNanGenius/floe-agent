@@ -132,12 +132,38 @@ actor StudioDocumentAccess {
             return !editing || editable
         }
     }
+    /// Issued only by the native user picker for this ordinary task. Does not
+    /// change the dedicated editor assistant or grant access to sibling works.
+    func setUserSelectedWork(_ projectID: UUID, conversationID: UUID, editable: Bool) throws {
+        try pool.write { db in
+            guard try !Self.hasLifecycle(db, projectID: projectID, conversationID: conversationID) else {
+                throw PersonalFileAssistantLifecycleError.pending
+            }
+            try db.execute(sql: """
+                INSERT INTO document_access(conversation_id,project_id,can_edit) VALUES (?,?,?)
+                ON CONFLICT(conversation_id,project_id) DO UPDATE SET can_edit=excluded.can_edit
+                """, arguments: [conversationID.uuidString, projectID.uuidString, editable])
+        }
+    }
+
     func revokeAccess(conversationID: UUID, projectID: UUID) throws {
         try pool.write { db in
             try db.execute(sql: "DELETE FROM document_access WHERE conversation_id=? AND project_id=?",
                 arguments: [conversationID.uuidString, projectID.uuidString])
         }
     }
+    func permissions(conversationID: UUID) throws -> [UUID: Bool] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT project_id,can_edit FROM document_access WHERE conversation_id=?",
+                                       arguments: [conversationID.uuidString])
+            var result: [UUID: Bool] = [:]
+            for row in rows {
+                if let id = UUID(uuidString: row["project_id"] as String) { result[id] = row["can_edit"] as Bool }
+            }
+            return result
+        }
+    }
+
     func projectIDs(conversationID: UUID) throws -> [UUID] {
         try pool.read { db in
             try String.fetchAll(db, sql: "SELECT project_id FROM document_access WHERE conversation_id=? ORDER BY project_id",

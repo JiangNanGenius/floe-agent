@@ -10,7 +10,7 @@ import Glibc
 /// An in-process optimization hint, never an authorization or persisted
 /// project revision. A cached digest is reusable only while the same regular
 /// file is reopened beneath the captured root with unchanged metadata.
-public struct GameFileFingerprint: Equatable, Sendable {
+public struct GameFileFingerprint: Codable, Equatable, Sendable {
     public let bytes: Int
     public let sha256: String
     let device: UInt64

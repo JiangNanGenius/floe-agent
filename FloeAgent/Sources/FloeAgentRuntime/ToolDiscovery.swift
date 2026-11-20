@@ -226,8 +226,12 @@ enum ToolDiscovery {
             let shell = descriptors.filter { $0.name == "exec.shell" }
             return lifecycle + shell
         }
-        if operationNames.isEmpty,
-           ["port", "forward", FloeL10n.l("runtime.tool_discovery.port"), FloeL10n.l("runtime.tool_discovery.forward")].contains(where: query.contains),
+        // English substrings such as imPORT/export also occur in every editor.
+        // A request to export a document or media must reach its native tools.
+        let words = query.split { !$0.isASCII || !$0.isLetter }
+        let portRequest = words.contains("port") || words.contains("ports") || query == "forward"
+            || query.contains("端口") || query == "转发" || words.contains("forwarding") && words.contains("tcp")
+        if operationNames.isEmpty, portRequest,
            let ports = descriptors.first(where: { $0.name == "linux.port" }) {
             return [ports] + descriptors.filter { $0.name == "environment.linuxStatus" || $0.name == "exec.localService" }
         }

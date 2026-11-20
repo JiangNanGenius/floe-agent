@@ -64,7 +64,7 @@ enum StudioToolOutput {
     private let libraryOverride: PersonalContentLibrary?
     let buildingProjects = BuildingStudioRegistry()
     private var preparations: [UUID: Task<UUID, Error>] = [:]
-    private var mutating: Set<UUID> = []
+    var mutating: Set<UUID> = []
     static let names: Set<String> = ["studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.media.provider", "studio.chemistry", "studio.machining", "studio.workspaceVideo", "studio.workspaceVideoRead"]
 
     init(environment: AppEnvironment, authority: StudioDocumentAccess? = nil, library: PersonalContentLibrary? = nil,
@@ -316,7 +316,7 @@ enum StudioToolOutput {
         }
         return conversationID
     }
-    private func requireMutationGrant(_ context: ToolContext) throws {
+    func requireMutationGrant(_ context: ToolContext) throws {
         guard context.approvalGrantID != nil else {
             throw FloeError.validationFailed("The task's existing approval grant is required for this operation")
         }
@@ -325,7 +325,8 @@ enum StudioToolOutput {
                   allowedNames: Set<String> = StudioCoordinator.names) async throws -> (record: PersonalContentRecord, url: URL) {
         let conversationID = try await conversation(context, allowedNames: allowedNames)
         guard try await access.get().canAccess(conversationID: conversationID, projectID: id, editing: editing) else {
-            throw FloeError.validationFailed("Open this work and its assistant before editing it")
+            throw FloeError.validationFailed("Open this work and its assistant before editing it. "
+                + "Bind the work from this task's attachment menu 空间作品 / Space works, or open its 作品助手 / work assistant in Space.")
         }
         try PersonalLibraryFileActions.requireAvailable(id)
         let value = try await PersonalContentService.shared.library().resolve(id)
@@ -379,6 +380,15 @@ enum StudioToolOutput {
             return try await readBuilding(mount, query: buildingQuery ?? .init(), offset: offset, limit: limit, context: context)
         }
         let value = try await location(id, context: context, editing: false)
+        if value.record.kind == .building {
+            if cadQuery.sketchID != nil || cadQuery.sketchOffset != 0 || cadQuery.sketchLimit != 12
+                || cadQuery.entityOffset != 0 || cadQuery.entityLimit != 80
+                || cadQuery.constraintOffset != 0 || cadQuery.constraintLimit != 120 || cadQuery.measure != nil {
+                throw FloeError.validationFailed("Use this building project's records or drawingPages query")
+            }
+            return try await readOrdinaryBuilding(value, query: buildingQuery ?? .init(),
+                offset: offset, limit: limit, context: context)
+        }
         if let buildingQuery, !(value.record.kind == .building && buildingQuery.action == .overview) {
             throw FloeError.validationFailed("Open the building project to query its working copy")
         }
@@ -570,8 +580,8 @@ enum StudioToolOutput {
             return try await editBuilding(mount, revision: revision, operations: operations, context: context)
         }
         let value = try await location(id, context: context, editing: true)
-        guard value.record.kind != .building else {
-            throw FloeError.validationFailed("Open this building project and use its assistant to edit the working copy")
+        if value.record.kind == .building {
+            return try await editOrdinaryBuilding(value, revision: revision, operations: operations, context: context)
         }
         try requireMutationGrant(context)
         guard mutating.insert(id).inserted else { throw PersonalContentError.changedDocument }
@@ -1346,7 +1356,7 @@ enum StudioToolOutput {
         var output = try StudioToolOutput.make(receipt); output.outputFiles = [published.file]
         return output
     }
-    private func changed(_ id: UUID) {
+    func changed(_ id: UUID) {
         NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: id)
         if let environment { Task { await environment.globalSourceMemory.changed() } }
     }
@@ -1492,7 +1502,7 @@ enum StudioToolOutput {
                            mediaRevision: Int64? = nil, musicAudioAsset: MusicAsset? = nil, cadState: Data? = nil,
                            musicDocument: MusicDocument? = nil) -> String {
         switch kind {
-        case .building: return "This is the verified published building generation. Open its project assistant to inspect walls, edit faces or save an independent copy."
+        case .building: return "A closed building package reads through the building query actions; an authorized edit publishes one new verified generation of the same original."
         case .image, .drawing, .video: return StudioTypedEditExamples.mediaFormat(kind: kind, revision: mediaRevision)
         case .document: return "UTF-8 text originals accept {action: replace|append, text:string}; expectedRevision fingerprints the live text. Imported binary/Office files retain their original and open in the native preview."
         case .cad2D, .cad3D:
@@ -1686,7 +1696,7 @@ private struct StudioMeetingState: Encodable {
 private struct StudioCreateTool: AgentTool {
     struct Arguments: Decodable, Sendable { let kind: PersonalContentKind; let title: String; let format: String? }
     static let name = "studio.create"
-    static let toolDescription = "Create a real native personal work. Use building for a standalone architectural project. Canvas belongs to Creative mode. Printing and cutting machining belong to CAD: create/open CAD first, then use studio.machining. For document, format can be docx, xlsx, pptx or md; omitted format retains the text-document default. Returns the saved original and its open link. This task may then inspect, edit and run its own work."
+    static let toolDescription = "Create a real native personal work. Use building for a standalone architectural project. An ordinary task can create and edit a canvas work here; Creative mode can also open the same canvas. Printing and cutting machining belong to CAD: create/open CAD first, then use studio.machining. For document, format can be docx, xlsx, pptx or md; omitted format retains the text-document default. Returns the saved original and its open link. This task may then inspect, edit and run its own work."
     static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["canvas","diagram","music","meeting","chemistry","latex","document","drawing","image","video","building","cad2D","cad3D","electronics","geography"]},"title":{"type":"string","minLength":1,"maxLength":160},"format":{"type":"string","enum":["docx","xlsx","pptx","md"]}},"required":["kind","title"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true

@@ -7,6 +7,16 @@ import FloeGameCore
 /// editor file is intentionally absent from the command contract.
 public protocol GameRunContextHost: Sendable {
     func currentContext(for captured: GameProjectContext) async throws -> GameProjectContext
+    /// Cheap currency probe for read-only fences. Hosts bound to a repository
+    /// answer from authenticated HEAD metadata without walking the tree; the
+    /// default keeps the full context open for every other host.
+    func currentContextMetadata(for captured: GameProjectContext) async throws -> GameProjectContext
+}
+
+extension GameRunContextHost {
+    public func currentContextMetadata(for captured: GameProjectContext) async throws -> GameProjectContext {
+        try await currentContext(for: captured)
+    }
 }
 
 public struct GamePreparedWebRun: Sendable {

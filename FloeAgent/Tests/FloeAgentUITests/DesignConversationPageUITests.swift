@@ -157,12 +157,8 @@ final class DesignConversationPageUITests: XCTestCase {
     private func assertWatchingPresentation(_ app: XCUIApplication, expanded: Bool = false) {
         if expanded {
             assertReadOnlyPage(app)
-        } else if #available(iOS 27.0, *) {
-            XCTAssertTrue(liveImage(app).waitForExistence(timeout: 10))
         } else {
-            XCTAssertFalse(liveImage(app).exists)
-            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label IN %@",
-                ["模型正在查看网页", "The model is viewing the page"])).firstMatch.waitForExistence(timeout: 8))
+            XCTAssertTrue(app.buttons.matching(identifier: "browser.live.watch").firstMatch.waitForExistence(timeout: 10))
         }
     }
 
@@ -225,6 +221,41 @@ final class DesignConversationPageUITests: XCTestCase {
         XCTAssertEqual(recorded.inputEvents, 0)
         XCTAssertEqual(live.viewport.count, 7)
         return live
+    }
+
+    func testIdleBrowserDoesNotShowAStatusBarInChat() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["--ui-test-live-browser-preview", "--ui-test-live-browser-idle"]
+        launchApp(app)
+        defer { app.terminate() }
+        try openFixture(app, rowID: browserRowID, title: "浏览器旁观验收")
+        XCTAssertTrue(app.textViews["composer.input"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons.matching(identifier: "browser.live.watch").firstMatch.exists)
+        XCTAssertFalse(app.buttons.matching(identifier: "browser.live.takeover").firstMatch.exists)
+    }
+
+    func testTakeOverFromThePreviewAndCloseWithoutEditing() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments += ["--ui-test-live-browser-preview"]
+        launchApp(app)
+        defer { app.terminate() }
+        try openFixture(app, rowID: browserRowID, title: "浏览器旁观验收")
+        let watch = app.buttons["browser.live.watch"].firstMatch
+        XCTAssertTrue(watch.waitForExistence(timeout: 15))
+        watch.tap()
+        assertWatchingPresentation(app, expanded: true)
+        let takeOver = app.buttons["browser.preview.takeover"].firstMatch
+        XCTAssertTrue(takeOver.isHittable)
+        takeOver.tap()
+        let address = app.textFields["browser.address"].firstMatch
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        let close = app.buttons["browser.live.back"].firstMatch
+        XCTAssertTrue(close.isHittable)
+        close.tap()
+        XCTAssertTrue(address.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.textViews["composer.input"].firstMatch.isHittable)
     }
 
     func testBrowserPreviewInChatAndFileInspectorPreservesDraftAndExplicitTakeover() throws {
@@ -299,7 +330,7 @@ final class DesignConversationPageUITests: XCTestCase {
         let sourceY = anchor.frame.midY
         XCTAssertNotEqual(heading, "Reading position 1")
         XCTAssertEqual(notify_post("org.floeagent.uitest.browser-preview.request"), UInt32(NOTIFY_STATUS_OK))
-        let request = app.staticTexts.matching(NSPredicate(format: "label IN %@", ["浏览器需要你操作", "The browser needs your input"])).firstMatch
+        let request = app.buttons.matching(identifier: "browser.live.takeover").firstMatch
         XCTAssertTrue(request.waitForExistence(timeout: 8))
         XCTAssertTrue(liveImage(app).waitForNonExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts[heading].isHittable)
@@ -352,11 +383,9 @@ final class DesignConversationPageUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String ?? "", draft)
         XCTAssertTrue(app.textFields["browser.address"].firstMatch.waitForNonExistence(timeout: 10))
         XCTAssertTrue(app.buttons["browser.live.return"].firstMatch.waitForNonExistence(timeout: 8))
-        // This offline fixture has no running task. Recovery belongs to the original task.
-        let taskStatus = app.staticTexts.matching(identifier: "browser.handoff.taskStatus").firstMatch
-        XCTAssertTrue(taskStatus.waitForExistence(timeout: 8))
-        XCTAssertTrue(taskStatus.label.contains("原任务未运行") || taskStatus.label.contains("not running"))
-        XCTAssertTrue(taskStatus.label.contains("返回原任务查看") || taskStatus.label.contains("Check the original task"))
+        // Handback with no live model action returns the reader to an idle chat.
+        XCTAssertFalse(app.staticTexts.matching(identifier: "browser.handoff.taskStatus").firstMatch.exists)
+        XCTAssertFalse(app.buttons.matching(identifier: "browser.live.takeover").firstMatch.exists)
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label IN %@", ["继续原任务", "Continue original task"])).firstMatch.exists)
         XCTAssertTrue(app.staticTexts[heading].isHittable)
         XCTAssertEqual(app.staticTexts[heading].frame.midY, sourceY, accuracy: 12)

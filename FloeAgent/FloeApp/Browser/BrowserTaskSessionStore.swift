@@ -666,6 +666,29 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         let continuation: CheckedContinuation<Bool, Never>
     }
 
+    // A lease can span multiple model turns. Only active tool work belongs in the UI.
+    private struct VisibleOperation {
+        let id: UUID
+        let lease: BrowserControlLease
+        let kind: BrowserModelActivity.Kind
+    }
+    @Published private var visibleOperations: [VisibleOperation] = []
+    var visibleModelActivity: BrowserModelActivity.Kind? {
+        guard isModelActive else { return nil }
+        return visibleOperations.last(where: { $0.lease == modelControl })?.kind
+    }
+
+    func beginVisibleOperation(_ kind: BrowserModelActivity.Kind, lease: BrowserControlLease?) -> UUID? {
+        guard let lease, isModelControlCurrent(lease) else { return nil }
+        let id = UUID()
+        visibleOperations.append(.init(id: id, lease: lease, kind: kind))
+        return id
+    }
+    func endVisibleOperation(_ id: UUID?) {
+        guard let id else { return }
+        visibleOperations.removeAll { $0.id == id }
+    }
+
     var hasModelControlHolder: Bool { modelControl != nil }
     var currentModelRunID: UUID? { modelControl?.runID }
     var isModelActive: Bool { modelControl != nil && !isUserControlling && !takeoverPending }
@@ -1513,6 +1536,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         if command.action != .protocolInfo, (command.tabID ?? activeTabID) == activeTabID {
             resetLivePreview()
         }
+        let kind = activityKind(for: command.action)
+        let visible = command.action == .protocolInfo ? nil : beginVisibleOperation(kind, lease: control)
+        defer { endVisibleOperation(visible) }
         let result = await executeAuthorized(command, control: control)
         if command.action != .protocolInfo, !isModelControlCurrent(control) {
             // A result that already says needsUser carries no page payload;
@@ -1536,7 +1562,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         }
         if result.status == .ok, let control, command.action != .protocolInfo,
            let page = result.page, let tab = tabs.first(where: { $0.documentID == page.documentID }) {
-            recordModelActivity(for: command.action)
+            lastModelActivity = BrowserModelActivity(kind: kind, at: Date())
             recordLivePreview(for: command, page: page, tab: tab, lease: control)
         }
         return result
@@ -1692,7 +1718,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         livePreviewFrame = BrowserLivePreviewFrame(image: image, clickedLabel: region.label, normalizedTarget: target)
     }
 
-    private func recordModelActivity(for action: BrowserAction) {
+    private func activityKind(for action: BrowserAction) -> BrowserModelActivity.Kind {
         let kind: BrowserModelActivity.Kind
         switch action {
         case .navigate, .create, .activateTab, .closeTab, .back, .forward, .reload:
@@ -1708,7 +1734,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         case .screenshot, .observe, .listTabs, .events, .listLinks, .readTable, .readText, .protocolInfo, .takeover:
             kind = .observing
         }
-        lastModelActivity = BrowserModelActivity(kind: kind, at: Date())
+        return kind
     }
 
     private func executeAuthorized(_ command: BrowserCommand, control: BrowserControlLease?) async -> BrowserResult {

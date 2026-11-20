@@ -28,7 +28,9 @@ public struct GameRunProjectDiscovery: Sendable {
     }
 
     public func discover(context: GameProjectContext, files: [GameProjectFile]) async throws -> [GameRunProjectRoot] {
-        try context.validate(current: await contexts.currentContext(for: context))
+        // Read-only currency fences use the host's metadata probe; the run
+        // preparation engine performs full-tree verification before planning.
+        try context.validate(current: await contexts.currentContextMetadata(for: context))
         let roots = try Self.candidateRoots(paths: files.map(\.path),
                                            maximum: maximumRoots,
                                            recognitionRoot: context.rootURL)
@@ -46,7 +48,7 @@ public struct GameRunProjectDiscovery: Sendable {
                 result.append(.init(root: root, engines: [], diagnostic: String(describing: error)))
             }
         }
-        try context.validate(current: await contexts.currentContext(for: context))
+        try context.validate(current: await contexts.currentContextMetadata(for: context))
         return result
     }
 

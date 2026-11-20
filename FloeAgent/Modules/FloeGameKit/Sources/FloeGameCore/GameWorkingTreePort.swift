@@ -23,23 +23,58 @@ public struct GameWorkingTreeBinding: Equatable, Sendable {
 /// resolved live root for all file access. Only the iOS container UUID varies.
 public enum GameSpaceRootIdentity {
     public static func persistedPath(_ path: String, owner: GameProjectOwner) -> String {
-        guard case .space = owner,
-              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return path
-        }
-        let container = support.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
-        let prefix = container.deletingLastPathComponent().pathComponents
+        persistedPath(path, owner: owner,
+                      support: FileManager.default.urls(for: .applicationSupportDirectory,
+                                                        in: .userDomainMask).first)
+    }
+
+    /// Relocation-stable identity for persisted root references. An App-owned
+    /// root keeps a container-relative token so a TestFlight/container UUID
+    /// change does not invalidate recovery journals or selection records;
+    /// every other root stays a strict absolute path. The token always names
+    /// the actual owner so two owners can never alias one directory.
+    static func persistedPath(_ path: String, owner: GameProjectOwner, support: URL?) -> String {
+        guard let support,
+              let prefix = Self.containerPrefix(support: support) else { return path }
         let parts = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
         guard path == "/" + parts.dropFirst().joined(separator: "/"),
-              prefix.suffix(3).elementsEqual(["Containers", "Data", "Application"]),
-              UUID(uuidString: container.lastPathComponent) != nil,
-              parts.starts(with: prefix), parts.count >= prefix.count + 8,
+              parts.starts(with: prefix),
+              parts.count >= prefix.count + 2,
               UUID(uuidString: parts[prefix.count]) != nil else { return path }
+        // The path may come from a former container; only its UUID format is
+        // validated, then it is stripped exactly like the live root's UUID.
         let suffix = parts.dropFirst(prefix.count + 1)
-        guard suffix.starts(with: ["Library", "Application Support", "FloeAgent", "PersonalContent"]),
-              suffix.suffix(2).elementsEqual(["Game", "Files"]),
-              suffix.dropLast(2).last?.hasSuffix(".floeproject") == true else { return path }
-        return "space-library:" + suffix.dropFirst(4).joined(separator: "/")
+        switch owner {
+        case .space:
+            // <container>/Library/Application Support/FloeAgent/PersonalContent/
+            //   <record>/.../<name>.floeproject/Game/Files
+            guard parts.count >= prefix.count + 8,
+                  suffix.starts(with: ["Library", "Application Support", "FloeAgent", "PersonalContent"]),
+                  suffix.suffix(2).elementsEqual(["Game", "Files"]),
+                  suffix.dropLast(2).last?.hasSuffix(".floeproject") == true else { return path }
+            return "space-library:" + suffix.dropFirst(4).joined(separator: "/")
+        case .conversation(let conversationID, let workspaceID):
+            // Only the exact app-owned per-task root of THIS owner relocates:
+            // <container>/Library/Application Support/FloeAgent/PrivateTasks/
+            //   <conversationID>. Other chat roots stay strict absolute paths.
+            // `suffix` is an ArraySlice: never index it, compare bounds+last.
+            let task = conversationID.uuidString.lowercased()
+            guard suffix.count == 5,
+                  suffix.starts(with: ["Library", "Application Support", "FloeAgent", "PrivateTasks"]),
+                  suffix.last?.caseInsensitiveCompare(task) == .orderedSame else { return path }
+            return "chat-task:" + task + "/" + workspaceID.uuidString.lowercased()
+        }
+    }
+
+    /// [.../Containers/Data/Application] prefix components of an iOS-style
+    /// Application Support URL, or nil on hosts without that layout.
+    private static func containerPrefix(support: URL) -> [String]? {
+        let resolved = support.resolvingSymlinksInPath()
+        let container = resolved.deletingLastPathComponent().deletingLastPathComponent()
+        let prefix = container.deletingLastPathComponent().pathComponents
+        guard prefix.suffix(3).elementsEqual(["Containers", "Data", "Application"]),
+              UUID(uuidString: container.lastPathComponent) != nil else { return nil }
+        return prefix
     }
 }
 

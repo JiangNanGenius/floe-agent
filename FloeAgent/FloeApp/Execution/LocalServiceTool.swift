@@ -7,12 +7,43 @@ import FloePersistence
 import FloeWorkspace
 
 struct LocalServiceProgress: Codable, Sendable {
+    /// Guest supervision state of the PROCESS (starting/running/stopping/…).
+    /// Liveness only: a running process that has not bound its port stays
+    /// "running" here while `ready` stays false.
     var state: String
     var runtime: String
+    /// True ONLY when the service's own probe on the published loopback port
+    /// verifiably answered HTTP/TCP. Process liveness never implies readiness;
+    /// consumers must report both axes instead of collapsing them into one.
+    var ready: Bool
     var previewURL: String?
     var stdout: String
     var stderr: String
     var truncated: Bool
+
+    init(state: String, runtime: String, ready: Bool = false, previewURL: String? = nil,
+         stdout: String, stderr: String, truncated: Bool) {
+        self.state = state
+        self.runtime = runtime
+        self.ready = ready
+        self.previewURL = previewURL
+        self.stdout = stdout
+        self.stderr = stderr
+        self.truncated = truncated
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decode(String.self, forKey: .state)
+        runtime = try container.decode(String.self, forKey: .runtime)
+        // Records written before `ready` existed carry no readiness axis;
+        // decode tolerantly and let consumers fall back to previewURL.
+        ready = try container.decodeIfPresent(Bool.self, forKey: .ready) ?? false
+        previewURL = try container.decodeIfPresent(String.self, forKey: .previewURL)
+        stdout = try container.decode(String.self, forKey: .stdout)
+        stderr = try container.decode(String.self, forKey: .stderr)
+        truncated = try container.decode(Bool.self, forKey: .truncated)
+    }
 
     mutating func boundAndRedact() {
         stdout = SecretRedactor.redact(stdout)

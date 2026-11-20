@@ -46,10 +46,10 @@ extension EnvironmentValues {
     @Entry fileprivate var browserPreviewPresentation: BrowserPreviewPresentation? = nil
 }
 
-private final class BrowserPreviewPanel: Identifiable, Sendable {
+@MainActor private final class BrowserPreviewPanel: ObservableObject, Identifiable {
     enum Mode: Sendable { case watching, interacting }
     let id = UUID()
-    let mode: Mode
+    @Published var mode: Mode
     let session: BrowserTaskSession
     let initialActivity: UInt64
     private let center: BrowserSessionCenter
@@ -64,9 +64,7 @@ private final class BrowserPreviewPanel: Identifiable, Sendable {
     deinit {
         // A removed window can discard its presentation state without a binding change.
         // Covering the sheet or backgrounding the scene keeps this same token alive.
-        if mode == .interacting {
-            Task { @MainActor [center = self.center, id = self.id] in center.closePreviewInteraction(id) }
-        }
+        Task { @MainActor [center = self.center, id = self.id] in center.closePreviewInteraction(id) }
     }
 }
 
@@ -137,28 +135,6 @@ struct TaskBrowserLivePreview: View {
                 BrowserLivePreviewControls(center: center, session: session, inlineImage: inlineImage)
                     .id(session.sessionID)
             }
-            BrowserReturnedHandoffStatus(center: center, owner: conversationID)
-        }
-    }
-}
-
-private struct BrowserReturnedHandoffStatus: View {
-    @ObservedObject var center: BrowserSessionCenter
-    let owner: UUID
-
-    private var receipt: BrowserSessionCenter.Handoff? {
-        guard let event = center.handoff(for: owner), event.conversationID == owner,
-              center.session(for: owner)?.isUserControlling != true,
-              center.session(for: owner)?.modelControl == nil else { return nil }
-        return event.closedAfterRestart == true ? event : nil
-    }
-
-    var body: some View {
-        if receipt != nil {
-            Text(IDELanguageRunText.t("上次打开的网页已关闭。", "The previous browser page closed."))
-                .font(.caption).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 4)
-                .accessibilityIdentifier("browser.handoff.taskStatus")
         }
     }
 }
@@ -174,61 +150,58 @@ private struct BrowserLivePreviewControls: View {
     @State private var collapsed = false
 
     private var shouldSample: Bool {
-        scenePhase == .active && session.isModelActive && onScreen && inlineImage && !collapsed && presentation?.panelID == nil
+        scenePhase == .active && session.visibleModelActivity != nil && onScreen && inlineImage && !collapsed && presentation?.panelID == nil
     }
-
-    private var isActive: Bool { session.isModelActive || session.isUserControlling }
 
     var body: some View {
         let page = session.previewPageIdentity
         let lease = session.modelControl
-        VStack(spacing: 0) {
-            if isActive {
-                Divider()
-                HStack(spacing: 8) {
-                    Image(systemName: session.isUserControlling ? "hand.raised" : "safari")
-                        .foregroundStyle(.secondary).accessibilityHidden(true)
-                    Text(session.livePreviewStatus(in: center)).font(.caption).lineLimit(2)
-                    Spacer(minLength: 0)
-                    if session.isModelActive {
-                        Button { presentation?.open(.watching, session, page, lease) } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right").frame(minWidth: 44, minHeight: 44)
-                        }
-                        .accessibilityLabel(IDELanguageRunText.t("放大观看", "Enlarge preview"))
-                        .accessibilityIdentifier("browser.live.watch")
-                        if inlineImage {
-                            Button { collapsed.toggle() } label: {
-                                Image(systemName: collapsed ? "chevron.down" : "chevron.up").frame(minWidth: 44, minHeight: 44)
-                            }
-                            .accessibilityLabel(collapsed ? IDELanguageRunText.t("展开预览", "Show preview") : IDELanguageRunText.t("收起预览", "Collapse preview"))
-                            .accessibilityIdentifier("browser.live.collapse")
-                        }
-                    }
-                    if session.isUserControlling, let receipt = center.handoff(for: session.conversationID),
-                       receipt.humanPresent, center.visibleSession === session {
-                        BrowserReturnActions(center: center, session: session, handoffID: receipt.id, presentationID: nil,
-                                             closes: false, identifier: "browser.live.return", completed: {})
-                    }
+        VStack(alignment: .leading, spacing: 4) {
+            if session.isUserControlling, presentation?.panelID == nil,
+               center.pendingPanelRequest(for: session.conversationID)?.show == true {
+                Button { presentation?.open(.interacting, session, page, lease) } label: {
+                    Label(IDELanguageRunText.t("浏览器需要你操作", "The browser needs your input"), systemImage: "hand.tap")
+                        .padding(.horizontal, 12).frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .background(.thinMaterial, in: Capsule())
+                .accessibilityIdentifier("browser.live.takeover")
+            } else if let kind = session.visibleModelActivity, presentation?.panelID == nil {
+                HStack(spacing: 0) {
                     Button {
-                        presentation?.open(.interacting, session, page, lease)
+                        presentation?.open(.watching, session, page, lease)
                     } label: {
-                        Image(systemName: "hand.tap")
-                            .frame(minWidth: 44, minHeight: 44)
+                        Label(BrowserModelStatusBar.description(for: kind), systemImage: "safari")
+                            .font(.subheadline)
+                            .lineLimit(1)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
                     }
-                    .accessibilityLabel(session.isUserControlling ? IDELanguageRunText.t("去操作", "Open browser") : IDELanguageRunText.t("我来操作", "Take over"))
+                    .accessibilityHint(IDELanguageRunText.t("打开网页预览", "Open page preview"))
+                    .accessibilityIdentifier("browser.live.watch")
+                    if inlineImage {
+                        Button { collapsed.toggle() } label: {
+                            Image(systemName: collapsed ? "chevron.down" : "chevron.up").frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel(collapsed ? IDELanguageRunText.t("展开预览", "Show preview") : IDELanguageRunText.t("收起预览", "Collapse preview"))
+                        .accessibilityIdentifier("browser.live.collapse")
+                    }
+                    Button { presentation?.open(.interacting, session, page, lease) } label: {
+                        Image(systemName: "hand.tap").frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel(IDELanguageRunText.t("我来操作", "Take over"))
                     .accessibilityIdentifier("browser.live.takeover")
                 }
-                .padding(.horizontal, 10)
-                .disabled(center.visibleSession === session && (center.returningControl || session.returningToModel))
-                .accessibilityElement(children: .contain)
+                .buttonStyle(.plain)
+                .background(.thinMaterial, in: Capsule())
+                .disabled(session.returningToModel)
                 if shouldSample, let frame = session.livePreviewFrame {
-                    BrowserLivePreviewImage(frame: frame)
-                        .frame(maxHeight: 132)
-                        .padding(.bottom, 6)
+                    BrowserLivePreviewImage(frame: frame).frame(maxHeight: 132)
                 }
             }
         }
-        .background(.bar)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
         .onAppear { onScreen = true }
         .onDisappear {
             onScreen = false
@@ -243,7 +216,7 @@ private struct BrowserLivePreviewControls: View {
 private struct BrowserLivePreviewSheet: View {
     @ObservedObject var center: BrowserSessionCenter
     @ObservedObject var session: BrowserTaskSession
-    let panel: BrowserPreviewPanel
+    @ObservedObject var panel: BrowserPreviewPanel
     let close: () -> Void
     @Environment(\.scenePhase) private var scenePhase
 
@@ -263,6 +236,18 @@ private struct BrowserLivePreviewSheet: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if panel.mode == .watching, let page = session.previewPageIdentity, let lease = session.modelControl {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            if center.openPreviewInteraction(session: session, page: page, displayedLease: lease, presentationID: panel.id) {
+                                panel.mode = .interacting
+                            }
+                        } label: {
+                            Label(IDELanguageRunText.t("我来操作", "Take over"), systemImage: "hand.tap")
+                        }
+                        .accessibilityIdentifier("browser.preview.takeover")
+                    }
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     if panel.mode == .interacting && session.isUserControlling {
                         BrowserReturnActions(center: center, session: session, handoffID: center.handoff(for: session.conversationID)?.id,
@@ -275,6 +260,7 @@ private struct BrowserLivePreviewSheet: View {
                 }
             }
         }
+        .presentationSizing(.page)
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled((panel.mode == .interacting && session.isUserControlling &&
             (session.humanActivitySequence != panel.initialActivity || session.takeoverPending))
@@ -338,27 +324,6 @@ private struct BrowserReturnActions: View {
                 completed()
             }
         }
-    }
-}
-
-private extension BrowserTaskSession {
-    func livePreviewStatus(in center: BrowserSessionCenter) -> String {
-        if takeoverPending {
-            return IDELanguageRunText.t("正在接管浏览器", "Taking over the browser")
-        }
-        if isUserControlling {
-            if center.pendingPanelRequest(for: conversationID)?.show == true {
-                return IDELanguageRunText.t("浏览器需要你操作", "The browser needs your input")
-            }
-            return IDELanguageRunText.t("浏览器由你操作", "You control the browser")
-        }
-        guard let kind = lastModelActivity?.kind else {
-            return IDELanguageRunText.t("当前没有浏览器操作", "No current browser action")
-        }
-        if kind == .clicking, let label = livePreviewFrame?.clickedLabel {
-            return IDELanguageRunText.t("模型点击了「\(label)」", "The model clicked “\(label)”")
-        }
-        return BrowserModelStatusBar.description(for: kind)
     }
 }
 
@@ -677,9 +642,6 @@ private struct BrowserSurface: View {
             }
             .background(.bar)
             BrowserProgressBar(session: session)
-            if center.taskHandoffsEnabled {
-                BrowserReturnedHandoffStatus(center: center, owner: session.conversationID)
-            }
             Divider()
             Group {
                 if session.usesFixedViewport {
@@ -703,7 +665,7 @@ private struct BrowserSurface: View {
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    if center.taskHandoffsEnabled && !session.isUserControlling && session.modelControl != nil && session.humanBrowsingTabID == nil {
+                    if center.taskHandoffsEnabled && session.visibleModelActivity != nil && session.humanBrowsingTabID == nil {
                         BrowserModelStatusBar(center: center, session: session, presentationID: spectator)
                             .padding(8)
                     }
@@ -938,7 +900,7 @@ private struct BrowserModelStatusBar: View {
             Image(systemName: "sparkles")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(activityText)
+            Text(session.visibleModelActivity.map(Self.description(for:)) ?? "")
                 .font(.caption)
                 .lineLimit(2)
             Button {
@@ -955,14 +917,6 @@ private struct BrowserModelStatusBar: View {
         .padding(.horizontal, 12)
         .background(.thinMaterial, in: Capsule())
         .accessibilityIdentifier("browser.modelStatus")
-    }
-
-    private var activityText: String {
-        let kind = session.lastModelActivity?.kind ?? .observing
-        if kind == .clicking, let detail = session.livePreviewFrame?.clickedLabel {
-            return IDELanguageRunText.t("模型点击了「\(detail)」", "The model clicked “\(detail)”")
-        }
-        return Self.description(for: kind)
     }
 
     static func description(for kind: BrowserModelActivity.Kind) -> String {

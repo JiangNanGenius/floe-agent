@@ -84,6 +84,25 @@ import FloeDiagramCore
                 _ = try await invoke("studio.read", ["projectID": projectID], foreign)
                 Issue.record("Another saved task read an unbound original.")
             } catch { #expect(error.localizedDescription.contains("Open this work")) }
+            // Native selection authorizes this original without taking ownership
+            // of its editor assistant. Read, edit and revoke follow the same store.
+            let authority = try environment.studioCoordinator.access.get()
+            let chosen = try #require(UUID(uuidString: projectID))
+            try await authority.setUserSelectedWork(chosen, conversationID: otherID, editable: false)
+            _ = try await invoke("studio.read", ["projectID": projectID], foreign)
+            #expect(try await !authority.canAccess(conversationID: otherID, projectID: chosen, editing: true))
+            try await authority.setUserSelectedWork(chosen, conversationID: otherID, editable: true)
+            var authorized = foreign
+            authorized.approvalGrantID = UUID()
+            authorized.toolCallID = "selected-work-edit"
+            _ = try await invoke("studio.edit", ["projectID": projectID,
+                "expectedRevision": try #require(reread["revision"] as? String),
+                "operationsJSON": #"[{"rename":{"_0":"Selected work updated"}}]"#], authorized)
+            let selectedRead = try object(try await invoke("studio.read", ["projectID": projectID], context))
+            #expect(selectedRead["title"] as? String == "Selected work updated")
+            try await authority.revokeAccess(conversationID: otherID, projectID: chosen)
+            #expect(try await authority.assistantProject(conversationID: otherID) == nil)
+            #expect(try await !authority.canAccess(conversationID: otherID, projectID: chosen, editing: false))
             context.allowedToolNames = []
             do {
                 _ = try await invoke("studio.read", ["projectID": projectID], context)

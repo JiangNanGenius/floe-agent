@@ -133,12 +133,41 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
     // MARK: Workspaces
 
     public func workspaces() async throws -> [WorkspaceRecord] {
+        try await database.reader { try Self.allWorkspaces(in: $0) }
+    }
+
+    private static func allWorkspaces(in db: Database) throws -> [WorkspaceRecord] {
+        try Row.fetchAll(db, sql: "SELECT * FROM workspaces ORDER BY name COLLATE NOCASE, id")
+            .map(Self.workspace(from:))
+    }
+
+    public func workspaceIndex() async throws -> (records: [WorkspaceRecord], owners: [UUID: UUID]) {
         try await database.reader { db in
-            try Row.fetchAll(
-                db,
-                sql: "SELECT * FROM workspaces ORDER BY name COLLATE NOCASE, id"
-            ).map(Self.workspace(from:))
+            let records = try Self.allWorkspaces(in: db)
+            var owners: [UUID: UUID] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT conversation_id, workspace_id FROM conversation_workspace_ownership") {
+                guard let conversation = UUID(uuidString: row["conversation_id"]),
+                      let workspace = UUID(uuidString: row["workspace_id"]) else {
+                    throw FloeError.validationFailed("Invalid workspace ownership identifier")
+                }
+                owners[conversation] = workspace
+            }
+            return (records, owners)
         }
+    }
+
+    public func ownedWorkspace(conversationID: UUID) async throws -> WorkspaceRecord? {
+        try await database.reader { db in
+            try Self.ownedWorkspace(conversationID: conversationID, db: db)
+        }
+    }
+
+    private static func ownedWorkspace(conversationID: UUID, db: Database) throws -> WorkspaceRecord? {
+        let row = try Row.fetchOne(db, sql: """
+            SELECT w.* FROM workspaces w JOIN conversation_workspace_ownership o ON o.workspace_id = w.id
+            WHERE o.conversation_id = ?
+            """, arguments: [conversationID.uuidString])
+        return try row.map(Self.workspace(from:))
     }
 
     public func workspace(id: UUID) async throws -> WorkspaceRecord? {
@@ -316,17 +345,7 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         ) == true else {
             throw FloeError.notFound("conversation \(conversationID.uuidString)")
         }
-        if let row = try Row.fetchOne(
-            db,
-            sql: """
-                SELECT w.* FROM workspaces w
-                JOIN conversation_workspace_ownership o ON o.workspace_id = w.id
-                WHERE o.conversation_id = ?
-                """,
-            arguments: [conversationID.uuidString]
-        ) {
-            return try Self.workspace(from: row)
-        }
+        if let existing = try ownedWorkspace(conversationID: conversationID, db: db) { return existing }
 
         let now = Date()
         let workspace = WorkspaceRecord(

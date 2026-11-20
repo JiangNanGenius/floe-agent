@@ -36,13 +36,19 @@ enum GameProjectSelectionValidation {
         }
     }
 
-    /// The repository is authoritative for the saved revision. Comparing the
-    /// reopened HEAD fences a project object captured before a save/import.
+    /// The repository HEAD is authoritative for the saved revision. The probe
+    /// decodes authenticated metadata only; a save/import still fences here.
+    /// Pass `authoritative: true` for the post-discovery fence, where an
+    /// actual underlying-file change during discovery must be adopted and
+    /// reported instead of silently building a snapshot over it.
     static func currentProject(_ project: GameStoredProject,
-                               repository: FileGameProjectRepository) async throws {
+                               repository: FileGameProjectRepository,
+                               authoritative: Bool = false) async throws {
         let current: GameStoredProject
         do {
-            current = try await repository.open(project.projectID, owner: project.owner)
+            current = try await (authoritative
+                ? repository.open(project.projectID, owner: project.owner)
+                : repository.openMetadata(project.projectID, owner: project.owner))
         } catch let error as GameProjectError {
             throw mapProject(error)
         } catch {
@@ -56,14 +62,19 @@ enum GameProjectSelectionValidation {
     }
 
     /// The host's existing context service is authoritative for access,
-    /// environment and the saved revision.
+    /// environment and the saved revision. Hosts answer through the metadata
+    /// probe by default, so ordinary fences no longer re-walk the working
+    /// tree; the post-discovery fence passes `authoritative: true`.
     static func currentContext(
         _ context: GameProjectContext,
-        contexts: any GameAuthoringContextHost & GameRunContextHost
+        contexts: any GameAuthoringContextHost & GameRunContextHost,
+        authoritative: Bool = false
     ) async throws {
         let current: GameProjectContext
         do {
-            current = try await contexts.currentContext(for: context)
+            current = try await (authoritative
+                ? contexts.currentContext(for: context)
+                : contexts.currentContextMetadata(for: context))
         } catch let error as GameProjectError {
             throw GameProjectFlowError.project(error)
         } catch {

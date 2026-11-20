@@ -53,6 +53,13 @@ private actor OwnedLoopReadiness {
     func record(_ id: UUID) { ids.append(id) }
 }
 
+/// Flip-gate for the loop's HTTP/TCP readiness probe: models a service whose
+/// start command succeeded (process alive) but whose port has not answered yet.
+private actor OwnedLoopReadinessGate {
+    private(set) var ready = false
+    func set(_ value: Bool) { ready = value }
+}
+
 @MainActor final class LocalServiceOwnedLoopTests: XCTestCase {
     private enum FixtureError: Error { case timedOut, returnedBeforeTerminal }
 
@@ -269,6 +276,61 @@ private actor OwnedLoopReadiness {
             XCTAssertFalse(counts.wrongScope)
             XCTAssertFalse(counts.cancelledWorker)
         } catch {
+            await controller.setSnapshot(.init(state: "stopped", alive: false))
+            try await waitForCompletion(completion)
+            _ = try? await parent.value
+            throw error
+        }
+    }
+
+    /// 启动命令成功（guest 进程 running）但端口尚未开始监听时，进度必须
+    /// 保持 ready=false、preview 撤回、且不宣布就绪；端口真实应答后 ready
+    /// 与 preview 出现且只宣布一次；进程仍活着而端口不再应答时 ready 必须
+    /// 回落——不能把上一次的真实回执当成当前状态沿用。
+    func testProcessRunningWithoutHTTPAnswerStaysUnreadyAndRevokesOnPortLoss() async throws {
+        let (store, job, handle) = try await fixture()
+        let cancellation = CancellationToken()
+        let gate = OwnedLoopReadinessGate()
+        let readiness = OwnedLoopReadiness()
+        let controller = OwnedLoopController(handle: handle,
+            snapshot: .init(state: "running", alive: true, stdout: "phase-boot"))
+        let (parent, completion) = begin(controller: controller, handle: handle, job: job,
+            store: store, cancellation: cancellation, poll: .milliseconds(25), retry: .milliseconds(75),
+            isReady: { await gate.ready }, onServiceReady: { await readiness.record($0) })
+        do {
+            let booting = try await waitForProgress("phase-boot", store: store, jobID: job.id, completion: completion)
+            XCTAssertEqual(booting.state, "running", "The process axis reports the live process")
+            XCTAssertFalse(booting.ready, "A live process that has not bound its port is NOT ready")
+            XCTAssertNil(booting.previewURL)
+            let beforeListening = await readiness.ids
+            XCTAssertEqual(beforeListening, [], "Readiness must never be announced before the port answers")
+
+            await gate.set(true)
+            await controller.setSnapshot(.init(state: "running", alive: true, stdout: "phase-listening"))
+            let listening = try await waitForProgress("phase-listening", store: store, jobID: job.id, completion: completion)
+            XCTAssertTrue(listening.ready)
+            XCTAssertEqual(listening.previewURL, "http://127.0.0.1:8123/")
+            let whileListening = await readiness.ids
+            XCTAssertEqual(whileListening, [job.id], "Verified readiness is announced exactly once")
+
+            await gate.set(false)
+            await controller.setSnapshot(.init(state: "running", alive: true, stdout: "phase-port-lost"))
+            let lost = try await waitForProgress("phase-port-lost", store: store, jobID: job.id, completion: completion)
+            XCTAssertFalse(lost.ready, "Readiness must fall back when the port stops answering")
+            XCTAssertNil(lost.previewURL)
+            XCTAssertEqual(lost.state, "running")
+            let afterPortLoss = await readiness.ids
+            XCTAssertEqual(afterPortLoss, [job.id], "A lost port never re-announces readiness")
+
+            await controller.setSnapshot(.init(state: "stopped", alive: false, stdout: "confirmed"))
+            try await waitForCompletion(completion)
+            let output = try await parent.value
+            XCTAssertEqual(output.exitStatus, 1)
+            let counts = await controller.recordedCounts()
+            XCTAssertFalse(counts.wrongScope)
+            XCTAssertFalse(counts.cancelledWorker)
+        } catch {
+            cancellation.cancel()
             await controller.setSnapshot(.init(state: "stopped", alive: false))
             try await waitForCompletion(completion)
             _ = try? await parent.value

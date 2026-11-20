@@ -41,25 +41,32 @@ import FloeHeavyEditorsHostAdapter
 
     func register() throws { try bridge.register(kinds: [.font]) }
     func typedServiceStorePaths() async throws -> [String: String] {
-        [TypedMutationContract.nativeFontLibraryStoreKey: try await library.containerDirectory().path]
+        [TypedMutationContract.nativeFontLibraryStoreKey: try await library.containerDirectory().standardizedFileURL.resolvingSymlinksInPath().path]
     }
     private func authority() async throws -> StudioDocumentAccess {
         if let access { return access }
         let value = try StudioDocumentAccess(root: await library.taskAuthorityDirectory())
         access = value; return value
     }
+    private func requireStore(_ context: ToolContext) async throws {
+        let root = try await library.containerDirectory().standardizedFileURL.resolvingSymlinksInPath().path
+        guard let path = context.serviceStorePaths[TypedMutationContract.nativeFontLibraryStoreKey],
+              URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path == root else {
+            throw HeavyEditorError.wrongDocument
+        }
+    }
     private func grant(_ context: ToolContext) async throws -> HeavyEditorTaskGrant {
         guard let environment else { throw FontDesignError.unavailable }
         let conversationID = try await environment.studioCoordinator.savedConversation(context)
+        try await requireStore(context)
         let ids = Set(try await authority().projectIDs(conversationID: conversationID))
-        let actual = Set(try await library.list().map(\.id))
+        let actual: Set<UUID> = ids.isEmpty ? [] : Set(try await library.list().map(\.id))
         return .init(enabledKinds: [.font], projects: ids.intersection(actual), canCreate: true, readOnly: false)
     }
     private func require(_ context: ToolContext, designID: UUID?, editing: Bool) async throws {
         guard let environment else { throw FontDesignError.unavailable }
         let conversationID = try await environment.studioCoordinator.conversation(context, allowedNames: Self.names)
-        let root = try await library.containerDirectory().standardizedFileURL.resolvingSymlinksInPath().path
-        guard context.serviceStorePaths[TypedMutationContract.nativeFontLibraryStoreKey] == root else { throw HeavyEditorError.wrongDocument }
+        try await requireStore(context)
         if let designID {
             guard try await authority().canAccess(conversationID: conversationID, projectID: designID, editing: editing) else { throw HeavyEditorError.wrongDocument }
             _ = try await library.project(designID)

@@ -36,7 +36,12 @@ extension StudioCoordinator {
             + String(decoding: reference, as: UTF8.self)
         if canReadStudio, value.record.kind != .game { text += "\nUse the offered studio.list to confirm activeProjectID, then studio.read with that exact projectID. Do not infer that a deferred schema is unavailable; tools.search can load those exact names." }
         if value.record.kind == .building {
-            text += "\nThis closed building package has a verified published generation. Open the same building and its project assistant for live wall, finish and copy commands."
+            text += "\nThis closed building package is bound to this task. studio.read with this exact projectID returns its current published records revision, rooms, sources, observations, drawing pages, walls (endpoints, left/right finishes) and copies; the building query selects overview, records, walls, drawingPages, copies, search, observations or sourceText."
+            if availableToolNames?.contains("studio.edit") != false,
+               try await access.get().canAccess(conversationID: conversationID, projectID: id, editing: true) {
+                text += " Authorized studio.edit commands on this binding commit to the same published original as one new verified generation; use the exact studio.read revision, wall counters and generationID. Copy actions return independent Space works and never overwrite this original."
+            }
+            text += " If this building is opened in its project editor/assistant, continue there; this binding stands down while that assistant is active."
             return text
         }
         if value.record.kind == .meeting {

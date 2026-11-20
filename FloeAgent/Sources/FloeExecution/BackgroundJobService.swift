@@ -716,6 +716,12 @@ public actor BackgroundJobService {
     /// An action-aware handler (or adapter) may check a REAL side effect
     /// before the honest `interrupted` outcome; an unknown outcome is never
     /// reported as success and never silently replayed.
+    ///
+    /// Every job reconciled to a terminal state here also gets the service's
+    /// terminal hook: the relaunch path never runs the live runner's
+    /// `jobDidFinish`, so without this delivery the owning task would keep
+    /// relying on the pre-relaunch receipt (for example a service's earlier
+    /// "ready" announcement) with no fresh evidence that the work is gone.
     @discardableResult
     public func reconcileInterruptedOnLaunch() async throws -> Int {
         let active = try await store.activeJobs()
@@ -727,6 +733,7 @@ public actor BackgroundJobService {
                 }) {
                     count += 1
                     await resolveDependency?(interrupted.id, .interrupted, interrupted.lastError)
+                    deliverReconciledTerminal(interrupted)
                 }
                 continue
             }
@@ -747,13 +754,14 @@ public actor BackgroundJobService {
                             "Reconciled after relaunch: \(resolved.rawValue)"
                         )
                     }
+                    deliverReconciledTerminal(reconciled)
                     continue
                 }
             }
             if let interrupted = try? await store.transition(
                 id: job.id, to: .interrupted,
                 mutate: { job in
-                    job.lastError = "Process exited before the job finished. The outcome is UNKNOWN: inspect the workspace/output first (read-only) before resubmitting; do not blindly rerun."
+                    job.lastError = Self.relaunchInterruptionMessage(for: job)
                 }
             ) {
                 count += 1
@@ -764,6 +772,7 @@ public actor BackgroundJobService {
                         "The process exited before this job finished; its outcome is UNKNOWN. Inspect existing outputs read-only before resubmitting."
                     )
                 }
+                deliverReconciledTerminal(interrupted)
             }
         }
         for job in active where job.kind == .download {
@@ -783,9 +792,30 @@ public actor BackgroundJobService {
                         "The download was interrupted by relaunch; resubmit with an explicit new jobs.submit."
                     )
                 }
+                deliverReconciledTerminal(interrupted)
             }
         }
         return count
+    }
+
+    /// Honest per-target relaunch interruption text. A managed service has no
+    /// "partial output" semantics: after an app relaunch its guest is gone, so
+    /// the service no longer exists. The wording never claims an unmeasured
+    /// port state — it clears the stale preview/liveness receipt and asks for
+    /// a re-probe or an explicit restart.
+    static func relaunchInterruptionMessage(for job: BackgroundJob) -> String {
+        if job.targetTool == "exec.localService" {
+            return "The app relaunched while this service was running, so the service no longer exists: the Linux guest that hosted its process is gone. Any earlier readiness receipt or previewURL is now stale — do not report the service as running or ready. To use it again, restart it with an explicit new jobs.submit (or floe-service restart); re-probe real state afterwards with jobs.status."
+        }
+        return "Process exited before the job finished. The outcome is UNKNOWN: inspect the workspace/output first (read-only) before resubmitting; do not blindly rerun."
+    }
+
+    /// Fire-and-forget terminal delivery for relaunch-reconciled jobs, in the
+    /// same shape as `jobDidFinish`'s `Task { await onTerminal(job) }`: the
+    /// app enqueues fresh terminal evidence into the owning conversation and
+    /// mirrors the local notification without blocking launch reconciliation.
+    private func deliverReconciledTerminal(_ job: BackgroundJob) {
+        Task { await onTerminal(job) }
     }
 
     /// True when an error means "the processor stopped on a cancellation

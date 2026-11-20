@@ -226,6 +226,7 @@ struct ThreadComposerView: View {
 
     @State private var isPickerPresented = false
     @State private var isNotesPickerPresented = false
+    @State private var isWorkPickerPresented = false
     @State private var isWorkspacePickerPresented = false
     @State private var isPhotoPickerPresented = false
     @State private var photoPickerTraceID: UUID?
@@ -352,6 +353,17 @@ struct ThreadComposerView: View {
         .sheet(isPresented: $isPickerPresented) {
             DocumentPickerView { url in
                 Task { await registerPicked(url) }
+            }
+        }
+        .sheet(isPresented: $isWorkPickerPresented) {
+            if let taskID = contextID ?? notesDraftID, !temporary, !documentAssistant {
+                OrdinaryWorkPicker(taskID: taskID, isDraft: contextID == nil, environment: environment) { record in
+                    guard isWorkPickerPresented, (contextID ?? notesDraftID) == taskID else { return }
+                    let title = record.title.replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
+                    draft += (draft.isEmpty ? "" : "\n") + "[\(title)](\(FloeAppEntryRoute.work(record.id).url.absoluteString))"
+                }
+                .id(taskID)
             }
         }
         .sheet(isPresented: $isNotesPickerPresented) {
@@ -525,6 +537,7 @@ struct ThreadComposerView: View {
             }
         }
         .onChange(of: contextID) { _, _ in
+            isWorkPickerPresented = false
             attachmentError = nil
             selectedPhoto = nil
             pendingLocalModelSwitch = nil
@@ -931,6 +944,13 @@ struct ThreadComposerView: View {
                     } label: {
                         Label("composer.attachment.camera", systemImage: "camera")
                     }
+                }
+                if !temporary, !documentAssistant, contextID != nil || notesDraftID != nil,
+                   agentMode == .agent || agentMode == .goal {
+                    Button { isWorkPickerPresented = true } label: {
+                        Label(IDELanguageRunText.t("空间作品", "Space works"), systemImage: "square.stack.3d.up")
+                    }
+                    .accessibilityIdentifier("composer.spaceWorks")
                 }
                 if contextID != nil || notesDraftID != nil {
                     Button("chat.thread_composer_view.notes_sources", systemImage: "book.pages") { isNotesPickerPresented = true }

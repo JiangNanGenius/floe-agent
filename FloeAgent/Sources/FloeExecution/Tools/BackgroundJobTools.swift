@@ -59,6 +59,14 @@ private struct JobView: Encodable {
     let state: String
     let workKind: BackgroundJobWorkKind
     let serviceState: BackgroundServiceState?
+    /// Service axis 1: the guest process supervision state (starting /
+    /// running / stopping / …) exactly as the supervisor observed it. A live
+    /// process that has not bound its port is still "running" here.
+    let serviceProcessState: String?
+    /// Service axis 2: true ONLY when the service's published loopback port
+    /// verifiably answered HTTP/TCP. Never inferred from process liveness or
+    /// elapsed time; `serviceState` becomes "running" only when this is true.
+    let serviceHTTPReady: Bool?
     let targetTool: String
     let createdAt: String
     let updatedAt: String
@@ -81,12 +89,28 @@ private struct JobView: Encodable {
     /// written. Nil means only resultSummary survives.
     let outputBytes: Int?
 
+    /// Minimal decode of the app-side `LocalServiceProgress` shape; kept
+    /// private here because the durable record is the contract (the app type
+    /// is not visible to this module).
+    private struct ManagedServiceProgress: Decodable {
+        var state: String?
+
+    }
+
     init(_ job: BackgroundJob) {
         jobID = job.id.uuidString
         state = job.state.rawValue
         workKind = job.workKind
         serviceState = job.serviceState
         targetTool = job.targetTool
+        if job.workKind == .service {
+            let snapshot = job.progressJSON.flatMap { try? JSONDecoder().decode(ManagedServiceProgress.self, from: $0) }
+            serviceProcessState = job.state == .running ? snapshot?.state : nil
+            serviceHTTPReady = job.serviceState == .running
+        } else {
+            serviceProcessState = nil
+            serviceHTTPReady = nil
+        }
         createdAt = ISO8601DateFormatter().string(from: job.createdAt)
         updatedAt = ISO8601DateFormatter().string(from: job.updatedAt)
         completedAt = job.completedAt.map { ISO8601DateFormatter().string(from: $0) }
@@ -99,7 +123,9 @@ private struct JobView: Encodable {
         resultPath = verifiedPath
         hasResult = job.resultSummary != nil || verifiedPath != nil
         lastError = job.lastError
-        progressJSON = job.progressJSON.map { String(decoding: $0, as: UTF8.self) }
+        // A terminal service may retain its last observation for diagnostics.
+        // Never advertise that historical endpoint as live to the model.
+        progressJSON = job.workKind == .service && job.state.isTerminal ? nil : job.progressJSON.map { String(decoding: $0, as: UTF8.self) }
         let document = NativeJobProgressDocument.decode(job.progressJSON)
         cancelling = !job.state.isTerminal && (document?.cancellationRequested == true || job.serviceState == .stopping)
         progress = document?.progress.map(JobProgressView.init)
@@ -659,7 +685,7 @@ public struct JobsStatusTool: AgentTool {
     }
 
     public static let name = "jobs.status"
-    public static let toolDescription = "Check background work and real processor progress. workKind distinguishes finite job/download from a managed service. state preserves the raw queued/running/completed/failed/cancelled/interrupted lifecycle; serviceState separately reports queued/starting/running/stopping/stopped/ended/failed/interrupted. A ready service keeps running after its launch command finishes and is not an unfinished finite task. Stop it explicitly with jobs.cancel. Failed or interrupted services are not successful starts. Poll no faster than every few seconds; readiness/completion is also announced automatically."
+    public static let toolDescription = "Check background work and real processor progress. workKind distinguishes finite job/download from a managed service. state preserves the raw queued/running/completed/failed/cancelled/interrupted lifecycle; serviceState separately reports queued/starting/running/stopping/stopped/ended/failed/interrupted. For a service, serviceProcessState is the guest PROCESS state and serviceHTTPReady is a separate axis: true only when the service's published loopback port verifiably answered HTTP/TCP. serviceState=starting means the process may be alive but the port is NOT verified answering — never report the service as ready/started in that case; serviceState=running means the port really answers. A ready service keeps running after its launch command finishes and is not an unfinished finite task. Stop it explicitly with jobs.cancel. Failed or interrupted services are not successful starts. Poll no faster than every few seconds; readiness/completion is also announced automatically."
     public static let parametersJSON = #"{"type":"object","properties":{"jobID":{"type":"string","description":"UUID returned by jobs.submit"}},"required":["jobID"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
@@ -894,7 +920,9 @@ public struct JobsResultTool: AgentTool {
                 nil
             }
         case .interrupted:
-            (pagingNote().map { $0 + " " } ?? "")
+            job.workKind == .service
+            ? "This service is gone: the app relaunched or its Linux guest stopped, so the process no longer exists. Any earlier readiness receipt is stale — do not quote it as current state. lastError carries the observed reason; restart the service with an explicit new jobs.submit (or floe-service restart) only if it is still needed, and re-probe afterwards with jobs.status."
+            : (pagingNote().map { $0 + " " } ?? "")
                 + "The process exited before this job finished, so its outcome is UNKNOWN — partial outputs may already exist. Inspect the workspace/output read-only first, then resubmit only what is still missing; do not blindly rerun."
         case .cancelled: job.workKind == .service
             ? "Managed service is stopped. Inspect existing output before an explicit restart."
@@ -903,11 +931,11 @@ public struct JobsResultTool: AgentTool {
             + (job.workKind == .service ? "Service failed; lastError carries the reason." : "Job failed; lastError carries the reason.")
         case .queued, .running:
             if job.serviceState == .running {
-                "Service is ready and keeps running. Use its authorized preview or jobs.status; stop it explicitly with jobs.cancel. Do not wait for a finite completion or resubmit the launch."
+                "Service is verifiably READY: its published loopback port answers HTTP (serviceHTTPReady=true). The process keeps running in the background. Use its authorized preview or jobs.status; stop it explicitly with jobs.cancel. Do not wait for a finite completion or resubmit the launch."
             } else if job.serviceState == .stopping {
                 "Service stop was requested; its processor has not acknowledged exit yet. It retains ownership until cleanup joins."
             } else if job.workKind == .service {
-                "Service is \(job.serviceState?.rawValue ?? "starting"); readiness has not been verified. Wait for the readiness announcement or poll jobs.status every few seconds."
+                "Service readiness is NOT verified (serviceHTTPReady=false): the guest process may be alive (serviceProcessState=\(JobView(job).serviceProcessState ?? "unknown")) but its published port has not answered HTTP/TCP. Do NOT report the service as started or ready yet. Wait for the readiness announcement or poll jobs.status every few seconds; if it stays unready, inspect the service logs with jobs.result."
             } else {
                 JobView(job).cancelling
                     ? "Cancellation has been requested; the processor is still stopping and cleaning up. The job is NOT terminal yet."

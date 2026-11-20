@@ -44,17 +44,13 @@ import FloeMusicCore
     private func grant(_ context: ToolContext) async throws -> HeavyEditorTaskGrant {
         let conversationID = try await coordinator.savedConversation(context)
         let access = try coordinator.access.get()
-        let ids = Set(try await access.projectIDs(conversationID: conversationID))
+        let permissions = try await access.permissions(conversationID: conversationID)
+        guard !permissions.isEmpty else { return .init(enabledKinds: [], projects: [], canCreate: false, readOnly: true) }
         let records = try await PersonalContentService.shared.library().records()
-        let music = records.filter { ids.contains($0.id) && $0.kind == .music }
-        var readable = Set<UUID>(), editable = Set<UUID>()
-        for record in music {
-            if try await access.canAccess(conversationID: conversationID, projectID: record.id, editing: false) { readable.insert(record.id) }
-            if try await access.canAccess(conversationID: conversationID, projectID: record.id, editing: true) { editable.insert(record.id) }
-        }
-        let assistant = try await access.assistantProject(conversationID: conversationID)
+        let readable = Set(records.lazy.filter { $0.kind == .music && !$0.needsRecovery && permissions[$0.id] != nil }.map(\.id))
+        let editable = readable.filter { permissions[$0] == true }
         return .init(enabledKinds: readable.isEmpty ? [] : [.score], projects: readable,
-            canCreate: assistant.map { editable.contains($0) } ?? false, readOnly: editable.isEmpty)
+            canCreate: !editable.isEmpty, readOnly: editable.isEmpty)
     }
     private func location(_ id: UUID, operation: HeavyEditorToolAction, context: ToolContext) async throws -> (record: PersonalContentRecord, url: URL) {
         let effectful = operation != .describe && operation != .query
@@ -73,7 +69,14 @@ import FloeMusicCore
         guard request.kind == .score, let environment else { throw HeavyEditorError.wrongDocument }
         let conversationID = try await coordinator.conversation(context, allowedNames: Self.names)
         let authority = try coordinator.access.get()
-        guard let id = try await authority.assistantProject(conversationID: conversationID) else { throw HeavyEditorError.wrongDocument }
+        let id: UUID
+        if let parent = request.parentProjectID {
+            id = parent
+        } else if let active = try await authority.assistantProject(conversationID: conversationID) {
+            id = active
+        } else {
+            throw FloeError.validationFailed("Use the authorized music projectID from studio.list or score.describe to create its score.")
+        }
         let selected = try await location(id, operation: .create, context: context)
         try await authorize()
         let digest = StudioToolOutput.hash(try StudioToolOutput.data([id.uuidString.lowercased(), request.kind.rawValue, request.title]))

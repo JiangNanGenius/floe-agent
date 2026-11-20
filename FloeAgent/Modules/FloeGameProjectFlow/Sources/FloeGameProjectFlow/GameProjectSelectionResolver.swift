@@ -98,8 +98,10 @@ struct GameProjectSelectionResolver: Sendable {
         }
 
         try await GameProjectSelectionValidation.currentProject(project,
-                                                               repository: repository)
-        try await GameProjectSelectionValidation.currentContext(context, contexts: contexts)
+                                                               repository: repository,
+                                                               authoritative: true)
+        try await GameProjectSelectionValidation.currentContext(context, contexts: contexts,
+                                                                authoritative: true)
         try Task.checkCancellation()
 
         let snapshot = GameProjectSelectionSnapshot(

@@ -56,6 +56,7 @@ enum LocalServiceOwnedLoop {
                     let terminal = !guest.alive && (guest.state == "stopped" || guest.state == "notFound")
                     if terminal {
                         snapshot.previewURL = nil
+                        snapshot.ready = false
                         setPreviewAuthorized(false)
                         snapshot.boundAndRedact()
                         do { try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot)) }
@@ -76,8 +77,10 @@ enum LocalServiceOwnedLoop {
                     if stopRequested {
                         snapshot.state = "stopping"
                         snapshot.previewURL = nil
+                        snapshot.ready = false
                         setPreviewAuthorized(false)
                     } else if guest.state == "running", await isReady(), !cancellation.isCancelled {
+                        snapshot.ready = true
                         snapshot.previewURL = previewURL
                         setPreviewAuthorized(true)
                         if !announcedReady {
@@ -85,6 +88,10 @@ enum LocalServiceOwnedLoop {
                             await onServiceReady?(jobID)
                         }
                     } else {
+                        // The process may be alive while its port still has
+                        // not answered: readiness stays false and the preview
+                        // stays revoked until the probe really verifies HTTP.
+                        snapshot.ready = false
                         snapshot.previewURL = nil
                         setPreviewAuthorized(false)
                     }

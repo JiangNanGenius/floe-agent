@@ -52,6 +52,17 @@ final class GameProjectToolService {
         let access = try environment.studioCoordinator.access.get()
         let bound = try await access.assistantProject(conversationID: conversationID)
         if let requested = projectID {
+            // The persisted conversation workspace binding is authoritative and
+            // cheap; only enumerate the content library when it does not match.
+            let store = SQLiteWorkspaceStore(database: environment.database)
+            if try await store.workspaceID(conversationID: conversationID) == requested {
+                guard let session = try await registry.restoreChatGame(conversationID: conversationID,
+                        workspaceID: requested, leasedRoot: context.workspaceRootURL) else {
+                    throw FloeError.validationFailed("No supported game entry was found in this task's workspace files.")
+                }
+                try verifyChatRoot(session, context: context)
+                return session
+            }
             if let value = try? await PersonalContentService.shared.library().resolve(requested),
                value.record.kind == .game {
                 guard try await access.assistant(projectID: requested) == conversationID,
@@ -62,14 +73,7 @@ final class GameProjectToolService {
                 if let existing = registry.session(record: value.record) { return existing }
                 return try await registry.openSpaceGame(record: value.record)
             }
-            let store = SQLiteWorkspaceStore(database: environment.database)
-            guard try await store.workspaceID(conversationID: conversationID) == requested,
-                  let session = try await registry.restoreChatGame(conversationID: conversationID,
-                      workspaceID: requested, leasedRoot: context.workspaceRootURL) else {
-                throw FloeError.validationFailed("This task has no open game workspace")
-            }
-            try verifyChatRoot(session, context: context)
-            return session
+            throw FloeError.validationFailed("This task has no open game workspace")
         }
         if let bound {
             if let value = try? await PersonalContentService.shared.library().resolve(bound),
@@ -111,7 +115,9 @@ final class GameProjectToolService {
         try await session.project.refresh()
         let project = session.project.project
         let snapshot = session.project.selectionSnapshot
-        let engine = snapshot?.selectedEngine ?? project.engine
+        // Only the live selection may claim a current engine; the recorded
+        // engine is reported separately as the past choice.
+        let engine = snapshot?.runSelection?.engine
         let choices = snapshot?.choices ?? []
         let engines = Array(Set(choices.flatMap { $0.engines.map(\.engine) })).sorted { $0.rawValue < $1.rawValue }
         let roots = choices.map { $0.root?.value ?? "." }.sorted()
@@ -124,8 +130,16 @@ final class GameProjectToolService {
         let hasInput = project.files.contains { $0.path.value == inputPath || (selectedRoot == nil && $0.path.value == "floe-inputs.json") }
         let prerequisites = entry?.prerequisites.map { "\($0.name) \($0.version)" } ?? []
         let state = snapshot?.state.rawValue ?? "unresolved"
-        let status = snapshot.map { $0.baseRevision != project.revision } == true
-            ? "stale selection: refresh before running" : state
+        let recognized = choices.contains { !$0.engines.isEmpty }
+        let status: String
+        if snapshot.map({ $0.baseRevision != project.revision }) == true {
+            status = "stale selection: refresh before running"
+        } else if !recognized {
+            status = "No supported game entry found in this task's files. "
+                + "Add or import the game folder in the project screen, then re-check the selection."
+        } else {
+            status = state
+        }
         var files: GameFileListResult?
         if let inspect, inspect.includeFiles == true || inspect.root != nil || inspect.offset != nil || inspect.limit != nil {
             let directory = try GameToolPathRule.validateDirectory(inspect.root) ?? ""
@@ -633,13 +647,12 @@ final class GameProjectToolService {
         guard source.record == nil else {
             throw FloeError.validationFailed("This project already belongs to Space; choose Export or a new copy explicitly")
         }
-        let engine = try await source.project.repository.open(source.key.projectID,
-            owner: source.key.owner).engine
         let destination: GameWorkspaceSession
         switch arguments.mode {
         case .createNew:
+            try await source.project.refresh()
             let record = try await PersonalContentService.shared.createGame(
-                title: arguments.title, engine: engine)
+                title: arguments.title, engine: source.selection?.runSelection?.engine)
             destination = try await registry.openSpaceGame(record: record)
         case .updateExisting:
             guard let id = arguments.destinationProjectID,
@@ -942,7 +955,7 @@ struct GameSelectionReport: Encodable, Sendable {
 private struct GameListTool: AgentTool {
     typealias Arguments = GameInspectArguments
     static let name = "game.list"
-    static let toolDescription = "List the game projects bound to this Space work or chat task. activeProjectID is the current work; a game project's files and assistant are independent from ordinary chat attachments. Use game.selection to check the engine, root and project revision. Use workspace tools for files when offered."
+    static let toolDescription = "List games available to this task. An ordinary chat uses its workspace files. Use game.selection to see engine and entry evidence, workspace tools for files, and Git tools for source control."
     static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -955,22 +968,24 @@ private struct GameListTool: AgentTool {
         let access = try service.environment.studioCoordinator.access.get()
         let ids = Set(try await access.projectIDs(conversationID: conversationID))
         let active = try await access.assistantProject(conversationID: conversationID)
-        let records = try await PersonalContentService.shared.library().records()
+        let records = ids.isEmpty ? [] : try await PersonalContentService.shared.library().records()
             .filter { ids.contains($0.id) && $0.kind == .game }
         var works: [GameToolListEntry] = []
         for record in records {
-            let session = service.registry.session(record: record)
+            let session = active == record.id ? service.registry.session(record: record) : nil
+            try await session?.project.refresh()
             works.append(.init(projectID: record.id, title: record.title,
-                engine: session?.project.selectionSnapshot?.selectedEngine?.rawValue,
+                engine: session?.selection?.runSelection?.engine.rawValue,
                 revision: try? session?.project.context.savedRevision,
                 isActive: active == record.id))
         }
         var activeID = works.first(where: \.isActive)?.projectID
         if activeID == nil, let chat = try await service.boundChatSession(context, conversationID: conversationID) {
-            let snapshot = try await chat.project.repository.open(chat.key.projectID, owner: chat.key.owner)
+            try await chat.project.refresh()
+            let snapshot = chat.project.project
             activeID = snapshot.projectID
             works.append(.init(projectID: snapshot.projectID, title: snapshot.title,
-                engine: chat.selection?.selectedEngine?.rawValue ?? snapshot.engine?.rawValue,
+                engine: chat.selection?.runSelection?.engine.rawValue,
                 revision: snapshot.revision, isActive: true))
         }
         return try gameToolOutput(GameToolProjectList(activeProjectID: activeID,

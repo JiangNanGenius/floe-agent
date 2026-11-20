@@ -4688,13 +4688,9 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames = allowedToolNames.map { $0.intersection(nonWorkspace) }
                 ?? nonWorkspace
         }
-        let hasChatGame = canonicalWorkspaceID.map {
-            environment.gameWorkspaces.hasSavedChatGame(conversationID: conversationID, workspaceID: $0)
-        } ?? false
-        if (gameWorkspaceID != nil || hasChatGame), taskRootLease != nil {
-            // Once the assistant is bound to the game tree, the existing
-            // workspace/Git catalog owns ordinary files and source control.
-            // Keep the old handlers registered for already-frozen runs only.
+        if taskRootLease != nil, runSurface == .ordinary || gameWorkspaceID != nil {
+            // Workspace and Git own ordinary files even before game recognition
+            // has produced any native history. Frozen historical calls still decode.
             let legacyFileTools: Set<String> = ["game.inspect", "game.read", "game.edit", "game.history", "game.rollback"]
             allowedToolNames = (allowedToolNames ?? Set(availableDescriptors.map(\.name)))
                 .subtracting(legacyFileTools)

@@ -15,6 +15,7 @@ public struct HeavyEditorTaskGrant: Sendable {
     }
 }
 public struct HeavyEditorCreationRequest: Sendable {
+    public let parentProjectID: UUID?
     public let kind: HeavyEditorKind
     public let title: String
     public let requestID: String
@@ -121,7 +122,7 @@ public final class HeavyEditorToolBridge: Sendable {
             let descriptor = try Self.descriptor(kind, action: action)
             registry.register(AnyAgentTool(descriptor: descriptor, run: { [self] data, context in
                 try await execute(kind, action: action, data: data, context: context)
-            }, validateArguments: { data in _ = try Self.arguments(data, action: action) }))
+            }, validateArguments: { data in _ = try Self.arguments(data, kind: kind, action: action) }))
         }}
     }
     private struct Arguments: Decodable {
@@ -133,11 +134,11 @@ public final class HeavyEditorToolBridge: Sendable {
         var fileID: String?
         var discovery: HeavyEditorDiscoveryPage?
     }
-    private static func arguments(_ data: Data, action: HeavyEditorToolAction) throws -> Arguments {
+    private static func arguments(_ data: Data, kind: HeavyEditorKind, action: HeavyEditorToolAction) throws -> Arguments {
         guard data.count <= 1_048_576, case .object(let object) = try EditorJSON.decode(data) else { throw HeavyEditorError.invalidDocument }
         let keys: Set<String>
         switch action {
-        case .create: keys = ["title"]
+        case .create: keys = kind == .score ? ["title", "projectID"] : ["title"]
         case .describe: keys = ["projectID", "baseRevision", "command", "arguments", "discovery"]
         case .importFile: keys = ["projectID", "baseRevision", "fileID", "arguments"]
         default: keys = ["projectID", "baseRevision", "command", "arguments"]
@@ -164,6 +165,10 @@ public final class HeavyEditorToolBridge: Sendable {
         var properties: [String: EditorJSON] = [:], required: [String] = []
         if action == .create { properties = ["title": string]; required = ["title"] }
         else { properties = ["projectID": .object(["type": .string("string"), "format": .string("uuid")])]; required = action == .describe ? [] : ["projectID"] }
+        if action == .create, kind == .score {
+            properties["projectID"] = .object(["type": .string("string"), "format": .string("uuid"),
+                "description": .string("The authorized parent music project. Required outside its editor assistant.")])
+        }
         if ![HeavyEditorToolAction.create, .describe].contains(action) { properties["baseRevision"] = revision; required.append("baseRevision") }
         if [.query, .invoke, .export, .describe].contains(action) {
             properties["command"] = string; properties["arguments"] = .object(["type": .string("object")])
@@ -203,7 +208,7 @@ public final class HeavyEditorToolBridge: Sendable {
         return try await withTaskCancellationHandler { try await worker.value } onCancel: { cancellation.cancel(); worker.cancel() }
     }
     private func executeBound(_ kind: HeavyEditorKind, action: HeavyEditorToolAction, data: Data, context: ToolContext, cancellation: CancellationToken) async throws -> ToolExecutionOutput {
-        let args = try Self.arguments(data, action: action)
+        let args = try Self.arguments(data, kind: kind, action: action)
         guard let callID = context.toolCallID, !callID.isEmpty else { throw HeavyEditorError.invalidCommand }
         let name = kind.rawValue + "." + action.rawValue
         var call = try ToolCall(id: callID, toolName: name, argumentsJSON: data, scope: context.scope)
@@ -229,7 +234,7 @@ public final class HeavyEditorToolBridge: Sendable {
         let hostAuthorization: HeavyEditorCallAuthorization = { try await gate.check(effect: action == .create) }
         let id: UUID
         if action == .create {
-            id = try await create(.init(kind: kind, title: args.title!, requestID: context.toolIdempotencyKey.isEmpty ? callID : context.toolIdempotencyKey), context, hostAuthorization)
+            id = try await create(.init(parentProjectID: args.projectID, kind: kind, title: args.title!, requestID: context.toolIdempotencyKey.isEmpty ? callID : context.toolIdempotencyKey), context, hostAuthorization)
             try await gate.bindCreated(id)
         } else { id = args.projectID! }
         let hosted = try await open(id, action, context, hostAuthorization)

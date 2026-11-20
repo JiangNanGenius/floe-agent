@@ -481,7 +481,13 @@ final class GameWorkspaceRegistry {
                 throw GameWorkspaceRegistryError.workStopUnconfirmed(
                     existing.closeFailure ?? "")
             }
-            return existing
+            if existing.project.currentPin != nil { return existing }
+            let outcome = await close(existing)
+            guard outcome.isConfirmed else { throw GameWorkspaceRegistryError.workStopUnconfirmed(outcome.detail) }
+            guard center.currentWorkspace?.id == workspace.id,
+                  center.currentRootURL.map(Self.canonical) == key.rootPath else {
+                throw GameIDEBridgeError.workspaceChanged
+            }
         }
         // Owner-bound repositories: two real conversations can share one IDE
         // workspace/root but must never share a FileGameProjectRepository or
@@ -499,8 +505,15 @@ final class GameWorkspaceRegistry {
         }
         let conversation: UUID?
         if case .conversation(let id, _) = key.owner { conversation = id } else { conversation = nil }
-        let environmentID = try await existingEnvironmentID(for: projectID,
-            conversationID: conversation, rootURL: root)
+        let environmentID: String?
+        do {
+            environmentID = try await existingEnvironmentID(for: projectID,
+                conversationID: conversation, rootURL: root)
+        } catch GameWorkspaceRegistryError.environmentRootMismatch {
+            // A native player can open the verified task files even when a
+            // previous Linux session is still bound to a different directory.
+            environmentID = nil
+        }
         let context = try GameProjectContext(projectID: projectID, owner: key.owner,
             rootURL: root, savedRevision: revision, environmentID: environmentID)
         let session = try await GameWorkspaceProjectSession.open(center: center, context: context,
@@ -538,28 +551,44 @@ final class GameWorkspaceRegistry {
         return FileManager.default.fileExists(atPath: head.path)
     }
 
-    func restoreChatGame(conversationID: UUID, workspaceID: UUID, leasedRoot: URL?,
-                         openedCenter: WorkspaceCenter? = nil) async throws -> GameWorkspaceSession? {
+    func restoreChatGame(conversationID: UUID, workspaceID: UUID, leasedRoot: URL?) async throws -> GameWorkspaceSession? {
+        guard let leasedRoot else { return nil }
         let owner = GameProjectOwner.conversation(conversationID: conversationID, workspaceID: workspaceID)
+        let key = GameWorkspaceKey(projectID: workspaceID, owner: owner, rootURL: leasedRoot)
+        if let pending = opening[key] {
+            do { return try await pending.value } catch GameWorkspaceRegistryError.notGameProject { return nil }
+        }
         if let existing = session(projectID: workspaceID, owner: owner) {
-            if let leasedRoot, existing.key.rootPath != Self.canonical(leasedRoot) {
+            guard existing.key == key else { throw GameIDEBridgeError.workspaceChanged }
+            if existing.project.currentPin != nil { return existing }
+        }
+        // Register the entire reopen before awaiting. An IDE center can now display
+        // another task even though the old game session still carries this key.
+        let task = Task { @MainActor [self] in
+            let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
+            try await center.openTaskWorkspace(conversationID: conversationID)
+            guard let workspace = center.currentWorkspace, workspace.id == workspaceID,
+                  let root = center.currentRootURL, Self.canonical(root) == key.rootPath else {
                 throw GameIDEBridgeError.workspaceChanged
             }
-            return existing
+            // Games created with Workspace/Git tools may have no Floe history yet.
+            // Inspect only the directory resolved from the persisted conversation owner.
+            if !hasSavedChatGame(conversationID: conversationID, workspaceID: workspaceID) {
+                let recognizable = try await Task.detached(priority: .userInitiated) {
+                    try GameProjectInspector.hasGameCandidate(rootURL: root)
+                }.value
+                guard recognizable else { throw GameWorkspaceRegistryError.notGameProject }
+                try Task.checkCancellation()
+                guard center.currentWorkspace?.id == workspaceID,
+                      center.currentRootURL.map(Self.canonical) == key.rootPath else {
+                    throw GameIDEBridgeError.workspaceChanged
+                }
+            }
+            return try await openChatGame(center: center, conversationID: conversationID, title: workspace.name)
         }
-        guard let leasedRoot, hasSavedChatGame(conversationID: conversationID, workspaceID: workspaceID) else { return nil }
-        let center = openedCenter ?? WorkspaceCenter(environment: environment, publishesSharedState: false)
-        try await center.openTaskWorkspace(conversationID: conversationID)
-        guard let workspace = center.currentWorkspace, workspace.id == workspaceID,
-              let current = center.currentRootURL, Self.canonical(current) == Self.canonical(leasedRoot) else {
-            throw GameIDEBridgeError.workspaceChanged
-        }
-        let key = GameWorkspaceKey(projectID: workspaceID, owner: owner, rootURL: current)
-        if let pending = opening[key] { return try await pending.value }
-        let task = Task { try await self.openChatGame(center: center, conversationID: conversationID, title: workspace.name) }
         opening[key] = task
         defer { opening[key] = nil }
-        return try await task.value
+        do { return try await task.value } catch GameWorkspaceRegistryError.notGameProject { return nil }
     }
 
     func session(projectID: UUID, owner: GameProjectOwner) -> GameWorkspaceSession? {
@@ -581,7 +610,7 @@ final class GameWorkspaceRegistry {
     @discardableResult
     func close(_ session: GameWorkspaceSession) async -> GameWorkspaceCloseOutcome {
         let outcome = await session.close()
-        if session.closed {
+        if session.closed, sessions[session.key] === session {
             sourceCompanions.retireAll(projectID: session.key.projectID,
                                        owner: session.key.owner)
             sessions.removeValue(forKey: session.key)
@@ -1292,7 +1321,10 @@ final class GameWorkspaceRegistry {
 
     func makeRunExtension(for session: GameWorkspaceSession) async throws -> IDEProjectRunExtension {
         try requireOpen(session)
-        guard let selection = session.project.selectionSnapshot?.runSelection else {
+        let inspectedProject = session.project
+        try await inspectedProject.refreshSelectionForPlay()
+        guard session.project === inspectedProject,
+              let selection = inspectedProject.selectionSnapshot?.runSelection else {
             throw GameWorkspaceRegistryError.ambiguousGameProject
         }
         switch selection.engine {
@@ -1312,7 +1344,7 @@ final class GameWorkspaceRegistry {
             }
         }
         try ensureIDEHost(session)
-        return try await session.project.makeRunExtension()
+        return try await session.project.makeRunExtension(selectionRefreshedForPlay: session.project === inspectedProject)
     }
 
     /// Serializes one project's launch slot. A replacement launch must first
@@ -1571,7 +1603,6 @@ final class GameWorkspaceRegistry {
                          conversationID: UUID?) async throws -> IDEProjectRunExtension? {
         guard let session = try await prepareIDEGameSession(
             for: center, conversationID: conversationID) else { return nil }
-        try await ensureResolvedSelection(session)
         return try await makeRunExtension(for: session)
     }
 
@@ -1581,13 +1612,6 @@ final class GameWorkspaceRegistry {
                          conversationID: UUID) async throws -> IDEProjectRunExtension? {
         let value: UUID? = conversationID
         return try await ideRunExtension(for: center, conversationID: value)
-    }
-
-    private func ensureResolvedSelection(_ session: GameWorkspaceSession) async throws {
-        try await session.project.refresh()
-        if session.project.selectionSnapshot?.requiresExplicitChoice == true {
-            throw GameWorkspaceRegistryError.ambiguousGameProject
-        }
     }
 
     private func resolveWorkspaceOwner(center: WorkspaceCenter,

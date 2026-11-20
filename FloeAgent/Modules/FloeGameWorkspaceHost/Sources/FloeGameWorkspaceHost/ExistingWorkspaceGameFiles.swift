@@ -72,6 +72,15 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         }
     }
 
+    private struct PersistedHints: Codable {
+        var version: Int
+        var projectID: UUID
+        var root: String
+        var rootDevice: UInt64
+        var rootInode: UInt64
+        var files: [String: GameFileFingerprint]
+    }
+
     private struct Stamp: Codable, Equatable {
         let digest: String
         let inode: UInt64
@@ -354,14 +363,13 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         let entries = try reader.tree(maximumEntries: limits.maximumEntries, excludingNames: vcsNames)
         let service = scoped(target, limits)
         var total = 0, files: [GameProjectFile] = []
-        // Only app-owned Space games use hints. Ordinary workspace roots can
-        // be externally provided filesystems with unreliable change metadata.
-        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).resolvingSymlinksInPath().pathComponents
-        let appOwned: Bool
-        if case .space = target.binding.owner {
-            appOwned = target.binding.rootURL.pathComponents.starts(with: home)
-        } else { appOwned = false }
-        let cached = allowCache && appOwned ? (fingerprintCache[target.binding.projectID] ?? [:]) : [:]
+        // Digest hints are restricted to app-owned roots (Space library games
+        // and the exact per-task private workspace). External or File
+        // Provider roots cannot promise reliable inode/change metadata, so
+        // their contents are re-hashed on every capture. Every hint hit is
+        // still reopened and fully revalidated before its digest is trusted.
+        let hintsEligible = allowCache && Self.digestHintsEligible(target.binding)
+        let cached = hintsEligible ? persistedHints(for: target) : [:]
         var nextCache: [GameRelativePath: GameFileFingerprint] = [:]
         for entry in entries {
             _ = try service.guardResolver.resolve(entry.path.value)
@@ -371,7 +379,7 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
                 throw GameProjectError.limitExceeded("projectBytes")
             }
             total += data.bytes
-            nextCache[entry.path] = data
+            if hintsEligible { nextCache[entry.path] = data }
             files.append(.init(path: entry.path, sha256: data.sha256, bytes: data.bytes,
                                executable: data.executable))
         }
@@ -379,8 +387,73 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         try verifyRoot(target)
         let snapshot = try GameWorkingTreeSnapshot(binding: target.binding, revision: revision,
             directories: entries.filter(\.directory).map(\.path), files: files)
-        fingerprintCache[target.binding.projectID] = nextCache
+        if hintsEligible {
+            persistHints(for: target, hints: nextCache, limits: limits)
+        }
         return snapshot
+    }
+
+    /// Cross-relaunch digest hints, loaded once per project and root identity.
+    /// Corrupt, mismatched or moved roots simply yield no hints; every live
+    /// file is still opened and identity-checked before a hint is used.
+    private func persistedHints(for target: ExistingGameWorkspaceTarget)
+        -> [GameRelativePath: GameFileFingerprint] {
+        let projectID = target.binding.projectID
+        if let cached = fingerprintCache[projectID] { return cached }
+        var state: [GameRelativePath: GameFileFingerprint] = [:]
+        defer { fingerprintCache[projectID] = state }
+        let url = hintsFileURL(projectID)
+        guard let data = try? GameWorkingTreeJournalFiles.read(url, maximum: 64 * 1_024 * 1_024) else { return [:] }
+        guard let decoded = try? JSONDecoder().decode(PersistedHints.self, from: data),
+              decoded.version == 1,
+              decoded.projectID == projectID,
+              decoded.root == target.binding.rootURL.path,
+              decoded.rootDevice == rootIdentities[projectID]?.device,
+              decoded.rootInode == rootIdentities[projectID]?.inode else { return [:] }
+        for (raw, hint) in decoded.files {
+            guard let path = try? GameRelativePath(raw) else { continue }
+            state[path] = hint
+        }
+        return state
+    }
+
+    /// Best-effort, atomic, bounded by the repository entry limit, and skipped
+    /// entirely when the validated hints are unchanged since load/last save.
+    /// A lost or stale hint file only costs a re-hash on the next capture.
+    private func persistHints(for target: ExistingGameWorkspaceTarget,
+                              hints: [GameRelativePath: GameFileFingerprint],
+                              limits: GameRepositoryLimits) {
+        let projectID = target.binding.projectID
+        guard hints.count <= limits.maximumEntries else { return }
+        if fingerprintCache[projectID] == hints {
+            return
+        }
+        var files: [String: GameFileFingerprint] = [:]
+        files.reserveCapacity(hints.count)
+        for (path, hint) in hints { files[path.value] = hint }
+        let value = PersistedHints(version: 1, projectID: projectID,
+            root: target.binding.rootURL.path,
+            rootDevice: rootIdentities[projectID]?.device ?? 0,
+            rootInode: rootIdentities[projectID]?.inode ?? 0,
+            files: files)
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        try? GameWorkingTreeJournalFiles.write(data, to: hintsFileURL(projectID))
+        fingerprintCache[projectID] = hints
+    }
+
+    /// Digest hints are restricted to app-owned roots: Space library games
+    /// and the exact per-task private workspace, detected through the same
+    /// relocatable-identity gate the selection store uses. External and File
+    /// Provider roots re-hash contents because their inode and change
+    /// metadata cannot be trusted.
+    private static func digestHintsEligible(_ binding: GameWorkingTreeBinding) -> Bool {
+        GameSpaceRootIdentity.persistedPath(binding.rootURL.path, owner: binding.owner)
+            != binding.rootURL.path
+    }
+
+    private func hintsFileURL(_ projectID: UUID) -> URL {
+        repositoryDirectory.appendingPathComponent(projectID.uuidString.lowercased()
+            + "/FingerprintHints.json")
     }
 
     private func verifyRoot(_ target: ExistingGameWorkspaceTarget) throws {

@@ -97,7 +97,7 @@ final class WorkspaceCenter: ObservableObject {
     }
 
     let environment: AppEnvironment
-    private let store: any WorkspaceStore
+    private let store: SQLiteWorkspaceStore
     /// Settings browsing owns its own security scopes and never rebinds the
     /// active conversation's legacy tool root or process-wide mount registry.
     private let publishesSharedState: Bool
@@ -151,14 +151,9 @@ final class WorkspaceCenter: ObservableObject {
     /// Reloads the workspace list from the store.
     func reload() async {
         do {
-            workspaces = try await store.workspaces()
-            var ownership: [UUID: UUID] = [:]
-            for workspace in workspaces {
-                for conversationID in try await store.conversations(workspaceID: workspace.id) {
-                    ownership[conversationID] = workspace.id
-                }
-            }
-            conversationWorkspaceIDs = ownership
+            let index = try await store.workspaceIndex()
+            workspaces = index.records
+            conversationWorkspaceIDs = index.owners
             actionError = nil
         } catch is CancellationError {
             // SwiftUI cancels view-bound reload tasks during navigation. That
@@ -487,6 +482,7 @@ final class WorkspaceCenter: ObservableObject {
         currentRootUsesSecurityScope = true
         let mounts = try activateMounts(for: record, rootURL: url)
         await activateNetworkMounts(for: record, rootURL: url)
+        guard generation == openGeneration else { return }
         fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: url, mounts: mounts))
         var opened = record
         opened.lastOpenedAt = Date()
@@ -659,86 +655,69 @@ final class WorkspaceCenter: ObservableObject {
     /// owner. It closes the previous tree immediately so switching tasks can
     /// never flash or operate on stale files.
     func openTaskWorkspace(conversationID: UUID) async throws {
-        if workspaces.isEmpty || conversationWorkspaceIDs[conversationID] == nil {
-            await reload()
-        }
-        var workspaceID = conversationWorkspaceIDs[conversationID]
-        var record = workspaceID.flatMap { id in workspaces.first(where: { $0.id == id }) }
-        if record == nil {
-            guard let conversation = try await environment.conversationStore
-                .conversation(id: conversationID) else {
+        openGeneration &+= 1
+        let generation = openGeneration
+        let record: WorkspaceRecord
+        if let owned = try await store.ownedWorkspace(conversationID: conversationID) {
+            record = owned
+        } else {
+            guard let conversation = try await environment.conversationStore.conversation(id: conversationID) else {
                 throw FloeError.notFound("conversation \(conversationID.uuidString)")
             }
-            // Repair legacy or partially-migrated tasks in one DB transaction.
-            // This is idempotent and never replaces an existing project owner.
-            record = try await store.ensureWorkspace(
-                conversationID: conversationID,
-                title: conversation.title
-            )
-            await reload()
-            workspaceID = record?.id
+            record = try await store.ensureWorkspace(conversationID: conversationID, title: conversation.title)
         }
-        guard let record, workspaceID != nil else {
-            throw FloeError.notFound("workspace for task \(conversationID.uuidString)")
-        }
-        if currentWorkspace?.id == record.id,
-           currentRootURL != nil,
-           fileService != nil {
-            return
+        guard generation == openGeneration else { throw CancellationError() }
+        conversationWorkspaceIDs[conversationID] = record.id
+        if let index = workspaces.firstIndex(where: { $0.id == record.id }) {
+            if workspaces[index] != record { workspaces[index] = record }
+        } else {
+            workspaces.append(record)
         }
         if record.kind == .project {
+            if isOpen(record) { return }
             try await openWorkspace(id: record.id)
             return
         }
-        closeCurrentWorkspace()
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
         let relative = record.internalRelativePath ?? "PrivateTasks/\(conversationID.uuidString)"
-        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
-            .appendingPathComponent(relative, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        currentRootURL = root
-        currentRootUsesSecurityScope = false
-        let mounts = try activateMounts(for: record, rootURL: root)
-        await activateNetworkMounts(for: record, rootURL: root)
-        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root, mounts: mounts))
-        currentWorkspace = record
-        if publishesSharedState { Self.sharedRootOverride = root }
-        await reloadRecentFiles()
-        await loadInstructions()
-        actionError = nil
+        try await openPrivateWorkspace(record, relative: relative, generation: generation)
     }
 
-    /// Opens an App-owned private workspace without a security-scoped bookmark.
-    /// The game project's `Game/Files` (or a game-created private task root) is
-    /// already inside the App container; treating it as an external project
-    /// would fail `startAccessingSecurityScopedResource` and misclassify the
-    /// owner. This sets the same file service/pin used by every existing IDE.
+    /// Opens the App-owned game files directly from their persisted workspace record.
     func openAppOwnedWorkspace(id: UUID) async throws {
-        guard let record = try await store.workspace(id: id),
-              record.kind == .privateTask,
+        openGeneration &+= 1
+        let generation = openGeneration
+        guard let record = try await store.workspace(id: id), record.kind == .privateTask,
               let relative = record.internalRelativePath, !relative.isEmpty else {
             throw FloeError.notFound("App-owned workspace \(id.uuidString)")
         }
-        if currentWorkspace?.id == id, currentRootURL != nil, fileService != nil { return }
-        closeCurrentWorkspace()
-        let support = try FileManager.default.url(for: .applicationSupportDirectory,
-            in: .userDomainMask, appropriateFor: nil, create: true)
+        guard generation == openGeneration else { throw CancellationError() }
+        try await openPrivateWorkspace(record, relative: relative, generation: generation)
+    }
+
+    private func isOpen(_ record: WorkspaceRecord) -> Bool {
+        guard let currentWorkspace, currentRootURL != nil, fileService != nil else { return false }
+        return currentWorkspace.id == record.id && currentWorkspace.kind == record.kind
+            && currentWorkspace.internalRelativePath == record.internalRelativePath
+            && currentWorkspace.rootBookmark == record.rootBookmark
+    }
+
+    private func openPrivateWorkspace(_ record: WorkspaceRecord, relative: String, generation: UInt64) async throws {
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                 appropriateFor: nil, create: true)
         let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent(relative, isDirectory: true)
+        if isOpen(record), currentRootURL?.standardizedFileURL == root.standardizedFileURL { return }
+        closeCurrentWorkspace(invalidatePendingOpen: false)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         currentRootURL = root
-        currentRootUsesSecurityScope = false
         let mounts = try activateMounts(for: record, rootURL: root)
         await activateNetworkMounts(for: record, rootURL: root)
+        guard generation == openGeneration else { throw CancellationError() }
         fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root, mounts: mounts))
         currentWorkspace = record
         if publishesSharedState { Self.sharedRootOverride = root }
         await reloadRecentFiles()
+        guard generation == openGeneration else { throw CancellationError() }
         await loadInstructions()
         actionError = nil
     }
@@ -781,7 +760,8 @@ final class WorkspaceCenter: ObservableObject {
             recentFiles = []
             return
         }
-        recentFiles = (try? await store.recentFiles(workspaceID: workspaceID)) ?? []
+        let files = (try? await store.recentFiles(workspaceID: workspaceID)) ?? []
+        if currentWorkspace?.id == workspaceID { recentFiles = files }
     }
 
     // MARK: - FLOE.md instructions

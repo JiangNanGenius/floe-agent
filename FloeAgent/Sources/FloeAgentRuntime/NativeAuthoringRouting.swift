@@ -159,7 +159,10 @@ enum NativeAuthoringRouting {
         let effective = context.isEmpty ? current : context
         guard !effective.isEmpty else { return [] }
         guard !ToolRoutingPolicy.requestsScript(current) else { return [] }
-        let matched = ToolDiscovery.matches(query: effective, descriptors: liveDescriptors)
+        // Search each real goal/step independently. An exact tool name in one
+        // step must not suppress the ordinary capability search for the others.
+        let matched = ToolDiscovery.matches(queries: effective.split(whereSeparator: \.isNewline).map(String.init),
+                                            descriptors: liveDescriptors)
         let strong = strongSignals(query: effective, descriptors: liveDescriptors)
         var pending: [ToolCatalog.Descriptor] = []
         for descriptor in matched where isRefreshableCapability(descriptor.name) {
@@ -238,7 +241,7 @@ enum NativeAuthoringRouting {
         let hasStudio = Set(capabilities.map(\.name)).contains("studio.list")
         var line = "Substep capability rule / 子步骤能力规则：你自己分解出的工作项同样属于本任务；制作或编辑媒体/文档/图表/3D/数据/文件/链接读取等资产前，先查看本轮已提供、已配置且支持该目标的专用能力并优先尝试原生路径（schema 被本窗口延后时用 \(displayName("tools.search")) 按精确名加载——延后不等于不可用；产物以真实回执验证）。普通的编程/网页/脚本项目请求不等于用户指定用代码合成该媒体。仅当用户当前消息明确要求用代码或指定路线制作/编辑该媒体时才遵从用户路线；专用能力未配置、明确不支持或调用真实失败并读回后，才使用既有执行；拒绝不能绕行，未决任务按现有生命周期等待，本行不授予任何权限。The substeps you decompose yourself belong to this task: before producing or editing media/documents/charts/3D/data/file/link assets by generated code, check whether an offered configured specialized capability supports the target and try it first (load a deferred exact schema with \(displayName("tools.search")) — deferred is not missing; verify artifacts by real receipts). A general coding/web-project request is not the user specifying code-based media synthesis. Follow the user route only when the user's CURRENT message explicitly chose code or a named route for that media; existing execution stays for unconfigured/unsupported/read-back-failed specialized work; denials are final and pending jobs await the existing lifecycle. This line grants nothing."
         if hasStudio {
-            line += " 个人作品原生创作（音乐/图示/画布/文档等）经 studio.* 在本任务内执行；同任务委派子代理持有同一有效上限并通过现有 canonical dispatch 逐调用授权。Personal-work authoring (music/diagram/canvas/documents…) runs through studio.* inside THIS task; a same-task delegated child holds the identical effective ceiling and dispatches per call."
+            line += " 普通任务可用 studio.list 查找本任务创建或用户从「空间作品」选入的原件。已有作品按返回的 projectID、revision 和 editFormat 编辑，需要原件时不要创建替代副本。同任务委派子代理持有同一有效上限并通过现有 canonical dispatch 逐调用授权。Use studio.list for originals created here or selected through Space works; follow their projectID, revision and editFormat when editing an existing work; a same-task delegated child holds the identical effective ceiling and dispatches per call."
         }
         return [line]
     }

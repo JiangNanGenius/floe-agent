@@ -29,4 +29,22 @@ public actor ExistingWorkspaceGameContexts: GameAuthoringContextHost, GameRunCon
             rootURL: target.binding.rootURL, savedRevision: project.revision,
             environmentID: target.binding.environmentID)
     }
+
+    /// Metadata-only currency probe for read-only fences (selection
+    /// validation). It answers project/owner/environment/root and the HEAD
+    /// revision without walking the tree or adopting external edits; every
+    /// real open path keeps the full snapshot verification.
+    public func currentContextMetadata(for captured: GameProjectContext) async throws -> GameProjectContext {
+        guard let target = targets[captured.projectID], target.binding.owner == captured.owner,
+              target.binding.rootURL == captured.rootURL,
+              target.binding.environmentID == captured.environmentID else { throw GameProjectError.invalidContext }
+        let checkpoint = try target.revisions.checkpoint()
+        let opened = try await repository.openWorkingMetadata(captured.projectID, owner: captured.owner)
+        try target.revisions.validate(checkpoint)
+        guard opened.binding == target.binding else { throw GameProjectError.invalidContext }
+        let project = opened.project
+        return try GameProjectContext(projectID: project.projectID, owner: project.owner,
+            rootURL: target.binding.rootURL, savedRevision: project.revision,
+            environmentID: target.binding.environmentID)
+    }
 }

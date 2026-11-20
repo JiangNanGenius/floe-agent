@@ -897,10 +897,10 @@ struct BrowserTaskSessionTests {
 
         // B cannot dismiss A's visible panel.
         let requestBeforeHide = center.presentationRequest
-        await #expect(throws: (any Error).self) {
-            _ = try await run(registry, "browser.panel", "{\"action\":\"hide\"}", as: contextB)
-        }
+        _ = try await run(registry, "browser.panel", "{\"action\":\"hide\"}", as: contextB)
         #expect(center.presentationRequest == requestBeforeHide)
+        #expect(sessionA.isUserControlling)
+        #expect(center.handoff(for: ownerA)?.runID == contextA.runID)
 
         center.deliverHandoff = { _, _ in false }
         await center.returnToAgent()
@@ -1701,6 +1701,7 @@ struct BrowserTaskSessionTests {
     @Test("Takeover requires the displayed task, document and route, and stale sheet dismissals leave the new presentation open")
     func livePreviewInteractionPinsDocumentRouteAndPresentation() async throws {
         let center = makeCenter()
+        center.deliverHandoff = { _, _ in false }
         let owner = UUID()
         center.bind(to: owner)
         defer { center.discard(conversationID: owner) }
@@ -2010,7 +2011,7 @@ struct BrowserTaskSessionTests {
         let tab = try #require(session.activeTabID)
         try await load(fixturePage("inflight"), tab: tab, in: session, registry: registry, context: ctx)
         let webView = try #require(session.activeWebView)
-        #expect(webView.isUserInteractionEnabled)
+        #expect(session.hasModelControlHolder && !webView.isUserInteractionEnabled)
 
         let waiting = Task {
             try await run(
@@ -2737,6 +2738,29 @@ struct BrowserTaskSessionTests {
         center.takeControl()
         center.releaseIdlePage(conversationID: owner, runID: runID)
         #expect(session.isUserControlling && session.tabs.map(\.id) == tabs)
+    }
+
+    @Test("Only in-flight browser work is presented, even while the run retains control")
+    func idleLeaseDoesNotDisplayActivity() async throws {
+        let center = makeCenter(), owner = UUID(), runID = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let registry = makeRegistry(center)
+        _ = try await run(registry, "browser.tabs", "{}", as: context(for: owner, runID: runID))
+        let session = try #require(center.session(for: owner))
+        let lease = try #require(session.modelControl)
+        #expect(session.visibleModelActivity == nil)
+        let first = session.beginVisibleOperation(.scrolling, lease: lease)
+        let second = session.beginVisibleOperation(.downloading, lease: lease)
+        session.endVisibleOperation(first)
+        #expect(session.visibleModelActivity == .downloading)
+        session.endVisibleOperation(second)
+        #expect(session.visibleModelActivity == nil)
+        #expect(session.modelControl == lease)
+        let pending = session.beginVisibleOperation(.observing, lease: lease)
+        center.takeControl()
+        #expect(session.visibleModelActivity == nil)
+        session.endVisibleOperation(pending)
     }
 
     @Test("A recovered return comment cannot launch a new turn or enter a different run")

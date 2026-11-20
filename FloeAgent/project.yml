@@ -2330,6 +2330,7 @@ targets:
       - path: Tests/FloeAppTests/NativeMeetingIntegrationTests.swift
       - path: Tests/FloeAppTests/StudioDocumentAccessTests.swift
       - path: Tests/FloeAppTests/StudioRegisteredWorkflowTests.swift
+      - path: Tests/FloeAppTests/StudioOrdinaryBuildingTests.swift
       - path: Tests/FloeAppTests/StudioMusicChemistryContractTests.swift
       - path: Tests/FloeAppTests/StudioMachiningContractTests.swift
       - path: Tests/FloeAppTests/CellSavedResultPresentationTests.swift

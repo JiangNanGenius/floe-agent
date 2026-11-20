@@ -148,6 +148,8 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         }
         let session = resolved.session
         let control = resolved.control
+        let visible = session.beginVisibleOperation(.observing, lease: control?.lease)
+        defer { session.endVisibleOperation(visible) }
         guard busyDesignTasks.insert(owner).inserted else {
             throw FloeError.validationFailed("A design measurement is already running for this task")
         }
@@ -278,6 +280,8 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             throw FloeError.validationFailed("The export destination belongs to a different workspace")
         }
         let control = try self.control(for: context)
+        let visible = control.session.beginVisibleOperation(.exporting, lease: control.lease)
+        defer { control.session.endVisibleOperation(visible) }
         guard control.owner == owner else {
             throw FloeError.validationFailed("The staged export task changed while validating the destination")
         }
@@ -369,6 +373,8 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             conversationID: context.conversationID
         )
         let control = try self.control(for: context)
+        let visible = control.session.beginVisibleOperation(.downloading, lease: control.lease)
+        defer { control.session.endVisibleOperation(visible) }
         guard control.owner == owner else {
             throw FloeError.validationFailed("The browser download task changed while waiting for authorization")
         }
@@ -1115,6 +1121,8 @@ private struct BrowserCookiesTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         let recipient = try await environment.requireBrowserDataAccess(context: context)
         let control = try environment.control(for: context)
+        let visible = control.session.beginVisibleOperation(.observing, lease: control.lease)
+        defer { control.session.endVisibleOperation(visible) }
         let session = control.session
         let bridge = BrowserWebDataBridge(session: session)
         let selectedTab = args.tabID ?? session.activeTabID
@@ -1254,6 +1262,8 @@ private struct BrowserStorageTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         let recipient = try await environment.requireBrowserDataAccess(context: context)
         let control = try environment.control(for: context)
+        let visible = control.session.beginVisibleOperation(.observing, lease: control.lease)
+        defer { control.session.endVisibleOperation(visible) }
         let session = control.session
         let bridge = BrowserWebDataBridge(session: session)
         let kind = BrowserStorageKind(rawValue: args.kind ?? "local") ?? .local
@@ -1417,6 +1427,8 @@ private struct BrowserSiteDataTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         let recipient = try await environment.requireBrowserDataAccess(context: context)
         let control = try environment.control(for: context)
+        let visible = control.session.beginVisibleOperation(.observing, lease: control.lease)
+        defer { control.session.endVisibleOperation(visible) }
         let session = control.session
         let scope = args.scope ?? "persistent"
         guard ["persistent", "session", "all"].contains(scope) else {

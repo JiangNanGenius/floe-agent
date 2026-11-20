@@ -107,7 +107,7 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
             let progress = managedServiceProgress
             if progress?.state == "stopping" || progress?.cancellationRequested == true
                 || lastError?.hasPrefix("Stop requested") == true { return .stopping }
-            return progress?.state == "running" && progress?.previewURL?.isEmpty == false ? .running : .starting
+            return progress?.state == "running" && progress?.ready != false && progress?.previewURL?.isEmpty == false ? .running : .starting
         case .completed: return .ended
         case .cancelled: return .stopped
         case .failed: return .failed
@@ -124,6 +124,7 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
 
     private struct ManagedServiceProgress: Decodable {
         var state: String?
+        var ready: Bool?
         var previewURL: String?
         var cancellationRequested: Bool?
     }

@@ -64,6 +64,17 @@ import FloeMusicCore
             do { _ = try await environment.studioCoordinator.savedConversation(value); Issue.record("Ended run retained document access") } catch {}
         }
     }
+    @Test func missingStudioStorePreservesAvailableFontTools() async throws {
+        try await savedTask { environment, conversation, run in
+            var value = try context(environment: environment, conversation: conversation, run: run, name: nil, call: "discovery")
+            value.allowedToolNames = HeavyEditorAppTools.names
+            value.frozenEffectiveCatalogNames = HeavyEditorAppTools.names
+            value.serviceStorePaths = try await environment.fontDesignAIHost.typedServiceStorePaths()
+            let names = try await environment.heavyEditorAppTools.descriptors(for: value).map(\.name)
+            #expect(names.contains("font.create"))
+            #expect(!names.contains("gis.create"))
+        }
+    }
     @Test func opaqueAttachmentReadsTheOriginalAndRejectsPathsForeignOwnershipAndTampering() async throws {
         try await savedTask { environment, conversation, run in
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("score-ai-source-" + UUID().uuidString)
@@ -113,6 +124,27 @@ import FloeMusicCore
         return try await runner.execute(argumentsJSON: data, context: value)
     }
     private func json(_ value: ToolExecutionOutput) throws -> EditorJSON { try EditorJSON.decode(Data((value.capturedOutput ?? value.summary).utf8)) }
+    @Test func ordinaryTaskCanCreateAScoreOnItsSelectedWritableMusicProject() async throws {
+        try await savedTask { environment, conversation, run in
+            let record = try await PersonalContentService.shared.create(kind: .music, title: "Ordinary score " + UUID().uuidString)
+            let authority = try environment.studioCoordinator.access.get()
+            let host = MusicNotationAITools(environment: environment)
+            let registry = ToolRunnerRegistry()
+            try host.register(in: registry)
+            let base = try context(environment: environment, conversation: conversation, run: run, name: nil, call: "create")
+            #expect(try await authority.assistantProject(conversationID: conversation) == nil)
+            try await authority.setUserSelectedWork(record.id, conversationID: conversation, editable: false)
+            #expect(try await !host.descriptors(for: base).contains { $0.name == "score.create" })
+            try await authority.setUserSelectedWork(record.id, conversationID: conversation, editable: true)
+            #expect(try await host.descriptors(for: base).contains { $0.name == "score.create" })
+            let args: EditorJSON = .object(["title": .string("New score"), "projectID": .string(record.id.uuidString)])
+            let result = try json(try await invoke("score.create", args: args, registry: registry, template: base))
+            #expect(result["projectID"].string?.lowercased() == record.id.uuidString.lowercased())
+            let original = try await PersonalContentService.shared.library().resolve(record.id)
+            _ = try MusicNotationPackage.readOriginal(root: original.url.appendingPathComponent("Music"), parentID: record.id)
+        }
+    }
+
     @Test func sixToolsRetainTheMusicOriginalAndReturnARealFileAttachment() async throws {
         let environment = FloeAgentApp.liveEnvironment
         try await environment.ensureDurableAutomationReady()
