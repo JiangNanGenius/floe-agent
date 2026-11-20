@@ -121,7 +121,9 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 15))
         menu.tap()
         app.buttons["space.files.delete"].tap()
-        app.buttons["space.files.delete.confirm"].tap()
+        let confirmation = app.sheets.buttons["space.files.delete.confirm"].firstMatch
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
+        confirmation.tap()
         XCTAssertTrue(menu.waitForNonExistence(timeout: 15))
     }
 
