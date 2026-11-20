@@ -174,7 +174,17 @@ final class GamePlayCoordinator {
             return data
         }
         guard let presentation = session.webPresentation else { throw GameWorkspaceRegistryError.noSavedRun }
-        return try await presentation.player.capturePNG()
+        do {
+            return try await presentation.player.capturePNG()
+        } catch GameWebPlayerError.timedOut {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "等待游戏画面超时。请查看游戏日志，等场景加载后再次截图。",
+                "Timed out waiting for the game frame. Check the game logs and retry after the scene loads."))
+        } catch GameWebPlayerError.notReady {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "游戏画面还未就绪。请稍后再截图。",
+                "The game frame is not ready. Try capturing it again once the game has loaded."))
+        }
     }
 
     func logs() async throws -> String {

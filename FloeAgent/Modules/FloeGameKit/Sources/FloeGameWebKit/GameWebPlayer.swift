@@ -90,6 +90,9 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
         // imported game's own save system. This named store is isolated from
         // the default App/browser store and from every other project identity.
         configuration.websiteDataStore = GameWebStorage.persistentStore(for: identity)
+        // Chat can own a running game without presenting a player window.
+        // Keep its event loop available to input and frame capture at idle priority.
+        configuration.preferences.inactiveSchedulingPolicy = .throttle
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.setURLSchemeHandler(handler, forURLScheme: GameArtifactSchemeHandler.scheme)
         // Preparation loads the document before the player is attached to its
@@ -284,8 +287,12 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
     public func capturePNG() async throws -> Data {
         guard loaded else { throw GameWebPlayerError.notReady }
         let token = generation
-        let bytes = try await boundedReply { id in
-            webView.takeSnapshot(with: nil) { [weak self] image, error in
+        let snapshot = WKSnapshotConfiguration()
+        snapshot.afterScreenUpdates = webView.window != nil
+        // Snapshotting involves the web and graphics processes. A busy scene
+        // can take longer than a bridge command to return its painted frame.
+        let bytes = try await boundedReply(timeout: 12) { id in
+            webView.takeSnapshot(with: snapshot) { [weak self] image, error in
                 guard let self, pendingReplies[id] != nil else { return }
                 if let error { self.finishReply(id, result: .failure(error)); return }
                 guard let image else { self.finishReply(id, result: .failure(GameWebPlayerError.invalidState)); return }
@@ -422,7 +429,7 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
     /// Fixed player operations share a finite deadline and one completion.
     /// Imported games may return unresolved promises. Their callback cannot
     /// keep Save/Close waiting or write into a subsequently started run.
-    private func boundedReply(_ begin: (UUID) -> Void) async throws -> Data {
+    private func boundedReply(timeout: TimeInterval = 4, _ begin: (UUID) -> Void) async throws -> Data {
         guard pendingReplies.count < 32 else { throw GameWebPlayerError.notReady }
         let id = UUID()
         return try await withTaskCancellationHandler {
@@ -430,7 +437,7 @@ public final class GameWebPlayer: NSObject, ObservableObject, WKNavigationDelega
             return try await withCheckedThrowingContinuation { continuation in
                 pendingReplies[id] = PendingReply(generation: generation, continuation: continuation)
                 begin(id)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
                     self?.finishReply(id, result: .failure(GameWebPlayerError.timedOut))
                 }
             }

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 import XCTest
+#if os(iOS)
+import UIKit
+#endif
 import FloeGameCore
 import FloeGameWebKit
 
@@ -47,16 +50,55 @@ private actor PreparationHost: GameWebRunPreparationHost {
         XCTAssertNil(controller.player)
     }
 
-    private func fixture() throws -> (URL, GameProjectContext, GamePreparedWebRun) {
+    private func fixture(html: String = "<html><p>Contract fixture</p></html>") throws -> (URL, GameProjectContext, GamePreparedWebRun) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("source")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        try Data("<html><p>Contract fixture</p></html>".utf8).write(to: source.appendingPathComponent("index.html"))
+        try Data(html.utf8).write(to: source.appendingPathComponent("index.html"))
         try Data(#"{"dependencies":{"phaser":"3.90.0"}}"#.utf8).write(to: source.appendingPathComponent("package.json"))
         let id = UUID(), context = try GameProjectContext(projectID: id, owner: .space(recordID: id), rootURL: source, savedRevision: "r1", environmentID: "existing-linux")
         let package = try GameWebArtifactPackage.build(source: context, engine: .phaser, entry: GameRelativePath("index.html"), to: root.appendingPathComponent("artifact"))
         return (root, context, .init(inspection: try GameProjectInspector().inspect(context: context), package: package))
     }
+    #if os(iOS)
+    func testChatScreenshotCapturesPaintedPixelsWithoutPresentingTheGame() async throws {
+        let html = """
+        <html><body style="margin:0"><canvas width="800" height="600"></canvas><script>
+        const c = document.querySelector('canvas').getContext('2d');
+        c.fillStyle = '#d32640'; c.fillRect(0,0,800,600);
+        </script></body></html>
+        """
+        let (root, context, prepared) = try fixture(html: html)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = PreparationHost(prepared)
+        let controller = GameProjectRunController(contexts: ContextHost(context), preparation: host)
+        let task = Task { try await controller.run(context: context, engine: .phaser) }
+        try await host.waitUntilStarted()
+        await host.finish()
+        try await task.value
+        let player = try XCTUnwrap(controller.player)
+        XCTAssertNil(player.webView.window)
+        for _ in 0..<200 where !player.loaded { try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertTrue(player.loaded)
+        // A busy game renderer may take longer than the input-command budget
+        // to service the next WebKit snapshot request during scene creation.
+        player.webView.evaluateJavaScript("const until = performance.now() + 4500; while (performance.now() < until) {}", completionHandler: nil)
+        let data = try await player.capturePNG()
+        let image = try XCTUnwrap(UIImage(data: data)?.cgImage)
+        let sample = try XCTUnwrap(image.cropping(to: CGRect(x: image.width / 2, y: image.height / 2, width: 1, height: 1)))
+        var rgba = [UInt8](repeating: 0, count: 4)
+        try rgba.withUnsafeMutableBytes { buffer in
+            let ctx = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            ctx.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        XCTAssertGreaterThan(rgba[0], 170)
+        XCTAssertLessThan(rgba[1], 80)
+        XCTAssertLessThan(rgba[2], 110)
+        _ = await controller.stop()
+    }
+    #endif
+
     func testStopCancelsOwnedPreparationAndCannotStartAPlayerLater() async throws {
         let (root, context, package) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let host = PreparationHost(package), controller = GameProjectRunController(contexts: ContextHost(context), preparation: host)
