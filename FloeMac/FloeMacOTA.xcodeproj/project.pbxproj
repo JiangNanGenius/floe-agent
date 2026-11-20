@@ -23,6 +23,7 @@
 		1B319DF0CB5DE21FCC120D40 /* FloeBridge.icns in Resources */ = {isa = PBXBuildFile; fileRef = EC300510324B510B0FF47B3D /* FloeBridge.icns */; };
 		1D420CD73B9B9AAB023E239F /* BridgeSensitiveEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BBDAD1E3B76D16466C4F833 /* BridgeSensitiveEnvironment.swift */; };
 		1EF19B4D292755EB73AD31A2 /* MacWorkspaceTaskCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F5B8066271F21CB5B2FEF /* MacWorkspaceTaskCenter.swift */; };
+		1FB247247860D8848FB5BBFA /* ComposerResponsiveRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE5929F6E00D9968C62500B2 /* ComposerResponsiveRow.swift */; };
 		20DEDEE654B58D49CDF25244 /* MacWorkspaceToolboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CB5353DAA742BC18120C3C1 /* MacWorkspaceToolboxView.swift */; };
 		21DF361047B2CE2D01737E9E /* BridgeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74AFD277E0611BE7C61FA36A /* BridgeService.swift */; };
 		2702967333484A8135864999 /* BridgeServiceMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DD8007271E12CCFB829960 /* BridgeServiceMain.swift */; };
@@ -228,6 +229,7 @@
 		F6DD8007271E12CCFB829960 /* BridgeServiceMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeServiceMain.swift; sourceTree = "<group>"; };
 		F6E34BC84B83E7DD68E5682A /* HostAgentWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAgentWorkspaceView.swift; sourceTree = "<group>"; };
 		FE045107C2A0375BA03E5593 /* BridgeApplicationDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeApplicationDelegate.swift; sourceTree = "<group>"; };
+		FE5929F6E00D9968C62500B2 /* ComposerResponsiveRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerResponsiveRow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -387,6 +389,7 @@
 		6CD25FD04BABE5A250BFA56F /* Design */ = {
 			isa = PBXGroup;
 			children = (
+				FE5929F6E00D9968C62500B2 /* ComposerResponsiveRow.swift */,
 				53C09FA9AA45BDAEAD397761 /* FloeTheme.swift */,
 				EBA6E21F48FAB6B87CD59223 /* FloeWorkbenchProjectRow.swift */,
 			);
@@ -784,6 +787,7 @@
 				89DAD5B00A08113E7E91DC5E /* BridgeUpdateActivity.swift in Sources */,
 				C331A8F65EF5AC82BA71590D /* BridgeUpdater.swift in Sources */,
 				05517621F1301E36CF4E1CB6 /* CodeBlockView.swift in Sources */,
+				1FB247247860D8848FB5BBFA /* ComposerResponsiveRow.swift in Sources */,
 				664E2344213F1BE2FA60D2D4 /* ErrorEventView.swift in Sources */,
 				5D991B1AC37260349BFE442C /* FloeMacBridgeApp.swift in Sources */,
 				BED66A2B4FEEF0A4F4E85090 /* FloeTheme.swift in Sources */,

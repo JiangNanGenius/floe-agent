@@ -152,6 +152,11 @@ final class UnifiedMacSmoke {
                     let point = NSPoint(x: content.bounds.width - 29, y: content.isFlipped ? 22 : content.bounds.height - 22)
                     _ = click(content, at: point, in: window)
                 }
+                let wideFrame = window.frame
+                window.setContentSize(NSSize(width: 780, height: 590))
+                try? await Task.sleep(for: .milliseconds(180))
+                capture(content, extension: "narrow-composer.png")
+                window.setFrame(wideFrame, display: true)
             }
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
             if nativeChat, workspaceAndAttachmentStaging, let pdf = try? writePDFTextAttachment() {

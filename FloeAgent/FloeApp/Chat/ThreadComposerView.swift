@@ -922,9 +922,7 @@ struct ThreadComposerView: View {
                     Label("composer.attachment.files", systemImage: "folder")
                 }
             } label: {
-                Image(systemName: "paperclip")
-                    .font(.title3)
-                    .foregroundStyle(FloeTheme.primary)
+                FloeWorkbenchControlIcon(systemImage: "paperclip")
             }
             .buttonStyle(.plain)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
@@ -1762,33 +1760,13 @@ struct ThreadComposerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(attachments) { attachment in
-                    HStack(spacing: 4) {
-                        Image(systemName: icon(for: attachment.kind))
-                            .accessibilityHidden(true)
-                        Text(attachment.displayName)
-                            .lineLimit(1)
-                        Button {
-                            withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) {
-                                attachments.removeAll { $0.id == attachment.id }
-                            }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
+                    FloeComposerAttachmentChip(name: attachment.displayName,
+                                               systemImage: icon(for: attachment.kind),
+                                               removeLabel: String(localized: "composer.attachment.remove")) {
+                        withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) {
+                            attachments.removeAll { $0.id == attachment.id }
                         }
-                        .buttonStyle(.plain)
-                        .frame(
-                            minWidth: FloeTheme.minimumTarget,
-                            minHeight: FloeTheme.minimumTarget
-                        )
-                        .accessibilityLabel(
-                            String(localized: "composer.attachment.remove")
-                                + " " + attachment.displayName
-                        )
                     }
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 10)
-                    .background(FloeTheme.groupedSurface, in: Capsule())
                 }
             }
             .padding(.horizontal, 12)

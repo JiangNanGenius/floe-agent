@@ -1134,6 +1134,7 @@
 		70432DC29DB4E7AE0399F3A1 /* CADAnimationVersionedPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87C2B6C70E347F7EA6D7E56 /* CADAnimationVersionedPersistenceTests.swift */; };
 		70480066DC808EE0970F5AFB /* MediaPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */; };
 		70520C3ACCCC3D82B68A7023 /* NotesLinkedMindMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */; };
+		7076EE1653E57127C00D24BC /* ComposerResponsiveRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA35DA06CFE2EADBB045F1BA /* ComposerResponsiveRow.swift */; };
 		7079A8AFA6C15D7FA9444B42 /* ChemistryDeletionLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1274CE73C18F4D2BF4C2E4 /* ChemistryDeletionLifecycleTests.swift */; };
 		708D1DBA44A699E58A9D4653 /* FloeShellCoreUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9075F54CA5B24D6571AFA532 /* FloeShellCoreUtilities.swift */; };
 		709D846BD9E004FF961B6F54 /* BrowserImpeccableCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EB5FAE1713DCDB627A6D7B7 /* BrowserImpeccableCapture.swift */; };
@@ -4744,6 +4745,7 @@
 		FA10C86BFE59AEC295E48BBB /* DeepSeekNativeBoundaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekNativeBoundaryTests.swift; sourceTree = "<group>"; };
 		FA1A137DE48B6F79747B1D4E /* GameBuildToolReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameBuildToolReadiness.swift; sourceTree = "<group>"; };
 		FA1E027683B4CA470B7EF6E4 /* ToolboxLANHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolboxLANHistoryTests.swift; sourceTree = "<group>"; };
+		FA35DA06CFE2EADBB045F1BA /* ComposerResponsiveRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerResponsiveRow.swift; sourceTree = "<group>"; };
 		FA562161832C52CB9365B231 /* ImportDraftSynchronizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportDraftSynchronizationTests.swift; sourceTree = "<group>"; };
 		FAB44464D488A732056E8D96 /* ScreenShareGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShareGuideView.swift; sourceTree = "<group>"; };
 		FABCA410D5C974FC17755EB6 /* MediaV2ProviderAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaV2ProviderAdapter.swift; sourceTree = "<group>"; };
@@ -8330,6 +8332,7 @@
 			isa = PBXGroup;
 			children = (
 				3C0E5940DD8BE562FA25E8D7 /* AppearanceSettingsSection.swift */,
+				FA35DA06CFE2EADBB045F1BA /* ComposerResponsiveRow.swift */,
 				9C41B8992C84C7B27CF73906 /* ComposerReturnField.swift */,
 				75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */,
 				7CA592446735B5E2575A56E1 /* FloeWorkbenchProjectRow.swift */,
@@ -9536,6 +9539,7 @@
 				A1040B5981D1A1F0F7862FB6 /* ComposerDraftStore.swift in Sources */,
 				38A17C950D8EF61D31DAF79B /* ComposerEditingPrimitives.swift in Sources */,
 				158F08E0CBDEC368D1D41EBB /* ComposerFullEditorSheet.swift in Sources */,
+				7076EE1653E57127C00D24BC /* ComposerResponsiveRow.swift in Sources */,
 				F6CA0D4D3D58B0879F11B5E4 /* ComposerReturnField.swift in Sources */,
 				93B12CF22F16EA6A86F180A5 /* ContactsMediaSupport.swift in Sources */,
 				051EEB3A8F608B9F5C4B91BA /* ContactsReadService.swift in Sources */,

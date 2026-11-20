@@ -553,25 +553,31 @@ struct MacWorkspaceRootView: View {
             }
             if showsTask {
                 Button { showInspector.toggle() } label: {
-                    Label("mac.workspace.files", systemImage: "sidebar.trailing")
+                    FloeWorkbenchControlIcon(systemImage: "sidebar.trailing")
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 }
-                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
                 .help("mac.workspace.files")
+                .accessibilityLabel("mac.workspace.files")
                 .accessibilityIdentifier("workspace.files.toggle")
                 .accessibilityAddTraits(showInspector ? .isSelected : [])
             }
             if case .conversation = destination {
                 Button(action: findInActiveView) {
-                    Label("mac.workspace.findConversation", systemImage: "magnifyingglass")
+                    FloeWorkbenchControlIcon(systemImage: "magnifyingglass")
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 }
-                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
                 .help("mac.workspace.findConversation")
+                .accessibilityLabel("mac.workspace.findConversation")
                 .disabled(workspace.isLoadingHistory || destinationConversationID != workspace.selectedID)
                 Button(action: exportConversation) {
-                    Label("mac.workspace.exportChat", systemImage: "square.and.arrow.up")
+                    FloeWorkbenchControlIcon(systemImage: "square.and.arrow.up")
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 }
-                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
                 .help("mac.workspace.exportChat")
+                .accessibilityLabel("mac.workspace.exportChat")
                 .disabled(!canSelectTask || isExportingConversation || workspace.messages.isEmpty
                           || destinationConversationID != workspace.selectedID)
             }

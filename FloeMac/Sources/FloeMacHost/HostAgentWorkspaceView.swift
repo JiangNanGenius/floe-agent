@@ -229,19 +229,22 @@ struct HostAgentWorkspaceView: View {
                     .accessibilityIdentifier("mac.agent.goalCriterion")
                     .disabled(workspace.isSending || workspace.isTerminating)
             }
-            HStack {
+            ComposerResponsiveRow {
                 composerAttachments
+                    .composerResponsiveLeadingControl()
                 TextField("host.chat.prompt", text: draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(FloeTheme.Typography.body)
                     .lineLimit(2...7)
                     .accessibilityIdentifier("thread.composer.input")
                     .disabled(workspace.isSending || workspace.isTerminating)
+                    .composerResponsiveFieldSlot()
                 if workspace.isSending {
                     Button(action: workspace.stop) {
                         FloeComposerActionGlyph(systemImage: "stop.fill", enabled: workspace.canStop, destructive: true)
                     }
                     .buttonStyle(.plain)
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityLabel("host.chat.stop")
                     .disabled(!workspace.canStop)
                 } else {
@@ -256,6 +259,7 @@ struct HostAgentWorkspaceView: View {
                         FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSend)
                     }
                     .buttonStyle(.plain)
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityLabel("host.chat.send")
                     .accessibilityIdentifier("composer.send")
                     .keyboardShortcut(.return, modifiers: .command)
@@ -304,14 +308,13 @@ struct HostAgentWorkspaceView: View {
                 Button("mac.settings.images", systemImage: "photo.badge.plus", action: openImageWorkbench)
             }
         } label: {
-            Label("mac.workspace.attachFiles", systemImage: "paperclip")
-                .labelStyle(.iconOnly)
-                .foregroundStyle(Color.accentColor)
+            FloeWorkbenchControlIcon(systemImage: "paperclip")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .help("mac.workspace.attachFiles")
-        .frame(width: 30)
+        .accessibilityLabel("mac.workspace.attachFiles")
+        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
         .disabled(workspace.isSending || workspace.isTerminating)
     }
 
@@ -451,36 +454,22 @@ struct HostAgentWorkspaceView: View {
     }
 
     private var attachmentStrip: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 6) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
                 ForEach(workspace.stagedAttachments, id: \.id) { attachment in
                     let isImage = attachment.kind == .image
-                    HStack(spacing: 5) {
-                        Image(systemName: isImage ? "photo" : "doc")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(verbatim: attachment.displayName).lineLimit(1)
-                            if !isImage {
-                                let eligible = FloeMacSelfRuntime.canInlineTextDocument(
-                                    uti: attachment.uti, byteCount: attachment.byteCount)
-                                Text(LocalizedStringKey(eligible ? "mac.workspace.textAttachment" : "mac.workspace.attachmentReferenceOnly"))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Button {
-                            workspace.unstageAttachment(attachment.id)
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("mac.workspace.removeAttachment")
+                    let eligible = FloeMacSelfRuntime.canInlineTextDocument(uti: attachment.uti, byteCount: attachment.byteCount)
+                    let detail = Text(LocalizedStringKey(eligible ? "mac.workspace.textAttachment" : "mac.workspace.attachmentReferenceOnly"))
+                    FloeComposerAttachmentChip(name: attachment.displayName, systemImage: isImage ? "photo" : "doc",
+                                               detail: isImage ? nil : detail,
+                                               removeLabel: String(localized: "mac.workspace.removeAttachment")) {
+                        workspace.unstageAttachment(attachment.id)
                     }
-                    .font(.caption)
-                    .padding(6)
-                    .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 7))
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
         }
-        .scrollIndicators(.hidden)
         .disabled(workspace.isSending || workspace.isTerminating)
     }
 

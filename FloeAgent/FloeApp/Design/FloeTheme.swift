@@ -247,6 +247,44 @@ struct FloeThreadComposerChip: View {
     }
 }
 
+struct FloeWorkbenchControlIcon: View {
+    let systemImage: String
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.title3)
+            .foregroundStyle(FloeTheme.primary)
+    }
+}
+
+struct FloeComposerAttachmentChip: View {
+    let name: String
+    let systemImage: String
+    var detail: Text? = nil
+    let removeLabel: String
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: name).lineLimit(1)
+                if let detail { detail }
+            }
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel(removeLabel + " " + name)
+        }
+        .font(FloeTheme.Typography.metadata)
+        .foregroundStyle(.secondary)
+        .padding(.leading, 10)
+        .background(FloeTheme.groupedSurface, in: Capsule())
+    }
+}
+
 struct FloeComposerActionGlyph: View {
     let systemImage: String
     var enabled = true
