@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.1</title>
+      <pubDate>Fri, 20 Nov 2026 16:55:33 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.1</link>
+      <sparkle:version>31</sparkle:version>
+      <sparkle:shortVersionString>1.11.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>默认进入 Agent，每个会话有独立文件夹。支持本机命令、分级审批和 Kimi CU 后台窗口操作。 Start in Agent mode with conversation folders, native Mac commands, risk-based approvals, and background window control with Kimi CU.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.1/Floe-Agent-1.11.1.dmg" length="32446490" type="application/octet-stream" sparkle:edSignature="3RVFmWL85KvgOOWfPz3O7TQnGCvRvdE9vV/DxRhIPqsKkWsGbTmdMJPK1ZlBB3rNDnCxnrEoN6OgqxGQFq38Bg==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.0</title>
       <pubDate>Fri, 20 Nov 2026 15:41:25 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.0</link>
