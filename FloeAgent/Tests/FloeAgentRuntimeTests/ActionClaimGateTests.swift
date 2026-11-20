@@ -68,6 +68,20 @@ struct ActionClaimGateTests {
         #expect(directive == .requestCorrection)
     }
 
+    @Test("Starting a background child is not evidence of a completed mutation")
+    func backgroundDelegateIsNotMutationEvidence() throws {
+        let call = try TestFixtures.toolCall(id: "spawn", toolName: "delegate",
+            arguments: #"{"task":"edit","background":true}"#)
+        var ledger = HarnessExecutionLedger()
+        ledger.record(call: call, result: .init(callID: call.id, status: .ok,
+            outputSummary: "status=started", outputDigest: "started"), isSideEffecting: true)
+        let entry = try #require(ledger.entries.first)
+        #expect(!ledger.supportsMutationClaim(for: entry, replayedCalls: [call]))
+        let recovered = HarnessExecutionLedger(records: ledger.checkpointRecords())
+        let recoveredEntry = try #require(recovered.entries.first)
+        #expect(!recovered.supportsMutationClaim(for: recoveredEntry, replayedCalls: [call]))
+    }
+
     @Test("Recovered evidence needs actual matching arguments without changing replay records")
     func recoveredMixedActionEvidenceDoesNotGuessAMutation() throws {
         let inspect = try TestFixtures.toolCall(id:"inspect",toolName:"studio.run",

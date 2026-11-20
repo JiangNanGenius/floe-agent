@@ -7,7 +7,7 @@ import FloePersistence
 import GRDB
 
 enum FloeMacSelfSchemaGate {
-    static let maximumVersion = 63
+    static let maximumVersion = 65
     static let knownMigrations: Set<String> = Set((1...39).map { "v\($0)" }).union([
         "v40_execution_environments", "v41_conversation_purpose",
         "v42_media_job_owners", "v43_media_job_idempotency",
@@ -20,6 +20,7 @@ enum FloeMacSelfSchemaGate {
         "v58_task_execution_bindings", "v59_skill_configuration",
         "v60_execution_experiences", "v61_editor_assistant_ownership",
         "v62_model_reasoning_metadata", "v63_linux_cache_cleanup_tasks",
+        "v64_background_child_owners", "v65",
     ])
 
     static func validateBeforeMigration(_ database: DatabaseManager) async throws {

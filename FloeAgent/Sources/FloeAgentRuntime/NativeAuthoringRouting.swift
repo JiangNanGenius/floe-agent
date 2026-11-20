@@ -48,7 +48,7 @@ enum NativeAuthoringRouting {
     /// them as "new capabilities" would be noise.
     private static let helperNames: Set<String> = [
         ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name,
-        "delegate", "delegate.peers", "delegate.message"
+        "delegate", "delegate.wait", "delegate.peers", "delegate.message"
     ]
 
     /// The shared eligibility predicate for schema refresh and guidance. Uses

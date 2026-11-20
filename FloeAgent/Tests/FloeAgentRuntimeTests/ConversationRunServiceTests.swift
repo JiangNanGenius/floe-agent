@@ -16,6 +16,103 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.ConversationRunService")
 struct ConversationRunServiceTests {
 
+    @Test("A real browser ownership notice leaves runtime.wait suspended and reaches only its owner at the model boundary", .timeLimit(.minutes(1)))
+    func browserControlNoticeDoesNotInterruptRuntimeWait() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database)
+        let inputs = SQLiteRunningInputStore(database: database)
+        let owner = UUID(), runID = UUID(), noticeID = UUID()
+        try await conversations.saveConversation(.init(id: owner, title: "Control notice", createdAt: Date(), updatedAt: Date()))
+        let (entered, signal) = AsyncStream<Void>.makeStream()
+        let (resume, release) = AsyncStream<Void>.makeStream()
+        defer { release.finish() }
+        let time = AsyncLock(Date(timeIntervalSince1970: 1_800_000_000))
+        let clock = AgentWaitClock(now: { time.withLock { $0 } }, sleepUntil: { deadline in
+            signal.yield(())
+            for await _ in resume { break }
+            try Task.checkCancellation()
+            time.withLock { $0 = deadline }
+        })
+        let tool = try ToolCall(id: "hold-own-browser", toolName: AgentWaitTool.name,
+            argumentsJSON: Data(#"{"seconds":30}"#.utf8), scope: .local)
+        let registry = ToolRunnerRegistry()
+        registerAgentWaitTool(registry: registry)
+        let adapter = MockAdapter()
+        adapter.script = [[.toolRequest(tool), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "Wait completed.")), .completed(.init(stopReason: .endTurn))]]
+        let provider = TestFixtures.localhostProvider()
+        let checkpoints = MockCheckpointStore()
+        let service = ConversationRunService(configuration: .init(conversationID: owner, provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id), agentWaitClock: clock), adapter: adapter,
+            policy: AutomaticApprovalPolicy(), executor: CatalogToolExecutor(runners: registry),
+            checkpointStore: checkpoints, conversationStore: conversations,
+            runStore: SQLiteRunStore(database: database), runningInputStore: inputs, runID: runID)
+        let running = Task {
+            defer { signal.finish() }
+            try await service.start(goal: "Wait, then report.")
+        }
+        defer { running.cancel() }
+        var waiting = false
+        for await _ in entered { waiting = true; break }
+        try #require(waiting)
+
+        let notice = BrowserControlNotice.humanTookControl
+        try await conversations.appendMessage(.init(id: noticeID, conversationID: owner,
+            role: "system", content: notice.message, createdAt: Date(), parts: [
+                .init(messageID: noticeID, partIndex: 0, kind: .text, text: notice.message,
+                      metadata: [BrowserControlNotice.historyMarker: "1"])
+            ], runID: runID))
+        _ = try await inputs.enqueue(.init(id: noticeID, conversationID: owner, targetRunID: runID,
+            content: notice.message, mode: .steer, status: .promoting, executionMode: BrowserControlNotice.executionMode))
+        let steer = RuntimeSteerInput(id: noticeID, content: notice.message, origin: .browserControl(notice))
+        #expect(await service.steer(steer, expectedRunID: runID) == .accepted)
+        #expect(await service.steer(steer, expectedRunID: runID) == .alreadyAccepted)
+        #expect(adapter.requests.count == 1)
+        release.yield(())
+        try await running.value
+        let request = try #require(adapter.requests.last)
+        let result = try #require(request.toolResults.first(where: { $0.callID == tool.id }))
+        #expect(!result.output.isEmpty)
+        let waits = checkpoints.saved.flatMap { $0.runtimeWaits ?? [] }
+        let completedWait = waits.last { $0.owner.runID == runID && $0.owner.callID == tool.id && $0.receipt != nil }
+        let wait = try #require(completedWait)
+        let receipt = try #require(wait.receipt)
+        #expect(wait.owner.runID == runID && receipt.status == .completed && receipt.remainingSeconds == 0)
+        let delivered = request.messages.filter { $0.content == notice.message }
+        #expect(delivered.count == 1 && delivered.first?.role == "system")
+        #expect(try await inputs.input(id: noticeID)?.consumedRunID == runID)
+        #expect(try await conversations.messages(conversationID: owner).filter { $0.id == noticeID }.map(\.role) == ["system"])
+        #expect(try await ConversationHistoryAssembler(store: conversations).build(conversationID: owner)
+            .allSatisfy { $0.id != noticeID })
+    }
+
+    @Test("Recovering a native browser receipt preserves its run and excludes it from new user runs")
+    func browserControlNoticeKeepsItsExactRunThroughRecovery() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let owner = UUID(), runID = UUID(), other = UUID()
+        let conversations = SQLiteConversationStore(database: database)
+        try await conversations.saveConversation(.init(id: owner, title: "Browser ownership", createdAt: Date(), updatedAt: Date()))
+        let runs = SQLiteRunStore(database: database)
+        for run in [runID, other] {
+            try await runs.saveRun(.init(id: run, conversationID: owner, state: "streamingModel", goal: "Fixture", startedAt: Date()))
+        }
+        let inputs = SQLiteRunningInputStore(database: database)
+        let notice = try await inputs.enqueue(.init(conversationID: owner, targetRunID: runID,
+            content: BrowserControlNotice.returned.message, mode: .steer, executionMode: BrowserControlNotice.executionMode))
+        #expect(try await inputs.beginSteerPromotion(id: notice.id, expectedRunID: runID) != nil)
+        try await inputs.markSteerAccepted(id: notice.id, runID: runID)
+        try await inputs.recoverTransientInputs()
+        #expect(try await inputs.claimNextQueued(conversationID: owner) == nil)
+        #expect(try await inputs.beginSteerPromotion(id: notice.id, expectedRunID: other) == nil)
+        #expect(try await inputs.beginSteerPromotion(id: notice.id, expectedRunID: runID) != nil)
+        try await inputs.markConsumed(id: notice.id, runID: other)
+        try await inputs.restoreQueued(id: notice.id)
+        let row = try #require(try await inputs.input(id: notice.id))
+        #expect(row.status == .queued && row.mode == .steer && row.targetRunID == runID && row.consumedRunID == nil)
+    }
+
     @Test("An active Agent refreshes saved Soul and profile without changing retry requests", arguments: [false, true])
     func activeRunRefreshesPersonalization(retryFirst: Bool) async throws {
         let database = try DatabaseManager.inMemory()
@@ -114,6 +211,83 @@ struct ConversationRunServiceTests {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         return (SQLiteConversationStore(database: database), SQLiteRunStore(database: database))
+    }
+
+    enum WorkspaceReceiptCase: CaseIterable, Sendable {
+        case confirmed, missingLease, differentRoot, mountedTarget, failed, cancelled, unknown
+    }
+
+    @Test("Only the successful direct dispatch under the matching workspace lease is stamped",
+          arguments: WorkspaceReceiptCase.allCases)
+    func persistsWorkspaceOnlyForConfirmedLeaseDispatch(_ scenario: WorkspaceReceiptCase) async throws {
+        let (conversations, runs) = try await makeStores()
+        let owner = UUID(), workspace = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await conversations.saveConversation(.init(id: owner, title: "Receipt", createdAt: Date(), updatedAt: Date()))
+        let path = scenario == .mountedTarget ? "Mounts/external/draft.txt" : "draft.txt"
+        let arguments = try JSONEncoder().encode(["path": path, "content": "x"])
+        let call = try ToolCall(id: "save-file", toolName: "workspace.createFile", argumentsJSON: arguments, scope: .local)
+        let (status, reply): (ToolResult.Status, String) = switch scenario {
+        case .failed: (.failed, "The file write failed.")
+        case .cancelled: (.cancelled, "The file write was cancelled and was not completed.")
+        case .unknown: (.ok, "The file write is not verified.")
+        case .confirmed, .missingLease, .differentRoot, .mountedTarget: (.ok, "Recorded.")
+        }
+        let adapter = MockAdapter()
+        adapter.script = [[.toolRequest(call)], [.textDelta(.init(text: reply)), .completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = .init(name: call.toolName, riskLabels: [], isSideEffecting: true)
+        let summary = "created=\(path) bytes=1 sha256=\(FloeDigest.sha256Hex(Data("x".utf8)))"
+        executor.results = [.init(callID: call.id, status: status, outputSummary: summary,
+                                  outputDigest: FloeDigest.sha256Hex(Data(summary.utf8)), outcomeUnknown: scenario == .unknown)]
+        let binding: (id: UUID, root: URL)? = switch scenario {
+        case .missingLease: nil
+        case .differentRoot: (workspace, root.appendingPathComponent("another"))
+        default: (workspace, root)
+        }
+        let service = ConversationRunService(
+            configuration: .init(conversationID: owner, provider: TestFixtures.localhostProvider(),
+                                 model: TestFixtures.testModel(providerID: UUID()), workspaceRootURL: root),
+            adapter: adapter, policy: AutomaticApprovalPolicy(backend: RecordingApprovalBackend()), executor: executor,
+            conversationStore: conversations, runStore: runs, receiptWorkspace: binding)
+        try await service.start(goal: "Process the fixture")
+        #expect(adapter.requests.count == 2)
+        let run = try #require(try await runs.run(id: service.runID))
+        #expect(run.state == "completed" && run.endedAt != nil)
+        let events = try await runs.events(runID: service.runID)
+        let row = try #require(events.first { $0.kind == .toolResult })
+        let fields = try JSONDecoder().decode([String: String].self, from: Data(row.payloadJSON.utf8))
+        #expect(fields["id"] == call.id && fields["dispatched"] == "true")
+        #expect(fields["status"] == status.rawValue)
+        #expect(fields["workspaceID"] == (scenario == .confirmed ? workspace.uuidString : nil))
+        #expect(fields["outcomeUnknown"] == (scenario == .unknown ? "true" : nil))
+    }
+
+    @Test("Workspace receipt paths exclude mounts, ambiguous sources and non-file operations")
+    func fileReceiptScopeChecksBothOperands() throws {
+        func eligible(_ tool: String, _ arguments: [String: String], scope: ToolScope = .local) throws -> Bool {
+            let call = try ToolCall(id: "scope", toolName: tool, argumentsJSON: JSONEncoder().encode(arguments), scope: scope)
+            return ConversationRunService.targetsLeasedWorkspace(call)
+        }
+        for tool in ["workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile",
+                     "workspace.replaceText", "workspace.deleteFile", "workspace.publishOutput"] {
+            #expect(try eligible(tool, ["path": "drafts/file.txt"]))
+        }
+        for tool in ["workspace.copyFile", "workspace.moveFile"] {
+            #expect(try eligible(tool, ["from": "a", "to": "b"]))
+            #expect(try !eligible(tool, ["from": "Mounts/external/a", "to": "b"]))
+            #expect(try !eligible(tool, ["from": "a", "to": "Network/share/b"]))
+        }
+        for path in ["/tmp/draft", "../draft", "./Mounts/ext/draft", #"Network\share\draft"#] {
+            #expect(try !eligible("workspace.createFile", ["path": path]))
+        }
+        #expect(try !eligible("workspace.writeFile", ["path": "draft", "sourcePath": "Mounts/other/input"]))
+        #expect(try !eligible("workspace.readFile", ["path": "draft"]))
+        #expect(try !eligible("exec.shell", ["path": "draft"]))
+        #expect(try !eligible("workspace.createFile", ["path": "draft", "scope": "host"]))
+        #expect(try !eligible("workspace.createFile", ["path": "draft"], scope: .host(UUID())))
     }
 
     @Test("A Goal run reserves one revision and advances it only after durable completion")

@@ -31,6 +31,12 @@ actor FloeMacSelfSession {
     private let goal: String
     private let toolsEnabled: Bool
     private let boundary: FloeMacSelfTaskBoundary?
+    /// The one durable pending-input store the runtime consumes. Running
+    /// steers persist their row here exactly like the iPad composition.
+    private let runningInputStore: any RunningInputStore
+    /// The bound provider's model id, persisted on steer rows so a recovered
+    /// queued follow-up relaunches with the user's original model choice.
+    private let steerModelID: UUID?
     /// Exact durable attachments the prepared user turn must still carry when
     /// the run is re-checked immediately before dispatch.
     private let preparedAttachments: [AttachmentRef]
@@ -72,6 +78,8 @@ actor FloeMacSelfSession {
         toolsEnabled: Bool,
         boundary: FloeMacSelfTaskBoundary?,
         preparedAttachments: [AttachmentRef],
+        runningInputStore: any RunningInputStore,
+        steerModelID: UUID?,
         verifyPreparedInput: @escaping @Sendable (PersistedMessage) throws -> Void,
         verifyWorkspaceLease: (@Sendable () async throws -> Void)? = nil,
         eventBufferLimit: Int,
@@ -92,6 +100,8 @@ actor FloeMacSelfSession {
         self.toolsEnabled = toolsEnabled
         self.boundary = boundary
         self.preparedAttachments = preparedAttachments
+        self.runningInputStore = runningInputStore
+        self.steerModelID = steerModelID
         self.verifyPreparedInput = verifyPreparedInput
         self.verifyWorkspaceLease = verifyWorkspaceLease
         self.beforeInputRecheck = beforeInputRecheck
@@ -381,6 +391,174 @@ actor FloeMacSelfSession {
         return accepted ? .accepted : .notPending
     }
 
+    // MARK: - Running steer (iPad-style user guidance)
+
+    /// Classifies one durable steer row already bound to this input id. A
+    /// replayed id must never re-submit: consumed/steerPending rows answer
+    /// from durable truth, cancelled rows stay unaccepted, and only
+    /// queued/promoting rows may continue toward the runtime.
+    private enum SteerRowDecision: Sendable {
+        case answer(Bool)
+        case proceed
+    }
+
+    private func classifySteerRow(
+        _ existing: PendingUserInput,
+        trimmedText: String
+    ) throws -> SteerRowDecision {
+        guard existing.conversationID == identity.conversationID else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "steer input identity is already bound to another conversation"
+            )
+        }
+        guard existing.content == trimmedText else {
+            throw FloeMacSelfCoreError.invalidRequest(
+                "steer input identity is already bound to different content"
+            )
+        }
+        switch existing.status {
+        case .consumed:
+            // Idempotent replay of guidance this exact run already ate.
+            return .answer(existing.consumedRunID == identity.runID)
+        case .steerPending:
+            // Already accepted by this exact run; the runtime owns the rest.
+            return .answer(existing.targetRunID == identity.runID)
+        case .cancelled:
+            return .answer(false)
+        case .queued, .promoting:
+            return .proceed
+        }
+    }
+
+    /// Submits user text guidance to this exact live run. Returns true exactly
+    /// when the runtime accepted the guidance; the durable pending row then
+    /// mirrors the iPad lifecycle (queued -> promoting -> steerPending, and
+    /// `consumed` once the runtime copies it into model context; on a
+    /// confirmed terminal the row is restored to `queued` so the host can
+    /// recover it). Returns false — leaving the text recoverable — when the
+    /// target is stale, stopped, ended, or the runtime rejected it. Throws
+    /// only for invalid input or unavailable persistence.
+    ///
+    /// `executionMode` is persisted on the row for host queue recovery; the
+    /// host supplies the run mode raw value so chat never becomes `agent`,
+    /// and nil falls back to this session's conversation mode.
+    func steer(
+        text: String,
+        inputID: UUID,
+        executionMode: String? = nil
+    ) async throws -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw FloeMacSelfCoreError.invalidRequest("steer text must not be empty")
+        }
+        guard !trimmed.utf8.contains(0) else {
+            throw FloeMacSelfCoreError.invalidRequest("steer text must not contain NUL")
+        }
+        guard trimmed.utf8.count <= FloeMacSelfRequestValidator.maximumGoalBytes else {
+            throw FloeMacSelfCoreError.invalidRequest("steer text exceeds the bounded message size")
+        }
+        let resolvedExecutionMode: String
+        if let executionMode {
+            let mode = executionMode.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !mode.isEmpty, !mode.utf8.contains(0), mode.utf8.count <= 64 else {
+                throw FloeMacSelfCoreError.invalidRequest("steer execution mode is invalid")
+            }
+            resolvedExecutionMode = mode
+        } else {
+            resolvedExecutionMode = identity.conversationMode.rawValue
+        }
+        guard !tornDown, !runFinished, !fence.isStopRequested else { return false }
+        // Serialize against stop/settlement exactly like an approval decision:
+        // a stop recorded during any await below invalidates the token.
+        guard let token = fence.beginSteerDecision() else { return false }
+
+        // Replaying the same input id must never duplicate a durable row.
+        let existing: PendingUserInput?
+        do {
+            existing = try await runningInputStore.input(id: inputID)
+        } catch {
+            throw FloeMacSelfCoreError.persistenceUnavailable(
+                FloeMacSelfErrorIdentity.render(error)
+            )
+        }
+        if let existing {
+            switch try classifySteerRow(existing, trimmedText: trimmed) {
+            case .answer(let value):
+                return value
+            case .proceed:
+                break
+            }
+        } else {
+            do {
+                _ = try await runningInputStore.enqueue(PendingUserInput(
+                    id: inputID,
+                    conversationID: identity.conversationID,
+                    content: trimmed,
+                    mode: .queue,
+                    status: .queued,
+                    selectedModelID: steerModelID,
+                    workspaceID: identity.workspaceID,
+                    executionMode: resolvedExecutionMode
+                ))
+            } catch {
+                throw FloeMacSelfCoreError.persistenceUnavailable(
+                    FloeMacSelfErrorIdentity.render(error)
+                )
+            }
+        }
+
+        // Mirror the iPad promotion before touching the runtime. A nil result
+        // means the row lost its queued state concurrently: re-read it and
+        // answer from durable truth instead of risking a double submission.
+        do {
+            let promoted = try await runningInputStore.beginSteerPromotion(
+                id: inputID, expectedRunID: identity.runID
+            )
+            if promoted == nil {
+                guard let reread = try await runningInputStore.input(id: inputID) else {
+                    // The row vanished between read and promotion; refuse
+                    // rather than steer without a durable pending row.
+                    return false
+                }
+                switch try classifySteerRow(reread, trimmedText: trimmed) {
+                case .answer(let value):
+                    return value
+                case .proceed:
+                    // A queued row that cannot be promoted is an inconsistent
+                    // race; refuse the submission without touching the runtime.
+                    return false
+                }
+            }
+        } catch {
+            throw FloeMacSelfCoreError.persistenceUnavailable(
+                FloeMacSelfErrorIdentity.render(error)
+            )
+        }
+
+        // No suspension between this final check and the runtime hand-off.
+        guard fence.validateSteerDecision(token), !runFinished, !tornDown else {
+            try? await runningInputStore.restoreQueued(id: inputID)
+            return false
+        }
+        let acceptance = await service.steer(
+            RuntimeSteerInput(id: inputID, content: trimmed, createdAt: Date()),
+            expectedRunID: identity.runID
+        )
+        switch acceptance {
+        case .accepted, .alreadyAccepted:
+            // A failed intermediate write only loses the steerPending snapshot;
+            // consumption (or crash recovery) still resolves the row, and the
+            // runtime already owns the guidance, so this stays accepted.
+            try? await runningInputStore.markSteerAccepted(id: inputID, runID: identity.runID)
+            return true
+        case .rejected:
+            // Unaccepted: keep the text recoverable exactly like the iPad
+            // restoreQueued path; nothing enters the transcript.
+            try? await runningInputStore.restoreQueued(id: inputID)
+            return false
+        }
+    }
+
     // MARK: - Cancellation and termination
 
     func cancelAndWait(timeout: TimeInterval) async -> FloeMacSelfCancelReceipt {
@@ -624,6 +802,16 @@ actor FloeMacSelfSession {
         let receipt = await probeTerminalWithBoundedRetry(timeout: 1.5)
         terminalReceipt = receipt
 
+        // Same-session recovery, exactly like the iPad restoreQueued contract:
+        // once the terminal is strictly confirmed, running guidance this run
+        // never consumed returns to the durable queue bound to this
+        // conversation (Goal rows keep their original run id) so the host can
+        // offer it again. An unconfirmed terminal never rewrites these rows;
+        // bootstrap's recoverTransientInputs() is the durable backstop.
+        if receipt.confirmed {
+            await restoreUnconsumedSteerRows()
+        }
+
         // The settlement write never upgrades an unknown run to confirmed:
         // it only records the already-proven receipt. If it fails, the row
         // stays unresolved and a later admission still re-probes the run.
@@ -666,6 +854,27 @@ actor FloeMacSelfSession {
     }
 
     // MARK: - Waiting helpers (real state only, bounded)
+
+    /// Restores this conversation's steer rows still bound to this run in a
+    /// transient state back to `queued` through the existing restoreQueued
+    /// contract (which preserves the original run id for Goal-mode rows).
+    /// Runs only after a strictly confirmed terminal; a sweep failure never
+    /// changes the terminal outcome.
+    private func restoreUnconsumedSteerRows() async {
+        do {
+            let pending = try await runningInputStore.pending(
+                conversationID: identity.conversationID
+            )
+            for row in pending where row.targetRunID == identity.runID
+                && row.consumedRunID == nil
+                && (row.status == .promoting || row.status == .steerPending) {
+                try await runningInputStore.restoreQueued(id: row.id)
+            }
+        } catch {
+            // Best-effort same-session recovery only; the durable admission
+            // and terminal receipts above remain the authority.
+        }
+    }
 
     /// Re-reads the durable terminal proof for a short bounded window while
     /// the runtime may still be committing its final answer/terminal record.

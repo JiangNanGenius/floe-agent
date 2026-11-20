@@ -15,15 +15,19 @@ struct HostAgentWorkspaceView: View {
     var workspaceDraft: Binding<String>? = nil
     var openModelSettings: (() -> Void)? = nil
     var openFiles: (() -> Void)? = nil
+    var chooseTaskProject: (() -> Void)? = nil
     var openImageWorkbench: (() -> Void)? = nil
     var findRequest: UUID? = nil
     var findConversationID: UUID? = nil
     @State private var standaloneDraft = ""
     #if FLOE_UNIFIED_MAC
     @StateObject private var search: MacConversationSearchModel
+    @FocusState private var promptFocused: Bool
+    @State private var attachmentSelection: UUID?
     @State private var choosingAttachments = false
     @State private var showAttachmentError = false
     @State private var criterion = ""
+    @State private var goalToEdit: ConversationGoal?
     @State private var goalForConfirmation: ConversationGoal?
     @State private var hiddenPlanConfirmations: Set<ThreadPlanConfirmationPresentationKey> = []
     private var mode: HostAgentMode { workspace.composerMode }
@@ -33,12 +37,13 @@ struct HostAgentWorkspaceView: View {
 
     init(workspace: HostAgentWorkspace, workspaceDraft: Binding<String>? = nil,
          openModelSettings: (() -> Void)? = nil, openFiles: (() -> Void)? = nil,
-         openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
+         chooseTaskProject: (() -> Void)? = nil, openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
          findConversationID: UUID? = nil) {
         self.workspace = workspace
         self.workspaceDraft = workspaceDraft
         self.openModelSettings = openModelSettings
         self.openFiles = openFiles
+        self.chooseTaskProject = chooseTaskProject
         self.openImageWorkbench = openImageWorkbench
         self.findRequest = findRequest
         self.findConversationID = findConversationID
@@ -117,13 +122,49 @@ struct HostAgentWorkspaceView: View {
                 }
                 pendingPlanReview
                 if let goal = workspace.goal { goalCard(goal) }
+                if let id = workspace.selectedID, let inputs = workspace.queuedInputs[id], !inputs.isEmpty {
+                    DisclosureGroup {
+                        ForEach(inputs) { input in
+                            HStack {
+                                Text(verbatim: input.content).lineLimit(2).textSelection(.enabled)
+                                Spacer()
+                                if let text = CredentialMessagePart.clipboardText(input.content) {
+                                    ChatMessageCopyButton(text: text)
+                                }
+                                Button("mac.agent.removeQueued", systemImage: "xmark") {
+                                    Task { await workspace.cancelQueued(input) }
+                                }
+                                .labelStyle(.iconOnly)
+                            }
+                        }
+                        if !workspace.isSending {
+                            Button("mac.agent.sendNextQueued") { Task { await workspace.startNextQueued(id) } }
+                        }
+                    } label: { Label { Text("mac.agent.queueCount \(inputs.count)") } icon: { Image(systemName: "text.badge.plus") } }
+                    .font(.callout).padding(.horizontal, 18)
+                }
+                if let steer = workspace.lastSteer {
+                    Label {
+                        Text(verbatim: String(localized: "mac.agent.steerSent") + " · " + steer)
+                            .lineLimit(1).help(steer)
+                    } icon: { Image(systemName: "arrow.turn.up.right") }
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
+                }
                 conversation
                 if let failed = workspace.failedUserMessage,
-                   let text = CredentialMessagePart.clipboardText(failed.content), !workspace.isSending {
+                   CredentialMessagePart.clipboardText(failed.content) != nil, !workspace.isSending {
                     Button("mac.agent.editFailedPrompt") {
-                        draft.wrappedValue = text
+                        let binding = draft
+                        Task {
+                            await workspace.editFailedInput(failed) { text in
+                                guard binding.wrappedValue.isEmpty else { return false }
+                                binding.wrappedValue = text
+                                promptFocused = true
+                                return true
+                            }
+                        }
                     }
-                    .disabled(!draft.wrappedValue.isEmpty)
+                    .disabled(!draft.wrappedValue.isEmpty || !workspace.stagedAttachments.isEmpty)
                     .padding(.horizontal, 16)
                 }
                 composer
@@ -170,16 +211,25 @@ struct HostAgentWorkspaceView: View {
             if let text, draft.wrappedValue.isEmpty { draft.wrappedValue = text }
         }
         .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            defer { attachmentSelection = nil }
+            guard attachmentSelection == workspace.draftSelectionID, !workspace.isSending,
+                  !workspace.isTerminating else { return }
             switch result {
             case .success(let urls):
                 let accepted = workspace.stageAttachments(urls)
-                showAttachmentError = !urls.isEmpty && accepted.isEmpty
-            case .failure:
-                showAttachmentError = true
+                showAttachmentError = accepted.count < urls.count
+            case .failure(let error):
+                showAttachmentError = (error as NSError).code != NSUserCancelledError
             }
         }
         .alert("mac.workspace.attachFailed", isPresented: $showAttachmentError) {
             Button("OK", role: .cancel) {}
+        }
+        .sheet(item: $goalToEdit) { goal in
+            GoalBuilderSheet(goal: goal, errorMessage: workspace.notice) { objective, criteria, blockers, stops in
+                await workspace.editGoal(goal, objective: objective, criteria: criteria, blockers: blockers, stops: stops)
+            }
+            .frame(minWidth: 420, idealWidth: 520, minHeight: 420, idealHeight: 580)
         }
         .sheet(item: $goalForConfirmation) { goal in
             MacGoalConfirmationView(goal: goal) { steps, criteria in
@@ -218,13 +268,30 @@ struct HostAgentWorkspaceView: View {
     }
 
     #if FLOE_UNIFIED_MAC
+    private var needsProject: Bool {
+        guard mode == .plan || mode == .agent else { return false }
+        if workspace.selectedID == nil { return workspace.selectedWorkspaceID == nil }
+        return workspace.selectedConversationWorkspace?.kind != .project
+    }
+
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 5) {
+            if !workspace.isSending {
+                if needsProject, let chooseTaskProject {
+                    Button("mac.workspace.chooseProject", systemImage: "folder.badge.plus", action: chooseTaskProject)
+                        .help("mac.agent.projectRequired")
+                        .controlSize(.small)
+                } else if mode != .chat, let provider = workspace.composerProvider,
+                          !provider.model.capabilities.contains(.tools) {
+                    Text("mac.agent.toolsModelRequired").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if !workspace.stagedAttachments.isEmpty {
                 attachmentStrip
             }
             if mode == .goal, workspace.goal?.status.isTerminal != false {
-                TextField("mac.agent.goalCriterion", text: $criterion)
+                TextField("mac.agent.goalCriterionHint", text: $criterion, axis: .vertical)
+                    .lineLimit(1...3)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("mac.agent.goalCriterion")
                     .disabled(workspace.isSending || workspace.isTerminating)
@@ -232,14 +299,41 @@ struct HostAgentWorkspaceView: View {
             ComposerResponsiveRow {
                 composerAttachments
                     .composerResponsiveLeadingControl()
-                TextField("host.chat.prompt", text: draft, axis: .vertical)
+                TextField(LocalizedStringKey(workspace.isSending ? (workspace.runningInputMode == .steer ? "mac.agent.steerPrompt" : "mac.agent.queuePrompt") : "host.chat.prompt"), text: draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(FloeTheme.Typography.body)
-                    .lineLimit(2...7)
+                    .focused($promptFocused)
+                    .onChange(of: workspace.draftSelectionID, initial: true) {
+                        if workspace.selectedID == nil { promptFocused = true }
+                    }
+                    .lineLimit(1...7)
+                    .frame(minHeight: FloeTheme.minimumTarget)
                     .accessibilityIdentifier("thread.composer.input")
-                    .disabled(workspace.isSending || workspace.isTerminating)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { workspace.smokePromptFrame = $0 })
+                    #endif
+                    .disabled(workspace.isTerminating || (workspace.isSending && workspace.selectedID == nil))
                     .composerResponsiveFieldSlot()
                 if workspace.isSending {
+                    Button {
+                        let binding = draft
+                        let text = binding.wrappedValue
+                        let clear = { if binding.wrappedValue == text { binding.wrappedValue = "" } }
+                        if workspace.runningInputMode == .steer { workspace.steer(text, onAccepted: clear) }
+                        else { workspace.enqueue(text, onAccepted: clear) }
+                    } label: {
+                        let steering = workspace.runningInputMode == .steer
+                        Label(LocalizedStringKey(steering ? "chat.thread_composer_view.steer_the_current_run" : "chat.thread_composer_view.add_to_message_queue"),
+                              systemImage: steering ? "arrow.turn.up.right" : "text.badge.plus")
+                            .labelStyle(.iconOnly)
+                    }
+                    .controlSize(.small)
+                    .disabled(!workspace.canSteer || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .accessibilityIdentifier("composer.running.send")
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { workspace.smokeSteerFrame = $0 })
+                    #endif
                     Button(action: workspace.stop) {
                         FloeComposerActionGlyph(systemImage: "stop.fill", enabled: workspace.canStop, destructive: true)
                     }
@@ -248,13 +342,13 @@ struct HostAgentWorkspaceView: View {
                     .accessibilityLabel("host.chat.stop")
                     .disabled(!workspace.canStop)
                 } else {
-                    let needsCriterion = mode == .goal && workspace.goal?.status.isTerminal != false
-                    let canSend = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let isNewGoal = mode == .goal && workspace.goal?.status.isTerminal != false
+                    let compatible = mode == .chat || workspace.composerProvider?.model.capabilities.contains(.tools) == true
+                    let canSend = workspace.composerProvider != nil && compatible && !needsProject && !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         && !workspace.isTerminating && !workspace.isAcceptingPlan
-                        && (!needsCriterion || !criterion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button {
                         let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
-                        submitDraft(workspaceID: project, mode: mode, criterion: needsCriterion ? criterion : "")
+                        submitDraft(workspaceID: project, mode: mode, criterion: isNewGoal ? criterion : "")
                     } label: {
                         FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSend)
                     }
@@ -268,42 +362,64 @@ struct HostAgentWorkspaceView: View {
             }
             if let openModelSettings {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        modelControl(openSettings: openModelSettings)
-                        if let openFiles {
-                            if let owner = workspace.selectedConversationWorkspace, owner.kind == .project {
-                                Button(action: openFiles) {
-                                    FloeThreadComposerChip(title: Text(verbatim: owner.name), systemImage: "folder")
-                                }
-                                .buttonStyle(.plain)
-                                .help("mac.workspace.browseFiles")
-                            } else if workspace.selectedID == nil {
-                                projectControl(openFiles: openFiles)
-                            }
-                        }
-                        modeControl
+                    HStack(spacing: 8) {
+                        composerContext(openModelSettings).disabled(workspace.isSending)
+                        modeControl.disabled(workspace.isSending)
+                        if workspace.isSending { runningInputControl }
                     }
                 }
                 .padding(.leading, 4)
-                .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
+                .disabled(workspace.isTerminating || workspace.isAcceptingPlan)
             }
         }
-        .padding(12)
+        .padding(8)
         .modifier(FloeThreadComposerChrome())
         .dropDestination(for: URL.self) { urls, _ in
             guard workspace.selectedID == findConversationID, !workspace.isSending,
                   !workspace.isTerminating, !workspace.isLoadingHistory else { return false }
             return !workspace.stageAttachments(urls.filter(\.isFileURL)).isEmpty
         }
-        .frame(maxWidth: 720)
-        .padding(.horizontal, 14)
-        .padding(.bottom, 12)
+        .frame(maxWidth: 824)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 3)
         .frame(maxWidth: .infinity)
+    }
+
+    private var runningInputControl: some View {
+        FloeComposerRunningInputMenu(queue: Binding(get: { workspace.runningInputMode == .queue },
+                                                   set: { workspace.runningInputMode = $0 ? .queue : .steer }))
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityIdentifier("composer.runningInputMode")
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { workspace.smokeRunningModeFrame = $0 })
+        #endif
+    }
+
+    private func composerContext(_ openModelSettings: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            modelControl(openSettings: openModelSettings).fixedSize()
+            if mode != .chat, let openFiles {
+                if let owner = workspace.selectedConversationWorkspace, owner.kind == .project {
+                    Button(action: openFiles) {
+                        FloeThreadComposerChip(title: Text(verbatim: owner.name), systemImage: "folder")
+                    }
+                    .buttonStyle(.plain)
+                    .help("mac.workspace.browseFiles")
+                } else if workspace.selectedID == nil {
+                    projectControl(openFiles: openFiles)
+                }
+            }
+        }
     }
 
     private var composerAttachments: some View {
         Menu {
-            Button("mac.workspace.attachFiles", systemImage: "paperclip") { choosingAttachments = true }
+            Button("mac.workspace.attachFiles", systemImage: "paperclip") {
+                attachmentSelection = workspace.draftSelectionID
+                choosingAttachments = true
+            }
             if let openImageWorkbench {
                 Button("mac.settings.images", systemImage: "photo.badge.plus", action: openImageWorkbench)
             }
@@ -320,10 +436,23 @@ struct HostAgentWorkspaceView: View {
 
     @ViewBuilder
     private var pendingPlanReview: some View {
-        if let plan = workspace.plan, plan.awaitsConfirmation,
-           !hiddenPlanConfirmations.contains(.init(plan)) {
-            planReview(for: plan)
-                .id(ThreadPlanConfirmationPresentationKey(plan))
+        if let plan = workspace.plan, plan.awaitsConfirmation {
+            let key = ThreadPlanConfirmationPresentationKey(plan)
+            if hiddenPlanConfirmations.contains(key) {
+                Button {
+                    hiddenPlanConfirmations.remove(key)
+                } label: {
+                    Label("mac.agent.reopenPlan", systemImage: "list.bullet.clipboard")
+                }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 14)
+                .accessibilityIdentifier("thread.plan.reopen")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { workspace.smokeReopenPlanFrame = $0 })
+                #endif
+            } else {
+                planReview(for: plan).id(key)
+            }
         }
     }
 
@@ -334,6 +463,7 @@ struct HostAgentWorkspaceView: View {
             Task { await workspace.confirmAndRunPlan(plan, as: execution) }
         }
         #if FLOE_MAC_HOST_SMOKE
+        review.onCloseFrame = { frame in workspace.smokeClosePlanFrame = frame }
         review.onNormalActionFrame = { frame in workspace.smokePlanExecuteFrame = frame }
         #endif
         return review
@@ -346,11 +476,28 @@ struct HostAgentWorkspaceView: View {
     }
 
     private func goalCard(_ goal: ConversationGoal) -> some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Label("mac.agent.goalStatus", systemImage: "scope").font(.callout.weight(.semibold))
+                Text(LocalizedStringKey("mac.agent.goal.\(goal.status.rawValue)"))
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if workspace.canConfirmGoal(goal) {
+                    Button("mac.agent.confirmGoal", systemImage: "checkmark") { goalForConfirmation = goal }
+                        .accessibilityIdentifier("mac.agent.goal.confirm")
+                }
+                if workspace.canContinueGoal(goal) {
+                    Button("mac.agent.continueGoal", systemImage: "play") { workspace.continueGoal(goal) }
+                        .accessibilityIdentifier("mac.agent.goal.continue")
+                } else if workspace.canPauseGoal(goal) {
+                    Button("mac.agent.pauseGoal", systemImage: "pause") { Task { await workspace.pauseGoal(goal) } }
+                        .accessibilityIdentifier("mac.agent.goal.pause")
+                }
+            }
+            Text(verbatim: goal.objective).lineLimit(2).help(goal.objective)
+            DisclosureGroup("mac.agent.goalCriteria") {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(verbatim: goal.objective)
                         ForEach(goal.acceptanceCriteria) { criterion in
                             Label {
                                 Text(verbatim: criterion.text)
@@ -370,49 +517,31 @@ struct HostAgentWorkspaceView: View {
                     .textSelection(.enabled)
                 }
                 .frame(maxHeight: 160)
-                HStack(spacing: 8) {
-                    if workspace.canConfirmGoal(goal) {
-                        Button("mac.agent.confirmGoal", systemImage: "checkmark") { goalForConfirmation = goal }
-                            .accessibilityIdentifier("mac.agent.goal.confirm")
-                    }
-                    if workspace.canContinueGoal(goal) {
-                        Button("mac.agent.continueGoal", systemImage: "play") { workspace.continueGoal(goal) }
-                            .accessibilityIdentifier("mac.agent.goal.continue")
-                    } else if workspace.canPauseGoal(goal) {
-                        Button("mac.agent.pauseGoal", systemImage: "pause") { Task { await workspace.pauseGoal(goal) } }
-                            .accessibilityIdentifier("mac.agent.goal.pause")
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                Label("mac.agent.goalStatus", systemImage: "scope")
-                Spacer()
-                Text(LocalizedStringKey("mac.agent.goal.\(goal.status.rawValue)")).foregroundStyle(.secondary)
             }
         }
+        .controlSize(.small)
         .modifier(HostTaskCardChrome())
         .accessibilityIdentifier("mac.agent.goalCard")
     }
 
+    private var editableGoal: ConversationGoal? {
+        guard let goal = workspace.goal, !goal.status.isTerminal else { return nil }
+        return goal
+    }
+
     private var modeControl: some View {
-        Menu {
-            ForEach(HostAgentMode.allCases, id: \.self) { choice in
-                Button { workspace.composerMode = choice } label: {
-                    if choice == mode {
-                        Label(choice.title, systemImage: "checkmark")
-                    } else {
-                        Label(choice.title, systemImage: choice.symbol)
-                    }
-                }
-            }
-        } label: {
-            FloeThreadComposerChip(title: Text(mode.title), systemImage: mode.symbol)
-        }
+        FloeComposerModeMenu(modes: HostAgentMode.allCases,
+                             selection: Binding(get: { mode }, set: { workspace.composerMode = $0 }),
+                             title: { $0.title }, symbol: { $0.symbol },
+                             editGoalTitle: String(localized: "mac.agent.editGoal"),
+                             editGoal: editableGoal.map { goal in { goalToEdit = goal } }, goal: .goal)
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityIdentifier("mac.composer.mode")
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { workspace.smokeModeFrame = $0 })
+        #endif
     }
 
     private func toolActivityCard(_ activity: [HostAgentToolActivity]) -> some View {
@@ -446,6 +575,7 @@ struct HostAgentWorkspaceView: View {
         switch state {
         case "pending": "mac.run.tool.waiting"
         case "running": "mac.run.tool.running"
+        case "settling": "mac.run.tool.settling"
         case "ok": "mac.run.tool.done"
         case "denied": "mac.run.tool.denied"
         case "cancelled": "mac.run.tool.cancelled"
@@ -508,22 +638,29 @@ struct HostAgentWorkspaceView: View {
             .buttonStyle(.plain)
         } else {
             Menu {
-                ForEach(workspace.providers, id: \.profile.id) { provider in
-                    Button {
-                        workspace.selectComposerProvider(provider.profile.id)
-                    } label: {
-                        if provider.profile.id == workspace.composerProvider?.profile.id {
-                            Label(provider.displayTitle, systemImage: "checkmark")
-                        } else {
-                            Text(verbatim: provider.displayTitle)
+                let groups = Dictionary(grouping: workspace.providers) {
+                    $0.profile.displayName ?? $0.profile.baseURL.host ?? $0.displayTitle
+                }
+                ForEach(groups.keys.sorted(), id: \.self) { name in
+                    Section {
+                        ForEach(groups[name] ?? [], id: \.profile.id) { provider in
+                            Button {
+                                workspace.selectComposerProvider(provider.profile.id)
+                            } label: {
+                                if provider.profile.id == workspace.composerProvider?.profile.id {
+                                    Label(provider.model.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(verbatim: provider.model.displayName)
+                                }
+                            }
                         }
-                    }
+                    } header: { Text(verbatim: name) }
                 }
                 Divider()
                 Button("host.chat.provider", action: openSettings)
             } label: {
                 FloeThreadComposerChip(
-                    title: Text(verbatim: workspace.composerProvider?.displayTitle ?? String(localized: "host.chat.provider")),
+                    title: Text(verbatim: workspace.composerProvider?.model.displayName ?? String(localized: "host.chat.provider")),
                     systemImage: "cpu"
                 )
             }
@@ -538,12 +675,19 @@ struct HostAgentWorkspaceView: View {
             ScrollViewReader { scroll in
                 ScrollView {
                     if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
-                        FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
-                            Text("home.welcome")
+                        VStack(spacing: 12) {
+                            FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
+                                Text(mode.prompt)
+                            }
+                            if workspace.composerProvider == nil, let openModelSettings {
+                                Button("host.chat.provider", action: openModelSettings)
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                            }
                         }
-                        .frame(maxWidth: .infinity, minHeight: max(240, proxy.size.height))
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height)
                     } else {
-                        LazyVStack(alignment: .leading, spacing: 16) {
+                        LazyVStack(alignment: .leading, spacing: 10) {
                             earlierHistoryButton(scroll)
                             ForEach(workspace.messages) { message in
                                 VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
@@ -597,9 +741,10 @@ struct HostAgentWorkspaceView: View {
                                 MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
                             }
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 16)
-                        .frame(maxWidth: 760)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: 824)
+                        .padding(.horizontal, 6)
                         .frame(maxWidth: .infinity)
                     }
                 }
@@ -734,8 +879,8 @@ private struct HostTaskCardChrome: ViewModifier {
         content
             .padding(12)
             .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 12))
-            .frame(maxWidth: 720)
-            .padding(.horizontal, 14)
+            .frame(maxWidth: 800)
+            .padding(.horizontal, 18)
             .frame(maxWidth: .infinity)
     }
 }
@@ -750,12 +895,21 @@ extension HostAgentMode {
         }
     }
 
+    var prompt: LocalizedStringKey {
+        switch self {
+        case .chat: "mac.chat.welcome"
+        case .plan: "mac.plan.welcome"
+        case .goal: "mac.goal.welcome"
+        case .agent: "home.welcome"
+        }
+    }
+
     var symbol: String {
         switch self {
-        case .chat: "bubble.left"
-        case .agent: "bolt"
+        case .chat: "text.bubble"
+        case .agent: "wand.and.sparkles"
         case .plan: "list.bullet.clipboard"
-        case .goal: "scope"
+        case .goal: "target"
         }
     }
 }

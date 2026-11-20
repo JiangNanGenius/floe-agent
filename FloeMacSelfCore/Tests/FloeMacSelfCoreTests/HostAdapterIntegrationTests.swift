@@ -13,13 +13,51 @@ import FloeModels
 import FloeProviders
 import FloeTools
 import FloeSecurity
-import FloePersistence
+@testable import FloePersistence
 import FloeAgentRuntime
 import GRDB
 @testable import FloeMacSelfCore
 
 @Suite("Mac self-core host provenance adapter")
 struct HostAdapterIntegrationTests {
+
+    @Test("Opening a 1.10.7 database preserves the original conversation and message")
+    func migrateMacHistoryFromVersion63() async throws {
+        try await withSelfCoreTempDirectory { root in
+            let databaseURL = root.appendingPathComponent("previous.sqlite")
+            let conversationID = UUID()
+            let messageID = UUID()
+            try Self.seedVersion63(databaseURL, conversationID: conversationID, messageID: messageID)
+            let runtime = try FloeMacSelfRuntime(
+                databaseURL: databaseURL, owner: .init(displayName: "MigrationFixture"),
+                provenance: try makeHostProvenance(databaseURL: databaseURL)
+            )
+            let receipt = try await runtime.bootstrap()
+            #expect(receipt.schemaVersion == 65)
+            let messages = try await runtime.conversationMessages(conversationID: conversationID)
+            #expect(messages.map(\.id) == [messageID])
+            #expect(messages.first?.content == "Saved before the update.")
+            _ = try await runtime.shutdown(cancelActive: false)
+        }
+    }
+
+    private static func seedVersion63(_ url: URL, conversationID: UUID, messageID: UUID) throws {
+        let database = try DatabaseQueue(path: url.path)
+        var migrations = DatabaseMigrator()
+        DatabaseManager.registerMigrations(into: &migrations)
+        try migrations.migrate(database, upTo: "v63_linux_cache_cleanup_tasks")
+        try database.write { db in
+            let date = PersistenceCodec.encode(Date())
+            try db.execute(sql: """
+                INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, 'Existing task', ?, ?)
+                """, arguments: [conversationID.uuidString, date, date])
+            try db.execute(sql: """
+                INSERT INTO messages (id, conversation_id, role, content, created_at)
+                VALUES (?, ?, 'user', 'Saved before the update.', ?)
+                """, arguments: [messageID.uuidString, conversationID.uuidString, date])
+        }
+        try database.close()
+    }
 
     @Test("Different unchecked authority domains do not prove a global exclusive lock")
     func uncheckedDomainsDoNotEstablishGlobalExclusivity() async throws {
@@ -97,7 +135,7 @@ struct HostAdapterIntegrationTests {
                 )
                 let error = await selfCoreError { _ = try await runtime.bootstrap() }
                 if futureVersion {
-                    #expect(error == .schemaMismatch(expected: 63, actual: 999))
+                    #expect(error == .schemaMismatch(expected: 65, actual: 999))
                 } else {
                     #expect(error == .authoritySchemaUnsupported("unknown_migration"))
                 }
@@ -109,7 +147,7 @@ struct HostAdapterIntegrationTests {
                     let admission = try db.tableExists("floe_mac_self_admission")
                     return (version, future, admission)
                 }
-                #expect(observed.0 == (futureVersion ? 999 : 63))
+                #expect(observed.0 == (futureVersion ? 999 : 65))
                 #expect(observed.1 == (futureVersion ? 0 : 1))
                 #expect(!observed.2)
                 try await reopened.close()

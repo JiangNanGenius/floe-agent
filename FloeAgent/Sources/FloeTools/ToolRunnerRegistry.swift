@@ -127,14 +127,21 @@ public struct AnyAgentTool: Sendable {
         guard isAvailable() else { throw FloeError.validationFailed("Tool is disabled or not configured: \(descriptor.name)") }
         var routedContext = context
         routedContext.executionToolName = descriptor.name
-        let lease = try await routing.acquire(routedContext)
-        do {
-            let output = try await run(argumentsJSON, lease.context)
-            await lease.finish()
-            return output
-        } catch {
-            await lease.finish()
-            throw error
+        var retried = false
+        while true {
+            let lease = try await routing.acquire(routedContext)
+            do {
+                let output = try await run(argumentsJSON, lease.context)
+                await lease.finish()
+                return output
+            } catch let retry as ToolPreDispatchRetry {
+                await lease.finish()
+                guard !retried, try await routing.waitForPreDispatchRetry(routedContext, reason: retry) else { throw retry }
+                retried = true
+            } catch {
+                await lease.finish()
+                throw error
+            }
         }
     }
 }

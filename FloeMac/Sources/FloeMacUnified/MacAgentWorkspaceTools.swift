@@ -51,6 +51,7 @@
 import Foundation
 import Darwin
 import UniformTypeIdentifiers
+import FloeAgentRuntime
 import FloeCore
 import FloeModels
 import FloeTools
@@ -211,7 +212,8 @@ public enum MacAgentWorkspaceTools {
     /// - Returns: A binding ready for `FloeMacSelfRuntime.startSession`.
     public static func binding(
         workspace: WorkspaceRecord,
-        readOnly: Bool
+        readOnly: Bool,
+        chatOnly: Bool = false
     ) throws -> FloeMacSelfToolBinding {
         guard workspace.kind == .project else {
             throw MacAgentWorkspaceToolsError.workspaceKindUnsupported(workspace.kind.rawValue)
@@ -240,9 +242,10 @@ public enum MacAgentWorkspaceTools {
 
         let executor = MacAgentWorkspaceToolExecutor(
             workspaceRootURL: root,
-            readOnly: readOnly
+            readOnly: readOnly || chatOnly
         )
-        let allowed = readOnly ? readToolNames : readToolNames.union(writeToolNames)
+        let allowed = chatOnly ? readToolNames.intersection(ConversationToolAccess.chatNames)
+            : (readOnly ? readToolNames : readToolNames.union(writeToolNames))
         let gate = (try? CatastrophicActionGate.withBundledPatterns())
             ?? CatastrophicActionGate.failClosed(
                 reason: "Mac workspace tool gate corpus unavailable"

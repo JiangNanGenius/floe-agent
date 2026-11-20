@@ -9,6 +9,9 @@ enum ToolWorkflowGuidance {
     static func contextLines(for toolNames: [String]) -> [String] {
         let names = Set(toolNames)
         var lines: [String] = []
+        if names.contains(DelegateTool.name), names.contains(DelegateWaitTool.name) {
+            lines.append("When a substantial task has independent parts within the current permissions, delegate a bounded part with background=true and continue your own work. Give writers separate files. Work directly on small or tightly coupled tasks. Collect child results when needed and reconcile their actual outcomes before finishing.")
+        }
         if names.contains("document.presentation.createInline") || names.contains("chat.content.list") {
             lines.append(ChatContentReference.modelInstructions)
         }

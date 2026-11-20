@@ -183,6 +183,31 @@ final class FloeMacSelfRunFence: @unchecked Sendable {
         return FloeMacSelfDecisionToken(stopEpoch: stopEpoch)
     }
 
+    /// Opens a running-steer submission with the same guarantees as an
+    /// approval decision: only a dispatched, unsettled, un-stopped run may
+    /// accept guidance, and a stop recorded during the store awaits below
+    /// invalidates the token before anything reaches the runtime.
+    func beginSteerDecision() -> FloeMacSelfDecisionToken? {
+        mutex.lock()
+        defer { mutex.unlock() }
+        guard phase == .dispatching, dispatchStarted, !settled, stopRequestedAt == nil else {
+            return nil
+        }
+        return FloeMacSelfDecisionToken(stopEpoch: stopEpoch)
+    }
+
+    /// Revalidates immediately before forwarding a steer. Mirrors
+    /// `validateApprovalDecision` for running guidance.
+    func validateSteerDecision(_ token: FloeMacSelfDecisionToken) -> Bool {
+        mutex.lock()
+        defer { mutex.unlock() }
+        return phase == .dispatching
+            && dispatchStarted
+            && !settled
+            && stopRequestedAt == nil
+            && stopEpoch == token.stopEpoch
+    }
+
     /// Revalidates immediately before forwarding an approval. A stop that was
     /// recorded during an await invalidates the token.
     func validateApprovalDecision(_ token: FloeMacSelfDecisionToken) -> Bool {

@@ -246,22 +246,55 @@ struct ProviderRecoveryTests {
         #expect(adapter.requests.count == 1)
     }
 
+    @Test("first response wait follows observed latency within the configured window")
+    func boundedFirstResponseWait() {
+        #expect(FloeAgentRuntime.firstEventWait(base: 120, lastActivityDelay: 1, afterSilentTimeout: false) == 120)
+        #expect(FloeAgentRuntime.firstEventWait(base: 120, lastActivityDelay: 110, afterSilentTimeout: false) == 165)
+        #expect(FloeAgentRuntime.firstEventWait(base: 120, lastActivityDelay: 300, afterSilentTimeout: false) == 180)
+        #expect(FloeAgentRuntime.firstEventWait(base: 120, lastActivityDelay: 0, afterSilentTimeout: true) == 180)
+        #expect(FloeAgentRuntime.firstEventWait(base: 0, lastActivityDelay: 110, afterSilentTimeout: true) == 0)
+    }
+
     @Test("a missing first event triggers the watchdog and reconnects")
     func missingFirstEventReconnects() async throws {
         let adapter = NeverEndingFirstAttemptAdapter()
+        let sink = MockSink()
         let runtime = FloeAgentRuntime(
             configuration: configuration(firstEventTimeout: 0.02),
             adapter: adapter,
             policy: HumanApprovalPolicy(),
             executor: MockExecutor(),
-            checkpointStore: MockCheckpointStore()
+            checkpointStore: MockCheckpointStore(),
+            sink: sink
         )
 
         try await runtime.start(goal: "watch the first packet")
 
+        #expect(sink.events.filter { if case .error = $0 { true } else { false } }.isEmpty)
         #expect(adapter.callCount == 2)
         #expect(await runtime.liveness().phase == .completed)
         #expect(await runtime.providerAttempt()?.attempt == 2)
+    }
+
+    @Test("two silent attempts produce one terminal error whether the app or HTTP times out", arguments: [false, true])
+    func repeatedFirstEventTimeoutStops(transportTimesOut: Bool) async throws {
+        let adapter = NeverEndingFirstAttemptAdapter(silentAttempts: 2, transportTimesOut: transportTimesOut)
+        let sink = MockSink()
+        let runtime = FloeAgentRuntime(
+            configuration: configuration(maxProviderRetries: 5, firstEventTimeout: 0.02),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore(),
+            sink: sink
+        )
+
+        try await runtime.start(goal: "bound silent retries")
+
+        #expect(adapter.callCount == 2)
+        #expect(sink.events.filter { if case .error = $0 { true } else { false } }.count == 1)
+        #expect(await runtime.providerAttempt()?.status == .exhausted)
+        #expect(await runtime.liveness().phase == .failed)
     }
 
     @Test("on-device generation is never cancelled or retried by the cloud stall watchdog")
@@ -357,11 +390,19 @@ private final class SlowLocalAdapter: ProviderAdapter, @unchecked Sendable {
     func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }
 
-/// First request remains open until cancellation; the reconnect attempt
-/// immediately returns a complete answer.
+/// Keeps the configured number of requests silent before returning an answer.
 private final class NeverEndingFirstAttemptAdapter: ProviderAdapter, @unchecked Sendable {
     let protocolKind: ModelProtocol = .openAIResponses
     private let calls = AsyncLock(0)
+
+    private let silentAttempts: Int
+
+    private let transportTimesOut: Bool
+
+    init(silentAttempts: Int = 1, transportTimesOut: Bool = false) {
+        self.silentAttempts = silentAttempts
+        self.transportTimesOut = transportTimesOut
+    }
 
     var callCount: Int { calls.withLock { $0 } }
 
@@ -373,8 +414,12 @@ private final class NeverEndingFirstAttemptAdapter: ProviderAdapter, @unchecked 
             value += 1
             return value
         }
-        if call == 1 {
+        if call <= silentAttempts {
             return AsyncThrowingStream { continuation in
+                if transportTimesOut {
+                    continuation.finish(throwing: URLError(.timedOut))
+                    return
+                }
                 let task = Task {
                     try? await Task.sleep(for: .seconds(60))
                     continuation.finish()

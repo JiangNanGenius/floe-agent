@@ -16,13 +16,16 @@ struct MacWorkspaceTaskCenter: View {
     let onDelete: (ConversationRecord) -> Void
 
     @Environment(\.locale) private var locale
+    let findRequest: UUID?
+    @FocusState private var searchFocused: Bool
     @State private var query = ""
     @State private var showsArchived = false
     private let relativeFormatter: RelativeDateTimeFormatter
 
-    init(workspace: HostAgentWorkspace, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
+    init(workspace: HostAgentWorkspace, findRequest: UUID? = nil, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
          onArchive: @escaping (UUID, Bool) -> Void, onMove: @escaping (ConversationRecord) -> Void,
          onDelete: @escaping (ConversationRecord) -> Void) {
+        self.findRequest = findRequest
         self.workspace = workspace
         self.onOpen = onOpen
         self.onNew = onNew
@@ -71,21 +74,9 @@ struct MacWorkspaceTaskCenter: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker(t("任务列表", "Task List"), selection: $showsArchived) {
-                Text(t("当前任务", "Current")).tag(false)
-                Text(t("已归档", "Archived")).tag(true)
+            HStack(spacing: 10) {
+                taskFilters
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField(t("搜索任务", "Search Tasks"), text: $query)
-                    .textFieldStyle(.plain)
-                    .accessibilityIdentifier("workspace.task.search")
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(.fill.quaternary, in: .rect(cornerRadius: 6))
             if workspace.taskRunLookupFailed {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -100,7 +91,31 @@ struct MacWorkspaceTaskCenter: View {
                 }
             }
         }
-        .padding()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .onChange(of: findRequest) { _, request in
+            if request != nil { searchFocused = true }
+        }
+    }
+
+    @ViewBuilder private var taskFilters: some View {
+        Picker(t("任务列表", "Task List"), selection: $showsArchived) {
+            Text(t("当前任务", "Current")).tag(false)
+            Text(t("已归档", "Archived")).tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(t("搜索任务", "Search Tasks"), text: $query)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .accessibilityIdentifier("workspace.task.search")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.fill.quaternary, in: .rect(cornerRadius: 6))
     }
 
     @ViewBuilder private var content: some View {

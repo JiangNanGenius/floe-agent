@@ -1210,27 +1210,10 @@ struct ThreadComposerView: View {
                 // always the ordinary `.agent` turn under the immutable
                 // read-only ceiling, never plan/goal/chat-only.
                 if !documentAssistant, isRunning, let runningInputMode {
-                    Menu {
-                        Button {
-                            runningInputMode.wrappedValue = .queue
-                        } label: {
-                            Label("chat.thread_composer_view.add_to_message_queue", systemImage: runningInputMode.wrappedValue == .queue
-                                  ? "checkmark" : "text.badge.plus")
-                        }
-                        Button {
-                            runningInputMode.wrappedValue = .steer
-                        } label: {
-                            Label("chat.thread_composer_view.steer_the_current_run", systemImage: runningInputMode.wrappedValue == .steer
-                                  ? "checkmark" : "arrow.triangle.turn.up.right.diamond")
-                        }
-                    } label: {
-                        composerChip(
-                            title: runningInputMode.wrappedValue == .queue ? FloeL10n.l("chat.thread_composer_view.queue") : FloeL10n.l("chat.thread_composer_view.steer"),
-                            systemImage: runningInputMode.wrappedValue == .queue
-                                ? "text.badge.plus" : "arrow.triangle.turn.up.right.diamond"
-                        )
-                    }
-                    .accessibilityLabel("chat.thread_composer_view.send_method_while_running")
+                    FloeComposerRunningInputMenu(queue: Binding(
+                        get: { runningInputMode.wrappedValue == .queue },
+                        set: { runningInputMode.wrappedValue = $0 ? .queue : .steer }
+                    ), maximumWidth: embedded ? 200 : 280)
                 }
                 if !documentAssistant, !temporary, agentMode != .chat {
                     Button { onPermissions() } label: {
@@ -1720,29 +1703,10 @@ struct ThreadComposerView: View {
     }
 
     private var modePicker: some View {
-        Menu {
-            ForEach(AgentExecutionMode.allCases) { mode in
-                if mode == .goal, let onEditGoal {
-                    Button(IDELanguageRunText.t("编辑目标", "Edit goal"), systemImage: "target", action: onEditGoal)
-                        .accessibilityIdentifier("composer.goal.edit")
-                } else {
-                    Button {
-                        agentMode = mode
-                    } label: {
-                        if agentMode == mode {
-                            Label(mode.title, systemImage: "checkmark")
-                        } else {
-                            Label(mode.title, systemImage: mode.systemImage)
-                        }
-                    }
-                }
-            }
-        } label: {
-            composerChip(
-                title: agentMode.localizedTitle,
-                systemImage: agentMode.systemImage
-            )
-        }
+        FloeComposerModeMenu(modes: AgentExecutionMode.allCases, selection: $agentMode,
+                             title: { $0.title }, symbol: { $0.systemImage },
+                             editGoalTitle: IDELanguageRunText.t("编辑目标", "Edit goal"), editGoal: onEditGoal,
+                             goal: .goal, maximumWidth: embedded ? 200 : 280)
     }
 
     private func composerChip(

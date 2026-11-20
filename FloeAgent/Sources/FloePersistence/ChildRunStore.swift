@@ -149,6 +149,15 @@ public struct ChildRunEntryPage: Sendable, Equatable {
     }
 }
 
+public struct BackgroundChildOwner: Sendable, Equatable {
+    public let childID: UUID
+    public let parentRunID: UUID
+    public let conversationID: UUID
+    public init(childID: UUID, parentRunID: UUID, conversationID: UUID) {
+        self.childID = childID; self.parentRunID = parentRunID; self.conversationID = conversationID
+    }
+}
+
 public protocol ChildRunStoring: Sendable {
     /// Persists identity + the parent relation BEFORE the first child turn.
     /// Returns the durable record (idempotent for a retried child id).
@@ -172,10 +181,29 @@ public protocol ChildRunStoring: Sendable {
     func child(id: UUID) async throws -> ChildRunRecord?
     func children(parentRunID: UUID) async throws -> [ChildRunRecord]
     func children(conversationID: UUID) async throws -> [ChildRunRecord]
+    /// Atomically records a background ownership transfer and its provenance.
+    /// Resumption requires the currently held resume lease.
+    func assignBackgroundOwner(childID: UUID, parentRunID: UUID, conversationID: UUID,
+                               resumeOwner: UUID?, payloadJSON: String) async throws
+    func recordBackgroundStartFailure(childID: UUID, parentRunID: UUID, conversationID: UUID) async throws
+    func backgroundOwner(childID: UUID) async throws -> BackgroundChildOwner?
+    func backgroundChildren(parentRunID: UUID, conversationID: UUID) async throws -> [ChildRunRecord]
     func entries(childRunID: UUID, afterSequence: Int, limit: Int) async throws -> ChildRunEntryPage
     /// Marks non-terminal children interrupted at launch. Returns the count.
     @discardableResult
     func reconcileInterruptedOnLaunch() async throws -> Int
+}
+
+public extension ChildRunStoring {
+    func assignBackgroundOwner(childID: UUID, parentRunID: UUID, conversationID: UUID,
+                               resumeOwner: UUID?, payloadJSON: String) async throws {
+        throw FloeError.invalidConfiguration("This child store does not support durable background ownership")
+    }
+    func recordBackgroundStartFailure(childID: UUID, parentRunID: UUID, conversationID: UUID) async throws {
+        throw FloeError.invalidConfiguration("This child store does not support background startup cleanup")
+    }
+    func backgroundOwner(childID: UUID) async throws -> BackgroundChildOwner? { nil }
+    func backgroundChildren(parentRunID: UUID, conversationID: UUID) async throws -> [ChildRunRecord] { [] }
 }
 
 // MARK: - Durable child checkpoints (S7 audit17)
@@ -701,7 +729,7 @@ public actor SQLiteChildRunStore: ChildRunStoring {
     public func child(id: UUID) async throws -> ChildRunRecord? {
         try await database.reader { db in
             guard let row = try Row.fetchOne(
-                db, sql: "SELECT * FROM child_runs WHERE id = ?",
+                db, sql: "SELECT c.*, rr.delegate_call_id AS delegate_call_id FROM child_runs c LEFT JOIN run_relations rr ON rr.child_run_id = c.id WHERE c.id = ?",
                 arguments: [id.uuidString]
             ) else { return nil }
             return try Self.decode(row)
@@ -729,6 +757,115 @@ public actor SQLiteChildRunStore: ChildRunStoring {
                 WHERE c.conversation_id = ?
                 ORDER BY c.started_at DESC, c.child_index
                 """, arguments: [conversationID.uuidString]).map(Self.decode)
+        }
+    }
+
+    public func assignBackgroundOwner(childID: UUID, parentRunID: UUID, conversationID: UUID,
+                                      resumeOwner: UUID?, payloadJSON: String) async throws {
+        let bounded = try Self.boundedPayload(payloadJSON, kind: .state)
+        let now = PersistenceCodec.encode(Date())
+        try await database.writer { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT c.parent_run_id, c.conversation_id, rr.delegate_call_id
+                FROM child_runs c JOIN run_relations rr ON rr.child_run_id = c.id
+                WHERE c.id = ?
+                """, arguments: [childID.uuidString]),
+                let originalParent: String = row["parent_run_id"],
+                let conversation: String = row["conversation_id"],
+                let _: String = row["delegate_call_id"], conversation == conversationID.uuidString else {
+                throw FloeError.validationFailed("The background child does not belong to this conversation")
+            }
+            if let resumeOwner {
+                guard try Int.fetchOne(db, sql: """
+                    SELECT 1 FROM child_run_checkpoints
+                    WHERE child_run_id = ? AND lease_owner = ? AND resume_state = 'resumed'
+                      AND resume_parent_run_id = ? AND lease_expires_at > ?
+                    """, arguments: [childID.uuidString, resumeOwner.uuidString, parentRunID.uuidString, now]) != nil else {
+                    throw FloeError.validationFailed("The child resume lease is no longer valid")
+                }
+            } else {
+                guard originalParent == parentRunID.uuidString else {
+                    throw FloeError.validationFailed("The background child has a different original parent")
+                }
+                if let existing = try String.fetchOne(db, sql: "SELECT parent_run_id FROM child_background_owners WHERE child_run_id = ?", arguments: [childID.uuidString]), existing != parentRunID.uuidString {
+                    throw FloeError.validationFailed("The background child has already been resumed elsewhere")
+                }
+            }
+            let next = try Int.fetchOne(db, sql: "SELECT COALESCE(MAX(sequence), 0) + 1 FROM child_run_entries WHERE child_run_id = ?", arguments: [childID.uuidString]) ?? 1
+            try db.execute(sql: """
+                INSERT INTO child_run_entries (id, child_run_id, sequence, kind, payload_json, created_at)
+                VALUES (?, ?, ?, 'state', ?, ?)
+                """, arguments: [UUID().uuidString, childID.uuidString, next, bounded, now])
+            try db.execute(sql: """
+                INSERT INTO child_background_owners (child_run_id, parent_run_id, conversation_id)
+                VALUES (?, ?, ?) ON CONFLICT(child_run_id) DO UPDATE SET
+                  parent_run_id = excluded.parent_run_id, conversation_id = excluded.conversation_id
+                """, arguments: [childID.uuidString, parentRunID.uuidString, conversationID.uuidString])
+        }
+    }
+
+    public func recordBackgroundStartFailure(childID: UUID, parentRunID: UUID, conversationID: UUID) async throws {
+        let now = PersistenceCodec.encode(Date())
+        try await database.writer { db in
+            guard try Int.fetchOne(db, sql: """
+                SELECT 1 FROM child_background_owners b JOIN child_runs c ON c.id = b.child_run_id
+                WHERE b.child_run_id = ? AND b.parent_run_id = ? AND b.conversation_id = ?
+                  AND c.state IN ('registered', 'interrupted')
+                """, arguments: [childID.uuidString, parentRunID.uuidString, conversationID.uuidString]) != nil else {
+                throw FloeError.validationFailed("The background startup owner or state changed")
+            }
+            // One exact, valid initial marker is the only provably pre-start
+            // transcript. Any extra/malformed history, active lease, or read
+            // failure keeps ownership and is never guessed away.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT sequence, kind, payload_json FROM child_run_entries WHERE child_run_id = ? ORDER BY sequence LIMIT 3
+                """, arguments: [childID.uuidString])
+            guard let first = rows.first, let sequence: Int = first["sequence"], sequence == 1,
+                  let kind: String = first["kind"], kind == "state",
+                  let payload: String = first["payload_json"],
+                  let data = payload.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object.count == 1, object["backgroundDelegate"] as? Bool == true else {
+                throw FloeError.storageCorrupted("Background startup cannot be proven unexecuted")
+            }
+            // A previous committed proof is idempotent even if the runner
+            // subsequently appended a diagnostic interruption event.
+            if rows.count >= 2, let secondKind: String = rows[1]["kind"], secondKind == "state",
+               let secondPayload: String = rows[1]["payload_json"], secondPayload == #"{"backgroundStartFailed":true}"# { return }
+            guard rows.count == 1,
+                  try Int.fetchOne(db, sql: """
+                    SELECT 1 FROM child_run_checkpoints WHERE child_run_id = ? AND resume_state IN ('leased','resumed')
+                    """, arguments: [childID.uuidString]) == nil else {
+                throw FloeError.storageCorrupted("Background startup cannot be proven unexecuted")
+            }
+            // Keep indexed ownership until the parent has checkpointed this
+            // honest failure; a second crash cannot lose the result.
+            try db.execute(sql: """
+                INSERT INTO child_run_entries (id, child_run_id, sequence, kind, payload_json, created_at)
+                VALUES (?, ?, 2, 'state', ?, ?)
+                """, arguments: [UUID().uuidString, childID.uuidString, #"{"backgroundStartFailed":true}"#, now])
+        }
+    }
+
+    public func backgroundOwner(childID: UUID) async throws -> BackgroundChildOwner? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM child_background_owners WHERE child_run_id = ?", arguments: [childID.uuidString]),
+                  let child = UUID(uuidString: row["child_run_id"]),
+                  let parent = UUID(uuidString: row["parent_run_id"]),
+                  let conversation = UUID(uuidString: row["conversation_id"]) else { return nil }
+            return BackgroundChildOwner(childID: child, parentRunID: parent, conversationID: conversation)
+        }
+    }
+
+    public func backgroundChildren(parentRunID: UUID, conversationID: UUID) async throws -> [ChildRunRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT c.*, rr.delegate_call_id AS delegate_call_id
+                FROM child_background_owners b JOIN child_runs c ON c.id = b.child_run_id
+                LEFT JOIN run_relations rr ON rr.child_run_id = c.id
+                WHERE b.parent_run_id = ? AND b.conversation_id = ?
+                ORDER BY c.started_at, c.child_index
+                """, arguments: [parentRunID.uuidString, conversationID.uuidString]).map(Self.decode)
         }
     }
 

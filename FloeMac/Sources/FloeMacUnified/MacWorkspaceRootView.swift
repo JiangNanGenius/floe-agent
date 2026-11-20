@@ -41,6 +41,7 @@ struct MacWorkspaceRootView: View {
     @State private var historySearch = ""
     @State private var conversationFindRequest: UUID?
     @State private var fileFindRequest: UUID?
+    @State private var taskCenterFindRequest: UUID?
     @State private var toolboxFindRequest: UUID?
     @State private var taskToRename: ConversationRecord?
     @State private var taskTitle = ""
@@ -62,7 +63,7 @@ struct MacWorkspaceRootView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarVisibility) {
             sidebar
-                .navigationSplitViewColumnWidth(min: 190, ideal: 234, max: 320)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 320)
         } detail: {
             workspacePanes
         }
@@ -116,6 +117,7 @@ struct MacWorkspaceRootView: View {
             conversationFindRequest = nil
             fileFindRequest = nil
             toolboxFindRequest = nil
+            taskCenterFindRequest = nil
             if case .conversation(let id) = newDestination { requestedConversation = id }
             if case .newTask = newDestination { requestedConversation = nil }
             #if FLOE_MAC_HOST_SMOKE
@@ -323,7 +325,7 @@ struct MacWorkspaceRootView: View {
             .padding(8)
             Divider().padding(.horizontal, 14)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
+                LazyVStack(alignment: .leading, spacing: 1) {
                     if historySearchQuery.isEmpty {
                         projectSidebar
                         personalHistory
@@ -506,7 +508,8 @@ struct MacWorkspaceRootView: View {
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
-            .frame(minHeight: 30)
+            .font(.callout)
+            .frame(minHeight: 25)
             .background(selected ? Color.accentColor.opacity(0.14) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
@@ -630,7 +633,7 @@ struct MacWorkspaceRootView: View {
                 if showsSpaceFiles { spaceProjectControl }
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: title).font(.headline).lineLimit(1)
+                    Text(verbatim: title).font(.body.weight(.semibold)).lineLimit(1)
                         .truncationMode(.tail)
                         .help(title)
                     if showsTask, !filesTakeDetail, destinationConversationID == workspace.selectedID,
@@ -644,7 +647,7 @@ struct MacWorkspaceRootView: View {
             headerActions
         }
         .padding(.horizontal, 14)
-        .frame(minHeight: 44)
+        .frame(minHeight: 37)
         .background(FloeTheme.chromeMaterial)
     }
 
@@ -780,7 +783,7 @@ struct MacWorkspaceRootView: View {
                     HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
                                            openModelSettings: openModelSettings,
                                            openFiles: { showInspector = true },
-                                           openImageWorkbench: openImageWorkbench,
+                                           chooseTaskProject: chooseProjectForTask, openImageWorkbench: openImageWorkbench,
                                            findRequest: conversationFindRequest,
                                            findConversationID: destinationConversationID)
                         .id(destinationConversationID)
@@ -794,7 +797,7 @@ struct MacWorkspaceRootView: View {
         case .images:
             imageWorkbench
         default:
-            MacWorkspaceTaskCenter(workspace: workspace, onOpen: openTask, onNew: startNewTask,
+            MacWorkspaceTaskCenter(workspace: workspace, findRequest: taskCenterFindRequest, onOpen: openTask, onNew: startNewTask,
                                    onArchive: { updateTask(id: $0, change: .archive($1)) },
                                    onMove: chooseTaskWorkspace, onDelete: confirmDelete)
         }
@@ -831,16 +834,27 @@ struct MacWorkspaceRootView: View {
         destination = .space(.files)
     }
 
+    private func chooseProjectForTask() {
+        chooseProjectFolder(forTask: true)
+    }
+
     private func chooseProjectFolder() {
+        chooseProjectFolder(forTask: false)
+    }
+
+    private func chooseProjectFolder(forTask: Bool) {
         guard canChooseProject, let window = NSApp.keyWindow else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = String(localized: "mac.workspace.addProjectAction")
+        let selection = workspace.draftSelectionID
+        let route = destination
         panel.beginSheetModal(for: window) { response in
-            guard response == .OK, let folder = panel.url else { return }
-            registerProject(folder, openInSpace: true)
+            guard response == .OK, let folder = panel.url, route == destination,
+                  !forTask || (workspace.draftSelectionID == selection && canEditVisibleDraft) else { return }
+            registerProject(folder, openInSpace: !forTask)
         }
     }
 
@@ -854,6 +868,7 @@ struct MacWorkspaceRootView: View {
         let startingDestination = destination
         let startingProjectID = spaceProjectID
         let startingDraftProjectID = workspace.selectedWorkspaceID
+        let startingSelection = workspace.draftSelectionID
         addingProject = true
         Task {
             defer { addingProject = false }
@@ -864,12 +879,14 @@ struct MacWorkspaceRootView: View {
                 return
             }
             expandedWorkspaceIDs.insert(project.id)
-            guard destination == startingDestination else { return }
+            guard destination == startingDestination, openInSpace || workspace.draftSelectionID == startingSelection else { return }
             if openInSpace, startingProjectID == spaceProjectID {
                 selectSpaceProject(project.id)
             } else if !openInSpace, case .newTask = destination, workspace.selectedID == nil,
                       startingDraftProjectID == workspace.selectedWorkspaceID {
                 workspace.selectWorkspace(project.id)
+            } else if !openInSpace, case .conversation(let id) = destination, workspace.selectedID == id, canEditVisibleDraft {
+                if !(await workspace.moveTask(id, to: project.id)) { showMoveError = true }
             }
         }
     }
@@ -918,6 +935,8 @@ struct MacWorkspaceRootView: View {
     private func findInActiveView() {
         if filesTakeDetail {
             fileFindRequest = UUID()
+        } else if destination == .taskCenter {
+            taskCenterFindRequest = UUID()
         } else if activeSpacePage == .toolbox {
             toolboxFindRequest = UUID()
         } else if case .conversation(let id) = destination, id == workspace.selectedID {

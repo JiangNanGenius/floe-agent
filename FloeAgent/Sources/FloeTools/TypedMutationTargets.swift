@@ -168,6 +168,9 @@ public enum TypedMutationContract {
     /// it is a service container extent, never a fabricated record path.
     /// Existing internal authorization/index bookkeeping remains internalState.
     public static let nativeStudioLibraryStoreKey = "nativeStudioLibrary"
+    /// Host-selected workbench container inside the active task workspace.
+    /// The model never supplies this path.
+    public static let workspaceStudioStoreKey = "workspaceStudio"
     /// App-owned native Biology originals, assets and lifecycle journals.
     /// This is injected by the concrete host, never accepted from arguments.
     public static let nativeBiologyStoreKey = "nativeBiology"
@@ -210,7 +213,7 @@ public enum TypedMutationContract {
     /// Every other typed family fully bounds its write set and drops the
     /// wildcard for narrow file keys.
     public static func keepsWorkspaceBounding(_ toolName: String) -> Bool {
-        toolName == "media.project" || ["biology.analyze", "biology.job", "biology.export", "latex.typeset", "latex.export"].contains(toolName)
+        toolName == "media.project" || ["biology.analyze", "biology.job", "biology.export", "latex.typeset", "latex.export", "studio.workspaceVideo"].contains(toolName)
     }
 
     // MARK: - Contract table
@@ -252,6 +255,9 @@ public enum TypedMutationContract {
             return stores
         case "studio.create", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining", "studio.simulation":
             return nativeStudioSpecs(toolName:toolName,arguments:arguments)
+        case "studio.workspaceVideo":
+            guard ["create", "import", "edit", "undo", "redo"].contains(action) else { return [] }
+            return [.init(argument: "projectID", role: .sourceWrite, whenAbsent: .required, storeKey: workspaceStudioStoreKey)]
         case "document.pdf.edit":
             // inputPath is read-only; the verified new copy is outputPath.
             return [.init(argument: "outputPath", role: .outputWrite, whenAbsent: .required)]
@@ -506,14 +512,20 @@ public enum TypedMutationContract {
     /// host paths. Actual task/project binding, source reads, CAS and native
     /// locks remain mandatory in the service after this classification.
     public static let nativeStudioMediaToolIDs: Set<String> = [
-            "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
-            "image.brush", "image.eraser", "image.fill", "image.eyedropper", "image.layer-mask", "image.vector-mask", "image.clip-mask",
-            "image.adjustment-layer", "image.group-layer", "image.duplicate-layer", "image.merge-layer", "image.crop", "image.rotate", "image.flip",
-            "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels",
-            "image.hsl", "image.white-balance", "image.bw", "video.trim", "video.split", "video.slip", "video.speed",
-            "video.transition", "video.pip", "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing",
-            "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll",
-            "video.srt", "image.align", "image.blend-mode", "media.import"
+        "image.remove-asset", "video.remove-asset", "image.feather-brush",
+        "image.remove", "image.content-fill", "image.heal", "image.patch", "image.smudge", "image.clone", "image.gradient", "image.blur-brush", "image.sharpen-brush", "image.layer-effect",
+        "image.perspective", "image.distort", "image.wand", "image.subject", "image.refine-edge", "image.expand", "image.smooth", "image.background", "image.curves", "image.balance", "image.lut", "image.denoise",
+        "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
+        "image.brush", "image.eraser", "image.fill", "image.eyedropper", "image.layer-mask", "image.vector-mask", "image.clip-mask",
+        "image.adjustment-layer", "image.group-layer", "image.duplicate-layer", "image.merge-layer", "image.crop", "image.rotate", "image.flip",
+        "image.boolean", "image.path-text", "image.outline", "image.resize", "image.canvas-size", "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw",
+        "video.video-curves", "video.wheels", "video.video-hsl", "video.video-lut", "video.tracking", "video.stabilize", "video.color-match", "video.hdr",
+        "video.chroma", "video.video-blend", "video.scopes", "video.eq", "video.compressor", "video.noise", "video.duck",
+        "video.graph", "video.motion-path", "video.motion-title", "video.preset-motion",
+        "video.reverse", "video.freeze", "video.caption-style", "video.nest",
+        "video.trim", "video.split", "video.slip", "video.speed", "video.transition", "video.pip",
+        "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing", "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll", "video.srt", "image.align", "image.blend-mode",
+        "media.import", "video.importFrames"
     ]
 
     private static func nativeStudioSpecs(toolName:String,arguments:[String:Any]) -> [TypedOutputSpec] {
@@ -656,6 +668,14 @@ public enum TypedMutationContract {
         fileManager: FileManager
     ) -> TypedMutableTarget?? {
         if let storeKey = spec.storeKey {
+            if storeKey == workspaceStudioStoreKey {
+                guard let raw = serviceStorePaths[storeKey], (raw as NSString).isAbsolutePath,
+                      !raw.contains("\0"), let workspaceRootURL else { return nil }
+                let root = workspaceRootURL.standardizedFileURL.resolvingSymlinksInPath()
+                let container = URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+                guard root.path != "/", container.deletingLastPathComponent() == root else { return nil }
+                return .some(TypedMutableTarget(path: container.path, role: spec.role))
+            }
             if storeKey == nativeFontLibraryStoreKey {
                 guard let raw = serviceStorePaths[storeKey], (raw as NSString).isAbsolutePath, !raw.contains("\0") else { return nil }
                 let root = URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()

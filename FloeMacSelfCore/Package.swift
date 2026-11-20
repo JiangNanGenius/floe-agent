@@ -170,6 +170,18 @@ let package = Package(
             path: "Sources/FloeMacSelfCore",
             swiftSettings: upstreamSwiftSettings
         ),
+        .target(
+            name: "FloeTestSupport",
+            dependencies: ["FloeCore", "FloeModels"],
+            path: "Tests/FloeTestSupport",
+            swiftSettings: upstreamSwiftSettings
+        ),
+        .testTarget(
+            name: "FloeAgentRuntimeTests",
+            dependencies: ["FloeAgentRuntime", "FloePersistence", "FloeTestSupport"],
+            path: "Tests/FloeAgentRuntimeTests",
+            swiftSettings: upstreamSwiftSettings
+        ),
         .testTarget(
             name: "FloeMacSelfCoreTests",
             dependencies: [

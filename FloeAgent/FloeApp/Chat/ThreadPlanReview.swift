@@ -24,6 +24,7 @@ struct ThreadPlanReview: View {
     var actionsDisabled = false
     let onDismiss: () -> Void
     #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+    var onCloseFrame: ((CGRect) -> Void)? = nil
     var onNormalActionFrame: ((CGRect) -> Void)? = nil
     #endif
     let onExecute: (PlanExecutionRecommendation) -> Void
@@ -46,6 +47,9 @@ struct ThreadPlanReview: View {
                 .foregroundStyle(.secondary)
                 .accessibilityLabel(planReviewText("关闭计划卡片", "Close plan card"))
                 .accessibilityIdentifier("thread.plan.close")
+                #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { frame in onCloseFrame?(frame) })
+                #endif
             }
             Text(plan.title).font(.subheadline).lineLimit(2)
             if let recommendation = plan.executionRecommendation {
@@ -168,4 +172,87 @@ struct ConfirmedPlanMessageCard: View {
 
 private func planReviewText(_ zh: String, _ en: String) -> String {
     FloeL10n.isChinese ? zh : en
+}
+
+struct GoalBuilderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var objective = ""
+    @State private var criteria = ""
+    @State private var blockers = ""
+    @State private var stops = ""
+    @State private var isSubmitting = false
+    @State private var hasSubmitted = false
+    let goal: ConversationGoal?
+    let errorMessage: String?
+    let onCreate: @MainActor (String, [String], [String], [String]) async -> Bool
+
+    init(goal: ConversationGoal? = nil, errorMessage: String?,
+        onCreate: @escaping @MainActor (String, [String], [String], [String]) async -> Bool) {
+        self.goal = goal; self.errorMessage = errorMessage; self.onCreate = onCreate
+        _objective = State(initialValue: goal?.objective ?? "")
+        _criteria = State(initialValue: goal?.acceptanceCriteria.map(\.text).joined(separator: "\n") ?? "")
+        _blockers = State(initialValue: goal?.blockingConditions?.joined(separator: "\n") ?? "")
+        _stops = State(initialValue: goal?.stoppingConditions?.joined(separator: "\n") ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("chat.thread_detail_view.final_goal") {
+                    TextEditor(text: $objective).frame(minHeight: 90)
+                }
+                Section("chat.thread_detail_view.acceptance_criteria_one_per_line") {
+                    TextEditor(text: $criteria).frame(minHeight: 80)
+                }
+                Section("chat.thread_detail_view.blocking_conditions_one_per_line") {
+                    TextEditor(text: $blockers).frame(minHeight: 80)
+                }
+                Section("chat.thread_detail_view.stop_conditions_one_per_line") {
+                    TextEditor(text: $stops).frame(minHeight: 80)
+                }
+                if goal != nil {
+                    Section {
+                        Text(planReviewText("保存修改会暂停后续推进，本轮按原目标继续执行。已有进度和结果会保留，可在目标条重新启用后续推进。",
+                            "Saving pauses future advancement. This round keeps its original objective. Progress and results are retained; Resume re-enables future advancement."))
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                if hasSubmitted, let errorMessage {
+                    Text(errorMessage).font(.callout).foregroundStyle(.red)
+                        .accessibilityIdentifier("goal.builder.error")
+                }
+            }
+            #if os(macOS)
+            .formStyle(.grouped)
+            #endif
+            .disabled(isSubmitting)
+            .navigationTitle(goal == nil ? String(localized: "chat.thread_detail_view.set_goal") : planReviewText("编辑目标", "Edit goal"))
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("workspace.workspace_canvas_view.cancel") { dismiss() }
+                        .disabled(isSubmitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(goal == nil ? String(localized: "chat.thread_detail_view.create_and_start") : String(localized: "workspace.workspace_canvas_view.save")) {
+                        isSubmitting = true
+                        hasSubmitted = true
+                        Task {
+                            let created = await onCreate(objective, lines(criteria), lines(blockers), lines(stops))
+                            isSubmitting = false
+                            if created { dismiss() }
+                        }
+                    }
+                    .disabled(isSubmitting || objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("goal.builder.create")
+                }
+            }
+        }
+        .interactiveDismissDisabled(isSubmitting)
+    }
+
+    private func lines(_ value: String) -> [String] {
+        value.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
 }

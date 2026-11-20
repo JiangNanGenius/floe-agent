@@ -114,7 +114,7 @@ private enum ProviderStoreError: Error {
 }
 
 enum HostAgentMode: String, CaseIterable {
-    case chat, agent, plan, goal
+    case agent, chat, plan, goal
 
     var runtimeMode: ConversationMode {
         switch self {
@@ -173,6 +173,9 @@ final class HostAgentWorkspace: ObservableObject {
         var approval: HostAgentApproval?
         var stopping = false
         var resolvingApproval = false
+        var steering = false
+        var lastSteer: String?
+        var modelID: UUID?
     }
 
     @Published private(set) var isReady = false
@@ -227,6 +230,12 @@ final class HostAgentWorkspace: ObservableObject {
     var smokeTaskFindInvocations = 0
     var smokeConversationSearchMounted = false
     var smokeApprovalFrames: [Bool: CGRect] = [:]
+    var smokeRunningModeFrame: CGRect?
+    var smokePromptFrame: CGRect?
+    var smokeSteerFrame: CGRect?
+    var smokeModeFrame: CGRect?
+    var smokeClosePlanFrame: CGRect?
+    var smokeReopenPlanFrame: CGRect?
     var smokePlanExecuteFrame: CGRect?
     var smokeProjectNewTaskFrames: [UUID: CGRect] = [:]
     var smokeProjectNameFrames: [UUID: CGRect] = [:]
@@ -283,7 +292,7 @@ final class HostAgentWorkspace: ObservableObject {
 
     var failedUserMessage: PersistedMessage? {
         guard let failedRunID else { return nil }
-        return messages.last {
+        return messages.first {
             $0.runID == failedRunID && $0.role == "user"
                 && PlanConfirmationSnapshot.from(message: $0) == nil
         }
@@ -418,6 +427,9 @@ final class HostAgentWorkspace: ObservableObject {
             isReady = true
             restoreStagedAttachments(for: selectedID)
             reloadProviders()
+            #if FLOE_UNIFIED_MAC
+            if let selectedID { await refreshQueue(selectedID) }
+            #endif
         } catch {
             if let error = error as? HostAgentDatabase.StorageError {
                 storageErrorKind = error.rawValue
@@ -614,6 +626,9 @@ final class HostAgentWorkspace: ObservableObject {
             if let run { await loadToolActivity(runID: run.id, conversationID: id, runtime: runtime) }
             #endif
             await loadPlanning(conversationID: id, runtime: runtime)
+            #if FLOE_UNIFIED_MAC
+            await refreshQueue(id)
+            #endif
         } catch {
             if historySelection == selection, !Task.isCancelled { historyLoadFailed = true }
         }
@@ -872,22 +887,48 @@ final class HostAgentWorkspace: ObservableObject {
 
     private func restoreStagedAttachments(for conversationID: UUID?) {
         guard let references = loadAttachmentDraft?(conversationID) else { return }
-        stagedAttachments = references.prefix(Self.maximumStagedAttachmentCount).compactMap { reference in
-            guard reference.storage == .securityScopedBookmark, let bookmark = reference.urlBookmark,
-                  reference.kind == .image || reference.kind == .document,
-                  reference.byteCount > 0, reference.byteCount <= Self.maximumAttachmentBytes else { return nil }
-            var stale = false
-            guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI],
-                                     relativeTo: nil, bookmarkDataIsStale: &stale), !stale else { return nil }
-            return .init(id: reference.id, kind: reference.kind == .image ? .image : .document,
-                         url: url, bookmark: bookmark, displayName: reference.displayName,
-                         byteCount: reference.byteCount, sha256: reference.sha256, uti: reference.uti,
-                         createdAt: reference.createdAt)
-        }
+        stagedAttachments = references.prefix(Self.maximumStagedAttachmentCount).compactMap { draftAttachment($0, id: $0.id) }
         if stagedAttachments.count != references.count {
             notice = String(localized: "mac.workspace.attachmentUnavailable")
         }
     }
+
+    private func draftAttachment(_ reference: AttachmentRef, id: UUID) -> HostAgentAttachmentDraft? {
+        guard reference.storage == .securityScopedBookmark, let bookmark = reference.urlBookmark,
+              reference.kind == .image || reference.kind == .document,
+              reference.byteCount > 0, reference.byteCount <= Self.maximumAttachmentBytes else { return nil }
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI],
+                                 relativeTo: nil, bookmarkDataIsStale: &stale), !stale else { return nil }
+        return .init(id: id, kind: reference.kind == .image ? .image : .document,
+                     url: url, bookmark: bookmark, displayName: reference.displayName,
+                     byteCount: reference.byteCount, sha256: reference.sha256, uti: reference.uti,
+                     createdAt: reference.createdAt)
+    }
+
+    #if FLOE_UNIFIED_MAC
+    func editFailedInput(_ message: PersistedMessage, applyText: (String) -> Bool) async {
+        guard let id = selectedID, id == message.conversationID, failedUserMessage?.id == message.id,
+              !isSending, stagedAttachments.isEmpty, !isTerminating, let runtime, let release = admit(),
+              let text = CredentialMessagePart.clipboardText(message.content) else { return }
+        defer { release() }
+        let selection = historySelection
+        do {
+            var restored: [HostAgentAttachmentDraft] = []
+            for part in message.parts where part.kind == .image || part.kind == .file {
+                guard let key = part.attachmentID, let ref = try await runtime.conversationAttachment(id: key, conversationID: id),
+                      let draft = draftAttachment(ref, id: UUID()) else { throw CocoaError(.fileNoSuchFile) }
+                restored.append(draft)
+            }
+            guard historySelection == selection, selectedID == id, !isSending, !isTerminating,
+                  failedUserMessage?.id == message.id, stagedAttachments.isEmpty, applyText(text) else { return }
+            stagedAttachments = restored
+            saveAttachmentDraft?(id, restored.map(\.reference))
+        } catch {
+            if selectedID == id { notice = String(localized: "mac.workspace.attachmentUnavailable") }
+        }
+    }
+    #endif
 
     /// Raster signatures accepted by the runtime's image inlining. Kept in
     /// sync with the upstream normalizer; non-raster files stage as
@@ -1032,12 +1073,21 @@ final class HostAgentWorkspace: ObservableObject {
                            provider: FloeMacSelfProviderBinding,
                            workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "",
                            acceptedPlan: PlanConfirmationSnapshot? = nil, resumingGoal: Bool = false,
+                           queued: PendingUserInput? = nil, queuedGoal: ConversationGoal? = nil,
                            onAdmitted: (() -> Void)? = nil) -> Bool {
-        let currentID = selectedID
+        let currentID = queued?.conversationID ?? selectedID
         let taskID = currentID ?? UUID()
         let originSelection = historySelection
-        guard !isSending, !changingTasks.contains(taskID) else { return false }
-        let currentGoal = mode == .goal && criterion.isEmpty && goal?.conversationID == currentID ? goal : nil
+        guard (queued != nil ? liveRuns[taskID] == nil : !isSending), !isTerminating, !changingTasks.contains(taskID) else { return false }
+        let currentGoal = queuedGoal ?? (mode == .goal && criterion.isEmpty && goal?.conversationID == currentID
+            && goal?.status.isTerminal == false ? goal : nil)
+        var criteria: [String] = []
+        if mode == .goal, currentGoal == nil, acceptedPlan == nil, !resumingGoal {
+            criteria = criterion.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if criteria.isEmpty { criteria = [String(localized: "mac.agent.defaultGoalCriterion")] }
+        }
+        let goalCriteria = criteria
         let selectedProject = workspaces.first { $0.id == workspaceID && $0.kind == .project }
         let requiresProject = mode == .agent || mode == .plan
         if requiresProject && currentID == nil && selectedProject == nil {
@@ -1046,10 +1096,12 @@ final class HostAgentWorkspace: ObservableObject {
         }
         guard let release = admit() else { return false }
         if currentID == nil { newDraftRunID = taskID }
-        liveRuns[taskID] = LiveRun(prompt: acceptedPlan == nil ? text : nil, mode: mode)
-        notice = nil
-        rejectedPrompt = nil
-        let drafts = resumingGoal || acceptedPlan != nil ? [] : stagedAttachments
+        liveRuns[taskID] = LiveRun(prompt: acceptedPlan == nil ? text : nil, mode: mode, modelID: provider.model.id)
+        if selectedID == currentID {
+            notice = nil
+            rejectedPrompt = nil
+        }
+        let drafts = resumingGoal || acceptedPlan != nil || queued != nil ? [] : stagedAttachments
         #if FLOE_UNIFIED_MAC
         let readOnly = mode == .plan || !allowsWorkspaceWrites
         let finalReview = mode != .chat && mode != .plan && verifyAgentAnswers
@@ -1058,18 +1110,31 @@ final class HostAgentWorkspace: ObservableObject {
         #endif
         Task {
             var admitted = false
+            var finishedNormally = false
             defer {
                 if newDraftRunID == taskID { newDraftRunID = nil }
                 liveSnapshotVersions.removeValue(forKey: taskID)
                 liveRuns.removeValue(forKey: taskID)
+                #if FLOE_UNIFIED_MAC
+                if (finishedNormally && queuedInputs[taskID]?.isEmpty == false) || (queued != nil && !admitted) {
+                    Task {
+                        if let queued, !admitted, let store = try? await runtime.runningInputStore() {
+                            try? await store.restoreQueued(id: queued.id)
+                        }
+                        if finishedNormally { await startNextQueued(taskID) }
+                        else { await refreshQueue(taskID) }
+                    }
+                }
+                #endif
                 release()
             }
             do {
                 let tools: FloeMacSelfToolBinding?
                 #if FLOE_UNIFIED_MAC
                 let project: WorkspaceRecord?
-                if mode != .chat, let currentID {
+                if let currentID {
                     let owner = try await runtime.workspaceForConversation(currentID)
+                    if let queued, owner?.id != queued.workspaceID { throw CocoaError(.userCancelled) }
                     project = owner?.kind == .project ? owner : nil
                 } else {
                     project = selectedProject
@@ -1081,8 +1146,8 @@ final class HostAgentWorkspace: ObservableObject {
                     }
                     return
                 }
-                if let project, mode != .chat {
-                    tools = try MacAgentWorkspaceTools.binding(workspace: project, readOnly: readOnly)
+                if let project, mode != .chat || provider.model.capabilities.contains(.tools) {
+                    tools = try MacAgentWorkspaceTools.binding(workspace: project, readOnly: readOnly, chatOnly: mode == .chat)
                 } else {
                     tools = nil
                 }
@@ -1111,7 +1176,7 @@ final class HostAgentWorkspace: ObservableObject {
                     conversationTitle: currentID == nil ? Self.initialTaskTitle(text, provider: provider) : "",
                     goal: acceptedExecution?.goal ?? text,
                     mode: acceptedExecution?.conversationMode ?? mode.runtimeMode,
-                    runID: acceptedExecution?.runID,
+                    runID: acceptedExecution?.runID ?? queued?.id,
                     context: FloeMacSelfRunContext(workspaceName: project?.name),
                     attachments: drafts.map {
                         FloeMacSelfSessionAttachment(
@@ -1126,7 +1191,7 @@ final class HostAgentWorkspace: ObservableObject {
                     },
                     chatFastMode: mode == .chat,
                     verifyFinalAnswer: finalReview,
-                    goalCriteria: mode == .goal && !criterion.isEmpty ? [criterion] : [],
+                    goalCriteria: goalCriteria,
                     reusingUserMessageID: acceptedExecution?.userMessageID,
                     expectedGoal: expectedGoal
                 )
@@ -1141,6 +1206,11 @@ final class HostAgentWorkspace: ObservableObject {
                 let events = handle.events()
                 let hasOriginSelection = selectedID == currentID && historySelection == originSelection
                 #if FLOE_UNIFIED_MAC
+                if let queued, let store = try? await runtime.runningInputStore() {
+                    do { try await store.markConsumed(id: queued.id, runID: handle.identity.runID) }
+                    catch { if selectedID == taskID { notice = String(localized: "mac.agent.queueUnavailable") } }
+                    await refreshQueue(taskID)
+                }
                 saveTaskMode(mode, for: taskID)
                 if currentID == nil, hasOriginSelection { draftMode = nil }
                 #endif
@@ -1186,6 +1256,7 @@ final class HostAgentWorkspace: ObservableObject {
                     }
                 }
                 let terminal = await handle.waitForTerminal()
+                finishedNormally = terminal?.confirmed == true && terminal?.outcome == .completed && liveRuns[taskID]?.stopping != true
                 #if FLOE_UNIFIED_MAC
                 await loadToolActivity(runID: handle.identity.runID, conversationID: handle.identity.conversationID,
                                        runtime: runtime)
@@ -1201,6 +1272,9 @@ final class HostAgentWorkspace: ObservableObject {
                         smokeRunDiagnostics.append(contentsOf: events.suffix(8).map(\.payloadJSON))
                     }
                 }
+                #endif
+                #if FLOE_UNIFIED_MAC
+                await refreshQueue(taskID)
                 #endif
                 if selectedID == taskID {
                     let selection = historySelection
@@ -1238,7 +1312,7 @@ final class HostAgentWorkspace: ObservableObject {
                 guard admitted ? selectedID == taskID : (selectedID == currentID && historySelection == originSelection) else {
                     return
                 }
-                if !admitted, acceptedPlan == nil, !resumingGoal { rejectedPrompt = text }
+                if !admitted, queued == nil, acceptedPlan == nil, !resumingGoal { rejectedPrompt = text }
                 if resumingGoal, !admitted {
                     notice = String(localized: "mac.agent.goalControlFailed")
                     await loadPlanning(conversationID: taskID, runtime: runtime)
@@ -1349,6 +1423,28 @@ final class HostAgentWorkspace: ObservableObject {
             }
         }
     }
+
+    #if FLOE_UNIFIED_MAC
+    func editGoal(_ expected: ConversationGoal, objective: String, criteria: [String],
+                  blockers: [String], stops: [String]) async -> Bool {
+        let id = expected.conversationID
+        guard selectedID == id, expected.id == goal?.id, !isTaskRunning(id), !isTerminating,
+              !changingGoals.contains(id), let runtime, let release = admit() else { return false }
+        changingGoals.insert(id)
+        defer { changingGoals.remove(id); release() }
+        do {
+            _ = try await runtime.editGoalDefinition(conversationID: id, goalID: expected.id,
+                expectedRevision: expected.revision ?? 1, objective: objective, criteria: criteria,
+                blockers: blockers, stops: stops)
+            await loadPlanning(conversationID: id, runtime: runtime)
+            return true
+        } catch {
+            if selectedID == id { notice = String(localized: "mac.agent.goalControlFailed") }
+            return false
+        }
+    }
+
+    #endif
 
     @discardableResult
     func confirmAndRunPlan(_ candidate: PlanDraft, as execution: PlanExecutionRecommendation) async -> Bool {
@@ -1485,6 +1581,160 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    #if FLOE_UNIFIED_MAC
+    var runningInputMode: RunningInputMode {
+        get { RunningInputMode(rawValue: preferences.string(forKey: "floe.mac.runningInputMode") ?? "") ?? .queue }
+        set {
+            objectWillChange.send()
+            preferences.set(newValue.rawValue, forKey: "floe.mac.runningInputMode")
+        }
+    }
+
+    @Published private(set) var queuedInputs: [UUID: [PendingUserInput]] = [:]
+    private var drainingQueues = Set<UUID>()
+    private var queueRefreshes: [UUID: UUID] = [:]
+
+    private func refreshQueue(_ id: UUID) async {
+        guard let runtime else { return }
+        let token = UUID()
+        queueRefreshes[id] = token
+        do {
+            let store = try await runtime.runningInputStore()
+            let rows = try await store.pending(conversationID: id)
+            if queueRefreshes[id] == token {
+                queuedInputs[id] = rows.filter { $0.status == .queued && HostAgentMode(rawValue: $0.executionMode) != nil }
+                queueRefreshes[id] = nil
+            }
+        } catch {
+            if selectedID == id { notice = String(localized: "mac.agent.queueUnavailable") }
+        }
+    }
+
+    func enqueue(_ text: String, onAccepted: @escaping () -> Void) {
+        guard canSteer, let run = visibleRun, let id = selectedID, let handle = run.handle,
+              let modelID = run.modelID, let runtime, let release = admit() else { return }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf8.count <= 1_048_576, !text.utf8.contains(0) else {
+            release()
+            notice = String(localized: "mac.agent.queueUnavailable")
+            return
+        }
+        let input = PendingUserInput(conversationID: id, targetRunID: handle.identity.runID,
+                                     content: text, mode: .queue, status: .queued, position: 0,
+                                     selectedModelID: modelID, workspaceID: handle.identity.workspaceID,
+                                     executionMode: run.mode.rawValue)
+        liveRuns[id]?.steering = true
+        Task {
+            defer {
+                if liveRuns[id]?.handle?.identity == handle.identity { liveRuns[id]?.steering = false }
+                release()
+            }
+            do {
+                let store = try await runtime.runningInputStore()
+                _ = try await store.enqueue(input)
+                onAccepted()
+                await refreshQueue(id)
+                // The original run may have finished during the store commit.
+                if liveRuns[id] == nil, let receipt = await handle.waitForTerminal(),
+                   receipt.confirmed, receipt.outcome == .completed { await startNextQueued(id) }
+            } catch {
+                if selectedID == id { notice = String(localized: "mac.agent.queueUnavailable") }
+            }
+        }
+    }
+
+    func cancelQueued(_ input: PendingUserInput) async {
+        guard selectedID == input.conversationID, let runtime, let release = admit() else { return }
+        defer { release() }
+        do {
+            let store = try await runtime.runningInputStore()
+            try await store.cancel(id: input.id)
+            await refreshQueue(input.conversationID)
+        } catch { notice = String(localized: "mac.agent.queueUnavailable") }
+    }
+
+    func startNextQueued(_ id: UUID) async {
+        guard !isTerminating, !changingTasks.contains(id), liveRuns[id] == nil, let runtime,
+              !drainingQueues.contains(id), let release = admit() else { return }
+        drainingQueues.insert(id)
+        defer {
+            drainingQueues.remove(id)
+            release()
+        }
+        do {
+            let store = try await runtime.runningInputStore()
+            while let input = try await store.claimNextQueued(conversationID: id) {
+                do {
+                    if let existing = try await runtime.runRecord(runID: input.id), existing.conversationID == id {
+                        try await store.markConsumed(id: input.id, runID: existing.id)
+                        continue
+                    }
+                    guard let mode = HostAgentMode(rawValue: input.executionMode),
+                          let model = providers.first(where: { $0.model.id == input.selectedModelID }),
+                          let owner = try await runtime.workspaceForConversation(id), owner.id == input.workspaceID,
+                          !isTerminating, !changingTasks.contains(id), liveRuns[id] == nil,
+                          input.attachments.isEmpty else { throw CocoaError(.userCancelled) }
+                    let priorGoal: ConversationGoal?
+                    if mode == .goal {
+                        guard let sourceID = input.targetRunID,
+                              let goalID = try await runtime.runRecord(runID: sourceID)?.goalID,
+                              let active = try await runtime.goals(conversationID: id).first(where: { $0.id == goalID }),
+                              active.status == .active else { throw CocoaError(.userCancelled) }
+                        priorGoal = active
+                    } else { priorGoal = nil }
+                    guard beginSend(input.content, runtime: runtime, provider: model.binding(),
+                                    workspaceID: owner.id, mode: mode, queued: input, queuedGoal: priorGoal)
+                    else { throw CocoaError(.userCancelled) }
+                } catch {
+                    try await store.restoreQueued(id: input.id)
+                    if selectedID == id { notice = String(localized: "mac.agent.queueHeld") }
+                }
+                break
+            }
+            await refreshQueue(id)
+        } catch {
+            if selectedID == id { notice = String(localized: "mac.agent.queueUnavailable") }
+        }
+    }
+
+    var canSteer: Bool {
+        guard let run = visibleRun, let identity = run.handle?.identity else { return false }
+        return identity.conversationID == selectedID && !run.steering && !run.stopping
+            && !isTerminating && run.phase == .running && !isLoadingHistory
+    }
+
+    var lastSteer: String? { visibleRun?.lastSteer }
+
+    func steer(_ text: String, onAccepted: @escaping () -> Void) {
+        guard canSteer, let run = visibleRun, let handle = run.handle, let id = selectedID else { return }
+        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty, let release = admit() else { return }
+        let runID = handle.identity.runID
+        let inputID = UUID()
+        liveRuns[id]?.steering = true
+        Task {
+            defer {
+                if liveRuns[id]?.handle?.identity.runID == runID { liveRuns[id]?.steering = false }
+                release()
+            }
+            do {
+                if try await handle.steer(text: content, inputID: inputID, expectedConversationID: id,
+                                          expectedRunID: runID, executionMode: run.mode.rawValue) {
+                    onAccepted()
+                    if liveRuns[id]?.handle?.identity.runID == runID { liveRuns[id]?.lastSteer = content }
+                    return
+                }
+                if let runtime {
+                    let store = try await runtime.runningInputStore()
+                    if try await store.input(id: inputID)?.status == .queued { try await store.cancel(id: inputID) }
+                    await refreshQueue(id)
+                }
+            } catch { /* Keep the draft available if the store cannot confirm delivery. */ }
+            if selectedID == id { notice = String(localized: "mac.agent.steerNotAccepted") }
+        }
+    }
+    #endif
+
     func stop() {
         guard let taskID = selectedID ?? newDraftRunID else { return }
         stopTask(taskID)
@@ -1567,6 +1817,10 @@ final class HostAgentWorkspace: ObservableObject {
             } else {
                 activity.append(.init(id: call.id, toolName: call.toolName, state: state))
             }
+        case .executionFinished(let callID, _, _):
+            guard let index = activity.firstIndex(where: { $0.id == callID }),
+                  activity[index].state == "running" || activity[index].state == "pending" else { return }
+            activity[index].state = "settling"
         case .finished(let result):
             if let index = activity.firstIndex(where: { $0.id == result.callID }) {
                 activity[index].state = result.status.rawValue
@@ -2134,7 +2388,7 @@ final class HostAgentWorkspace: ObservableObject {
 
     func verifyProjectTaskWorkflowSmoke(
         project: WorkspaceRecord, folder: URL, attachment: URL, endpoint: URL,
-        confirm: () -> Bool, approve: () -> Bool
+        chooseMode: (HostAgentMode) async -> Bool, confirm: () async -> Bool, approve: () async -> Bool
     ) async -> Bool {
         guard vault == nil, let runtime, selectedID == nil, selectedWorkspaceID == project.id, activeRunCount == 0,
               endpoint.scheme == "http", endpoint.host == "127.0.0.1",
@@ -2153,13 +2407,13 @@ final class HostAgentWorkspace: ObservableObject {
         providers = [other, chosen]
         selectedProviderID = other.profile.id
         selectComposerProvider(chosen.profile.id)
-        composerMode = .plan
         smokePlanExecuteFrame = nil
 
         func exercise() async -> Bool {
             let prompt = "Use the attached brief to write and save the project acceptance report."
             let report = folder.appendingPathComponent("acceptance-report.md")
-            guard composerProvider?.model.id == chosen.model.id,
+            guard await chooseMode(.chat), await chooseMode(.goal), await chooseMode(.agent),
+                  await chooseMode(.plan), composerMode == .plan, composerProvider?.model.id == chosen.model.id,
                   let brief = stageAttachments([attachment]).first, brief.kind == .document,
                   send(prompt, workspaceID: selectedWorkspaceID, mode: composerMode),
                   await waitForSmokeRun(),
@@ -2170,7 +2424,7 @@ final class HostAgentWorkspace: ObservableObject {
                 smokeRunDiagnostics.append("Project task did not reach plan review with the selected model.")
                 return false
             }
-            guard confirm() else {
+            guard await confirm() else {
                 smokeRunDiagnostics.append("Project task plan confirmation control was unavailable.")
                 return false
             }
@@ -2181,13 +2435,17 @@ final class HostAgentWorkspace: ObservableObject {
             }
             guard let approval = pendingApproval, approval.conversationID == taskID,
                   approval.workspaceID == project.id, approval.path == report.lastPathComponent,
-                  !FileManager.default.fileExists(atPath: report.path), approve(),
+                  !FileManager.default.fileExists(atPath: report.path), await approve(),
                   await waitForSmokeRun(),
                   (try? String(contentsOf: report, encoding: .utf8)) == "# Acceptance\nSynthetic attachment verified.\n" else {
                 smokeRunDiagnostics.append("Project task did not write the approved report.")
                 return false
             }
 
+            let queuedDeadline = ContinuousClock.now + .seconds(5)
+            while !messages.contains(where: { $0.content == "Queued report summary." }) && ContinuousClock.now < queuedDeadline {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
             await select(nil)
             await select(taskID)
             let runs = try? await runtime.recentRuns(conversationID: taskID, limit: 3)
@@ -2197,10 +2455,14 @@ final class HostAgentWorkspace: ObservableObject {
             guard selectedConversationWorkspace?.id == project.id, owners?[project.id]?.contains(taskID) == true,
                   reopenedAttachment?.standardizedFileURL == attachment.standardizedFileURL,
                   composerProvider?.model.id == chosen.model.id, plan?.status == .accepted,
-                  runs?.count == 2, let execution = runs?.first,
+                  runs?.count == 3, queuedInputs[taskID]?.isEmpty == true,
+                  let next = runs?.first, next.id != approval.runID,
+                  messages.contains(where: { $0.content == "Queued report summary." && $0.runID == next.id }),
+                  let execution = runs?.first(where: { $0.id == approval.runID }),
                   execution.modelID == chosen.model.id, execution.id == approval.runID,
                   let message = messages.first(where: { PlanConfirmationSnapshot.from(message: $0) != nil }),
                   message.runID == execution.id,
+                  messages.filter({ $0.content == "Mention the checked attachment in your reply." && $0.role == "user" && $0.runID == execution.id }).count == 1,
                   messages.contains(where: { $0.content.contains("Acceptance report saved.") }) else {
                 smokeRunDiagnostics.append("Project task lost its folder, selected model, plan or attachment after reopening.")
                 return false
@@ -2239,8 +2501,8 @@ final class HostAgentWorkspace: ObservableObject {
         let planSaved = pendingAcceptedPlan == nil
         let criterion = "Read the saved file and verify the requested text."
         guard beginSend("Verify the project output", runtime: runtime, provider: worker,
-                        mode: .goal, criterion: criterion), await waitForSmokeRun(),
-              let stored = goal, stored.acceptanceCriteria.contains(where: { $0.text == criterion }),
+                        mode: .goal, criterion: criterion + "\nConfirm the result."), await waitForSmokeRun(),
+              let stored = goal, stored.acceptanceCriteria.map(\.text) == [criterion, "Confirm the result."],
               stored.evidence.contains(where: { $0.kind == .toolResult }),
               (try? await runtime.recentRuns(conversationID: conversationID, limit: 1))?.first?.goalID == stored.id else {
             return (planSaved, false)
@@ -2260,11 +2522,17 @@ final class HostAgentWorkspace: ObservableObject {
         await pauseGoal(initial)
         guard let paused = goal, paused.status == .paused, paused.id == initial.id,
               paused.evidence == initial.evidence, canContinueGoal(paused),
+              await editGoal(paused, objective: "Verify the project and report the outcome",
+                             criteria: paused.acceptanceCriteria.map(\.text), blockers: ["Missing project"], stops: ["Report verified"]),
+              let edited = goal, edited.status == .paused, edited.evidence == paused.evidence,
+              edited.acceptanceCriteria == paused.acceptanceCriteria, edited.blockingConditions == ["Missing project"],
+              edited.stoppingConditions == ["Report verified"], edited.revision != paused.revision,
+              !(await editGoal(paused, objective: "Stale edit", criteria: ["Stale"], blockers: [], stops: [])),
               beginSend("Continue the fixture goal", runtime: runtime, provider: provider, mode: .goal, resumingGoal: true),
               await waitForSmokeRun(),
               let newest = try? await runtime.recentRuns(conversationID: id, limit: 1).first else { return false }
         guard newest.id != previousRun.id, newest.goalID == initial.id,
-              let ready = goal, ready.id == initial.id, ready.objective == initial.objective,
+              let ready = goal, ready.id == initial.id, ready.objective == edited.objective,
               ready.progress.cycleCount == initial.progress.cycleCount + 1, ready.status == .verifying else {
             smokeRunDiagnostics.append("Goal continuation: newRun=\(newest.id != previousRun.id), sameGoal=\(newest.goalID == initial.id), status=\(goal?.status.rawValue ?? "-"), cycles=\(goal?.progress.cycleCount ?? -1), prior=\(initial.progress.cycleCount)")
             return false
@@ -2281,12 +2549,17 @@ final class HostAgentWorkspace: ObservableObject {
     func verifyReadOnlyModelToolsSmoke(project: WorkspaceRecord, documentName: String) async -> Bool {
         guard vault == nil, let runtime, !isSending else { return false }
         let previous = allowsWorkspaceWrites
-        allowsWorkspaceWrites = false
         defer { allowsWorkspaceWrites = previous }
+        guard let chat = try? MacAgentWorkspaceTools.binding(workspace: project, readOnly: false, chatOnly: true),
+              chat.allowedToolNames == ["workspace.listDirectory", "workspace.searchFiles", "workspace.readFile"],
+              chat.executor.descriptor(named: "workspace.createFile") == nil,
+              chat.executor.descriptor(named: "workspace.replaceText") == nil else { return false }
         for (tool, arguments, mode) in [
+            ("workspace.searchFiles", ["query": "Synthetic attachment", "path": "fixture.md"], HostAgentMode.chat),
             ("workspace.searchFiles", ["query": "Synthetic attachment", "path": "fixture.md"], HostAgentMode.agent),
             ("workspace.readDocument", ["path": documentName], HostAgentMode.plan),
         ] {
+            allowsWorkspaceWrites = mode == .chat
             await select(nil)
             guard let provider = smokeProvider(.readWorkspace(tool, arguments)),
                   beginSend("Read the fixture", runtime: runtime, provider: provider,

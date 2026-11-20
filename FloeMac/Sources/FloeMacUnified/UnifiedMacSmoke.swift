@@ -199,11 +199,20 @@ final class UnifiedMacSmoke {
                     if let endpoint = projectTaskFixtureEndpoint,
                        await openNewProjectTask(workspace: agent, projectID: project.id) {
                         projectWorkflow = await agent.verifyProjectTaskWorkflowSmoke(project: project,
-                            folder: folder, attachment: document, endpoint: endpoint) {
-                                clickWorkbenchButton(ids: ["thread.plan.executeNormal"],
+                            folder: folder, attachment: document, endpoint: endpoint, chooseMode: { mode in
+                                await selectComposerMode(mode, workspace: agent)
+                            }) {
+                                guard clickWorkbenchButton(ids: ["thread.plan.close"], frame: agent.smokeClosePlanFrame,
+                                                           screenshot: "project-task-plan.png") else { return false }
+                                await Task.yield()
+                                guard clickWorkbenchButton(ids: ["thread.plan.reopen"], frame: agent.smokeReopenPlanFrame,
+                                                           screenshot: nil) else { return false }
+                                await Task.yield()
+                                return clickWorkbenchButton(ids: ["thread.plan.executeNormal"],
                                                      frame: agent.smokePlanExecuteFrame, screenshot: "project-task-plan.png")
                             } approve: {
-                                clickApproval(in: agent, allow: true, screenshot: "project-task-approval.png")
+                                guard await enterSteerDuringApproval(workspace: agent) else { return false }
+                                return clickApproval(in: agent, allow: true, screenshot: "project-task-approval.png")
                             }
                     }
                 }
@@ -539,6 +548,11 @@ final class UnifiedMacSmoke {
 
     private func verifyDesktopFilesLayout(window: NSWindow, content: NSView, workspace: HostAgentWorkspace) async -> Bool {
         guard let project = workspace.workspaces.first(where: { $0.kind == .project }) else { return false }
+        window.makeKeyAndOrderFront(nil)
+        let keyDeadline = ContinuousClock.now + .seconds(2)
+        while (!window.isKeyWindow || !workspace.windowShowsTask) && ContinuousClock.now < keyDeadline {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
         workspace.selectWorkspace(project.id)
         let frame = window.frame
         defer {
@@ -686,6 +700,87 @@ final class UnifiedMacSmoke {
             window.sendEvent(event)
         }
         return true
+    }
+
+    private func enterSteerDuringApproval(workspace: HostAgentWorkspace) async -> Bool {
+        guard let window = visibleWorkbench, let content = window.contentView, let id = workspace.selectedID,
+              workspace.canSteer else { return false }
+        func submit(_ text: String) async -> Bool {
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            guard let frame = workspace.smokePromptFrame, !frame.isEmpty,
+                  clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: window) else { return false }
+            await Task.yield()
+            guard let field = window.firstResponder as? NSTextView else { return false }
+            field.insertText(text, replacementRange: field.selectedRange())
+            await Task.yield()
+            return clickWorkbenchButton(ids: ["composer.running.send"], frame: workspace.smokeSteerFrame, screenshot: nil)
+        }
+        let next = "Summarize the saved project report."
+        let guidance = "Mention the checked attachment in your reply."
+        let titles = ["chat.thread_composer_view.add_to_message_queue", "chat.thread_composer_view.steer_the_current_run"].map { NSLocalizedString($0, comment: "") }
+        guard await selectMenuChoice(frame: workspace.smokeRunningModeFrame, titles: titles, target: titles[0]),
+              workspace.runningInputMode == .queue, await submit(next) else { return false }
+        var deadline = ContinuousClock.now + .seconds(2)
+        while workspace.queuedInputs[id]?.first?.content != next && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard workspace.queuedInputs[id]?.first?.content == next,
+              await selectMenuChoice(frame: workspace.smokeRunningModeFrame, titles: titles, target: titles[1]),
+              workspace.runningInputMode == .steer, await submit(guidance) else { return false }
+        deadline = ContinuousClock.now + .seconds(2)
+        while workspace.lastSteer != guidance && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return workspace.lastSteer == guidance && workspace.pendingApproval != nil
+    }
+
+    private func selectComposerMode(_ mode: HostAgentMode, workspace: HostAgentWorkspace) async -> Bool {
+        let titles = HostAgentMode.allCases.map { NSLocalizedString("mac.agent.mode." + $0.rawValue, comment: "") }
+        let target = NSLocalizedString("mac.agent.mode." + mode.rawValue, comment: "")
+        let chosen = await selectMenuChoice(frame: workspace.smokeModeFrame, titles: titles, target: target)
+        if !chosen || workspace.composerMode != mode {
+            settingsDiagnostics.append("Mode menu expected \(mode.rawValue), got \(workspace.composerMode.rawValue), selected=\(chosen).")
+        }
+        return chosen && workspace.composerMode == mode
+    }
+
+    private func selectMenuChoice(frame: @autoclosure () -> CGRect?, titles: [String], target: String) async -> Bool {
+        guard let window = visibleWorkbench, let content = window.contentView else { return false }
+        // The preceding selection can add/remove a project chip before this menu.
+        // Wait for its screen position to settle before dispatching the pointer event.
+        var previous = CGRect.null
+        let layoutDeadline = ContinuousClock.now + .seconds(1)
+        repeat {
+            try? await Task.sleep(for: .milliseconds(70))
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            if let now = frame(), now == previous { break }
+            previous = frame() ?? .null
+        } while ContinuousClock.now < layoutDeadline
+        content.layoutSubtreeIfNeeded()
+        refreshButtonFrames(in: content)
+        guard let frame = frame(), !frame.isEmpty else { settingsDiagnostics.append("Missing frame for \(target)"); return false }
+        capture(content, extension: "picker-\(titles.firstIndex(of: target) ?? 0).png")
+        let selection = SmokeMenuSelection(titles: titles, target: target)
+        NotificationCenter.default.addObserver(selection, selector: #selector(SmokeMenuSelection.menuOpened(_:)),
+                                               name: NSMenu.didBeginTrackingNotification, object: nil)
+        defer { NotificationCenter.default.removeObserver(selection) }
+        let point = content.convert(NSPoint(x: frame.midX, y: frame.midY), from: nil)
+        guard content.bounds.contains(point),
+              clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: window) else { return false }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !selection.selected && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        if !selection.selected {
+            settingsDiagnostics.append("Menu \(target) at \(frame) observed \(selection.observedTitles), hit \(String(describing: content.hitTest(point).map { type(of: $0) }))")
+        }
+        if selection.selected {
+            // Await the native popup closing animation before opening the next one.
+            try? await Task.sleep(for: .milliseconds(450))
+        }
+        return selection.selected
     }
 
     private func exerciseSpaceNavigation(model: BridgeAppModel) async -> Bool {
@@ -948,4 +1043,31 @@ final class UnifiedMacSmoke {
         return true
     }
 }
+@MainActor
+private final class SmokeMenuSelection: NSObject {
+    let titles: [String]
+    let target: String
+    var selected = false
+    var observedTitles: [String] = []
+
+    init(titles: [String], target: String) {
+        self.titles = titles
+        self.target = target
+    }
+
+    @objc func menuOpened(_ notification: Notification) {
+        guard let menu = notification.object as? NSMenu else { return }
+        perform(#selector(choose(_:)), with: menu, afterDelay: 0, inModes: [.eventTracking, .common])
+    }
+
+    @objc private func choose(_ menu: NSMenu) {
+        observedTitles = menu.items.map(\.title)
+        let items = menu.items.filter { titles.contains($0.title) }
+        defer { menu.cancelTracking() }
+        guard items.map(\.title) == titles, let item = items.first(where: { $0.title == target }) else { return }
+        menu.performActionForItem(at: menu.index(of: item))
+        selected = true
+    }
+}
+
 #endif

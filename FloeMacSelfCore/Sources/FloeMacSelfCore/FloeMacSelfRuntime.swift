@@ -44,6 +44,9 @@ private struct FloeMacSelfStores: Sendable {
     /// The one existing durable store for plan drafts and Goals. The
     /// composition never implements a second persistence model.
     let intelligence: SQLiteIntelligenceStore
+    /// The one existing durable pending-user-input store. Running steers and
+    /// host-owned queued follow-ups share this exact store and SQLite writer.
+    let runningInputs: SQLiteRunningInputStore
 }
 
 public actor FloeMacSelfRuntime {
@@ -241,8 +244,6 @@ public actor FloeMacSelfRuntime {
                 FloeMacSelfErrorIdentity.render(error)
             )
         }
-        // Upstream's constant currently lags registered V62/V63 migrations.
-        // Check the exact pinned schema instead of accepting arbitrary futures.
         guard version == FloeMacSelfSchemaGate.maximumVersion else {
             throw FloeMacSelfCoreError.schemaMismatch(
                 expected: FloeMacSelfSchemaGate.maximumVersion,
@@ -269,14 +270,27 @@ public actor FloeMacSelfRuntime {
             )
         }
         guard !closed, !shuttingDown else { throw FloeMacSelfCoreError.runtimeClosed }
-        stores = FloeMacSelfStores(
+        let preparedStores = FloeMacSelfStores(
             launch: SQLiteRunLaunchStore(database: database),
             conversations: SQLiteConversationStore(database: database),
             runs: SQLiteRunStore(database: database),
             checkpoints: SQLiteRunCheckpointStore(database: database, legacyDirectory: nil),
             workspaces: SQLiteWorkspaceStore(database: database),
-            intelligence: SQLiteIntelligenceStore(database: database)
+            intelligence: SQLiteIntelligenceStore(database: database),
+            runningInputs: SQLiteRunningInputStore(database: database)
         )
+        // Match the app launch contract: transient steer/queue rows left by a
+        // dead process return to `queued` before any session can start. A
+        // failure here means the durable owner cannot prove its recovery, so
+        // bootstrap fails closed instead of claiming readiness.
+        do {
+            try await preparedStores.runningInputs.recoverTransientInputs()
+        } catch {
+            throw FloeMacSelfCoreError.persistenceUnavailable(
+                FloeMacSelfErrorIdentity.render(error)
+            )
+        }
+        stores = preparedStores
         admissions = FloeMacSelfAdmissionStore(database: database, authorityLock: authorityLock)
         let receipt = FloeMacSelfBootstrapReceipt(
             schemaVersion: version,
@@ -716,7 +730,15 @@ public actor FloeMacSelfRuntime {
                 intelligenceStore: stores.intelligence,
                 conversationStore: stores.conversations,
                 runStore: stores.runs,
+                runningInputStore: stores.runningInputs,
                 runID: prepared.run.id,
+                // Tool-timing workspace receipts reuse the iOS contract: only
+                // an explicit project boundary passes its verified root; the
+                // service records the id only when the root exactly matches
+                // the run's workspace root.
+                receiptWorkspace: resolvedWorkspaceRoot.map {
+                    (id: prepared.workspace.id, root: $0)
+                },
                 conversationHistory: conversationHistory,
                 currentUserImages: currentUserImages,
                 runContext: runContext
@@ -759,6 +781,8 @@ public actor FloeMacSelfRuntime {
                 toolsEnabled: resolvedTools.enabled,
                 boundary: resolvedTools.boundary,
                 preparedAttachments: prepared.attachments,
+                runningInputStore: stores.runningInputs,
+                steerModelID: resolvedProvider.model.id,
                 verifyPreparedInput: verifyPreparedInput,
                 verifyWorkspaceLease: verifyWorkspaceLease,
                 eventBufferLimit: options.eventBufferLimit,
@@ -783,6 +807,49 @@ public actor FloeMacSelfRuntime {
     }
 
     // MARK: - Goal pause and continue (user controls)
+
+    /// Saves an explicit change to the current Goal and pauses advancement.
+    /// Retained criteria keep their identities and evidence, including duplicates in order.
+    @discardableResult
+    public func editGoalDefinition(conversationID: UUID, goalID: UUID, expectedRevision: Int,
+                                   objective: String, criteria: [String], blockers: [String],
+                                   stops: [String]) async throws -> ConversationGoal {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let operation = UUID()
+        activeAdmissions.insert(operation)
+        defer { activeAdmissions.remove(operation) }
+        var goal = try await controlledGoal(stores: stores, conversationID: conversationID,
+                                           goalID: goalID, expectedRevision: expectedRevision)
+        let title = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = { (list: [String]) in list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
+        let texts = clean(criteria)
+        guard !title.isEmpty, title.utf8.count <= FloeMacSelfRequestValidator.maximumGoalBytes,
+              !title.utf8.contains(0) else { throw Self.goalControlConflict() }
+        try FloeMacSelfRequestValidator.validateGoalCriteria(texts)
+        let blocking = clean(blockers)
+        let stopping = clean(stops)
+        if !blocking.isEmpty { try FloeMacSelfRequestValidator.validateGoalCriteria(blocking) }
+        if !stopping.isEmpty { try FloeMacSelfRequestValidator.validateGoalCriteria(stopping) }
+        var previous = goal.acceptanceCriteria
+        goal.objective = title
+        goal.acceptanceCriteria = texts.map { text in
+            if let index = previous.firstIndex(where: { $0.text == text }) { return previous.remove(at: index) }
+            return GoalCriterion(text: text)
+        }
+        goal.blockingConditions = blocking
+        goal.stoppingConditions = stopping
+        goal.status = .paused
+        goal.updatedAt = Date()
+        guard try await stores.intelligence.saveGoalIfRevisionMatches(goal, expectedRevision: expectedRevision),
+              let saved = try await stores.intelligence.goal(id: goalID), saved.status == .paused,
+              saved.objective == title, saved.acceptanceCriteria == goal.acceptanceCriteria,
+              saved.blockingConditions == blocking, saved.stoppingConditions == stopping else {
+            throw Self.goalControlConflict()
+        }
+        return saved
+    }
 
     /// Durable user Pause for one exact Goal revision. Persisting `.paused`
     /// fences every future round: the launch transaction only admits an
@@ -1311,6 +1378,14 @@ public actor FloeMacSelfRuntime {
     }
 
     // MARK: - Workspaces (project-aware selection)
+
+    /// The one durable pending-user-input store the composition itself uses
+    /// for running steers. The trusted host uses the same instance for its
+    /// queued follow-up logic; this composition never launches queued rows.
+    /// Throws `notBootstrapped` before `bootstrap()`.
+    public func runningInputStore() throws -> any RunningInputStore {
+        try requireStores().runningInputs
+    }
 
     /// Every durable workspace in deterministic name order. This is the
     /// project list the host presents for task selection; it grants no
@@ -2261,6 +2336,38 @@ public struct FloeMacSelfSessionHandle: Sendable {
         _ command: FloeMacSelfApprovalCommand
     ) async -> FloeMacSelfApprovalResolution {
         await session.resolveApproval(command)
+    }
+
+    /// Submits iPad-style running user text guidance to this exact session.
+    /// `expectedConversationID`/`expectedRunID` must match the session the
+    /// host believes is active; a stale or mismatched target returns false
+    /// without touching persistence. True means the runtime durably accepted
+    /// the guidance (the pending row mirrors the iPad lifecycle and the
+    /// consumed text appears exactly once in reopened history). False means
+    /// unaccepted — the run ended, a stop was recorded, or the runtime
+    /// rejected it — and the unsent text stays recoverable by the host.
+    /// Throws `invalidRequest` for empty/NUL/oversized text and
+    /// `persistenceUnavailable` when the durable write cannot complete.
+    ///
+    /// `executionMode` is persisted on the recovered queue row; the host
+    /// passes the run mode raw value so chat never becomes `agent`. Nil
+    /// stores this session's conversation mode.
+    public func steer(
+        text: String,
+        inputID: UUID,
+        expectedConversationID: UUID,
+        expectedRunID: UUID,
+        executionMode: String? = nil
+    ) async throws -> Bool {
+        guard expectedConversationID == identity.conversationID,
+              expectedRunID == identity.runID else {
+            return false
+        }
+        return try await session.steer(
+            text: text,
+            inputID: inputID,
+            executionMode: executionMode
+        )
     }
 
     /// Cancels this session's exact run and waits for the runtime's terminal

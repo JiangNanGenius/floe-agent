@@ -160,7 +160,30 @@ struct ConversationContextFeedbackTests {
             executor: executor
         )
 
+        // Subscribe before starting: the executor's lightweight completion is
+        // independent of the later authoritative, durable settlement.
+        let liveEvents = service.events()
         try await service.start(goal: "Check the background job")
+
+        var executionFinishIndex: Int?
+        var settledIndex: Int?
+        var index = 0
+        for await event in liveEvents {
+            if case .toolLifecycle(.executionFinished(let callID, let status, let emittedAt)) = event,
+               emittedAt != nil,
+               callID == call.id {
+                executionFinishIndex = index
+                #expect(status == .failed)
+            }
+            if case .toolLifecycle(.finished(let result)) = event, result.callID == call.id {
+                settledIndex = index
+                #expect(result.status == .failed)
+            }
+            index += 1
+        }
+        let early = try #require(executionFinishIndex)
+        let settled = try #require(settledIndex)
+        #expect(early < settled)
 
         let snapshot = await service.snapshot()
         // Presentation classification never changes the run's real terminal
@@ -171,6 +194,7 @@ struct ConversationContextFeedbackTests {
         #expect(snapshot.lastToolOutcome?.recovery == .waitForResource)
         #expect(snapshot.toolOutcome(callID: call.id)?.callID == call.id)
         #expect(snapshot.toolOutcome(callID: "never-settled") == nil)
+        #expect(snapshot.finishedToolExecutions[call.id] == nil)
 
         // The classification is presentation truth about a settled FAILED
         // result; it must never rewrite the durable result into a success.

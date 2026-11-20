@@ -47,6 +47,10 @@ public struct AgentLivenessSnapshot: Sendable, Codable, Hashable {
     public var lastProgressAt: Date
     public var isRecoverable: Bool
 
+    public var isReconnecting: Bool {
+        phase == .retrying || (phase == .waitingForFirstEvent && retryCount > 0)
+    }
+
     public init(
         phase: AgentLivenessPhase,
         message: String,
@@ -122,6 +126,10 @@ public struct TextDelta: Sendable, Codable, Hashable {
 public enum ToolLifecycleEvent: Sendable, Codable, Hashable {
     case requested(ToolCall)
     case started(ToolCall)
+    /// The executor returned for this call. This transient, output-free hint
+    /// lets the UI stop showing execution while settlement is in progress.
+    /// The later finished result remains authoritative and may differ.
+    case executionFinished(callID: String, status: ToolResult.Status, emittedUptimeNanoseconds: UInt64? = nil)
     case finished(ToolResult)
 }
 

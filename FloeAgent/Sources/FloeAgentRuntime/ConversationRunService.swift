@@ -62,6 +62,8 @@ public actor ConversationRunService {
         public var recentToolOutcomes: [ToolOutcomeClassification]
         /// RAM-only native observations, keyed within this exact run.
         public var nativeToolDiagnostics: [String: [TaskDiagnosticProgress]]
+        /// Transient execution completions awaiting durable tool results.
+        public var finishedToolExecutions: [String: ToolResult.Status]
 
         public var lastToolOutcome: ToolOutcomeClassification? {
             recentToolOutcomes.last
@@ -90,7 +92,8 @@ public actor ConversationRunService {
             checkpointReason: String? = nil,
             contextCompression: ContextCompressionSnapshot? = nil,
             recentToolOutcomes: [ToolOutcomeClassification] = [],
-            nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:]
+            nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:],
+            finishedToolExecutions: [String: ToolResult.Status] = [:]
         ) {
             self.runID = runID
             self.conversationID = conversationID
@@ -107,6 +110,7 @@ public actor ConversationRunService {
             self.contextCompression = contextCompression
             self.recentToolOutcomes = recentToolOutcomes
             self.nativeToolDiagnostics = nativeToolDiagnostics
+            self.finishedToolExecutions = finishedToolExecutions
         }
     }
 
@@ -118,6 +122,7 @@ public actor ConversationRunService {
     /// Model identity used to rebuild the effective policy when permissions
     /// change during this run.
     public nonisolated let primaryModel: ModelProfile
+    public nonisolated let executionConfined: Bool
     /// Immutable execution contract copied into the durable run and live UI
     /// projection. Recovery must never infer this from mutable conversation UI.
     public nonisolated let conversationMode: ConversationMode
@@ -129,6 +134,7 @@ public actor ConversationRunService {
     private let runtime: FloeAgentRuntime
     private let conversationStore: any ConversationStore
     private let runStore: any RunStore
+    private let receiptWorkspaceID: UUID?
     private let runningInputStore: (any RunningInputStore)?
     private let intelligenceStore: SQLiteIntelligenceStore?
     private let secretForRedaction: String?
@@ -222,6 +228,7 @@ public actor ConversationRunService {
     )
     private var providerAttempt: ProviderAttemptSnapshot?
     private var latestState: AgentState = .idle
+    private var backgroundApproval: AgentState.WaitingApproval?
     private var isReviewingApproval = false
     private var pendingUserQuestion: UserQuestionWaitingSnapshot?
     /// Last runtime-published compression state for this exact run. Stored so
@@ -262,12 +269,13 @@ public actor ConversationRunService {
     /// dispatched with zero execution time. The instant is stamped at the
     /// real executor boundary, not when the service actor later receives it,
     /// so actor delivery latency is never counted as execution.
-    private var toolDispatchedAt: [String: ContinuousClock.Instant] = [:]
+    private var toolDispatches: [String: (instant: ContinuousClock.Instant, name: String, workspaceID: UUID?)] = [:]
     /// Per-call executor-return instants (`didFinishToolCall`), the execution
     /// end boundary. Recorded per call as each executor returns BEFORE the
     /// batch settles, so parallel calls keep their own real durations.
     private var toolCompletedAt: [String: ContinuousClock.Instant] = [:]
     private var toolNames: [String: String] = [:]
+    private var finishedToolExecutions: [String: ToolResult.Status] = [:]
     /// Prevents the legacy Markdown fallback from overwriting a structured
     /// plan submitted during this run.
     private var receivedStructuredPlan = false
@@ -383,6 +391,7 @@ public actor ConversationRunService {
         adapter: any ProviderAdapter,
         policy: any ApprovalPolicy,
         executor: any ToolExecutor,
+        executionConfined: Bool = false,
         credentials: ProviderCredentials = ProviderCredentials(),
         gate: CatastrophicActionGate? = nil,
         auditSink: (any AuditSink)? = nil,
@@ -398,6 +407,7 @@ public actor ConversationRunService {
         runStore: any RunStore,
         runningInputStore: (any RunningInputStore)? = nil,
         runID: UUID = UUID(),
+        receiptWorkspace: (id: UUID, root: URL)? = nil,
         conversationHistory: [ConversationMessage] = [],
         currentUserImages: [ConversationImagePart] = [],
         runContext: RunContext? = nil,
@@ -406,9 +416,17 @@ public actor ConversationRunService {
     ) {
         self.runID = runID
         self.conversationID = configuration.conversationID
+        self.executionConfined = executionConfined
         self.primaryModel = configuration.model
         self.conversationStore = conversationStore
         self.runStore = runStore
+        if let receiptWorkspace, !configuration.temporaryReadOnly, receiptWorkspace.root.isFileURL,
+           let runRoot = configuration.workspaceRootURL, runRoot.isFileURL,
+           runRoot.standardizedFileURL.path == receiptWorkspace.root.standardizedFileURL.path {
+            self.receiptWorkspaceID = receiptWorkspace.id
+        } else {
+            self.receiptWorkspaceID = nil
+        }
         self.runningInputStore = runningInputStore
         self.intelligenceStore = intelligenceStore
         self.conversationMode = configuration.conversationMode
@@ -481,10 +499,10 @@ public actor ConversationRunService {
             await self?.handleEvent(event)
         }
         forwarder.onToolDispatch = { [weak self] call, stamp in
-            await self?.handleToolDispatch(callID: call.id, at: stamp)
+            await self?.handleToolDispatch(call, at: stamp)
         }
-        forwarder.onToolFinish = { [weak self] call, stamp in
-            await self?.handleToolFinish(callID: call.id, at: stamp)
+        forwarder.onToolFinish = { [weak self] call, status, stamp in
+            await self?.handleToolFinish(callID: call.id, status: status, at: stamp)
         }
         forwarder.onNativeDiagnostic = { [weak self] callID, observation in
             await self?.handleNativeDiagnostic(observation, callID: callID)
@@ -519,8 +537,28 @@ public actor ConversationRunService {
         forwarder.onApprovalReview = { [weak self] snapshot in
             await self?.handleApprovalReview(snapshot)
         }
+        forwarder.onBackgroundApproval = { [weak self] waiting in
+            await self?.handleBackgroundApproval(waiting)
+        }
         forwarder.onApprovalDecisionRecorded = { [weak self] receipt in
             self?.eventChannel.yield(.approvalResolved(callID: receipt.callID))
+        }
+    }
+
+    private func handleBackgroundApproval(_ waiting: AgentState.WaitingApproval?) async {
+        if waiting != nil, isTerminal(latestState) { return }
+        let prior = backgroundApproval
+        backgroundApproval = waiting
+        if let waiting {
+            eventChannel.yield(.approvalRequested(ApprovalRequestSnapshot(toolCall: waiting.toolCall,
+                reason: waiting.reason, requestedAt: waiting.requestedAt)))
+            _ = await appendEventReliably(runID: runID, kind: .approval,
+                payloadJSON: Self.approvalPayload(waiting), boundary: "backgroundApprovalRequest",
+                completionCritical: true)
+        } else if prior != nil {
+            // This is only a presentation change. The real approval receipt
+            // is published by the dispatch/audit path after persistence.
+            eventChannel.yield(.stateChanged(Self.harnessState(latestState)))
         }
     }
 
@@ -530,7 +568,7 @@ public actor ConversationRunService {
         if case .waitingApproval(let waiting) = latestState {
             pendingApproval = waiting
         } else {
-            pendingApproval = nil
+            pendingApproval = backgroundApproval
         }
         let checkpointReason: String?
         if case .checkpointed(let reference) = latestState {
@@ -557,7 +595,8 @@ public actor ConversationRunService {
             checkpointReason: checkpointReason,
             contextCompression: contextCompression,
             recentToolOutcomes: recentToolOutcomes,
-            nativeToolDiagnostics: nativeToolDiagnostics
+            nativeToolDiagnostics: nativeToolDiagnostics,
+            finishedToolExecutions: finishedToolExecutions
         )
     }
 
@@ -611,14 +650,13 @@ public actor ConversationRunService {
         if case .checkpointed = state { return "checkpointed" }
         if case .waitingUserQuestion = state { return "waitingUserQuestion" }
         if isReviewingApproval { return "reviewingApproval" }
+        if liveness.isReconnecting { return "reconnecting" }
         switch liveness.phase {
         case .waitingTool:
             return "waitingTool"
         case .preparingToolCall:
             if case .streamingModel = state { return "preparingToolCall" }
             return state.name
-        case .retrying:
-            return "reconnecting"
         case .persisting:
             return "committingResults"
         case .compacting:
@@ -940,7 +978,7 @@ public actor ConversationRunService {
     /// Every dedicated internal delivery mode the runtime treats as
     /// fail-closed. A persisted row without one of these stays ordinary.
     static let internalDeliveryExecutionModes: Set<String> = [
-        designConfirmationExecutionMode, proposalDecisionExecutionMode, taskCoordinationExecutionMode, taskWaitCompletionExecutionMode,
+        designConfirmationExecutionMode, proposalDecisionExecutionMode, taskCoordinationExecutionMode, taskWaitCompletionExecutionMode, BrowserControlNotice.executionMode,
     ]
 
     /// Recoverable-failure text for a dedicated internal delivery whose
@@ -999,7 +1037,7 @@ public actor ConversationRunService {
             return
         case .ordinary:
             switch input.origin {
-            case .taskCoordination, .waitCompletion:
+            case .taskCoordination, .waitCompletion, .browserControl:
                 durabilityFailure = Self.invalidInternalDeliveryMessage
                 return
             case .user: break
@@ -1128,6 +1166,11 @@ public actor ConversationRunService {
             case .mismatch: return .ordinary
             }
         }
+        if case .browserControl(let notice) = input.origin {
+            guard row.executionMode == BrowserControlNotice.executionMode, input.content == notice.message else { return .invalidInternal }
+        } else if row.executionMode == BrowserControlNotice.executionMode {
+            return .invalidInternal
+        }
         guard Self.internalDeliveryExecutionModes.contains(row.executionMode) else {
             // Genuine ordinary guidance (including a steer whose text repeats
             // a notice template) keeps its existing path.
@@ -1165,8 +1208,12 @@ public actor ConversationRunService {
     private func systemNoticeEvidence(for input: RuntimeSteerInput) async -> SystemNoticeEvidence {
         do {
             let messages = try await conversationStore.messages(conversationID: conversationID)
-            let match = messages.contains {
-                $0.id == input.id && $0.role == "system" && $0.content == input.content
+            let match = messages.contains { message in
+                guard message.id == input.id, message.role == "system", message.content == input.content else { return false }
+                if case .browserControl = input.origin {
+                    return message.runID == runID && message.parts.contains { $0.metadata[BrowserControlNotice.historyMarker] == "1" }
+                }
+                return true
             }
             return match ? .match : .mismatch
         } catch {
@@ -1353,14 +1400,48 @@ public actor ConversationRunService {
     /// execution-time origin for this callID. No lifecycle event is emitted
     /// here: subscribers already received `.requested(call)` with the full
     /// call, and a synthetic partial event would corrupt their state.
-    private func handleToolDispatch(callID: String, at stamp: ToolTimingStamp) {
-        toolDispatchedAt[callID] = stamp.monotonic
+    private func handleToolDispatch(_ call: ToolCall, at stamp: ToolTimingStamp) {
+        let workspaceID = receiptWorkspaceID.flatMap { Self.targetsLeasedWorkspace(call) ? $0 : nil }
+        toolDispatches[call.id] = (stamp.monotonic, call.toolName, workspaceID)
+    }
+
+    /// Only the native file tools below route ordinary relative paths through
+    /// this run's root guard. Local and network mounts can own different bytes.
+    static func targetsLeasedWorkspace(_ call: ToolCall) -> Bool {
+        guard case .local = call.scope else { return false }
+        let usesTwoPaths: Bool
+        switch call.toolName {
+        case "workspace.copyFile", "workspace.moveFile":
+            usesTwoPaths = true
+        case "workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile",
+             "workspace.replaceText", "workspace.deleteFile", "workspace.publishOutput":
+            usesTwoPaths = false
+        default: return false
+        }
+        struct Paths: Decodable {
+            let path, from, to, sourcePath, scope: String?
+        }
+        guard let args = try? JSONDecoder().decode(Paths.self, from: call.argumentsJSON),
+              args.scope == nil || args.scope == "local" else { return false }
+        func isDirect(_ value: String?) -> Bool {
+            guard let path = value?.trimmingCharacters(in: .whitespaces),
+                  !path.hasPrefix("/"), !path.hasPrefix("~"), !path.contains("\\"), !path.contains("\0") else { return false }
+            let parts = path.split(separator: "/").filter { $0 != "." }
+            guard let first = parts.first, !parts.contains("..") else { return false }
+            return first != "Mounts" && first != "Network"
+        }
+        if usesTwoPaths { return isDirect(args.from) && isDirect(args.to) }
+        if call.toolName == "workspace.writeFile", let source = args.sourcePath, !isDirect(source) { return false }
+        return isDirect(args.path)
     }
 
     /// Per-call executor return: the execution end boundary for this callID,
     /// independent of when the whole batch settles.
-    private func handleToolFinish(callID: String, at stamp: ToolTimingStamp) {
+    private func handleToolFinish(callID: String, status: ToolResult.Status, at stamp: ToolTimingStamp) {
         toolCompletedAt[callID] = stamp.monotonic
+        finishedToolExecutions[callID] = status
+        eventChannel.yield(.toolLifecycle(.executionFinished(callID: callID, status: status,
+            emittedUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds)))
     }
 
     private func handleNativeDiagnostic(_ observation: TaskDiagnosticProgress, callID: String) {
@@ -1460,6 +1541,7 @@ public actor ConversationRunService {
             nativeToolDiagnostics[call.id] = nil
             nativeDiagnosticCallOrder.removeAll { $0 == call.id }
             toolNames[call.id] = call.toolName
+            finishedToolExecutions.removeValue(forKey: call.id)
             toolRequestedAt[call.id] = ContinuousClock.now
             // Explicit Cookie/Authorization argument values are scrubbed
             // over the FULL argument data BEFORE the bounded event projection.
@@ -1487,9 +1569,10 @@ public actor ConversationRunService {
             )
         case .toolResult(let result):
             eventChannel.yield(.toolLifecycle(.finished(result)))
+            let dispatch = toolDispatches.removeValue(forKey: result.callID)
             let timing = Self.toolTiming(
                 requestedAt: toolRequestedAt.removeValue(forKey: result.callID),
-                dispatchedAt: toolDispatchedAt.removeValue(forKey: result.callID),
+                dispatchedAt: dispatch?.instant,
                 completedAt: toolCompletedAt.removeValue(forKey: result.callID)
             )
             let durationMs = timing.durationMs
@@ -1516,6 +1599,11 @@ public actor ConversationRunService {
                 "durationMs": String(durationMs),
                 "dispatched": timing.dispatched ? "true" : "false"
             ]
+            if result.outcomeUnknown {
+                persisted["outcomeUnknown"] = "true"
+            } else if result.status == .ok, dispatch?.name == finishedToolName, let workspaceID = dispatch?.workspaceID {
+                persisted["workspaceID"] = workspaceID.uuidString
+            }
             // Queue time is persisted only for genuinely dispatched calls:
             // approval resolution and write-barrier waits are queue time, not
             // execution time, and a missing record must never be fabricated.
@@ -1553,12 +1641,13 @@ public actor ConversationRunService {
                     )
                 }
             }
-            _ = await appendEventReliably(
+            let resultPersisted = await appendEventReliably(
                 runID: runID, kind: .toolResult,
                 payloadJSON: Self.jsonPayload(persisted),
                 boundary: "toolResult",
                 completionCritical: true
             )
+            if resultPersisted { finishedToolExecutions.removeValue(forKey: result.callID) }
         case .usage(let report):
             eventChannel.yield(.usageChanged(UsageSnapshot(
                 inputTokens: report.inputTokens,
@@ -2866,12 +2955,17 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
+    var onBackgroundApproval: (@Sendable (AgentState.WaitingApproval?) async -> Void)?
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
     var onToolDispatch: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
-    var onToolFinish: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
+    var onToolFinish: (@Sendable (ToolCall, ToolResult.Status, ToolTimingStamp) async -> Void)?
     var onNativeDiagnostic: (@Sendable (String, TaskDiagnosticProgress) async -> Void)?
     var onContextCompression: (@Sendable (ContextCompressionSnapshot) async -> Void)?
     var onToolOutcome: (@Sendable (ToolOutcomeClassification) async -> Void)?
+
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeBackgroundApproval waiting: AgentState.WaitingApproval?) async {
+        await onBackgroundApproval?(waiting)
+    }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)
@@ -2891,7 +2985,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
         result: ToolResult,
         at stamp: ToolTimingStamp
     ) async {
-        await onToolFinish?(call, stamp)
+        await onToolFinish?(call, result.status, stamp)
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didObserveNativeDiagnostic observation: TaskDiagnosticProgress, callID: String) async {

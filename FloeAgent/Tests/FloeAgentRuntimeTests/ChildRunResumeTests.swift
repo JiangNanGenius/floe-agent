@@ -78,6 +78,7 @@ struct ChildRunResumeTests {
         private var records: [UUID: ChildRunRecord] = [:]
         private var entries: [UUID: [ChildRunEntry]] = [:]
         private var checkpoints: [UUID: ChildRunCheckpoint] = [:]
+        private var backgroundOwners: [UUID: BackgroundChildOwner] = [:]
         private(set) var checkpointHistory: [UUID: [ChildRunCheckpoint]] = [:]
         private var leaseOwner: UUID?
         private var leaseExpiresAt: Date?
@@ -89,6 +90,8 @@ struct ChildRunResumeTests {
         /// Number of successful checkpoint saves before saves start throwing.
         var failCheckpointSaveAfter: Int?
         private var checkpointSaveCount = 0
+        private var failResumeMarker = false
+        func setFailResumeMarker() { failResumeMarker = true }
 
         func register(_ record: ChildRunRecord) async throws -> ChildRunRecord {
             log.append("register")
@@ -105,6 +108,9 @@ struct ChildRunResumeTests {
         }
 
         func appendEntry(id: UUID, kind: ChildRunEntryKind, payloadJSON: String) async throws {
+            if failResumeMarker && payloadJSON.contains("resumedParentRunID") {
+                throw FloeError.storageCorrupted("simulated resume provenance failure")
+            }
             log.append("entry:\(kind.rawValue)")
             entries[id, default: []].append(ChildRunEntry(
                 childRunID: id,
@@ -151,6 +157,21 @@ struct ChildRunResumeTests {
         func entries(childRunID: UUID, afterSequence: Int, limit: Int) async throws -> ChildRunEntryPage {
             let all = (entries[childRunID] ?? []).filter { $0.sequence > afterSequence }
             return ChildRunEntryPage(entries: Array(all.prefix(limit)), nextSequence: nil)
+        }
+
+        func assignBackgroundOwner(childID: UUID, parentRunID: UUID, conversationID: UUID,
+                                   resumeOwner: UUID?, payloadJSON: String) async throws {
+            guard let child = records[childID], child.conversationID == conversationID,
+                  resumeOwner == nil ? child.parentRunID == parentRunID : resumeOwner == leaseOwner && resumeParent == parentRunID else {
+                throw FloeError.validationFailed("owner mismatch")
+            }
+            try await appendEntry(id: childID, kind: .state, payloadJSON: payloadJSON)
+            backgroundOwners[childID] = .init(childID: childID, parentRunID: parentRunID, conversationID: conversationID)
+        }
+        func backgroundOwner(childID: UUID) async throws -> BackgroundChildOwner? { backgroundOwners[childID] }
+        func backgroundChildren(parentRunID: UUID, conversationID: UUID) async throws -> [ChildRunRecord] {
+            backgroundOwners.values.filter { $0.parentRunID == parentRunID && $0.conversationID == conversationID }
+                .compactMap { records[$0.childID] }
         }
 
         func reconcileInterruptedOnLaunch() async throws -> Int {
@@ -341,7 +362,8 @@ struct ChildRunResumeTests {
             kind: "explore",
             taskSummary: task,
             state: .running,
-            iterationCount: spentIterations
+            iterationCount: spentIterations,
+            delegateCallID: "delegate-1"
         ))
         try await store.saveCheckpoint(ChildRunCheckpoint(
             childID: childID,
@@ -849,4 +871,62 @@ struct ChildRunResumeTests {
         let record = try #require(await store.child(id: childID))
         #expect(record.state == .cancelled)
     }
+    @Test("a background child resumed by a new parent is delivered once to that parent after restart")
+    func backgroundResumeReplaysToCurrentParent() async throws {
+        let store = FakeChildStore()
+        let (childID, conversationID, originalParent) = try await makeInterruptedChild(store: store)
+        try await store.assignBackgroundOwner(childID: childID, parentRunID: originalParent,
+            conversationID: conversationID, resumeOwner: nil, payloadJSON: #"{"backgroundDelegate":true}"#)
+        try await store.appendEntry(id: childID, kind: .state, payloadJSON: #"{"backgroundStartReady":true}"#)
+        let currentParent = UUID()
+        let plan = try await ChildResumeService(store: store).begin(childID: childID,
+            currentParentRunID: currentParent, currentParentConversationID: conversationID)
+        let adapter = MockAdapter()
+        adapter.script = [[.textDelta(.init(text: "actual resumed result")), .completed(.init(stopReason: .endTurn))]]
+        let dispatcher = RecordingDispatcher(), runner = makeRunner(adapter: adapter, store: store)
+        let result = try await runner.resumeStructured(plan,
+            context: childContext(identity: plan.resumedIdentity, dispatcher: dispatcher),
+            childBudget: budget(plan.remainingIterations))
+        #expect(result.status == .completed)
+        #expect(dispatcher.calls.isEmpty)
+        // New registry instance models process restart; durable provenance is
+        // the only source of the actual current parent identity.
+        let recovered = SubagentRunnerRegistry()
+        await recovered.register(runner, for: currentParent)
+        let pending = try await recovered.settleBackground(runID: currentParent, conversationID: conversationID)
+        #expect(pending.count == 1)
+        #expect(pending.first?.outcome?.findings.contains("actual resumed result") == true)
+        let old = SubagentRunnerRegistry()
+        await old.register(runner, for: originalParent)
+        #expect(try await old.settleBackground(runID: originalParent, conversationID: conversationID).isEmpty)
+        try await recovered.markBackgroundDelivered(runID: currentParent, conversationID: conversationID, childIDs: [childID])
+        let restarted = SubagentRunnerRegistry()
+        await restarted.register(runner, for: currentParent)
+        #expect(try await restarted.settleBackground(runID: currentParent, conversationID: conversationID).isEmpty)
+        #expect(adapter.requests.count == 1)
+    }
+
+    @Test("a failed resume provenance write stops before the resumed provider or tools run")
+    func failedResumeProvenanceCannotStart() async throws {
+        let store = FakeChildStore()
+        let (childID, conversationID, originalParent) = try await makeInterruptedChild(store: store)
+        try await store.assignBackgroundOwner(childID: childID, parentRunID: originalParent,
+            conversationID: conversationID, resumeOwner: nil, payloadJSON: #"{"backgroundDelegate":true}"#)
+        try await store.appendEntry(id: childID, kind: .state, payloadJSON: #"{"backgroundStartReady":true}"#)
+        let currentParent = UUID()
+        let plan = try await ChildResumeService(store: store).begin(childID: childID,
+            currentParentRunID: currentParent, currentParentConversationID: conversationID)
+        await store.setFailResumeMarker()
+        let adapter = MockAdapter(), dispatcher = RecordingDispatcher()
+        adapter.script = [[.textDelta(.init(text: "must not run")), .completed(.init(stopReason: .endTurn))]]
+        let result = try await makeRunner(adapter: adapter, store: store).resumeStructured(plan,
+            context: childContext(identity: plan.resumedIdentity, dispatcher: dispatcher),
+            childBudget: budget(plan.remainingIterations))
+        #expect(result.status == .toolError)
+        #expect(adapter.requests.isEmpty)
+        #expect(dispatcher.calls.isEmpty)
+        #expect(try await store.child(id: childID)?.state == .interrupted)
+        #expect(try await store.checkpoint(childRunID: childID) != nil)
+    }
+
 }

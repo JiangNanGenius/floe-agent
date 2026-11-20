@@ -87,12 +87,18 @@ enum FloeTheme {
     // MARK: - Typography roles
 
     enum Typography {
+        #if os(macOS)
+        static let title = Font.headline
+        static let section = Font.body.weight(.semibold)
+        static let body = Font.callout
+        #else
         /// Screen / section hero title.
         static let title = Font.title2.weight(.semibold)
         /// Section header inside a screen.
         static let section = Font.headline
         /// Primary reading text.
         static let body = Font.body
+        #endif
         /// Timestamps, counts, secondary context.
         static let metadata = Font.footnote
         /// Terminal output, evidence payloads, fingerprints, JSON.
@@ -110,10 +116,24 @@ enum FloeTheme {
 
     // MARK: - Accessibility helpers
 
-    /// Minimum hit-target dimension (44pt per HIG).
+    #if os(macOS)
+    static let minimumTarget: CGFloat = 28
+    static let welcomeSpacing: CGFloat = 9
+    static let welcomeCorner: CGFloat = 12
+    static let welcomeIconSize: CGFloat = 48
+    static let composerRadius: CGFloat = 12
+    static let sendButtonSize: CGFloat = 26
+    #else
+    static let welcomeSpacing: CGFloat = 16
+    static let welcomeCorner: CGFloat = 18
+    static let welcomeIconSize: CGFloat = 76
+    static let composerRadius: CGFloat = 22
+    static let sendButtonSize: CGFloat = 34
     static let minimumTarget: CGFloat = 44
 
-    /// Pads a control so its tappable area never drops below 44pt.
+    #endif
+
+    /// Apply the platform control target.
     static func minimumTargetFrame<Content: View>(
         _ content: Content,
         alignment: Alignment = .center
@@ -181,16 +201,16 @@ struct FloeWorkbenchWelcomeHeader<Welcome: View>: View {
     @ViewBuilder var welcome: () -> Welcome
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: FloeTheme.welcomeSpacing) {
             icon
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 76, height: 76)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .frame(width: FloeTheme.welcomeIconSize, height: FloeTheme.welcomeIconSize)
+                .clipShape(RoundedRectangle(cornerRadius: FloeTheme.welcomeCorner, style: .continuous))
                 .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
                 .accessibilityHidden(true)
             welcome()
-                .font(.title2.weight(.semibold))
+                .font(FloeTheme.Typography.title)
                 .multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
         }
@@ -203,10 +223,10 @@ struct FloeThreadComposerChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : 22, style: .continuous))
+            .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : FloeTheme.composerRadius, style: .continuous))
             .overlay {
                 if !documentAssistant {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    RoundedRectangle(cornerRadius: FloeTheme.composerRadius, style: .continuous)
                         .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
                 }
             }
@@ -247,12 +267,67 @@ struct FloeThreadComposerChip: View {
     }
 }
 
+/// The same choices, symbols and selected mark in each workbench composer.
+struct FloeComposerModeMenu<Mode: Hashable>: View {
+    let modes: [Mode]
+    @Binding var selection: Mode
+    let title: (Mode) -> LocalizedStringKey
+    let symbol: (Mode) -> String
+    var editGoalTitle = ""
+    var editGoal: (() -> Void)? = nil
+    let goal: Mode
+    var maximumWidth: CGFloat = 280
+
+    var body: some View {
+        Menu {
+            ForEach(modes, id: \.self) { mode in
+                if mode == goal, let editGoal {
+                    Button(editGoalTitle, systemImage: "target", action: editGoal)
+                        .accessibilityIdentifier("composer.goal.edit")
+                } else {
+                    Button { selection = mode } label: {
+                        Label(title(mode), systemImage: mode == selection ? "checkmark" : symbol(mode))
+                    }
+                }
+            }
+        } label: {
+            FloeThreadComposerChip(title: Text(title(selection)), systemImage: symbol(selection),
+                                   maximumWidth: maximumWidth)
+        }
+    }
+}
+
+struct FloeComposerRunningInputMenu: View {
+    @Binding var queue: Bool
+    var maximumWidth: CGFloat = 280
+
+    var body: some View {
+        Menu {
+            Button { queue = true } label: {
+                Label("chat.thread_composer_view.add_to_message_queue", systemImage: queue ? "checkmark" : "text.badge.plus")
+            }
+            Button { queue = false } label: {
+                Label("chat.thread_composer_view.steer_the_current_run", systemImage: queue ? "arrow.triangle.turn.up.right.diamond" : "checkmark")
+            }
+        } label: {
+            FloeThreadComposerChip(title: Text(LocalizedStringKey(queue ? "chat.thread_composer_view.queue" : "chat.thread_composer_view.steer")),
+                                  systemImage: queue ? "text.badge.plus" : "arrow.triangle.turn.up.right.diamond",
+                                  maximumWidth: maximumWidth)
+        }
+        .accessibilityLabel("chat.thread_composer_view.send_method_while_running")
+    }
+}
+
 struct FloeWorkbenchControlIcon: View {
     let systemImage: String
 
     var body: some View {
         Image(systemName: systemImage)
+            #if os(macOS)
+            .font(.body.weight(.medium))
+            #else
             .font(.title3)
+            #endif
             .foregroundStyle(FloeTheme.primary)
     }
 }
@@ -294,7 +369,7 @@ struct FloeComposerActionGlyph: View {
         Image(systemName: systemImage)
             .font(.system(size: destructive ? 13 : 17, weight: .semibold))
             .foregroundStyle(enabled ? Color.white : Color.secondary)
-            .frame(width: 34, height: 34)
+            .frame(width: FloeTheme.sendButtonSize, height: FloeTheme.sendButtonSize)
             .background(background, in: Circle())
     }
 

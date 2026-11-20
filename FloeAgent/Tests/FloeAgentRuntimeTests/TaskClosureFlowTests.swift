@@ -35,6 +35,29 @@ struct TaskClosureFlowTests {
             checkpointStore:checkpointStore,sink:sink,runID:runID)
     }
 
+    @Test("An explicit future action without a checklist cannot end the run")
+    func explicitFutureWorkRequiresContinuation() {
+        let facts = TaskClosureGate.Facts(steps: [], receipts: [], availableToolNames: ["exec.shell"])
+        let gate = TaskClosureGate()
+        #expect(gate.evaluate(answer: "我会继续检查执行结果。", facts: facts, corrections: 0, isVerification: false) == .reconcileOnce)
+        #expect(gate.evaluate(answer: "我会继续检查执行结果。", facts: facts, corrections: 1, isVerification: false) == .reportUnfinished)
+        #expect(gate.evaluate(answer: "结果已检查完成。", facts: facts, corrections: 0, isVerification: false) == .allow)
+        #expect(gate.evaluate(answer: "你确认后我会继续检查。", facts: facts, corrections: 0, isVerification: false) == .allow)
+        #expect(gate.evaluate(answer: "请确认，之后我会继续检查。", facts: facts, corrections: 0, isVerification: false) == .allow)
+    }
+
+    @Test("An engine recommendation can end the turn while confirmation is pending")
+    func engineRecommendationAwaitsUser() {
+        let facts = TaskClosureGate.Facts(
+            steps: [.init(id: "engine", title: "Confirm the proposed engine", status: "pending")],
+            receipts: [.init(toolName: "game.selection", callFingerprint: "proposal", status: "ok",
+                             isSideEffecting: true, outcomeUnknown: false)],
+            availableToolNames: ["game.selection"])
+        let answer = "已提交建议。请在项目设置面板确认 RPG Maker MV 和 www。"
+        #expect(TaskClosureGate().evaluate(answer: answer, facts: facts,
+                                          corrections: 0, isVerification: false) == .allow)
+    }
+
     @Test("A pending task promise continues through the actual executor once")
     func promisedWorkActuallyExecutes() async throws {
         let run = UUID(), adapter = MockAdapter(), calls = executor()
@@ -82,7 +105,7 @@ struct TaskClosureFlowTests {
             [.textDelta(.init(text:"图示编辑失败。接下来按各工具返回的实际结构格式修正编辑输入，并继续化学结构分析。")),.completed(.init(stopReason:.endTurn))],
             [.textDelta(.init(text:"读取已完成；图示编辑失败，化学计算未完成，需要先绑定目标。")),.completed(.init(stopReason:.endTurn))]
         ]
-        let subject = runtime(adapter,calls,runID:run,fast:true,checklist:{plan})
+        let subject = runtime(adapter,calls,runID:run,fast:false,checklist:{plan})
         try await subject.start(goal:"编辑图示并计算化学结构")
         #expect(adapter.requests.count == 4)
         #expect(calls.executedCalls.map(\.id) == ["read","write"])
@@ -266,7 +289,7 @@ struct TaskClosureFlowTests {
             [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
         ]
         let done = checklist(run,finished:true)
-        let subject = runtime(adapter,calls,runID:run,fast:true,checklist:{done},
+        let subject = runtime(adapter,calls,runID:run,fast:false,checklist:{done},
             policy:DenyCallIDsPolicy(deniedCallIDs:["denied-call"]))
         try await subject.start(goal:"导出 PDF")
         #expect(adapter.requests.count == 3)
@@ -289,7 +312,7 @@ struct TaskClosureFlowTests {
             [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
         ]
         let done = checklist(run,finished:true)
-        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:true,checklist:{done},
+        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:false,checklist:{done},
             policy:DenyCallIDsPolicy(deniedCallIDs:["denied-call"]))
         try await subject.start(goal:"导出 PDF")
         #expect(calls.executedCalls.map(\.id) == ["other-call"])
@@ -319,8 +342,9 @@ struct TaskClosureFlowTests {
             [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
         ]
         let done = checklist(run,finished:true)
-        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:true,checklist:{done})
+        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:false,checklist:{done})
         try await subject.start(goal:"导出 PDF")
+        #expect(calls.executedCalls.map(\.id) == ["failed-call", "corrected-call"])
         guard case .failed(let failure) = await subject.state else {
             Issue.record("A dispatched failure must keep blocking"); return
         }
@@ -345,7 +369,7 @@ struct TaskClosureFlowTests {
             [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
         ]
         let done = checklist(run,finished:true)
-        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:true,checklist:{done})
+        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:false,checklist:{done})
         try await subject.start(goal:"导出 PDF")
         #expect(calls.executedCalls.map(\.id) == ["cancelled-call","corrected-call"])
         guard case .failed(let failure) = await subject.state else {

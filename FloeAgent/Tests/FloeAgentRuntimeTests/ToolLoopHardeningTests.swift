@@ -2044,7 +2044,7 @@ struct ToolLoopHardeningTests {
         #expect(!messages.contains { $0.role == "system" })
     }
 
-    @Test("Nil run context still injects the tool list")
+    @Test("Nil run context retains tool discovery guidance")
     func systemContextWithoutWorkspace() async throws {
         let (conversationStore, runStore) = try await makeStores()
         let conversationID = UUID()
@@ -2073,7 +2073,8 @@ struct ToolLoopHardeningTests {
         let request = try #require(adapter.requests.first)
         let first = try #require(request.messages.first)
         #expect(first.role == "system")
-        #expect(first.content.contains("Available tools:"))
+        #expect(first.content.contains("Use offered definitions directly."))
+        #expect(first.content.contains("tools.search"))
         #expect(!first.content.contains("Workspace:"))
     }
 
@@ -2106,13 +2107,23 @@ struct ToolLoopHardeningTests {
     }
 
     @Test("Browser context requires structured access before visual fallback")
-    func browserContextPrefersStructuredAccess() {
-        let message = ConversationRunService.buildContextMessage(
-            .init(availableToolNames: [
-                "browser.observe", "browser.click", "browser.screenshot",
-                "browser.clickPoint", "image.inspect"
-            ])
+    func browserContextPrefersStructuredAccess() async throws {
+        let adapter = MockAdapter(), executor = MockExecutor()
+        let observation = try TestFixtures.toolCall(id: "observe", toolName: "browser.observe")
+        executor.descriptors[observation.toolName] = .init(name: observation.toolName, riskLabels: [], isSideEffecting: false)
+        adapter.script = [
+            [.toolRequest(observation)],
+            [.textDelta(.init(text: "Page inspected.")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(conversationID: UUID(), provider: provider, model: TestFixtures.testModel(providerID: provider.id)),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: executor
         )
+        await runtime.injectSystemContext("Use the available browser.")
+        try await runtime.start(goal: "Inspect the browser page")
+        let request = try #require(adapter.requests.dropFirst().first)
+        let message = request.messages.filter { $0.role == "system" }.map(\.content).joined(separator: "\n")
 
         #expect(message.contains("prefer browser.observe DOM refs"))
         #expect(message.contains("screenshots/OCR are the fallback"))

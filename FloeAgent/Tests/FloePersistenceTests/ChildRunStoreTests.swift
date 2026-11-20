@@ -353,4 +353,110 @@ struct ChildRunStoreTests {
         #expect(try await store.child(id: id)?.state == .interrupted)
     }
 
+    @Test("background ownership is indexed and transferred only with the live same-conversation lease")
+    func backgroundOwnershipRoundTrip() async throws {
+        let manager = try DatabaseManager.inMemory()
+        try await manager.migrate()
+        let store = SQLiteChildRunStore(database: manager)
+        let childID = UUID(), oldParent = UUID(), newParent = UUID(), conversation = UUID()
+        let unrelated = UUID(), unrelatedParent = UUID()
+        try await store.register(ChildRunRecord(id: childID, parentRunID: oldParent, rootRunID: conversation,
+            conversationID: conversation, childIndex: 1, kind: "explore", taskSummary: "background",
+            state: .interrupted, delegateCallID: "delegate-owner"))
+        try await store.register(ChildRunRecord(id: unrelated, parentRunID: unrelatedParent, rootRunID: conversation,
+            conversationID: conversation, childIndex: 1, kind: "explore", taskSummary: "old foreground",
+            state: .completed, delegateCallID: "old-foreground"))
+        // The query must not parse or load unrelated historical transcript
+        // content, including malformed rows and more than the recovery cap.
+        try await manager.writer { db in
+            try db.execute(sql: """
+                WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 20001)
+                INSERT INTO child_run_entries(id, child_run_id, sequence, kind, payload_json, created_at)
+                SELECT 'poison-' || x, ?, x, 'state', 'not-json', '2026-01-01T00:00:00Z' FROM n
+                """, arguments: [unrelated.uuidString])
+        }
+        #expect(try await store.backgroundChildren(parentRunID: UUID(), conversationID: conversation).isEmpty)
+        try await store.assignBackgroundOwner(childID: childID, parentRunID: oldParent, conversationID: conversation,
+            resumeOwner: nil, payloadJSON: #"{"backgroundDelegate":true}"#)
+        #expect(try await store.child(id: childID)?.delegateCallID == "delegate-owner")
+        #expect(try await store.backgroundChildren(parentRunID: oldParent, conversationID: conversation).map(\.id) == [childID])
+        let before = try await store.entries(childRunID: childID, afterSequence: 0, limit: 100).entries
+        await #expect(throws: (any Error).self) {
+            try await store.assignBackgroundOwner(childID: childID, parentRunID: newParent, conversationID: conversation,
+                resumeOwner: UUID(), payloadJSON: #"{"state":"resumed"}"#)
+        }
+        #expect(try await store.backgroundOwner(childID: childID)?.parentRunID == oldParent)
+        #expect(try await store.entries(childRunID: childID, afterSequence: 0, limit: 100).entries == before)
+        let checkpoint = sampleCheckpoint(childID: childID, parentRunID: oldParent, rootRunID: conversation)
+        try await store.saveCheckpoint(checkpoint)
+        let lease = UUID()
+        #expect(try await store.acquireResume(childRunID: childID, owner: lease,
+            resumingParentRunID: newParent, leaseExpiresAt: Date().addingTimeInterval(60)))
+        #expect(try await store.markResumeStarted(childRunID: childID, owner: lease))
+        try await store.assignBackgroundOwner(childID: childID, parentRunID: newParent, conversationID: conversation,
+            resumeOwner: lease, payloadJSON: #"{"state":"resumed"}"#)
+        #expect(try await store.backgroundChildren(parentRunID: oldParent, conversationID: conversation).isEmpty)
+        #expect(try await store.backgroundChildren(parentRunID: newParent, conversationID: conversation).map(\.id) == [childID])
+        #expect(try await store.backgroundChildren(parentRunID: newParent, conversationID: UUID()).isEmpty)
+        await #expect(throws: (any Error).self) {
+            try await store.assignBackgroundOwner(childID: childID, parentRunID: oldParent, conversationID: conversation,
+                resumeOwner: nil, payloadJSON: #"{"backgroundDelegate":true}"#)
+        }
+        #expect(try await store.backgroundOwner(childID: childID)?.parentRunID == newParent)
+    }
+
+    @Test("v63 persistent history upgrades to v64 without changing existing children")
+    func v63UpgradePreservesChildren() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("floe-v63-upgrade-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("history.sqlite")
+        let manager = try DatabaseManager(path: databaseURL)
+        try await manager.migrate()
+        let store = SQLiteChildRunStore(database: manager)
+        let id = UUID(), parent = UUID(), conversation = UUID()
+        try await store.register(ChildRunRecord(id: id, parentRunID: parent, rootRunID: conversation,
+            conversationID: conversation, childIndex: 1, kind: "explore", taskSummary: "legacy foreground",
+            state: .completed, delegateCallID: "legacy-call"))
+        try await store.appendEntry(id: id, kind: .message, payloadJSON: #"{"text":"legacy evidence"}"#)
+        // Recreate the exact v63 schema/GRDB migration metadata in a private
+        // on-disk fixture, keeping the original user records intact.
+        try await manager.writer { db in
+            try db.execute(sql: "DROP TABLE child_background_owners")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v64_background_child_owners'")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v65'")
+            try db.execute(sql: "PRAGMA user_version = 63")
+        }
+        try await manager.close()
+        let reopened = try DatabaseManager(path: databaseURL)
+        try await reopened.migrate()
+        let upgraded = SQLiteChildRunStore(database: reopened)
+        #expect(try await reopened.userVersion() == 65)
+        #expect(try await upgraded.child(id: id)?.delegateCallID == "legacy-call")
+        #expect(try await upgraded.child(id: id)?.state == .completed)
+        #expect(try await upgraded.entries(childRunID: id, afterSequence: 0, limit: 10).entries.count == 1)
+        #expect(try await upgraded.backgroundChildren(parentRunID: parent, conversationID: conversation).isEmpty)
+        try await reopened.close()
+    }
+
+    @Test("only a proven unstarted background child can record a startup failure")
+    func abandonOnlyProvenUnstartedChild() async throws {
+        let store = try await makeStore(), parent = UUID(), conversation = UUID(), initial = UUID(), ready = UUID()
+        for id in [initial, ready] {
+            try await store.register(ChildRunRecord(id: id, parentRunID: parent, rootRunID: conversation,
+                conversationID: conversation, childIndex: 0, kind: "explore", taskSummary: "startup", delegateCallID: id.uuidString))
+            try await store.assignBackgroundOwner(childID: id, parentRunID: parent, conversationID: conversation,
+                resumeOwner: nil, payloadJSON: #"{"backgroundDelegate":true}"#)
+        }
+        try await store.recordBackgroundStartFailure(childID: initial, parentRunID: parent, conversationID: conversation)
+        #expect(try await store.backgroundOwner(childID: initial)?.parentRunID == parent)
+        #expect(try await store.child(id: initial) != nil)
+        #expect(try await store.entries(childRunID: initial, afterSequence: 0, limit: 10).entries.count == 2)
+        try await store.appendEntry(id: ready, kind: .state, payloadJSON: #"{"backgroundStartReady":true}"#)
+        await #expect(throws: (any Error).self) {
+            try await store.recordBackgroundStartFailure(childID: ready, parentRunID: parent, conversationID: conversation)
+        }
+        #expect(try await store.backgroundOwner(childID: ready)?.parentRunID == parent)
+    }
+
 }
