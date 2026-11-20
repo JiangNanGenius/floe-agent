@@ -931,7 +931,7 @@ public struct JobsResultTool: AgentTool {
             + (job.workKind == .service ? "Service failed; lastError carries the reason." : "Job failed; lastError carries the reason.")
         case .queued, .running:
             if job.serviceState == .running {
-                "Service is verifiably READY: its published loopback port answers HTTP (serviceHTTPReady=true). The process keeps running in the background. Use its authorized preview or jobs.status; stop it explicitly with jobs.cancel. Do not wait for a finite completion or resubmit the launch."
+                "Service is ready and keeps running in the background. Its published loopback port answered the readiness probe (serviceHTTPReady=true). Use its authorized preview or jobs.status; stop it explicitly with jobs.cancel. Do not wait for a finite completion or resubmit the launch."
             } else if job.serviceState == .stopping {
                 "Service stop was requested; its processor has not acknowledged exit yet. It retains ownership until cleanup joins."
             } else if job.workKind == .service {
