@@ -59,25 +59,25 @@ struct ThreadEventView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.nativeToolDiagnostics) private var nativeDiagnostics
 
-    private var payload: [String: String] {
-        ConversationCenter.decodePayload(event.payloadJSON)
-    }
-
-    private var toolRequestResultPayload: [String: String] {
-        guard let toolRequestResultPayloadJSON else { return [:] }
-        return ConversationCenter.decodePayload(toolRequestResultPayloadJSON)
+    // One decode per body evaluation. The payloads are immutable persisted
+    // bytes; the previous computed properties re-parsed the same JSON for
+    // every access (header checks, kind dispatch, result pairing), which is
+    // the dominant per-row cost when a long chat re-renders batches.
+    private func decodedPayload() -> (payload: [String: String], resultPayload: [String: String]) {
+        (ConversationCenter.decodePayload(event.payloadJSON),
+         toolRequestResultPayloadJSON.map { ConversationCenter.decodePayload($0) } ?? [:])
     }
 
     /// True for the main-run delegation tool. The child identity itself is
     /// durable (persisted by the lifecycle owner); this row only renders the
     /// honest status derived from the persisted call/result.
-    private var isDelegateCall: Bool {
+    private func isDelegateCall(payload: [String: String]) -> Bool {
         (payload["tool"] ?? "") == DelegateTool.name
     }
 
     /// Decoded delegate arguments (persisted `input` is the redacted JSON
     /// prefix of the call). Never trusted for anything but display.
-    private var delegateArguments: [String: Any] {
+    private func delegateArguments(payload: [String: String]) -> [String: Any] {
         guard let input = payload["input"], let data = input.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
@@ -87,8 +87,8 @@ struct ThreadEventView: View {
 
     /// The subtask title the card leads with: the real `task` argument when
     /// present, else the redacted input itself, else the tool name.
-    private var delegateTaskTitle: String {
-        if let task = delegateArguments["task"] as? String {
+    private func delegateTaskTitle(payload: [String: String]) -> String {
+        if let task = delegateArguments(payload: payload)["task"] as? String {
             let trimmed = task.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return String(trimmed.prefix(500)) }
         }
@@ -96,13 +96,16 @@ struct ThreadEventView: View {
         return raw.isEmpty ? (payload["tool"] ?? "delegate") : String(raw.prefix(500))
     }
 
-    private var delegateKindHint: String? {
-        guard let type = delegateArguments["type"] as? String, !type.isEmpty else { return nil }
+    private func delegateKindHint(payload: [String: String]) -> String? {
+        guard let type = delegateArguments(payload: payload)["type"] as? String, !type.isEmpty else { return nil }
         return type
     }
 
     var body: some View {
-        if isDelegateCall || hasImageArtifacts || gitHubSource != nil {
+        let decoded = decodedPayload()
+        if isDelegateCall(payload: decoded.payload)
+            || hasImageArtifacts(payload: decoded.payload, resultPayload: decoded.resultPayload)
+            || gitHubSource(payload: decoded.payload) != nil {
             // A delegate row must NOT be combined into one accessibility
             // element: the card owns a real "View subagents" button, and
             // combining made the row container inherit that button's
@@ -110,9 +113,9 @@ struct ThreadEventView: View {
             // action). An image-artifact row has the same requirement: every
             // verified thumbnail keeps its own identifier, hit target and
             // full-screen action. Every other row keeps the historical combine.
-            rowBody
+            rowBody(payload: decoded.payload, resultPayload: decoded.resultPayload)
         } else {
-            rowBody
+            rowBody(payload: decoded.payload, resultPayload: decoded.resultPayload)
                 .accessibilityElement(children: .combine)
         }
     }
@@ -120,12 +123,12 @@ struct ThreadEventView: View {
     /// Tool result payloads carry the retained image references the card will
     /// verify. This only decides accessibility grouping; it never treats the
     /// reference bytes as trusted display data.
-    private var hasImageArtifacts: Bool {
-        let source = event.kind == .toolRequest ? toolRequestResultPayload : payload
+    private func hasImageArtifacts(payload: [String: String], resultPayload: [String: String]) -> Bool {
+        let source = event.kind == .toolRequest ? resultPayload : payload
         return artifacts(from: source).contains(where: ToolArtifactPresentation.isImage)
     }
 
-    private var gitHubSource: GitHubSourceReference? {
+    private func gitHubSource(payload: [String: String]) -> GitHubSourceReference? {
         let result: RunEventRecord?
         if event.kind == .toolRequest {
             guard let paired = toolRequestResultEvent, paired.runID == event.runID,
@@ -136,12 +139,12 @@ struct ThreadEventView: View {
         return GitHubSourceReference.make(result: result, conversationID: conversationID)
     }
 
-    private var rowBody: some View {
+    private func rowBody(payload: [String: String], resultPayload: [String: String]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if showsHeader {
-                header
+                header(payload: payload)
             }
-            content
+            content(payload: payload, resultPayload: resultPayload)
         }
         .padding(.vertical, 4)
     }
@@ -154,10 +157,10 @@ struct ThreadEventView: View {
         ![.assistantText, .reasoning, .toolRequest, .toolResult].contains(event.kind)
     }
 
-    private var header: some View {
+    private func header(payload: [String: String]) -> some View {
         HStack(spacing: 8) {
             Image(systemName: kindIcon)
-                .foregroundStyle(kindColor)
+                .foregroundStyle(kindColor(payload: payload))
                 .accessibilityHidden(true)
             Text(kindTitle)
                 .font(FloeTheme.Typography.metadata)
@@ -187,7 +190,7 @@ struct ThreadEventView: View {
     // MARK: - Content by kind
 
     @ViewBuilder
-    private var content: some View {
+    private func content(payload: [String: String], resultPayload: [String: String]) -> some View {
         switch event.kind {
         case .assistantText:
             AssistantMessageView(
@@ -199,16 +202,16 @@ struct ThreadEventView: View {
             ReasoningBlockView(text: payload["text"] ?? "", isStreaming: false)
 
         case .toolRequest:
-            if isDelegateCall {
+            if isDelegateCall(payload: payload) {
                 DelegateChildCallCard(
-                    title: delegateTaskTitle,
-                    kindHint: delegateKindHint,
+                    title: delegateTaskTitle(payload: payload),
+                    kindHint: delegateKindHint(payload: payload),
                     startedAt: childRun?.startedAt ?? event.createdAt,
                     isWaiting: toolRequestIsWaiting,
                     isLive: isLive,
                     childRun: childRun,
-                    resultSummary: toolRequestResultPayload["summary"],
-                    resultFailed: ["failed", "error"].contains(toolRequestResultPayload["status"] ?? ""),
+                    resultSummary: resultPayload["summary"],
+                    resultFailed: ["failed", "error"].contains(resultPayload["status"] ?? ""),
                     onOpen: onOpenChild
                 )
             } else {
@@ -216,15 +219,15 @@ struct ThreadEventView: View {
                     name: payload["tool"] ?? event.kind.rawValue,
                     status: toolRequestStatus ?? payload["status"] ?? "pending",
                     inputSummary: payload["input"] ?? payload["summary"],
-                    resultSummary: toolRequestResultPayload["summary"],
+                    resultSummary: resultPayload["summary"],
                     approvalSummary: approvalSummary,
                     decisionSummary: decisionSummary,
-                    duration: duration(from: toolRequestResultPayload),
-                    artifacts: artifacts(from: toolRequestResultPayload),
-                    outputFiles: outputFiles(from: toolRequestResultPayload),
-                    outputContext: outputContext(from: toolRequestResultPayload),
-                    outcomeUnknown: toolRequestResultPayload["outcomeUnknown"] == "true",
-                    gitHubSource: gitHubSource,
+                    duration: duration(from: resultPayload),
+                    artifacts: artifacts(from: resultPayload),
+                    outputFiles: outputFiles(from: resultPayload),
+                    outputContext: outputContext(from: resultPayload),
+                    outcomeUnknown: resultPayload["outcomeUnknown"] == "true",
+                    gitHubSource: gitHubSource(payload: payload),
                     diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
                         runID: event.runID, callID: payload["callID"] ?? payload["id"]),
                     detailExpansion: toolDetailExpansion
@@ -233,10 +236,10 @@ struct ThreadEventView: View {
 
         case .toolResult:
             let status = payload["status"] ?? "ok"
-            if isDelegateCall {
+            if isDelegateCall(payload: payload) {
                 DelegateChildCallCard(
-                    title: delegateTaskTitle,
-                    kindHint: delegateKindHint,
+                    title: delegateTaskTitle(payload: payload),
+                    kindHint: delegateKindHint(payload: payload),
                     startedAt: childRun?.startedAt ?? event.createdAt,
                     isWaiting: false,
                     isLive: false,
@@ -259,7 +262,7 @@ struct ThreadEventView: View {
                     outputFiles: outputFiles(from: payload),
                     outputContext: outputContext(from: payload),
                     outcomeUnknown: payload["outcomeUnknown"] == "true",
-                    gitHubSource: gitHubSource,
+                    gitHubSource: gitHubSource(payload: payload),
                     diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
                         runID: event.runID, callID: payload["callID"] ?? payload["id"]),
                     detailExpansion: toolDetailExpansion
@@ -291,7 +294,7 @@ struct ThreadEventView: View {
             )
 
         case .usage:
-            usageBody
+            usageBody(payload: payload)
 
         case .status:
             if let playback = VoicePlaybackReceipt.fromEventPayloadJSON(event.payloadJSON) {
@@ -302,7 +305,7 @@ struct ThreadEventView: View {
                         .accessibilityIdentifier("thread.voice.playback_interrupted")
                 }
             } else {
-                statusBody
+                statusBody(payload: payload)
             }
 
         case .notice:
@@ -359,7 +362,7 @@ struct ThreadEventView: View {
         )
     }
 
-    private var usageBody: some View {
+    private func usageBody(payload: [String: String]) -> some View {
         HStack(spacing: 12) {
             Label(payload["input"] ?? "0", systemImage: "arrow.up")
             Label(payload["output"] ?? "0", systemImage: "arrow.down")
@@ -374,7 +377,7 @@ struct ThreadEventView: View {
 
     /// State transitions resolve through RunStateLocalizer — the view
     /// never interprets machine names itself (§6.2).
-    private var statusBody: some View {
+    private func statusBody(payload: [String: String]) -> some View {
         let state = payload["state"] ?? ""
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -449,7 +452,7 @@ struct ThreadEventView: View {
         }
     }
 
-    private var kindColor: Color {
+    private func kindColor(payload: [String: String]) -> Color {
         switch event.kind {
         case .approval: FloeTheme.pending
         case .error: FloeTheme.destructive

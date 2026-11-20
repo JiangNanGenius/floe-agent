@@ -142,6 +142,214 @@ struct ChatInlineContentPagingTests {
         #expect(done && Set(delivered) == expected && delivered.count == expected.count)
     }
 
+    // MARK: - Long-chat tool-receipt projection performance
+
+    /// One gate-accepted sealed receipt for the given run/call, using the
+    /// production deterministic identity derivation.
+    private func makeSealedReceipt(
+        runID: UUID, taskID: UUID, callID: String, tool: String, slot: String
+    ) throws -> RunOutputFile {
+        let outputID = RunOutputFile.derivedOutputID(runID: runID, producerCallID: callID, slot: slot)
+        let name = "result-\(slot).txt"
+        return RunOutputFile(
+            outputID: outputID, slot: slot, runID: runID, taskID: taskID, environmentID: nil,
+            producerCallID: callID, producerTool: tool,
+            relativePath: RunOutputFile.canonicalRelativePath(runID: runID, outputID: outputID, displayName: name),
+            displayName: name, mimeType: "text/plain", uti: nil,
+            byteCount: 3, sha256: FloeDigest.sha256Hex(Data("abc".utf8)), role: .userFile)
+    }
+
+    /// One completed tool batch: a request/result pair per call, results
+    /// sealed with real run-output receipts; ends with one verified
+    /// `github.readLink` result (name matches `GitHubReadLinkTool.name`).
+    private func makeCompletedBatch(
+        runID: UUID, taskID: UUID, baseSequence: Int, callCount: Int
+    ) throws -> [RunEventRecord] {
+        var events: [RunEventRecord] = []
+        var sequence = baseSequence
+        for index in 0..<callCount {
+            let callID = "call-\(baseSequence)-\(index)"
+            let tool = "workspace.writeFile"
+            let request = RunEventRecord(
+                id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", sequence))!,
+                runID: runID, sequence: sequence, kind: .toolRequest,
+                payloadJSON: "{\"tool\":\"\(tool)\",\"id\":\"\(callID)\",\"input\":\"write \(index)\"}")
+            sequence += 1
+            let receipts = [try makeSealedReceipt(runID: runID, taskID: taskID, callID: callID, tool: tool, slot: "document")]
+            let receiptsJSON = String(decoding: try JSONEncoder().encode(receipts), as: UTF8.self)
+            let resultPayload: [String: String] = [
+                "tool": tool, "id": callID, "status": "ok", "summary": "wrote",
+                "outputFilesJSON": receiptsJSON,
+            ]
+            let result = RunEventRecord(
+                id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", sequence))!,
+                runID: runID, sequence: sequence, kind: .toolResult,
+                payloadJSON: String(decoding: try JSONSerialization.data(withJSONObject: resultPayload), as: UTF8.self))
+            sequence += 1
+            events.append(request)
+            events.append(result)
+        }
+        // Verified GitHub source row (paired request/result).
+        let ghCall = "gh-\(baseSequence)"
+        let ghRequest = RunEventRecord(
+            runID: runID, sequence: sequence, kind: .toolRequest,
+            payloadJSON: "{\"tool\":\"github.readLink\",\"id\":\"\(ghCall)\",\"input\":\"https://github.com/a/b\"}")
+        sequence += 1
+        let ghResult = RunEventRecord(
+            runID: runID, sequence: sequence, kind: .toolResult,
+            payloadJSON: "{\"tool\":\"github.readLink\",\"id\":\"\(ghCall)\",\"status\":\"ok\"}")
+        events.append(ghRequest)
+        events.append(ghResult)
+        return events
+    }
+
+    @Test func stepGroupProjectionCachesAcrossRevisionsAndRefreshesOnAppends() async throws {
+        let runID = UUID(), taskID = UUID()
+        let events = try makeCompletedBatch(runID: runID, taskID: taskID, baseSequence: 1, callCount: 6)
+        let projection = StepGroupMetadata()
+        let first = projection.read(events, conversationID: taskID)
+        // The full projection derived the batch: header payloads, pairing,
+        // gate-accepted receipts for both the request row and its result row,
+        // and the verified GitHub source row.
+        for event in events {
+            #expect(first.payloads[event.id] != nil)
+        }
+        let firstRequest = events[0], firstResult = events[1]
+        #expect(first.requests.contains("call-1-0"))
+        #expect(first.results["call-1-0"]?.id == firstResult.id)
+        #expect(first.receiptEventIDs.contains(firstRequest.id))
+        #expect(first.receiptEventIDs.contains(firstResult.id))
+        let ghResult = events.last!
+        #expect(first.gitHubSourceEventIDs.contains(ghResult.id))
+        // Repeated reads with the same value (one per SwiftUI body evaluation
+        // on a timeline revision bump) return the same derived values. Rows
+        // can be re-promoted with a refreshed payload for the same id (the
+        // durable promoter upserts run_events on conflict(id)), so the
+        // projection's cheap identity pass also requires exact payload
+        // equality before it may serve the retained snapshot.
+        for _ in 0..<200 {
+            let again = projection.read(events, conversationID: taskID)
+            #expect(again.receiptEventIDs == first.receiptEventIDs)
+            #expect(again.gitHubSourceEventIDs == first.gitHubSourceEventIDs)
+            #expect(again.results == first.results)
+        }
+        // A NEW event with a NEW sequence (the store's normal append) must
+        // surface on the next read — never a stale status.
+        let appended = RunEventRecord(
+            runID: runID, sequence: events.count + 100, kind: .toolResult,
+            payloadJSON: "{\"tool\":\"workspace.writeFile\",\"id\":\"call-1-0\",\"status\":\"failed\",\"summary\":\"late failure\"}")
+        let second = projection.read(events + [appended], conversationID: taskID)
+        #expect(second.payloads[appended.id] != nil)
+        #expect(second.payloads[appended.id]?["status"] == "failed")
+        #expect(second.receiptEventIDs == first.receiptEventIDs)
+        // Earlier-page prepend (bounded history paging) also refreshes.
+        let prepended = RunEventRecord(
+            runID: runID, sequence: 0, kind: .reasoning,
+            payloadJSON: "{\"text\":\"earlier page\"}")
+        let third = projection.read([prepended] + events + [appended], conversationID: taskID)
+        #expect(third.payloads[prepended.id]?["text"] == "earlier page")
+        #expect(third.payloads.count == second.payloads.count + 1)
+    }
+
+    @Test func stepGroupProjectionRefreshesWhenPayloadIsReplacedForSameEventID() async throws {
+        // Production replacement path: ConversationPromoter upserts
+        // run_events ON CONFLICT(id) and overwrites sequence/kind/payload_json,
+        // and synthetic streaming updates may reuse identities. The projection
+        // must never serve a retained status/approval/receipt set after the
+        // bytes for a given id changed, even when id+sequence+kind still match.
+        let runID = UUID(), taskID = UUID()
+        let events = try makeCompletedBatch(runID: runID, taskID: taskID, baseSequence: 1, callCount: 3)
+        let projection = StepGroupMetadata()
+        let original = projection.read(events, conversationID: taskID)
+        let firstResult = events[1]
+        #expect(original.payloads[firstResult.id]?["status"] == "ok")
+        #expect(original.receiptEventIDs.contains(firstResult.id))
+        // Same id, same sequence, same kind — refreshed payload bytes. This is
+        // exactly the promoter's ON CONFLICT(id) overwrite shape.
+        var replaced = events
+        replaced[1] = RunEventRecord(
+            id: firstResult.id, runID: runID, sequence: firstResult.sequence,
+            kind: .toolResult,
+            payloadJSON: "{\"tool\":\"workspace.writeFile\",\"id\":\"call-1-0\",\"status\":\"failed\",\"summary\":\"retry failed\"}")
+        let refreshed = projection.read(replaced, conversationID: taskID)
+        #expect(refreshed.payloads[firstResult.id]?["status"] == "failed")
+        // The failed replacement carries no receipts; the stale receipt
+        // marker for this row must be gone.
+        #expect(!refreshed.receiptEventIDs.contains(firstResult.id))
+        #expect(refreshed.receiptEventIDs.isSubset(of: original.receiptEventIDs))
+        // Sequence/kind replacement under the same id also refreshes (the
+        // upsert overwrites those columns too).
+        var resequenced = events
+        resequenced[0] = RunEventRecord(
+            id: events[0].id, runID: runID, sequence: events[0].sequence + 500,
+            kind: .toolRequest,
+            payloadJSON: "{\"tool\":\"workspace.writeFile\",\"id\":\"call-1-0\",\"input\":\"edited\"}")
+        let resequencedSnapshot = projection.read(resequenced, conversationID: taskID)
+        #expect(resequencedSnapshot.payloads[events[0].id] != nil)
+    }
+
+    @Test func stepGroupProjectionRefreshesWhenOwningConversationChanges() async throws {
+        let runID = UUID(), taskID = UUID(), foreign = UUID()
+        let events = try makeCompletedBatch(runID: runID, taskID: taskID, baseSequence: 1, callCount: 2)
+        let projection = StepGroupMetadata()
+        let own = projection.read(events, conversationID: taskID)
+        #expect(!own.receiptEventIDs.isEmpty)
+        // The same bytes read under another conversation can no longer adopt
+        // the task-sealed receipts; the projection must re-derive, not serve
+        // the previous conversation's urgency set.
+        let other = projection.read(events, conversationID: foreign)
+        #expect(other.receiptEventIDs.isEmpty)
+        #expect(other.gitHubSourceEventIDs == own.gitHubSourceEventIDs)
+        // And it recovers when the owner returns.
+        let restored = projection.read(events, conversationID: taskID)
+        #expect(restored.receiptEventIDs == own.receiptEventIDs)
+    }
+
+    @Test func longTranscriptToolReceiptProjectionStaysBoundedAcrossBatches() async throws {
+        // Representative long synthetic transcript: 30 completed tool batches
+        // of 20 receipt-bearing calls each (plus one GitHub row per batch),
+        // then 120 conversation-wide timeline revisions where one batch
+        // appends a new event per revision and EVERY batch re-reads its
+        // projection twice (two body evaluations per revision). Before the
+        // projection cache this re-decoded every receipt payload on every
+        // evaluation; the bound below keeps that quadratic behavior out.
+        let runID = UUID(), taskID = UUID()
+        var groups: [[RunEventRecord]] = []
+        for index in 0..<30 {
+            groups.append(try makeCompletedBatch(runID: runID, taskID: taskID, baseSequence: index * 100 + 1, callCount: 20))
+        }
+        var projections = groups.map { _ in StepGroupMetadata() }
+        var visibleRowCounts: [Int] = []
+        let started = ContinuousClock.now
+        for revision in 0..<120 {
+            let active = revision % groups.count
+            groups[active].append(RunEventRecord(
+                runID: runID, sequence: groups[active].last!.sequence + 1,
+                kind: .reasoning, payloadJSON: "{\"text\":\"batch \(revision)\"}"))
+            for (index, group) in groups.enumerated() {
+                let snapshot = projections[index].read(group, conversationID: taskID)
+                // Collapsed-path urgency: one visible row per receipt-bearing
+                // request + the paired GitHub request row; paired tool results
+                // stay folded into their invocation.
+                var urgent = Set<UUID>()
+                for event in group where snapshot.receiptEventIDs.contains(event.id)
+                    || snapshot.gitHubSourceEventIDs.contains(event.id) {
+                    urgent.insert(event.id)
+                }
+                let requests = group.filter { $0.kind == .toolRequest }
+                let visible = requests.filter { urgent.contains($0.id) }
+                visibleRowCounts.append(visible.count)
+                // second body evaluation with the same event set
+                let reread = projections[index].read(group, conversationID: taskID)
+                #expect(reread.receiptEventIDs == snapshot.receiptEventIDs)
+            }
+        }
+        let elapsed = started.duration(to: .now)
+        #expect(visibleRowCounts.allSatisfy { $0 == 21 })
+        #expect(elapsed < .seconds(4),
+            "tool-receipt projection must not re-decode payloads per revision: \(elapsed)")
+    }
+
     @Test func selectedRunFreezesTheEventUpperBound() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let db = try DatabaseManager.inMemory(); try await db.migrate()
