@@ -63,6 +63,29 @@ import FloePersistence
         }
     }
 
+    @Test func matchesOnlyASingleRetiredApplicationContainerComponent() {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "/Data/Application")
+        let suffix = "Library/Application Support/FloeAgent/PersonalContent"
+        let previous = parent.appendingPathComponent(UUID().uuidString + "/" + suffix)
+        let current = parent.appendingPathComponent(UUID().uuidString + "/" + suffix)
+        #expect(PersonalContentLibrary.isPreviousAppLibrary(previous.path, current: current))
+        #expect(!PersonalContentLibrary.isPreviousAppLibrary(previous.path, current: current.appendingPathComponent("other")))
+        #expect(!PersonalContentLibrary.isPreviousAppLibrary(previous.path.replacingOccurrences(of: "/Data/Application/", with: "/Other/Application/"), current: current))
+    }
+
+    @Test func freshTrashActionSettlesAnInterruptedIntentForTheSameProject() async throws {
+        let f = try Fixture(); defer { f.clean() }
+        let work = try await f.create(), other = try await f.create("Other")
+        _ = try await f.access.beginFileLifecycle(action: .trash, entryID: UUID(), rootPath: f.libraryRoot.path,
+            relativePath: work.relativePath, members: [work])
+        _ = try await f.access.beginFileLifecycle(action: .trash, entryID: UUID(), rootPath: f.libraryRoot.path,
+            relativePath: other.relativePath, members: [other])
+        _ = try await f.trash(work)
+        let pending = try await f.access.pendingFileLifecycles()
+        #expect(pending.count == 1 && pending.first?.projectIDs == [other.id])
+        #expect(try await f.library.records().map(\.id) == [other.id])
+    }
+
     @Test func trashStopsBeforeFileCommitAndRetainsExactBindingAndBytes() async throws {
         let f = try Fixture(); defer { f.clean() }
         let record = try await f.create(), assistant = try await f.bind(record)

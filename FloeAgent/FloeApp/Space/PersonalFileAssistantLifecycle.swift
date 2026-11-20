@@ -59,7 +59,7 @@ enum PersonalFileAssistantLifecycleError: Error, LocalizedError {
         // A Restore/Purge click may be the first retry after a successful
         // trash commit whose companion cleanup failed. Settle that exact
         // predecessor now instead of making the user repeat the same click.
-        try await reconcile(entryID: entryID)
+        try await reconcile(entryID: entryID, projects: Set(members.map(\.id)))
         guard Self.liveEntries.insert(entryID).inserted else { throw PersonalFileAssistantLifecycleError.pending }
         defer { Self.liveEntries.remove(entryID) }
         let root = await library.root
@@ -93,11 +93,11 @@ enum PersonalFileAssistantLifecycleError: Error, LocalizedError {
     /// Never retries the destructive file operation itself. Uncommitted work
     /// is released only when the exact originals are still known; committed
     /// work gets its idempotent companion cleanup. Unknown data stays intact.
-    func reconcile(entryID: UUID? = nil) async throws {
+    func reconcile(entryID: UUID? = nil, projects: Set<UUID> = []) async throws {
         var failed = false
-        let root = await library.root
-        for intent in try await access.pendingFileLifecycles(entryID: entryID) where !Self.liveEntries.contains(intent.entryID) {
-            guard intent.rootPath == root.path else { failed = true; continue }
+        let pending = try await access.pendingFileLifecycles(entryID: projects.isEmpty ? entryID : nil)
+        for intent in pending where !Self.liveEntries.contains(intent.entryID) {
+            if let entryID, intent.entryID != entryID, intent.projectIDs.isDisjoint(with: projects) { continue }
             guard Self.liveEntries.insert(intent.entryID).inserted else { continue }
             do {
                 switch try await library.fileAssistantCommitState(intent) {
@@ -143,8 +143,30 @@ enum PersonalFileAssistantLifecycleError: Error, LocalizedError {
 extension PersonalContentLibrary {
     enum FileAssistantCommitState: Equatable { case notCommitted, committed, unknown }
 
+    /// An iOS update can move this same app's data to a new container UUID.
+    /// Match only that one component. The journal's project identities and
+    /// commit evidence are checked against the current library below.
+    static func isPreviousAppLibrary(_ savedPath: String, current: URL) -> Bool {
+        let old = URL(fileURLWithPath: savedPath).pathComponents
+        let live = current.pathComponents
+        let suffix = ["Library", "Application Support", "FloeAgent", "PersonalContent"]
+        guard old.count == live.count, old.count > suffix.count + 2,
+              old.suffix(suffix.count).elementsEqual(suffix),
+              live.suffix(suffix.count).elementsEqual(suffix),
+              !FileManager.default.fileExists(atPath: savedPath) else { return false }
+        let slot = old.count - suffix.count - 1
+        return old[slot - 1] == "Application" && old.prefix(slot) == live.prefix(slot)
+            && UUID(uuidString: old[slot]) != nil && UUID(uuidString: live[slot]) != nil
+            && old[slot] != live[slot]
+    }
+
     func fileAssistantCommitState(_ intent: PersonalFileAssistantLifecycleIntent) throws -> FileAssistantCommitState {
-        guard root.path == intent.rootPath else { return .unknown }
+        if root.path != intent.rootPath {
+            guard !intent.members.isEmpty,
+                  let appRoot = try? Self.applicationRoot().resolvingSymlinksInPath().standardizedFileURL,
+                  root.path == appRoot.path,
+                  Self.isPreviousAppLibrary(intent.rootPath, current: appRoot) else { return .unknown }
+        }
         let state = try PersonalLibraryTrashStore.read(root: root)
         let entry = state.entries.first { $0.id == intent.entryID && $0.relativePath == intent.relativePath }
         switch intent.action {
