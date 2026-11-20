@@ -2044,7 +2044,7 @@ struct EngineeringPreviewURLView: View {
             Group {
                 if let slicedPlateData {
                     PrintResultPreview(url: source.url.deletingLastPathComponent().appendingPathComponent((source.displayName as NSString).lastPathComponent),
-                                       preset: .genericMarlinPLA, sourceData: slicedPlateData)
+                                       sourceData: slicedPlateData)
                 } else if let package {
                     EngineeringFilePreview(package: package)
                 } else if let error {

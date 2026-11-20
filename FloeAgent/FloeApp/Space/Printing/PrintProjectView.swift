@@ -276,7 +276,7 @@ struct PrintProjectView: View {
                 if stage == .prepare {
                     PrintMeshPreview(disk: session.disk, document: session.document, machine: session.machine, selectedObjectID: session.selectedObject?.id, reset: viewReset) { id in session.selectedObjectID = id }
                 } else if stage == .preview, session.resultIsCurrent, let result = session.result {
-                    PrintResultPreview(url: result, preset: session.document.preset, machine: session.document.machine ?? .generic(for: session.document.preset))
+                    PrintResultPreview(url: result, machine: session.document.machine ?? .generic(for: session.document.preset))
                 } else if stage == .export { exportPanel }
                 else {
                     ContentUnavailableView {

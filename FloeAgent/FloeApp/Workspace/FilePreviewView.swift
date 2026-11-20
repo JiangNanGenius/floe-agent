@@ -254,7 +254,7 @@ struct FilePreviewView: View {
                     Task { await center.recordRecentFile(relativePath:path,displayName:(path as NSString).lastPathComponent) }
                 }.id(nativeModelImportPath)
             } else if let printFile {
-                PrintResultPreview(url: printFile.url, preset: .genericMarlinPLA, sourceData: printFile.data)
+                PrintResultPreview(url: printFile.url, sourceData: printFile.data)
             } else if let engineeringPackage {
                 if isEngineeringFullScreen {
                     Color.clear

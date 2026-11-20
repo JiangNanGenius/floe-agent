@@ -11,7 +11,6 @@ import FloePrintCore
 /// streams, so its fallback to the geometry viewer is the caller's job.
 struct PrintResultPreview: View {
     let url: URL
-    let preset: PrintPreset
     var machine: PrintMachineConfiguration? = nil
     /// Immutable workspace snapshot. When supplied for `.3mf`/`.gcode`,
     /// the disk is never read; the URL is only identity/display name.
@@ -28,27 +27,12 @@ struct PrintResultPreview: View {
     private var count: Int { gcode?.layers.count ?? resin?.header.layerCount ?? 1 }
     private var index: Int { min(max(0, Int(layer) - 1), max(0, count - 1)) }
 
-    /// Workspace imports carry no machine, and toolpath dialects disagree on
-    /// the origin (front-left Marlin vs centred firmware). Centre the actual
-    /// toolpath extent on the bed so any imported file renders on the plate
-    /// instead of half off it. Explicitly passed machines always win.
-    private var effectiveMachine: PrintMachineConfiguration {
-        if let machine { return machine }
-        var value = PrintMachineConfiguration.generic(for: preset)
-        value.origin = .custom
-        if let gcode {
-            value.originX = (gcode.summary.minimum[0] + gcode.summary.maximum[0]) / 2
-            value.originY = (gcode.summary.minimum[1] + gcode.summary.maximum[1]) / 2
-        }
-        return value
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 if let gcode, !gcode.layers.isEmpty {
                     PrintLayerScene(layers: showLower ? Array(gcode.layers.prefix(index + 1)) : [gcode.layers[index]],
-                        preset: preset, identity: sceneIdentity, machine: effectiveMachine)
+                        summary: gcode.summary, identity: sceneIdentity, machine: machine)
                         .accessibilityIdentifier("printing.slicedPreview")
                 } else if let raster {
                     ZStack { Color.black; Image(decorative: raster, scale: 1).resizable().interpolation(.none).scaledToFit().padding(20) }
@@ -189,9 +173,9 @@ private enum LoadResult {
 
 private struct PrintLayerScene: UIViewRepresentable {
     let layers: [PrintPathLayer]
-    let preset: PrintPreset
+    let summary: GCodeSummary
     let identity: String
-    let machine: PrintMachineConfiguration
+    let machine: PrintMachineConfiguration?
     static let maximumRenderedSegments = 50_000
 
     final class Coordinator {
@@ -208,20 +192,29 @@ private struct PrintLayerScene: UIViewRepresentable {
         let coordinator = context.coordinator
         if coordinator.identity != identity {
             coordinator.identity = identity; coordinator.nodes = [:]; coordinator.segmentCounts = [:]
-            let scene = SCNScene(), bed = (width: machine.bedWidth, depth: machine.bedDepth)
-            let plate = SCNNode(geometry: SCNBox(width: bed.width, height: 0.2, length: bed.depth, chamferRadius: 0))
-            plate.position.y = -0.2; plate.geometry?.firstMaterial?.diffuse.contents = UIColor.tertiarySystemFill
-            scene.rootNode.addChildNode(plate)
-            view.scene = scene
-            if view.pointOfView?.camera == nil {
-                let camera = SCNNode()
-                camera.camera = SCNCamera(); camera.camera?.zNear = 0.1; camera.camera?.zFar = 5_000
-                let span = max(bed.width, bed.depth); camera.position = SCNVector3(span * 0.75, span * 0.8, span * 0.9)
-                camera.look(at: SCNVector3Zero)
-                scene.rootNode.addChildNode(camera)
-                view.pointOfView = camera
-                view.defaultCameraController.target = SCNVector3Zero
+            let scene = SCNScene()
+            // Only a project with a known printer has an authoritative bed.
+            if let machine {
+                let plate = SCNNode(geometry: SCNBox(width: machine.bedWidth, height: 0.2, length: machine.bedDepth, chamferRadius: 0))
+                plate.position.y = -0.2
+                plate.geometry?.firstMaterial?.diffuse.contents = UIColor.tertiarySystemFill
+                scene.rootNode.addChildNode(plate)
             }
+            let offset = machine?.coordinateOffset ?? [0, 0, 0]
+            let mid = zip(summary.minimum, summary.maximum).map { ($0 + $1) * 0.5 }
+            let target = SCNVector3(mid[0] - offset[0], mid[2] - offset[2], offset[1] - mid[1])
+            let extent = zip(summary.minimum, summary.maximum).map { $1 - $0 }
+            let span = max(6, sqrt(extent.reduce(0.0) { $0 + $1 * $1 }))
+            let camera = SCNNode()
+            camera.camera = SCNCamera()
+            camera.camera?.zNear = 0.1
+            camera.camera?.zFar = max(5_000, span * 8)
+            camera.position = SCNVector3(Double(target.x) + span * 0.68, Double(target.y) + span * 0.72, Double(target.z) + span * 0.82)
+            camera.look(at: target)
+            scene.rootNode.addChildNode(camera)
+            view.scene = scene
+            view.pointOfView = camera
+            view.defaultCameraController.target = target
         }
         guard let scene = view.scene else { return }
         let visibleIds = layers.map(\.id)
@@ -266,7 +259,7 @@ private struct PrintLayerScene: UIViewRepresentable {
     /// Builds one layer's node consuming at most `limit` segments.
     private func makeLayerNode(_ layer: PrintPathLayer, limit: Int, coordinator: Coordinator) -> SCNNode? {
         guard limit > 0 else { return nil }
-        let offset = machine.coordinateOffset
+        let offset = machine?.coordinateOffset ?? [0, 0, 0]
         var groups: [String: [SCNVector3]] = [:]
         var consumed = 0
         for segment in layer.segments {
