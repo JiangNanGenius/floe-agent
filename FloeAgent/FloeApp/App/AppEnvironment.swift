@@ -2055,7 +2055,7 @@ final class AppEnvironment: ObservableObject {
                     // No POST retry or host-key auto-trust. Runtime pauses at the
                     // existing user-action boundary, with the same task/run retained.
                     return ToolExecutionOutput(digesting: error.localizedDescription + " "
-                        + (FloeL10n.isChinese ? "请打开此项目的源码管理 → 远端与连接，完成配置后继续。" : "Open this project's Source Control → Remotes and Connections, configure it, then continue."),
+                        + (FloeL10n.l("app.app_environment.open_this_project_s_source")),
                         requiresUserAction: true)
                 }
             }, projectImporter: { [weak self] directory, name, context in

@@ -12,8 +12,8 @@
 //   * A Bundle proxy routes the main bundle's `Localizable` table lookups to
 //     the chosen lproj, so `String(localized:)` and SwiftUI keyed labels
 //     reflect an in-session change without an app relaunch.
-//   * `localized(key:arguments:)` resolves keys explicitly against the
-//     `en.lproj` / `zh-Hans.lproj` tables for package modules and UIKit code.
+//   * `localized(key:arguments:)` resolves keys explicitly against the active
+//     .lproj table for package modules and UIKit code.
 //   * `isChinese` / `swiftUILocale` drive inline bilingual helpers and views.
 //
 // User data, AI output, log messages and protocol identifiers never pass
@@ -32,7 +32,7 @@ public enum FloeL10n {
     public static let appGroupIdentifier = "group.org.floeagent.ios"
 
     /// Product languages; the catalog is compiled for exactly these.
-    public static let supportedLanguageCodes = ["en", "zh-Hans"]
+    public static let supportedLanguageCodes = LanguagePreference.allCases.compactMap(\.localizationCode)
 
     /// Preference raw values (`LanguagePreference.rawValue`).
     public static let preferenceSystem = "system"
@@ -42,7 +42,7 @@ public enum FloeL10n {
     /// Locked, Sendable holder for all mutable language state.
     private final class State: @unchecked Sendable {
         let lock = NSLock()
-        /// `"en"` or `"zh-Hans"`; nil until `bootstrap()`/`setPreference()`.
+        /// Selected catalog language; nil until `bootstrap()` or `setPreference()`.
         /// Unbootstrapped processes (e.g. unit-test hosts) follow the system.
         var languageCode: String?
         /// True when language follows the OS.
@@ -74,20 +74,23 @@ public enum FloeL10n {
     public static func bootstrap(
         standardDefaults: UserDefaults = .standard,
         suiteDefaults: UserDefaults? = UserDefaults(suiteName: appGroupIdentifier),
-        arguments: [String] = ProcessInfo.processInfo.arguments
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        isExtension: Bool = false
     ) -> String {
         installBundleProxyIfNeeded()
         let forced = launchArgumentLanguageCode(arguments: arguments)
-        var stored = standardDefaults.string(forKey: defaultsKey)
-            ?? suiteDefaults?.string(forKey: defaultsKey)
-        if forced == nil {
+        let localPreference = standardDefaults.string(forKey: defaultsKey)
+        let sharedPreference = suiteDefaults?.string(forKey: defaultsKey)
+        let stored = isExtension && suiteDefaults != nil
+            ? sharedPreference
+            : localPreference ?? sharedPreference
+        if forced == nil && !isExtension {
             // Mirror a standard-defaults value (set before the app group link
             // existed, or in unit-test hosts) so extensions stay consistent.
-            if let standardValue = standardDefaults.string(forKey: defaultsKey) {
-                suiteDefaults?.set(standardValue, forKey: defaultsKey)
-            } else if stored == nil, let suiteValue = suiteDefaults?.string(forKey: defaultsKey) {
-                standardDefaults.set(suiteValue, forKey: defaultsKey)
-                stored = suiteValue
+            if let localPreference {
+                suiteDefaults?.set(localPreference, forKey: defaultsKey)
+            } else if let sharedPreference {
+                standardDefaults.set(sharedPreference, forKey: defaultsKey)
             }
         }
         let followingSystem = forced == nil && (stored == nil || stored == preferenceSystem)
@@ -111,7 +114,7 @@ public enum FloeL10n {
         return code
     }
 
-    /// Applies a preference chosen in Settings ("system"/"en"/"zhHans").
+    /// Applies a preference chosen in Settings.
     @discardableResult
     public static func setPreference(
         rawValue: String?,
@@ -151,16 +154,16 @@ public enum FloeL10n {
         return code
     }
 
-    /// Language code for an explicit en/zhHans preference (never system).
+    /// Resolve a persisted preference, falling back to the system list.
     private static func overrideLanguageCode(
         preferenceRaw: String?,
         standardDefaults: UserDefaults = .standard
     ) -> String {
-        switch preferenceRaw {
-        case preferenceEn: return "en"
-        case preferenceZhHans: return "zh-Hans"
-        default: return systemLanguageCode(standardDefaults: standardDefaults)
-        }
+        resolveLanguageCode(
+            preferenceRaw: preferenceRaw,
+            forcedLanguageCode: nil,
+            systemPreferredLanguages: systemPreferredLanguages(standardDefaults: standardDefaults)
+        )
     }
 
     private static func apply(
@@ -196,7 +199,7 @@ public enum FloeL10n {
     // MARK: - Resolution (pure, unit-testable)
 
     /// - Parameters:
-    ///   - preferenceRaw: stored "system"/"en"/"zhHans" value (nil = unset).
+    ///   - preferenceRaw: stored LanguagePreference value (nil = unset).
     ///   - forcedLanguageCode: language forced by launch arguments.
     ///   - systemPreferredLanguages: the *OS* preferred-language list.
     public static func resolveLanguageCode(
@@ -204,33 +207,40 @@ public enum FloeL10n {
         forcedLanguageCode: String?,
         systemPreferredLanguages: [String]
     ) -> String {
-        if let forcedLanguageCode, supportedLanguageCodes.contains(forcedLanguageCode) {
-            return forcedLanguageCode
+        if let forcedLanguageCode, let supported = matchingLanguageCode(forcedLanguageCode) {
+            return supported
         }
-        switch preferenceRaw {
-        case preferenceEn: return "en"
-        case preferenceZhHans: return "zh-Hans"
-        default: break
+        if let preferenceRaw,
+           let code = LanguagePreference(rawValue: preferenceRaw)?.localizationCode {
+            return code
         }
-        if let first = systemPreferredLanguages.first, first.hasPrefix("zh") {
-            return "zh-Hans"
-        }
-        return "en"
+        return systemPreferredLanguages.lazy.compactMap(matchingLanguageCode).first ?? "en"
     }
 
-    /// Parses `-AppleLanguages (en)` / `(zh-Hans)` style launch arguments.
+    /// Matches Apple language tags, including regional and script-qualified preferences.
+    public static func matchingLanguageCode(_ identifier: String) -> String? {
+        let language = Locale.Language.Components(identifier: identifier)
+        guard let code = language.languageCode?.identifier else { return nil }
+        if code == "zh" {
+            if let script = language.script?.identifier {
+                return script == "Hant" ? "zh-Hant" : "zh-Hans"
+            }
+            let traditionalRegions = ["TW", "HK", "MO"]
+            return traditionalRegions.contains(language.region?.identifier ?? "")
+                ? "zh-Hant" : "zh-Hans"
+        }
+        if code == "pt" { return "pt-BR" }
+        return supportedLanguageCodes.contains(code) ? code : nil
+    }
+
+    /// Parses `-AppleLanguages (en)` or `(ja-JP, en)` launch arguments.
     static func launchArgumentLanguageCode(arguments: [String]) -> String? {
         guard let index = arguments.firstIndex(of: "-AppleLanguages"),
               index + 1 < arguments.count else { return nil }
-        var raw = arguments[index + 1]
-        if raw.hasPrefix("(") { raw = String(raw.dropFirst()) }
-        if raw.hasSuffix(")") { raw = String(raw.dropLast()) }
-        raw = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
-        guard let code = raw.components(separatedBy: ",").first?
-            .trimmingCharacters(in: .whitespaces) else { return nil }
-        if code.hasPrefix("zh") { return "zh-Hans" }
-        if code.hasPrefix("en") { return "en" }
-        return nil
+        let delimiters = CharacterSet(charactersIn: "()\"'").union(.whitespacesAndNewlines)
+        return arguments[index + 1].split(separator: ",").lazy
+            .map { $0.trimmingCharacters(in: delimiters) }
+            .compactMap(matchingLanguageCode).first
     }
 
     /// Reads the *OS* preferred languages independently of this app's
@@ -257,9 +267,11 @@ public enum FloeL10n {
     public static func systemLanguageCode(
         standardDefaults: UserDefaults = .standard
     ) -> String {
-        let languages = systemPreferredLanguages(standardDefaults: standardDefaults)
-        if let first = languages.first, first.hasPrefix("zh") { return "zh-Hans" }
-        return "en"
+        resolveLanguageCode(
+            preferenceRaw: nil,
+            forcedLanguageCode: nil,
+            systemPreferredLanguages: systemPreferredLanguages(standardDefaults: standardDefaults)
+        )
     }
 
     // MARK: - Current language
@@ -309,8 +321,14 @@ public enum FloeL10n {
         preferredLanguages: [String],
         region: String?
     ) -> String {
-        guard let first = preferredLanguages.first else { return currentLanguageCode }
-        var components = Locale.Components(identifier: first)
+        guard !preferredLanguages.isEmpty else { return currentLanguageCode }
+        let preferred = preferredLanguages.first { matchingLanguageCode($0) != nil } ?? "en"
+        var components = Locale.Components(identifier: preferred)
+        // Keep the selected catalog's Chinese script visible to SwiftUI
+        // even when a device reports only a regional Chinese tag.
+        if let supported = matchingLanguageCode(preferred), supported.hasPrefix("zh-") {
+            components.languageComponents.script = Locale.Language.Components(identifier: supported).script
+        }
         if let region, !region.isEmpty {
             components.languageComponents.region = Locale.Region(region)
         }
@@ -341,16 +359,37 @@ public enum FloeL10n {
         localized(key: key, arguments: arguments)
     }
 
-    /// Count-aware lookup: English resolves the sibling `<key>.one` entry when
-    /// the count is exactly 1 (Chinese has no plural form and always uses the
-    /// base entry). Falls back to the base entry when no singular is defined.
+    /// Looks up a literal pair from an inline bilingual UI helper. The two
+    /// original strings remain the fallback when a pair is assembled at runtime.
+    public static func bilingual(chinese: String, english: String) -> String {
+        let code = currentLanguageCode
+        if code == "zh-Hans" { return chinese }
+        guard code != "en", chinese != english else { return english }
+        var key: UInt64 = 0xcbf29ce484222325
+        for byte in (english + "\0" + chinese).utf8 {
+            key = (key ^ UInt64(byte)) &* 0x100000001b3
+        }
+        return localizedFormat(forKey: "app.bilingual." + String(key, radix: 16), code: code) ?? english
+    }
+
+    /// Selects the singular sibling for catalogs using one/other forms.
+    /// CJK languages use the base entry. Missing singular variants use the base.
     public static func plural(_ key: String, count: Int, _ extra: Any...) -> String {
         var resolvedKey = key
-        if count == 1, currentLanguageCode == "en",
-           resolvedFormat(forKey: key + ".one") != nil {
+        if usesSingular(count: count, code: currentLanguageCode),
+           let singular = localizedFormat(forKey: key + ".one", code: currentLanguageCode),
+           count != 0 || singular.contains("%") {
             resolvedKey = key + ".one"
         }
         return localized(key: resolvedKey, arguments: [count] + extra)
+    }
+
+    static func usesSingular(count: Int, code: String) -> Bool {
+        switch code {
+        case "fr", "pt-BR": count == 0 || count == 1
+        case "en", "de", "es": count == 1
+        default: false
+        }
     }
 
     /// Replaces placeholders with the string representation of each argument.
@@ -446,15 +485,23 @@ public enum FloeL10n {
     }
 
     static func resolvedFormat(forKey key: String) -> String? {
-        let code = currentLanguageCode
-        if let value = lookup(key: key, code: code), value != key, !value.isEmpty {
-            return value
+        localizedFormat(forKey: key, code: currentLanguageCode)
+            ?? localizedFormat(forKey: key, code: "en")
+    }
+
+    public static func localized(
+        key: String, languageCode: String, arguments: [Any] = []
+    ) -> String {
+        let format = localizedFormat(forKey: key, code: languageCode)
+            ?? localizedFormat(forKey: key, code: "en") ?? key
+        return arguments.isEmpty ? format : substituting(format: format, arguments: arguments)
+    }
+
+    private static func localizedFormat(forKey key: String, code: String) -> String? {
+        guard let value = lookup(key: key, code: code), value != key, !value.isEmpty else {
+            return nil
         }
-        if code != "en", let fallback = lookup(key: key, code: "en"),
-           fallback != key, !fallback.isEmpty {
-            return fallback
-        }
-        return nil
+        return value
     }
 
     static func lookup(key: String, code: String) -> String? {
@@ -504,13 +551,12 @@ public enum FloeL10n {
     #endif
 
     private static func loadTableBundle(code: String) -> Bundle? {
-        let lprojName = code == "zh-Hans" ? "zh-Hans" : "en"
         var candidates: [Bundle] = [Bundle.main] + Bundle.allBundles + additionalResourceBundles
         #if canImport(Darwin)
         candidates.append(contentsOf: Bundle.allFrameworks)
         #endif
         for host in candidates {
-            if let url = host.url(forResource: lprojName, withExtension: "lproj"),
+            if let url = host.url(forResource: code, withExtension: "lproj"),
                let tableBundle = Bundle(url: url),
                tableBundle.url(forResource: "Localizable", withExtension: "strings") != nil {
                 return tableBundle
@@ -531,7 +577,7 @@ public enum FloeL10n {
         static func register(_ bundle: Bundle) {
             proxyLock.lock()
             defer { proxyLock.unlock() }
-            let already = registeredTargets.allObjects.contains { ($0 as? Bundle) == bundle }
+            let already = registeredTargets.allObjects.contains { $0 == bundle }
             if !already {
                 registeredTargets.add(bundle)
             }
@@ -539,7 +585,7 @@ public enum FloeL10n {
 
         static func isRegistered(_ bundle: Bundle) -> Bool {
             proxyLock.lock(); defer { proxyLock.unlock() }
-            return registeredTargets.allObjects.contains { ($0 as? Bundle) == bundle }
+            return registeredTargets.allObjects.contains { $0 == bundle }
         }
 
         static func languageBundle(for host: Bundle, code: String) -> Bundle? {
@@ -551,8 +597,7 @@ public enum FloeL10n {
             }
             proxyLock.unlock()
 
-            let lprojName = code == "zh-Hans" ? "zh-Hans" : "en"
-            guard let url = host.url(forResource: lprojName, withExtension: "lproj"),
+            guard let url = host.url(forResource: code, withExtension: "lproj"),
                   let tableBundle = Bundle(url: url) else { return nil }
             proxyLock.lock()
             var map = lprojCache[id] ?? [:]
@@ -613,7 +658,7 @@ extension Bundle {
         // preferred-language cache, which can lag an in-session switch.
         let code = FloeL10n.currentLanguageCode
         if let target = FloeL10n.BundleProxy.languageBundle(for: self, code: code) {
-            let resolved = target.localizedString(forKey: key, value: value ?? key, table: table)
+            let resolved = target.localizedString(forKey: key, value: key, table: table)
             if resolved != key { return resolved }
         }
         if code != "en",

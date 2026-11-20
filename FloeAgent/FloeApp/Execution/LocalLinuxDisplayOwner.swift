@@ -511,13 +511,9 @@ final class LocalLinuxDisplayOwner {
 
     private static func componentCapabilityMessage(legacyImage: Bool) -> String {
         if legacyImage {
-            return FloeL10n.isChinese
-                ? "当前 Linux 环境缺少安全启动屏幕所需的能力。请升级环境后再打开屏幕。"
-                : "This Linux environment cannot safely start a screen. Upgrade it before reopening the screen."
+            return FloeL10n.l("app.local_linux_display_owner.this_linux_environment_cannot_safely")
         }
-        return FloeL10n.isChinese
-            ? "当前 Linux 环境无法安全管理屏幕进程。请在执行环境中停止并重新启动 Linux；若问题仍在，请修复运行组件。"
-            : "This Linux runtime cannot safely manage the screen process. Stop and restart Linux in Execution Environment; repair the component if it continues."
+        return FloeL10n.l("app.local_linux_display_owner.this_linux_runtime_cannot_safely")
     }
 
     private static func isKnownOldImage(_ id: String) -> Bool {

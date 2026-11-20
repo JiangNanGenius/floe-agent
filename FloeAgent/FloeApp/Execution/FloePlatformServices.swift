@@ -1147,9 +1147,7 @@ final class FloePlatformServices: @unchecked Sendable {
                 // Converge a previous pass's deferred cleanup; the retirement
                 // records make this idempotent.
                 await self.retireSupersededFactoryImagesAfterRebuild(replacementImageID)
-                return FloeL10n.isChinese
-                    ? "Linux 环境已经是当前版本，未再次重建；已有资料保留。"
-                    : "Linux is already on the current environment; nothing was rebuilt and existing data was kept."
+                return FloeL10n.l("app.floe_platform_services.linux_is_already_on_the")
             }
             // Fence ALL Linux admissions, including future IDs, then cancel
             // and join the already-owned sessions/jobs/tools. Their SH guards
@@ -1170,9 +1168,7 @@ final class FloePlatformServices: @unchecked Sendable {
                     self.linuxImageStatusCache.bumpRevision()
                     StorageMutationHooks.invalidate(.environmentChanged)
                     await self.retireSupersededFactoryImagesAfterRebuild(replacementImageID)
-                    return FloeL10n.isChinese
-                        ? "Linux 环境已经是当前版本，未再次重建；已有资料保留。"
-                        : "Linux is already on the current environment; nothing was rebuilt and existing data was kept."
+                    return FloeL10n.l("app.floe_platform_services.linux_is_already_on_the")
                 }
                 let records = await registry.all().filter { $0.effectiveExecutionBackend == .linuxVM && $0.kind != .template }
                 try await lifecycle.quiesceLinuxRuntime(containerIDs: records.map(\.id))

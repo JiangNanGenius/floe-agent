@@ -168,7 +168,7 @@ final class GameWorkspaceProjectSession {
         project = result.project
         selectionSnapshot = nil
         pendingSelectionProposal = nil
-        importSummary = IDELanguageRunText.t("已导入 \(result.importedFiles) 个文件", "Imported \(result.importedFiles) files")
+        importSummary = FloeL10n.l("app.game_workspace_project_session.imported_files", result.importedFiles)
         try await refresh(reloadFiles: false, allowRecognitionFailure: true)
     }
 

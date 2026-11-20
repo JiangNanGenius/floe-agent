@@ -23,7 +23,7 @@ import FloeWorkspace
 /// move these keys into `Localizable.xcstrings` (see O/LOCALIZATION.json).
 enum ReaderText {
     static var isChinese: Bool { FloeL10n.isChinese }
-    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
+    static func t(_ zh: String, _ en: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 }
 
 /// Appearance options for the reader surface only; the app-wide theme is
@@ -535,10 +535,7 @@ final class TextReaderModel: ObservableObject {
         switch error {
         case .fileTooLarge(let limit):
             let mebibytes = limit / (1024 * 1024)
-            return ReaderText.t(
-                "文件超过阅读模式的单文件上限（\(mebibytes) MB）。",
-                "This file exceeds the reading-mode limit (\(mebibytes) MB)."
-            )
+            return FloeL10n.l("app.text_reader_view.this_file_exceeds_the_reading", mebibytes)
         case .emptyDocument:
             return ReaderText.t("文档没有可显示的文字。", "The document has no readable text.")
         case .unrecognizedEncoding:
@@ -547,20 +544,11 @@ final class TextReaderModel: ObservableObject {
                 "The text encoding could not be recognized, so nothing was decoded."
             )
         case .corruptText(let offset):
-            return ReaderText.t(
-                "文件在第 \(offset) 字节处无法解码。",
-                "The file could not be decoded at byte \(offset)."
-            )
+            return FloeL10n.l("app.text_reader_view.the_file_could_not_be", offset)
         case .encodingConflict(let chosen):
-            return ReaderText.t(
-                "文件自带的编码标记与所选编码（\(chosen.displayName)）不一致；请改用自动或匹配的编码。",
-                "The file's own encoding mark does not match the selected encoding (\(chosen.displayName)). Choose Auto or the matching encoding."
-            )
+            return FloeL10n.l("app.text_reader_view.the_file_s_own_encoding", chosen.displayName)
         case .encodingInvalid(let chosen):
-            return ReaderText.t(
-                "所选编码（\(chosen.displayName)）无法完整解码此文件；未显示替换字符。可改用自动。",
-                "The selected encoding (\(chosen.displayName)) could not decode the whole file; no replacement characters were shown. Try Auto."
-            )
+            return FloeL10n.l("app.text_reader_view.the_selected_encoding_could_not", chosen.displayName)
         case .sourceUnavailable:
             return ReaderText.t("文件当前不可读取。", "The source could not be read.")
         case .cancelled, .superseded:
@@ -750,7 +738,7 @@ struct TextReaderView: View {
         VStack(spacing: 12) {
             ProgressView()
             if progress > 0.01 {
-                Text(ReaderText.t("正在建立索引 \(Int(progress * 100))%", "Indexing \(Int(progress * 100))%"))
+                Text(FloeL10n.l("app.text_reader_view.indexing", Int(progress * 100)))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             } else {
@@ -934,7 +922,7 @@ struct TextReaderView: View {
                             .multilineTextAlignment(.leading)
                         Spacer(minLength: 0)
                         if chapter.lineNumber > 0 {
-                            Text(ReaderText.t("第 \(chapter.lineNumber) 行", "Line \(chapter.lineNumber)"))
+                            Text(FloeL10n.l("app.text_reader_view.line", chapter.lineNumber))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -993,7 +981,7 @@ struct TextReaderView: View {
                                     .multilineTextAlignment(.leading)
                                 HStack(spacing: 6) {
                                     if hit.lineNumber > 0 {
-                                        Text(ReaderText.t("第 \(hit.lineNumber) 行", "Line \(hit.lineNumber)"))
+                                        Text(FloeL10n.l("app.text_reader_view.line", hit.lineNumber))
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     if !hit.exactOffset {
@@ -1006,7 +994,7 @@ struct TextReaderView: View {
                     }
                     .overlay(alignment: .bottom) {
                         if model.findTruncated {
-                            Text(ReaderText.t("仅显示前 \(model.findHits.count) 条结果。", "Showing the first \(model.findHits.count) matches."))
+                            Text(FloeL10n.l("app.text_reader_view.showing_the_first_matches", model.findHits.count))
                                 .font(FloeTheme.Typography.metadata)
                                 .padding(8)
                                 .frame(maxWidth: .infinity)
@@ -1137,10 +1125,9 @@ struct TextReaderView: View {
 
     private var statusBar: some View {
         HStack(spacing: 12) {
-            Text(ReaderText.t("已读 \(Int(model.progress * 100))%", "\(Int(model.progress * 100))% read"))
+            Text(FloeL10n.l("app.text_reader_view.read", Int(model.progress * 100)))
             if model.lineNumber > 0, model.totalLines > 0 {
-                Text(ReaderText.t("第 \(model.lineNumber) 行 / 共 \(model.totalLines) 行",
-                                  "Line \(model.lineNumber) of \(model.totalLines)"))
+                Text(FloeL10n.l("app.text_reader_view.line_of", model.lineNumber, model.totalLines))
             }
             Spacer(minLength: 0)
             Text(model.encodingSummary)

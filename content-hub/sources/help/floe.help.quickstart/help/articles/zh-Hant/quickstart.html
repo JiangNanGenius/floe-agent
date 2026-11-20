@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>從安裝到第一個成果</title>
+<link rel="stylesheet" href="../../styles/help.css">
+</head>
+<body>
+<main>
+<h1>從安裝到第一個成果</h1>
+<nav class="toc" aria-label="目錄"><h2>目錄</h2><ul>
+<li class="lv2"><a href="#overview">概覽</a></li>
+<li class="lv2"><a href="#section-1">選擇安裝方式</a></li>
+<li class="lv2"><a href="#section-2">完成一個 AI 任務</a></li>
+<li class="lv2"><a href="#section-3">在裝置端執行程式碼</a></li>
+<li class="lv2"><a href="#section-4">建立並儲存一個 3D 模型</a></li>
+<li class="lv2"><a href="#section-5">在空間試用一個作品（較新構建）</a></li>
+<li class="lv2"><a href="#section-6">區分兩種 Bridge</a></li>
+<li class="lv2"><a href="#section-7">儲存、恢復與反饋</a></li>
+</ul></nav>
+<h2 id="overview">概覽</h2>
+<p>本頁適用於 iOS / iPadOS。功能以所選版本的釋出說明為準；模型、任務與檔案的通用操作見<a href="shared-basics.html">共通指南</a>。</p>
+<h2 id="section-1">選擇安裝方式</h2>
+<p>先開啟<a href="https://www.floe-agent.com/releases" class="external">版本中心</a>，按產品選擇 Floe Agent、Mac Bridge 或 iOS Bridge。Floe Agent 正式版已上架 App Store（iOS/iPadOS 26+），可直接安裝與更新。GitHub iOS IPA 需要自行簽名，可能包含較新功能；選擇安裝包前核對<a href="https://github.com/JiangNanGenius/floe-agent/blob/main/docs/CURRENT_STATUS.md" class="external">渠道版本及核實日期</a>。想使用 TestFlight，可在<a href="https://www.floe-agent.com/#beta" class="external">官網申請</a>，申請不等於立即獲得測試資格。</p>
+<h2 id="section-2">完成一個 AI 任務</h2>
+<p>先在模型設定新增可用的雲端模型，再新建任務並選擇工作區。如何配置模型、描述成果、核對儲存和處理常見錯誤，見<a href="shared-basics.html">模型、任務與檔案</a>。本地模型安裝與裝置能力見<a href="user-manual.html#section-2">本平臺手冊</a>。</p>
+<h2 id="section-3">在裝置端執行程式碼</h2>
+<p><strong>準備：</strong> 足夠的可用儲存和裝置記憶體。iOS 當前使用共享 ARM64 Linux 執行環境，任務與專案目錄保持各自歸屬；執行包需適配客體架構。</p>
+<ol><li>到執行環境設定下載並校驗所需資源，再開啟當前工作區的本地終端。</li><li>執行 <code>pwd</code> 和 <code>uname -m</code>，核對目錄與實際架構，然後按任務安裝 Python、Node.js 或所需軟體包。</li><li>執行一個小程式，開啟生成的檔案；網頁服務使用“作為網頁服務執行”，待實際響應後再預覽。</li><li>結束時停止對應作業或服務。隱藏終端、關閉預覽不等於停止後臺任務。</li></ol>
+<p><strong>遇到問題：</strong> 先檢視安裝、啟動和執行輸出。資源修復前保留專案檔案，不隨意重置或刪除資料。詳見<a href="user-manual.html#section-9">終端與執行環境</a>。</p>
+<h2 id="section-4">建立並儲存一個 3D 模型</h2>
+<p><strong>準備：</strong> 已提供原生 3D 工作臺的 iOS/iPadOS 版本。匯入的網格不自動擁有原生引數化歷史；不同格式支援的操作不同。</p>
+<ol><li>在創作流程中建立原生 3D 模型，先用簡單幾何建立可編輯成果。</li><li>在同一模型中繼續調整尺寸、孔或圓角；使用 AI 時明確當前模型及所需修改。</li><li>核對幾何、材質和檢視，儲存 <code>.floecad</code>，關閉後重開確認。</li><li>按用途匯出圖片或受支援的 3D 格式，使用接收方工具再核對。</li></ol>
+<p><strong>遇到問題：</strong> 格式只讀時保留原檔案，不把匯入成功當作可編輯證明；幾何失敗先撤銷到可恢復狀態。詳見<a href="user-manual.html#section-15-3">原生 3D 手冊</a>。</p>
+<h2 id="section-5">在空間試用一個作品（較新構建）</h2>
+<p><strong>準備：</strong> 包含空間功能的安裝包，適用版本見<a href="workspaces.html">工作臺教程</a>，渠道可用性見<a href="https://github.com/JiangNanGenius/floe-agent/blob/main/docs/CURRENT_STATUS.md" class="external">版本狀態</a>。GitHub IPA 下載後需自行簽名。</p>
+<ol><li>從側欄開啟<strong>空間</strong>，切換到“檔案”。點<strong>新建</strong>建立一個繪畫或文件作品並命名。</li><li>編輯作品後關閉，再從“繼續使用”重新開啟，確認儲存成功。</li><li>開啟該作品的助手，請它總結或繼續處理；採納前核對每項建議。</li><li>刪除測試作品，再從“最近刪除”恢復，熟悉恢復流程。</li></ol>
+<p><strong>遇到問題：</strong> 先確認構建支援空間（設定 → 診斷與關於）。會議、音樂、列印和工具箱見<a href="workspaces.html">空間與專用工作臺</a>。</p>
+<h2 id="section-6">區分兩種 Bridge</h2>
+<div class="table-wrap"><table><tr><th>產品</th><th>用途</th><th>連線前檢查</th></tr><tr><td>Floe Bridge · Mac</td><td>為同一臺 Mac 上的 Floe 提供本機終端、檔案和 MCP</td><td>兩個應用在同一臺 Mac，雙方確認同一配對碼；不是 iPad 到 Mac 的遠端橋</td></tr><tr><td>Floe iOS Bridge</td><td>獨立的 iPhone/iPad 本機自動化橋</td><td>自行簽名所需能力、裝置設定與授權；1.0 不接入主 Floe App</td></tr></table></div>
+<p>Mac Bridge：從<a href="https://www.floe-agent.com/releases?platform=bridge" class="external">對應版本</a>安裝，啟動選單欄應用，再在同一 Mac 的 Floe 中發起連線；雙方核對驗證碼並確認。先檢查目錄、讀取一個測試檔案，再開始任務。斷開後不自動重放命令。沒有圖示時重新啟動應用；拒絕連線時檢查兩端版本與配對確認。</p>
+<p>iOS Bridge：先閱讀<a href="https://github.com/JiangNanGenius/floe-agent/blob/floe-ios-bridge-v1.0.0/FloeIOSBridge/INSTALL.zh-CN.md" class="external">固定版本安裝說明</a>。1.0 的簽名材料需要 Network Extension 能力，不承諾任意重籤方式相容。按應用嚮導完成裝置準備，在裝置上批准客戶端配對；預設只訪問本機，需要時才開啟區域網。操作後重新讀屏核對，遇到“結果未確認”不要自動重複點選。</p>
+<h2 id="section-7">儲存、恢復與反饋</h2>
+<p>Office、媒體和 3D 成果應分別在對應編輯器確認儲存；另存和匯出不會自動替代原件。存在衝突時先保留恢復副本。重要資料始終保留獨立備份。</p>
+<p>仍有問題時，在<a href="https://github.com/JiangNanGenius/floe-agent/blob/main/SUPPORT.zh-CN.md" class="external">支援入口</a>描述版本、裝置、復現步驟、預期與實際結果；診斷和截圖只主動提交必要部分，不附密碼、Key 或私人檔案。繼續閱讀<a href="user-manual.html">完整手冊</a>與<a href="workspaces.html">空間與專用工作臺</a>。</p>
+</main>
+<footer><p>Floe 指南</p></footer>
+</body>
+</html>

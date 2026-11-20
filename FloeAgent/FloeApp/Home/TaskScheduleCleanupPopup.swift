@@ -150,23 +150,23 @@ final class TaskScheduleCleanupPopupLedger {
 /// system automation.
 enum TaskScheduleCleanupCopy {
     static func title() -> String {
-        FloeL10n.isChinese ? "清理系统自动化" : "Clean up the automation"
+        FloeL10n.l("app.task_schedule_cleanup_popup.clean_up_the_automation")
     }
 
     static func openShortcuts() -> String {
-        FloeL10n.isChinese ? "打开快捷指令" : "Open Shortcuts"
+        FloeL10n.l("app.task_schedule_cleanup_popup.open_shortcuts")
     }
 
     static func later() -> String {
-        FloeL10n.isChinese ? "稍后" : "Later"
+        FloeL10n.l("action.later")
     }
 
     static func removed() -> String {
-        FloeL10n.isChinese ? "已移除" : "Removed"
+        FloeL10n.l("app.task_schedule_cleanup_popup.removed")
     }
 
     static func dismiss() -> String {
-        FloeL10n.isChinese ? "忽略" : "Dismiss"
+        FloeL10n.l("cad.animation.export.recovery.dismiss")
     }
 
     /// One short, actionable bilingual line per retired schedule — the plan's
@@ -175,21 +175,13 @@ enum TaskScheduleCleanupCopy {
     static func reason(_ reminder: TaskScheduleCleanupReminder) -> String {
         switch reminder.reason {
         case .deleted:
-            return FloeL10n.isChinese
-                ? "已删除「\(reminder.title)」。你为它设置过系统自动化，请在快捷指令中删除对应自动化。"
-                : "“\(reminder.title)” was deleted. You had set up a system automation for it — remove that automation in Shortcuts."
+            return FloeL10n.l("app.task_schedule_cleanup_popup.was_deleted_you_had_set", reminder.title)
         case .onceConsumed:
-            return FloeL10n.isChinese
-                ? "一次性计划「\(reminder.title)」已运行结束，不会再运行。请在快捷指令中删除对应自动化。"
-                : "The one-time plan “\(reminder.title)” has finished running and will not fire again. Remove its automation in Shortcuts."
+            return FloeL10n.l("app.task_schedule_cleanup_popup.the_one_time_plan_has", reminder.title)
         case .staleTrigger:
-            return FloeL10n.isChinese
-                ? "「\(reminder.title)」的系统自动化仍在触发已不存在的计划。请在快捷指令中删除它。"
-                : "“\(reminder.title)” still fires an automation for a plan that no longer exists. Remove it in Shortcuts."
+            return FloeL10n.l("app.task_schedule_cleanup_popup.still_fires_an_automation_for", reminder.title)
         case nil:
-            return FloeL10n.isChinese
-                ? "「\(reminder.title)」可能仍有对应的系统自动化。请在快捷指令中检查并删除。"
-                : "A system automation for “\(reminder.title)” may still exist. Check and remove it in Shortcuts."
+            return FloeL10n.l("app.task_schedule_cleanup_popup.a_system_automation_for_may", reminder.title)
         }
     }
 }

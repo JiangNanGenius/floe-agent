@@ -159,11 +159,11 @@ struct SpeechProfileEditor: View {
                 }
                 Section {
                     if draft.provider == .deepSeek {
-                        Picker(FloeL10n.isChinese ? "音色" : "Voice", selection: $draft.voiceID) {
-                            Text(FloeL10n.isChinese ? "海星" : "Stella").tag("stella")
-                            Text(FloeL10n.isChinese ? "暗潮" : "Tide").tag("tide")
+                        Picker(FloeL10n.l("voice.settings.voice"), selection: $draft.voiceID) {
+                            Text(FloeL10n.l("app.online_speech_services_view.stella")).tag("stella")
+                            Text(FloeL10n.l("app.online_speech_services_view.tide")).tag("tide")
                         }
-                        Toggle(FloeL10n.isChinese ? "保存后用于朗读" : "Use for read-aloud after saving", isOn: $selectAfterSave)
+                        Toggle(FloeL10n.l("app.online_speech_services_view.use_for_read_aloud_after"), isOn: $selectAfterSave)
                     } else {
                         TextField("voice.settings.model", text: $draft.modelID)
                             .keyboardType(.asciiCapable)

@@ -1790,7 +1790,7 @@ struct NotesEditTool: AgentTool {
         if let value = args.title?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
             return value
         }
-        return FloeL10n.isChinese ? "编辑文档" : "Edit document"
+        return FloeL10n.l("app.notes_agent_tools.edit_document")
     }
     private static func requiredOperations(_ args: Arguments) throws -> [Operation] {
         guard let value = args.operations, !value.isEmpty, value.count <= 1000 else {

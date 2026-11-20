@@ -58,16 +58,16 @@ struct GitHubCollaborationDraft: Codable, Sendable, Equatable, Identifiable {
     }
     var caption: String {
         switch kind {
-        case .createIssue: ghCollabText("新建问题", "New issue")
-        case .updateIssue: closeIssue ? ghCollabText("关闭问题", "Close issue") : ghCollabText("重新打开问题", "Reopen issue")
-        case .reply: ghCollabText("回复", "Reply")
-        case .createPull: ghCollabText("新建拉取请求", "New pull request")
-        case .review: ghCollabText("评审拉取请求", "Review pull request")
-        case .lineComment: ghCollabText("评论代码行", "Comment on a line")
-        case .mergePull: ghCollabText("合并拉取请求", "Merge pull request")
-        case .rerunActions: ghCollabText("重新运行", "Re-run jobs")
-        case .rerunFailedActions: ghCollabText("重跑失败作业", "Re-run failed jobs")
-        case .cancelActions: ghCollabText("取消运行", "Cancel run")
+        case .createIssue: FloeL10n.l("app.git_hub_collaboration_drafts.new_issue")
+        case .updateIssue: closeIssue ? FloeL10n.l("app.git_hub_collaboration_drafts.close_issue") : FloeL10n.l("app.git_hub_collaboration_drafts.reopen_issue")
+        case .reply: FloeL10n.l("app.git_hub_collaboration_drafts.reply")
+        case .createPull: FloeL10n.l("app.git_hub_collaboration_drafts.new_pull_request")
+        case .review: FloeL10n.l("app.git_hub_collaboration_drafts.review_pull_request")
+        case .lineComment: FloeL10n.l("app.git_hub_collaboration_drafts.comment_on_a_line")
+        case .mergePull: FloeL10n.l("app.git_hub_collaboration_drafts.merge_pull_request")
+        case .rerunActions: FloeL10n.l("app.git_hub_collaboration_drafts.re_run_jobs")
+        case .rerunFailedActions: FloeL10n.l("app.git_hub_collaboration_drafts.re_run_failed_jobs")
+        case .cancelActions: FloeL10n.l("app.git_hub_collaboration_drafts.cancel_run")
         }
     }
     func validate() throws {

@@ -361,9 +361,7 @@ struct WorkbenchBootstrapSheet: View {
                         .foregroundStyle(.tint)
                     Text(WorkbenchText.t("发现已保存的项目", "Saved project found"))
                         .font(.headline)
-                    Text(WorkbenchText.t(
-                        "“\(candidate.name)”已有 \(candidate.revision) 次修订。继续编辑会保留已有图层/时间线/撤销历史；新建会从当前素材重新开始。",
-                        "“\(candidate.name)” has \(candidate.revision) revisions. Resume keeps its layers/timeline/undo history; start fresh rebuilds from the current media."))
+                    Text(FloeL10n.l("app.media_workbench_view.has_revisions_resume_keeps_its", candidate.name, candidate.revision))
                         .font(.callout)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)

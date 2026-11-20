@@ -286,7 +286,7 @@ struct CreativeModeHubView: View {
             case .confirm(let record):
                 return Alert(
                     title: Text(IDELanguageRunText.t("删除画布？", "Delete canvas?")),
-                    message: Text(IDELanguageRunText.t("“\(record.title)”将移至最近删除，可以从那里恢复。", "“\(record.title)” will move to Recently Deleted, where you can restore it.")),
+                    message: Text(FloeL10n.l("app.workspace_canvas_view.will_move_to_recently_deleted", record.title)),
                     primaryButton: .destructive(Text(IDELanguageRunText.t("删除", "Delete"))) {
                         guard deletingPersonalCanvasID == nil else { return }
                         deletingPersonalCanvasID = record.id
@@ -2034,9 +2034,7 @@ private final class CanvasDocumentStore: ObservableObject {
             reconciliationNotice = nil
             return true
         } catch {
-            reconciliationNotice = canvasLocalized(
-                "素材引用对账记录暂时无法写入磁盘，对账仍会继续，但本次进度不会被持久保存：\(error.localizedDescription)",
-                "The asset-reference reconciliation journal could not be written; reconciliation continues, but this progress will not survive a restart: \(error.localizedDescription)")
+            reconciliationNotice = FloeL10n.l("app.workspace_canvas_view.the_asset_reference_reconciliation_journal", error.localizedDescription)
             return false
         }
     }
@@ -2725,15 +2723,13 @@ private final class CanvasDocumentStore: ObservableObject {
         guard let selected = selectedDocument?.nodes.first(where: { $0.id == nodeID }),
               let asset = selected.asset,
               let hash = asset.contentHash, !hash.isEmpty else {
-            saveError = canvasLocalized("该素材没有内容哈希，无法从云端恢复。",
-                                        "This asset has no content hash and cannot be restored from the cloud.")
+            saveError = FloeL10n.l("app.workspace_canvas_view.this_asset_has_no_content")
             return
         }
         do {
             guard let record = try await service.downloadAssetIfNeeded(contentHash: hash),
                   let relative = record.localRelativePath else {
-                saveError = canvasLocalized("云端没有找到该素材；请检查同步设置后重试。",
-                                            "The asset was not found in the cloud; check sync settings and retry.")
+                saveError = FloeL10n.l("app.workspace_canvas_view.the_asset_was_not_found")
                 return
             }
             var updated = asset
@@ -2741,7 +2737,7 @@ private final class CanvasDocumentStore: ObservableObject {
             if updated.cloudRecordName == nil { updated.cloudRecordName = record.cloudRecordName }
             attachAsset(updated, kind: selected.kind, to: nodeID)
         } catch {
-            saveError = canvasLocalized("素材下载失败：", "Asset download failed: ") + error.localizedDescription
+            saveError = FloeL10n.l("app.workspace_canvas_view.asset_download_failed") + error.localizedDescription
         }
     }
 
@@ -4011,31 +4007,27 @@ private struct CanvasVideoChildProjectSheet: View {
 
     private var pendingBody: some View {
         ContentUnavailableView {
-            Label(canvasLocalized("正在准备独立可编辑副本", "Preparing an independent editable copy"),
+            Label(FloeL10n.l("app.workspace_canvas_view.preparing_an_independent_editable_copy"),
                   systemImage: "arrow.triangle.2.circlepath")
         } description: {
-            Text(canvasLocalized(
-                "正在为该节点创建独立工程，完成前不会共享原视频的编辑状态。",
-                "A separate project is being prepared for this node; it does not share the original's editable state until ready."))
+            Text(FloeL10n.l("app.workspace_canvas_view.a_separate_project_is_being"))
         }
         .accessibilityIdentifier("canvas.videoEditor.pending")
     }
 
     private func failedBody(reason: String) -> some View {
         ContentUnavailableView {
-            Label(canvasLocalized("应用回画布失败", "Applying back to the canvas failed"),
+            Label(FloeL10n.l("app.workspace_canvas_view.applying_back_to_the_canvas"),
                   systemImage: "exclamationmark.triangle")
         } description: {
-            Text(canvasLocalized(
-                "导出结果仍在素材库中，原节点未被修改。可重试。\n\(reason)",
-                "The export is still in the material library and the original node was not changed. You can retry.\n\(reason)"))
+            Text(FloeL10n.l("app.workspace_canvas_view.the_export_is_still_in", reason))
         } actions: {
-            Button(canvasLocalized("重试", "Retry")) {
+            Button(FloeL10n.l("action.retry")) {
                 store.retryCopiedFork(nodeID: presentation.id, environment: environment)
             }
             .frame(minHeight: 44)
             .accessibilityIdentifier("canvas.videoEditor.retry")
-            Button(canvasLocalized("取消", "Cancel")) { dismiss() }
+            Button(FloeL10n.l("cad.scene.cancel")) { dismiss() }
                 .frame(minHeight: 44)
         }
         .accessibilityIdentifier("canvas.videoEditor.failed")
@@ -4043,14 +4035,12 @@ private struct CanvasVideoChildProjectSheet: View {
 
     private var recoveryBody: some View {
         ContentUnavailableView {
-            Label(canvasLocalized("工程绑定来自更新版本", "Edit binding is from a newer version"),
+            Label(FloeL10n.l("app.workspace_canvas_view.edit_binding_is_from_a"),
                   systemImage: "exclamationmark.triangle")
         } description: {
-            Text(canvasLocalized(
-                "已保留原始绑定数据，不会用新工程覆盖。将从此原视频新建一个分支节点。",
-                "The original binding is preserved and will not be overwritten. A new variant node will be created from this video."))
+            Text(FloeL10n.l("app.workspace_canvas_view.the_original_binding_is_preserved"))
         } actions: {
-            Button(canvasLocalized("从此原视频新建分支", "Create variant from this video")) { startFresh = true }
+            Button(FloeL10n.l("app.workspace_canvas_view.create_variant_from_this_video")) { startFresh = true }
                 .frame(minHeight: 44)
         }
     }
@@ -4093,8 +4083,7 @@ private struct CanvasVideoChildProjectSheet: View {
         applying = true
         defer { applying = false }
         guard liveNode != nil else {
-            errorMessage = canvasLocalized("视频已导出；原画布或节点已改变，请从素材库插入。",
-                                           "The video was exported; the canvas or node changed, so insert it from the material library.")
+            errorMessage = FloeL10n.l("app.workspace_canvas_view.the_video_was_exported_the")
             return
         }
         do {
@@ -4103,8 +4092,7 @@ private struct CanvasVideoChildProjectSheet: View {
             // Re-read the live node after the await; the presentation-time
             // capture never commits.
             guard let liveNodeAtCommit = liveNode else {
-                errorMessage = canvasLocalized("视频已保存到素材库；原节点已改变，请从素材库插入。",
-                                               "The video was saved to the material library; the node changed, so insert it from there.")
+                errorMessage = FloeL10n.l("app.workspace_canvas_view.the_video_was_saved_to")
                 return
             }
             let reference = CanvasAssetReference(
@@ -4117,9 +4105,7 @@ private struct CanvasVideoChildProjectSheet: View {
                 ?? liveNodeAtCommit.childProjectBinding?.appliedRevision ?? 0
             if startFresh || liveNodeAtCommit.childProjectBindingState.isRecoverable {
                 guard let projectID else {
-                    errorMessage = canvasLocalized(
-                        "视频已保存到素材库；没有可绑定的新工程，未修改原节点。",
-                        "The video was saved to the library; there is no new project to bind, so the original node was not changed.")
+                    errorMessage = FloeL10n.l("app.workspace_canvas_view.the_video_was_saved_to_2")
                     return
                 }
                 let (_, operations) = try CanvasChildProjectMigrationPlanner.variantPatch(
@@ -4138,9 +4124,7 @@ private struct CanvasVideoChildProjectSheet: View {
                         "variant": "true", "appliedRevision": String(revision)
                     ])
                 guard store.commitVariantPatch(operations, documentID: presentation.documentID) else {
-                    errorMessage = canvasLocalized(
-                        "视频已保存到素材库；画布写入失败，原节点未修改。",
-                        "The video was saved to the library; the canvas write failed and the original node was not changed.")
+                    errorMessage = FloeL10n.l("app.workspace_canvas_view.the_video_was_saved_to_3")
                     return
                 }
                 return
@@ -4170,13 +4154,11 @@ private struct CanvasVideoChildProjectSheet: View {
                     store.commitNodeAssetPatch(
                         marker, documentID: presentation.documentID, previousAssetID: nil)
                 }
-                errorMessage = canvasLocalized(
-                    "视频已保存到素材库；应用回画布失败，可重试。",
-                    "The video was saved to the library; applying it back failed and can be retried.")
+                errorMessage = FloeL10n.l("app.workspace_canvas_view.the_video_was_saved_to_4")
                 return
             }
         } catch {
-            errorMessage = canvasLocalized("视频已导出，但应用回画布失败：", "The video was exported but applying it back failed: ")
+            errorMessage = FloeL10n.l("app.workspace_canvas_view.the_video_was_exported_but")
                 + error.localizedDescription
         }
     }
@@ -4315,17 +4297,13 @@ private final class CanvasDrawingSessionRegistry: ObservableObject {
             case .replacePreservingDraft(let serializeFirst):
                 if serializeFirst, !(await serializeLiveDraft(nodeID: node.id)) {
                     touch(nodeID: node.id)
-                    return Prepared(entry: existing, notice: canvasLocalized(
-                        "图纸在编辑期间已被外部修改；当前未保存的编辑还未能写入本地草稿，请先在编辑器中保存。原草稿不会被删除。",
-                        "The drawing changed externally while you were editing; the unsaved edits could not be written to the local draft yet. Save in the editor first; the old draft is preserved."))
+                    return Prepared(entry: existing, notice: FloeL10n.l("app.workspace_canvas_view.the_drawing_changed_externally_while"))
                 }
                 let preserved = existing.stagedRelativePath
                 existing.session.tearDown()
                 entries[node.id] = nil
                 let fresh = try await stageFresh(canvasID: canvasID, node: node)
-                return Prepared(entry: fresh, notice: canvasLocalized(
-                    "图纸在编辑期间已被外部修改；旧草稿已保留（\(preserved)），已为最新版本新建编辑副本。",
-                    "The drawing changed externally; the previous draft was preserved (\(preserved)) and a fresh editable copy was staged for the latest revision."))
+                return Prepared(entry: fresh, notice: FloeL10n.l("app.workspace_canvas_view.the_drawing_changed_externally_the", preserved))
             case .fresh:
                 break
             }
@@ -4340,9 +4318,7 @@ private final class CanvasDrawingSessionRegistry: ObservableObject {
                     CanvasDrawingDraftRecoveryCenter.shared.hold(entry: stale)
                     entries[node.id] = nil
                     return Prepared(entry: try await stageFresh(canvasID: canvasID, node: node),
-                                    notice: canvasLocalized(
-                                        "上一条编辑会话尚未保存成功，已在后台保留并会重试；草稿文件未删除。",
-                                        "The previous edit session could not be saved yet; it is retained in the background for retry and its draft files are kept."))
+                                    notice: FloeL10n.l("app.workspace_canvas_view.the_previous_edit_session_could"))
                 }
             }
             stale.session.tearDown()
@@ -4788,9 +4764,7 @@ private final class CanvasDrawingDraftRecoveryCenter: ObservableObject {
 
     var notice: String? {
         guard pendingCount > 0 else { return nil }
-        return canvasLocalized(
-            "有 \(pendingCount) 份图纸草稿尚未写入本地；编辑会话已保留并会自动重试。",
-            "\(pendingCount) drawing draft(s) have not been written locally yet; the edit session is retained and will retry.")
+        return FloeL10n.l("app.workspace_canvas_view.drawing_draft_s_have_not", pendingCount)
     }
 
     func hold(entry: CanvasDrawingSessionRegistry.Entry) {
@@ -4904,19 +4878,19 @@ private struct CanvasDrawingEditorSheet: View {
             Group {
                 if let errorMessage {
                     ContentUnavailableView {
-                        Label(canvasLocalized("无法打开图纸", "Could not open the drawing"),
+                        Label(FloeL10n.l("app.workspace_canvas_view.could_not_open_the_drawing"),
                               systemImage: "exclamationmark.triangle")
                     } description: {
                         Text(errorMessage)
                     } actions: {
-                        Button(canvasLocalized("关闭", "Close")) { onFinish(nil) }
+                        Button(FloeL10n.l("help.close")) { onFinish(nil) }
                             .frame(minHeight: 44)
                     }
                     .accessibilityIdentifier("canvas.drawingEditor.unavailable")
                 } else if let entry, let package {
                     editorPreview(entry: entry, package: package)
                 } else {
-                    ProgressView(canvasLocalized("正在准备图纸编辑…", "Preparing the drawing…"))
+                    ProgressView(FloeL10n.l("app.workspace_canvas_view.preparing_the_drawing"))
                         .task { await prepareIfNeeded() }
                 }
             }
@@ -4924,11 +4898,11 @@ private struct CanvasDrawingEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(canvasLocalized("关闭", "Close")) { requestClose() }
+                    Button(FloeL10n.l("help.close")) { requestClose() }
                         .accessibilityIdentifier("canvas.drawingEditor.close")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(canvasLocalized("完成", "Finish")) {
+                    Button(FloeL10n.l("setup.finish")) {
                         Task { await finishAndApply() }
                     }
                     .disabled(isWorking || entry == nil)
@@ -4940,7 +4914,7 @@ private struct CanvasDrawingEditorSheet: View {
                             Button {
                                 isFullScreenEditor = true
                             } label: {
-                                Label(canvasLocalized("全屏", "Fullscreen"),
+                                Label(FloeL10n.l("app.workspace_canvas_view.fullscreen"),
                                       systemImage: "arrow.up.left.and.arrow.down.right")
                             }
                             .accessibilityIdentifier("canvas.drawingEditor.fullscreen")
@@ -4949,14 +4923,14 @@ private struct CanvasDrawingEditorSheet: View {
                             Button {
                                 showHistory = true
                             } label: {
-                                Label(canvasLocalized("版本历史", "Version history"),
+                                Label(FloeL10n.l("memory.memory_view.version_history"),
                                       systemImage: "clock.arrow.circlepath")
                             }
                             .disabled(isWorking)
                             Button {
                                 Task { await makeVariant() }
                             } label: {
-                                Label(canvasLocalized("创建变体", "Make variant"),
+                                Label(FloeL10n.l("app.workspace_canvas_view.make_variant"),
                                       systemImage: "plus.square.on.square")
                             }
                             .disabled(isWorking)
@@ -4969,9 +4943,7 @@ private struct CanvasDrawingEditorSheet: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if cadDirty {
-                    Label(canvasLocalized(
-                        "图纸有未保存修改；点“完成”会先写入本地草稿，再应用回画布。",
-                        "The drawing has unsaved edits: Finish writes them to the local draft first, then applies to the canvas."),
+                    Label(FloeL10n.l("app.workspace_canvas_view.the_drawing_has_unsaved_edits"),
                           systemImage: "pencil.and.outline")
                         .font(.footnote)
                         .padding(8)
@@ -4991,26 +4963,24 @@ private struct CanvasDrawingEditorSheet: View {
         }
         .interactiveDismissDisabled(cadDirty)
         .confirmationDialog(
-            canvasLocalized("图纸有未保存的修改", "The drawing has unsaved edits"),
+            FloeL10n.l("app.workspace_canvas_view.the_drawing_has_unsaved_edits_2"),
             isPresented: $confirmDiscard, titleVisibility: .visible
         ) {
-            Button(canvasLocalized("保留草稿并关闭", "Keep draft and close")) {
+            Button(FloeL10n.l("app.workspace_canvas_view.keep_draft_and_close")) {
                 Task { @MainActor in
                     if await sessions.serializeLiveDraft(nodeID: presentation.id) {
                         onFinish(nil)
                     } else {
-                        statusMessage = canvasLocalized(
-                            "未保存的图纸修改未能写入本地草稿；请在编辑器中保存后重试，画布不会丢失草稿。",
-                            "The unsaved drawing edits could not be written to the local draft; save in the editor and retry. Nothing is discarded.")
+                        statusMessage = FloeL10n.l("app.workspace_canvas_view.the_unsaved_drawing_edits_could")
                     }
                 }
             }
-            Button(canvasLocalized("放弃未保存修改", "Discard unsaved edits"), role: .destructive) {
+            Button(FloeL10n.l("app.workspace_canvas_view.discard_unsaved_edits"), role: .destructive) {
                 sessions.discard(nodeID: presentation.id)
                 cadDirty = false
                 onFinish(nil)
             }
-            Button(canvasLocalized("继续编辑", "Keep editing"), role: .cancel) {}
+            Button(FloeL10n.l("engineering.cad.keepEditing"), role: .cancel) {}
         }
         .sheet(isPresented: $showHistory) {
             if let node = liveNode {
@@ -5035,13 +5005,13 @@ private struct CanvasDrawingEditorSheet: View {
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .cancellationAction) {
-                                Button(canvasLocalized("完成", "Done")) {
+                                Button(FloeL10n.l("help.done")) {
                                     isFullScreenEditor = false
                                 }
                                 .accessibilityIdentifier("canvas.drawingEditor.fullscreen.done")
                             }
                             ToolbarItem(placement: .confirmationAction) {
-                                Button(canvasLocalized("应用", "Finish")) {
+                                Button(FloeL10n.l("app.workspace_canvas_view.finish")) {
                                     isFullScreenEditor = false
                                     Task { await finishAndApply() }
                                 }
@@ -5082,7 +5052,7 @@ private struct CanvasDrawingEditorSheet: View {
 
     private var drawingTitle: String {
         if let text = liveNode?.text, !text.isEmpty { return text }
-        return canvasLocalized("图纸", "Drawing")
+        return FloeL10n.l("app.workspace_canvas_view.drawing")
     }
 
     private func requestClose() {
@@ -5095,8 +5065,7 @@ private struct CanvasDrawingEditorSheet: View {
         isPreparing = true
         defer { isPreparing = false }
         guard let node = liveNode else {
-            errorMessage = canvasLocalized("原画布或图纸节点已被删除。",
-                                           "The original canvas or drawing node was deleted.")
+            errorMessage = FloeL10n.l("app.workspace_canvas_view.the_original_canvas_or_drawing")
             return
         }
         do {
@@ -5107,8 +5076,7 @@ private struct CanvasDrawingEditorSheet: View {
                 try EngineeringPreviewPackage.load(path: relative, service: service)
             }.value
             guard liveNode != nil else {
-                errorMessage = canvasLocalized("原画布或图纸节点已被删除。",
-                                               "The original canvas or drawing node was deleted.")
+                errorMessage = FloeL10n.l("app.workspace_canvas_view.the_original_canvas_or_drawing")
                 return
             }
             entry = prepared.entry
@@ -5148,7 +5116,7 @@ private struct CanvasDrawingEditorSheet: View {
             access: stagedDocumentAccess(for: entry),
             sha256: outcome.write.sha256)
         self.entry = sessions.entry(for: presentation.id) ?? entry
-        statusMessage = canvasLocalized("草稿已保存。", "Draft saved.")
+        statusMessage = FloeL10n.l("app.workspace_canvas_view.draft_saved")
         return outcome.write.sha256
     }
 
@@ -5290,18 +5258,14 @@ private struct CanvasDrawingEditorSheet: View {
         // variant/discard; restore never silently consumes that work.
         if let activeEntry = sessions.entry(for: presentation.id) {
             if activeEntry.session.isCADDirty {
-                statusMessage = canvasLocalized(
-                    "当前图纸有未保存的修改；请先点“完成”应用，或先放弃修改后再恢复历史版本。",
-                    "The drawing has unsaved edits: Finish to apply them, or discard them first, then restore a historical version.")
+                statusMessage = FloeL10n.l("app.workspace_canvas_view.the_drawing_has_unsaved_edits_3")
                 return
             }
             if CanvasDrawingDraftContinuity.hasUnappliedDraft(
                 stagedContentHash: activeEntry.stagedContentHash,
                 appliedContentHash: activeEntry.appliedContentHash,
                 sourceContentHash: activeEntry.sourceContentHash) {
-                statusMessage = canvasLocalized(
-                    "当前图纸的草稿尚未应用到画布；请先点“完成”应用，或创建变体保留后再恢复历史版本。",
-                    "The saved draft has not been applied to the canvas: Finish to apply it, or keep it via a variant first, then restore.")
+                statusMessage = FloeL10n.l("app.workspace_canvas_view.the_saved_draft_has_not")
                 return
             }
         }
@@ -5320,14 +5284,10 @@ private struct CanvasDrawingEditorSheet: View {
             // Re-read live state AFTER the await: node, asset baseline and
             // history must still match the captured intent before the CAS.
             guard let reRead = liveNode else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "节点在恢复前已被删除；未做任何修改。",
-                    "The node was removed before restore; nothing was changed."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_node_was_removed_before"))
             }
             guard reRead.asset?.contentHash == live.asset?.contentHash else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "图纸在恢复准备期间已变化；已重新载入，请再次选择历史版本。",
-                    "The drawing changed while preparing the restore; reloaded, please choose the historical version again."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_drawing_changed_while_preparing"))
             }
             let restoredReference = CanvasAssetReference(
                 id: chosen.assetID,
@@ -5388,9 +5348,7 @@ private struct CanvasDrawingEditorSheet: View {
                     throw error
                 }
             } catch {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "无法打开所选历史版本；当前图纸未修改。",
-                    "The historical version could not be opened; the current drawing is unchanged."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_historical_version_could_not"))
             }
 
             // FINAL CAS AFTER THE LAST AWAIT: nothing may have changed the
@@ -5402,9 +5360,7 @@ private struct CanvasDrawingEditorSheet: View {
                   case .usable(let finalRevisions) = CanvasDrawingRevisionHistory.read(from: finalNode),
                   finalRevisions == CanvasDrawingRevisionHistory.revisions(from: reRead) else {
                 if let stagedPrepared { sessions.discardPreviewEntry(stagedPrepared.entry) }
-                throw FloeError.validationFailed(canvasLocalized(
-                    "图纸在恢复准备期间已变化；当前内容未修改，请重新选择历史版本。",
-                    "The drawing changed while preparing the restore; the current content is unchanged, please choose a historical version again."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_drawing_changed_while_preparing_2"))
             }
             // A still-present live session must be clean and applied: refuse
             // concurrent dirty/unapplied edits. A missing session is fine,
@@ -5419,9 +5375,7 @@ private struct CanvasDrawingEditorSheet: View {
                     || currentSession.sourceContentHash != reRead.asset?.contentHash
                 if sessionDrifted {
                     sessions.discardPreviewEntry(stagedPrepared!.entry)
-                    throw FloeError.validationFailed(canvasLocalized(
-                        "图纸在恢复准备期间出现了未应用的修改；当前内容未修改，请先处理该修改后再恢复。",
-                        "Unapplied edits appeared while preparing the restore; the current content is unchanged, please handle them first, then restore."))
+                    throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.unapplied_edits_appeared_while_preparing"))
                 }
             }
 
@@ -5440,8 +5394,7 @@ private struct CanvasDrawingEditorSheet: View {
                 // Commit rejected: remove the staged-preview draft (never
                 // visible/owned) and leave the current entry intact.
                 sessions.discardPreviewEntry(stagedPrepared!.entry)
-                throw FloeError.validationFailed(canvasLocalized(
-                    "恢复历史版本失败；请重试。", "Restoring the historical version failed; please try again."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.restoring_the_historical_version_failed"))
             }
 
             // Commit succeeded: adopt the already-prepared restored editor as
@@ -5453,13 +5406,9 @@ private struct CanvasDrawingEditorSheet: View {
             package = stagedPackage
             cadDirty = false
             showHistory = false
-            statusMessage = canvasLocalized(
-                "已恢复所选历史版本；原版本仍保留在历史中。编辑器已载入恢复后的版本。",
-                "The selected historical version is now current; the previous version remains in history, and the editor now shows the restored revision.")
+            statusMessage = FloeL10n.l("app.workspace_canvas_view.the_selected_historical_version_is")
         } catch {
-            statusMessage = canvasLocalized(
-                "恢复历史版本失败：\(error.localizedDescription)",
-                "Could not restore the historical version: \(error.localizedDescription)")
+            statusMessage = FloeL10n.l("app.workspace_canvas_view.could_not_restore_the_historical", error.localizedDescription)
         }
     }
 
@@ -5498,9 +5447,7 @@ private struct CanvasDrawingEditorSheet: View {
     private func finishAndApply() async {
         guard !isWorking, sessions.entry(for: presentation.id) != nil else { return }
         if cadDirty, !(await sessions.serializeLiveDraft(nodeID: presentation.id)) {
-            statusMessage = canvasLocalized(
-                "未保存的图纸修改未能写入本地草稿；请在编辑器中保存后重试，草稿不会丢失。",
-                "The unsaved drawing edits could not be written to the local draft; save in the editor and retry. Nothing is discarded.")
+            statusMessage = FloeL10n.l("app.workspace_canvas_view.the_unsaved_drawing_edits_could_2")
             return
         }
         guard let entry = sessions.entry(for: presentation.id) else { return }
@@ -5514,14 +5461,12 @@ private struct CanvasDrawingEditorSheet: View {
             let attributes = try FileManager.default.attributesOfItem(atPath: stagedURL.path)
             let size = (attributes[.size] as? Int64) ?? 0
             guard size > 0, size <= CanvasDrawingNodePlanner.maximumDrawingBytes else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "图纸为空或超过大小限制。", "The drawing is empty or exceeds the size limit."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_drawing_is_empty_or"))
             }
             let ingestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
             let record = try await ingestion.importLocalFile(stagedURL)
             guard let live = liveNode else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "原画布或图纸节点已被删除。", "The original canvas or drawing node was deleted."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_original_canvas_or_drawing"))
             }
             let reference = CanvasAssetReference(
                 id: record.id, contentHash: record.contentHash,
@@ -5542,9 +5487,7 @@ private struct CanvasDrawingEditorSheet: View {
             guard store.commitNodeAssetPatch(
                 operation, documentID: presentation.documentID,
                 previousAssetID: live.asset?.id) else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "图纸已保存到素材库；应用回画布失败，草稿已保留。",
-                    "The drawing was saved to the library; applying it back failed and the draft is preserved."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_drawing_was_saved_to"))
             }
             let recorded = await sessions.markApplied(
                 nodeID: presentation.id, contentHash: record.contentHash, assetID: record.id)
@@ -5552,9 +5495,7 @@ private struct CanvasDrawingEditorSheet: View {
             if recorded {
                 onFinish(presentation.id)
             } else {
-                statusMessage = canvasLocalized(
-                    "已更新画布节点，但草稿记录暂未写入；已保留并会自动重试。",
-                    "The canvas node was updated, but the draft record could not be persisted yet; it is kept and will be retried.")
+                statusMessage = FloeL10n.l("app.workspace_canvas_view.the_canvas_node_was_updated")
             }
         } catch {
             statusMessage = error.localizedDescription
@@ -5569,9 +5510,7 @@ private struct CanvasDrawingEditorSheet: View {
     private func makeVariant() async {
         guard !isWorking, liveNode != nil else { return }
         if cadDirty, !(await sessions.serializeLiveDraft(nodeID: presentation.id)) {
-            statusMessage = canvasLocalized(
-                "未保存的图纸修改未能写入本地草稿；请在编辑器中保存后重试，草稿不会丢失。",
-                "The unsaved drawing edits could not be written to the local draft; save in the editor and retry. Nothing is discarded.")
+            statusMessage = FloeL10n.l("app.workspace_canvas_view.the_unsaved_drawing_edits_could_2")
             return
         }
         guard let entry = sessions.entry(for: presentation.id) ?? entry,
@@ -5586,8 +5525,7 @@ private struct CanvasDrawingEditorSheet: View {
         do {
             let data = try Data(contentsOf: stagedURL, options: .mappedIfSafe)
             guard !data.isEmpty, Int64(data.count) <= CanvasDrawingNodePlanner.maximumDrawingBytes else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "图纸为空或超过大小限制。", "The drawing is empty or exceeds the size limit."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_drawing_is_empty_or"))
             }
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask,
@@ -5620,9 +5558,7 @@ private struct CanvasDrawingEditorSheet: View {
                 sourceAssetHash: entry.sourceContentHash,
                 extraMetadata: ["editor": "cad", "cadFormat": entry.fileExtension])
             guard store.commitVariantPatch(operations, documentID: presentation.documentID) else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "图纸已保存到素材库；创建变体失败，原节点未修改。",
-                    "The drawing was saved to the library; creating the variant failed and the original node is unchanged."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_drawing_was_saved_to_2"))
             }
             onFinish(newID)
         } catch {
@@ -5688,7 +5624,7 @@ private struct CanvasDrawingHistorySheet: View {
                     .accessibilityIdentifier("canvas.drawingHistory.row")
                 }
             }
-            .navigationTitle(canvasLocalized("版本历史", "Version history"))
+            .navigationTitle(FloeL10n.l("memory.memory_view.version_history"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -5697,8 +5633,7 @@ private struct CanvasDrawingHistorySheet: View {
             }
             .overlay {
                 if revisions.isEmpty {
-                    ContentUnavailableView(canvasLocalized(
-                        "暂无版本记录", "No recorded versions"),
+                    ContentUnavailableView(FloeL10n.l("app.workspace_canvas_view.no_recorded_versions"),
                         systemImage: "clock.arrow.circlepath")
                 }
             }
@@ -5710,13 +5645,13 @@ private struct CanvasDrawingHistorySheet: View {
         let base: String
         switch revision.kind {
         case .original:
-            base = canvasLocalized("原始版本", "Original")
+            base = FloeL10n.l("app.workspace_canvas_view.original")
         case .adopt:
-            base = canvasLocalized("编辑版本", "Edited")
+            base = FloeL10n.l("app.workspace_canvas_view.edited")
         case .restore:
-            base = canvasLocalized("恢复的版本", "Restored")
+            base = FloeL10n.l("app.workspace_canvas_view.restored")
         case .variant:
-            base = canvasLocalized("变体版本", "Variant")
+            base = FloeL10n.l("app.workspace_canvas_view.variant")
         }
         return "\(index) · \(base)"
     }
@@ -6354,13 +6289,12 @@ struct WorkspaceCanvasView: View {
                 .environmentObject(environment)
             } else {
                 ContentUnavailableView {
-                    Label(canvasLocalized("无法打开图片编辑器", "Could not open the image editor"),
+                    Label(FloeL10n.l("app.workspace_canvas_view.could_not_open_the_image"),
                           systemImage: "photo.badge.exclamationmark")
                 } description: {
-                    Text(canvasLocalized("原画布或图片节点已被删除或改变；请重新选择图片节点。",
-                                         "The original canvas or image node was deleted or changed; select an image node again."))
+                    Text(FloeL10n.l("app.workspace_canvas_view.the_original_canvas_or_image"))
                 } actions: {
-                    Button(canvasLocalized("关闭", "Close")) { imageEditorPresentation = nil }
+                    Button(FloeL10n.l("help.close")) { imageEditorPresentation = nil }
                         .frame(minHeight: 44)
                 }
                 .accessibilityIdentifier("canvas.imageEditor.unavailable")
@@ -9240,7 +9174,7 @@ struct WorkspaceCanvasView: View {
                             // Read-only uniform preview. The canvas file
                             // asset is not edited, moved or imported into
                             // another document.
-                            Button(canvasLocalized("预览工程文件", "Preview engineering file"),
+                            Button(FloeL10n.l("app.workspace_canvas_view.preview_engineering_file"),
                                    systemImage: "eye") {
                                 preview()
                             }
@@ -9803,9 +9737,7 @@ struct WorkspaceCanvasView: View {
     private func openDrawingEditor(_ node: FloeCanvasNode) {
         guard CanvasDrawingNodePlanner.isDrawingNode(node) else { return }
         guard case .file = CanvasAssetNodeContent.resolveLocal(for: node) else {
-            store.saveError = canvasLocalized(
-                "图纸文件不在本机素材库中；请重新导入后再编辑。",
-                "The drawing file is not in the local material library; re-import it before editing.")
+            store.saveError = FloeL10n.l("app.workspace_canvas_view.the_drawing_file_is_not")
             return
         }
         drawingSessions.scheduleMaintain(project: store.project)
@@ -9924,9 +9856,7 @@ struct WorkspaceCanvasView: View {
         guard node.kind == .scene3D else { return }
         switch LegacySceneMigrationService.migrationState(of: node) {
         case .notLegacyScene:
-            store.saveError = canvasLocalized(
-                "该节点不是可编辑的 3D 场景。",
-                "This node is not an editable 3D scene.")
+            store.saveError = FloeL10n.l("app.workspace_canvas_view.this_node_is_not_an")
         case .migrated:
             // Marker + binding already present: the native document is the
             // authority; reopen it through the ordinary binding.
@@ -10078,9 +10008,7 @@ struct WorkspaceCanvasView: View {
               CanvasCADStorage.isCanvasOwnedKey(sourceKey),
               let url = CADCanvasActionBridge.packageURL(forSourceKey: sourceKey),
               FileManager.default.fileExists(atPath: url.path) else {
-            store.saveError = canvasLocalized(
-                "该 CAD 节点引用的本机文档缺失；可删除后重新创建。",
-                "The on-device CAD document for this node is missing; delete and recreate the node.")
+            store.saveError = FloeL10n.l("app.workspace_canvas_view.the_on_device_cad_document")
             return
         }
         let ownerDocumentID = Canvas3DDocumentLocator.documentID(
@@ -10883,31 +10811,27 @@ private struct CanvasLocalImageEditor: View {
 
     private var pendingBody: some View {
         ContentUnavailableView {
-            Label(canvasLocalized("正在准备独立可编辑副本", "Preparing an independent editable copy"),
+            Label(FloeL10n.l("app.workspace_canvas_view.preparing_an_independent_editable_copy"),
                   systemImage: "arrow.triangle.2.circlepath")
         } description: {
-            Text(canvasLocalized(
-                "正在为该副本创建独立工程，完成前不会共享原图的编辑状态。",
-                "A separate project is being forked for this copy; it does not share the original's editable state until ready."))
+            Text(FloeL10n.l("app.workspace_canvas_view.a_separate_project_is_being_2"))
         }
         .accessibilityIdentifier("canvas.imageEditor.pending")
     }
 
     private func failedBody(reason: String) -> some View {
         ContentUnavailableView {
-            Label(canvasLocalized("副本工程创建失败", "Could not create the editable copy"),
+            Label(FloeL10n.l("app.workspace_canvas_view.could_not_create_the_editable"),
                   systemImage: "exclamationmark.triangle")
         } description: {
-            Text(canvasLocalized(
-                "独立工程创建失败，该副本仍未共享原图的可编辑状态。可重试。\n\(reason)",
-                "The separate project could not be created; this copy still does not share the original's editable state. You can retry.\n\(reason)"))
+            Text(FloeL10n.l("app.workspace_canvas_view.the_separate_project_could_not", reason))
         } actions: {
-            Button(canvasLocalized("重试", "Retry")) {
+            Button(FloeL10n.l("action.retry")) {
                 store.retryCopiedFork(nodeID: node.id, environment: environment)
             }
             .frame(minHeight: 44)
             .accessibilityIdentifier("canvas.imageEditor.retryFork")
-            Button(canvasLocalized("取消", "Cancel")) { onSave(node.id) }
+            Button(FloeL10n.l("cad.scene.cancel")) { onSave(node.id) }
                 .frame(minHeight: 44)
         }
         .accessibilityIdentifier("canvas.imageEditor.forkFailed")
@@ -10915,19 +10839,17 @@ private struct CanvasLocalImageEditor: View {
 
     private var recoveryBody: some View {
         ContentUnavailableView {
-            Label(canvasLocalized("工程绑定来自更新版本", "Edit binding is from a newer version"),
+            Label(FloeL10n.l("app.workspace_canvas_view.edit_binding_is_from_a"),
                   systemImage: "exclamationmark.triangle")
         } description: {
-            Text(canvasLocalized(
-                "已保留原始绑定数据，不会用新工程覆盖。可从此原图新建一个分支继续编辑。",
-                "The original binding data is preserved and will not be overwritten. You can create a variant branch from this image instead."))
+            Text(FloeL10n.l("app.workspace_canvas_view.the_original_binding_data_is"))
         } actions: {
-            Button(canvasLocalized("从此原图新建分支", "Create variant from this image")) {
+            Button(FloeL10n.l("app.workspace_canvas_view.create_variant_from_this_image")) {
                 startFreshVariant = true
             }
             .frame(minHeight: 44)
             .accessibilityIdentifier("canvas.imageEditor.recoveryVariant")
-            Button(canvasLocalized("取消", "Cancel")) { onSave(node.id) }
+            Button(FloeL10n.l("cad.scene.cancel")) { onSave(node.id) }
                 .frame(minHeight: 44)
         }
         .accessibilityIdentifier("canvas.imageEditor.recovery")
@@ -10965,12 +10887,10 @@ private struct CanvasLocalImageEditor: View {
     @MainActor
     private func applyEditedImage(_ data: Data, projectRevision: Int64?, choice: ApplyChoice) async throws {
         guard !data.isEmpty else {
-            throw FloeError.validationFailed(canvasLocalized("导出为空，未应用到画布。",
-                                                             "The export was empty; nothing was applied to the canvas."))
+            throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_export_was_empty_nothing"))
         }
         guard liveNode != nil else {
-            throw FloeError.validationFailed(canvasLocalized("原画布或素材已改变，请重新打开图片编辑器。",
-                                                             "The original canvas or asset changed; reopen the image editor."))
+            throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_original_canvas_or_asset"))
         }
         var writtenTarget: URL?
         do {
@@ -10999,9 +10919,7 @@ private struct CanvasLocalImageEditor: View {
             // A registered asset remains recoverable in the library if the canvas changes.
             writtenTarget = nil
             guard let liveNodeAtCommit = liveNode else {
-                throw FloeError.validationFailed(canvasLocalized(
-                    "图片已保存到素材库；原画布已改变，请从素材库插入。",
-                    "The image was saved to the material library; the canvas changed, so insert it from there."))
+                throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_image_was_saved_to"))
             }
             let reference = CanvasAssetReference(
                 id: assetID, contentHash: hash,
@@ -11014,9 +10932,7 @@ private struct CanvasLocalImageEditor: View {
                 let projectID = liveNodeAtCommit.childProjectBinding?.projectID
                     ?? environment.workbenchCenter.project?.id
                 guard let projectID else {
-                    throw FloeError.validationFailed(canvasLocalized(
-                        "图片已保存到素材库；没有可绑定的编辑工程，原节点未修改。",
-                        "The image was saved to the library; there is no edit project to bind, so the original node was not changed."))
+                    throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_image_was_saved_to_2"))
                 }
                 let revision = projectRevision
                     ?? environment.workbenchCenter.project?.revision
@@ -11046,9 +10962,7 @@ private struct CanvasLocalImageEditor: View {
                         store.commitNodeAssetPatch(
                             marker, documentID: documentID, previousAssetID: nil)
                     }
-                    throw FloeError.validationFailed(canvasLocalized(
-                        "图片已保存到素材库；应用回画布失败，可重试。",
-                        "The image was saved to the library; applying it back failed and can be retried."))
+                    throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_image_was_saved_to_3"))
                 }
                 onSave(node.id)
             case .makeVariant:
@@ -11059,9 +10973,7 @@ private struct CanvasLocalImageEditor: View {
                 if let parentID = liveBinding?.projectID {
                     guard let forked = await environment.workbenchCenter
                         .forkProjectForVariant(parentID: parentID) else {
-                        throw FloeError.validationFailed(canvasLocalized(
-                            "无法创建分支工程；原图未改变。",
-                            "Could not create the variant project; the original is unchanged."))
+                        throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.could_not_create_the_variant"))
                     }
                     let (newID, operations) = try CanvasChildProjectMigrationPlanner.variantPatch(
                         sourceNodeID: node.id,
@@ -11079,18 +10991,14 @@ private struct CanvasLocalImageEditor: View {
                             "variant": "true"
                         ])
                     guard store.commitVariantPatch(operations, documentID: documentID) else {
-                        throw FloeError.validationFailed(canvasLocalized(
-                            "图片已保存到素材库；画布写入失败，原图未改变。",
-                            "The image was saved to the library; the canvas write failed and the original is unchanged."))
+                        throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_image_was_saved_to_4"))
                     }
                     resultID = newID
                 } else {
                     // Legacy/recoverable node: the fresh editor project IS the
                     // variant; no fork of a just-created session.
                     guard let projectID = environment.workbenchCenter.project?.id else {
-                        throw FloeError.validationFailed(canvasLocalized(
-                            "图片已保存到素材库；没有可绑定的新工程，原节点未修改。",
-                            "The image was saved to the library; there is no new project to bind, so the original node was not changed."))
+                        throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_image_was_saved_to_5"))
                     }
                     let revision = environment.workbenchCenter.project?.revision ?? 0
                     let (newID, operations) = try CanvasChildProjectMigrationPlanner.variantPatch(
@@ -11109,9 +11017,7 @@ private struct CanvasLocalImageEditor: View {
                             "variant": "true", "appliedRevision": String(revision)
                         ])
                     guard store.commitVariantPatch(operations, documentID: documentID) else {
-                        throw FloeError.validationFailed(canvasLocalized(
-                            "图片已保存到素材库；画布写入失败，原图未改变。",
-                            "The image was saved to the library; the canvas write failed and the original is unchanged."))
+                        throw FloeError.validationFailed(FloeL10n.l("app.workspace_canvas_view.the_image_was_saved_to_4"))
                     }
                     resultID = newID
                 }
@@ -11341,7 +11247,7 @@ private struct CanvasNodeCard: View {
             }
             if let onOpenFlow { Button(IDELanguageRunText.t("流程调试", "Workflow debugger"), systemImage: "play.rectangle", action: onOpenFlow) }
             if let onPreviewEngineering, !node.isLocked {
-                Button(canvasLocalized("预览工程文件", "Preview engineering file"),
+                Button(FloeL10n.l("app.workspace_canvas_view.preview_engineering_file"),
                        systemImage: "eye", action: onPreviewEngineering)
                     .accessibilityIdentifier("canvas.context.previewEngineering")
                 Divider()
@@ -11926,14 +11832,11 @@ internal struct CanvasAssetNodeContent: View {
             case .video(let url):
                 CanvasVideoNode(url: url)
             case .missingLocalFile:
-                placeholder(message: canvasLocalized("本地素材文件缺失，可从云端恢复或重新插入。",
-                                                     "The local asset file is missing; restore it from the cloud or re-insert it."))
+                placeholder(message: FloeL10n.l("app.workspace_canvas_view.the_local_asset_file_is"))
             case .remoteOnly:
-                placeholder(message: canvasLocalized("素材尚未下载到本机。",
-                                                     "The asset has not been downloaded to this device yet."))
+                placeholder(message: FloeL10n.l("media.floe_image_editor_view.the_asset_has_not_been_downloaded"))
             case .undecodable:
-                placeholder(message: canvasLocalized("无法解码该图片格式。",
-                                                     "This image format could not be decoded."))
+                placeholder(message: FloeL10n.l("app.workspace_canvas_view.this_image_format_could_not"))
             case .unsupported:
                 placeholder(message: nil)
             }
@@ -11957,7 +11860,7 @@ internal struct CanvasAssetNodeContent: View {
             }
             if message != nil, node.asset?.contentHash != nil || node.asset?.cloudRecordName != nil,
                let onRetryDownload {
-                Button(canvasLocalized("从云端恢复", "Restore from cloud")) { onRetryDownload() }
+                Button(FloeL10n.l("app.workspace_canvas_view.restore_from_cloud")) { onRetryDownload() }
                     .font(.caption)
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("canvas.asset.retryDownload")

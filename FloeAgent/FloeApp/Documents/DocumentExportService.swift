@@ -484,9 +484,7 @@ enum DocumentExportService {
               let proofSHA = proof.packageSHA256 else {
             let reason = proof.reason ?? "unknown"
             let detail = proof.error.map { " (\($0.prefix(200)))" } ?? ""
-            throw NoteError.invalidOperation(OfficeInkText.t(
-                "当前 Office 编辑器无法证明本文件已保存且静止（状态=\(proof.outcome.rawValue)，原因=\(reason)）\(detail)。未导出任何文件；请等当前操作完成或抬笔后重试。",
-                "The live Office editor could not prove a saved, quiescent state for this exact document (outcome=\(proof.outcome.rawValue), reason=\(reason))\(detail). Nothing was exported; wait for the current operation or lift the pen, then retry."))
+            throw NoteError.invalidOperation(FloeL10n.l("app.document_export_service.the_live_office_editor_could", proof.outcome.rawValue, reason, detail))
         }
         let latest = try await store.document(document.id)
         guard latest.revision == proofRevision, latest.officeResourceID == proofResourceID else {
@@ -1062,9 +1060,7 @@ enum DocumentExportService {
         let expectedExtension = defaultExtension(for: request, document: document)
         let actualExtension = (relative as NSString).pathExtension.lowercased()
         guard actualExtension == expectedExtension else {
-            throw NoteError.invalidOperation(OfficeInkText.t(
-                "目标文件扩展名必须是 .\(expectedExtension)。",
-                "The destination extension must be .\(expectedExtension)."))
+            throw NoteError.invalidOperation(FloeL10n.l("app.document_export_service.the_destination_extension_must_be", expectedExtension))
         }
         try context.authorizeWorkspacePath(relative)
         let destination = try WorkspacePathGuard(rootURL: root).resolve(relative)

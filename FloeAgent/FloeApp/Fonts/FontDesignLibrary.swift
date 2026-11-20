@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeCore
 import CryptoKit
 import Darwin
 import FloeFontKit
@@ -57,13 +58,13 @@ enum FontDesignError: LocalizedError {
     case unavailable, invalidProject, invalidOutput, nameInUse(String), registrationFailed, editorOpen, saving
     var errorDescription: String? {
         switch self {
-        case .unavailable: EditorText.t("无法打开字体设计库。", "The font design library could not be opened.")
-        case .invalidProject: EditorText.t("字体草稿或输入原件不完整。", "The font draft or its original source is incomplete.")
-        case .invalidOutput: EditorText.t("导出的字体未能通过保存核验。请重新导出。", "The exported font could not be verified. Export it again.")
-        case .nameInUse(let name): EditorText.t("已有字体使用名称“", "A font already uses the name “") + name + EditorText.t("”。请为编辑版本使用不同的家族名称。", "”. Use a different family name for the edited version.")
-        case .registrationFailed: EditorText.t("新字体未能注册为当前可用版本。草稿和原件已保留。", "The new font could not be activated. The draft and original have been retained.")
-        case .editorOpen: EditorText.t("请先关闭此字体的编辑窗口，再删除。", "Close this typeface’s editor window before deleting it.")
-        case .saving: EditorText.t("字体正在保存，请稍后再试。", "This typeface is being saved. Try again shortly.")
+        case .unavailable: FloeL10n.l("app.font_design_library.the_font_design_library_could")
+        case .invalidProject: FloeL10n.l("app.font_design_library.the_font_draft_or_its")
+        case .invalidOutput: FloeL10n.l("app.font_design_library.the_exported_font_could_not")
+        case .nameInUse(let name): FloeL10n.l("app.font_design_library.a_font_already_uses_the") + name + FloeL10n.l("app.font_design_library.use_a_different_family_name")
+        case .registrationFailed: FloeL10n.l("app.font_design_library.the_new_font_could_not")
+        case .editorOpen: FloeL10n.l("app.font_design_library.close_this_typeface_s_editor")
+        case .saving: FloeL10n.l("app.font_design_library.this_typeface_is_being_saved")
         }
     }
 }
@@ -101,7 +102,7 @@ actor FontDesignLibrary {
         if source == nil { number = try await list().count + 1 } else { number = 0 }
         let id = UUID(), directory = try projectsDirectory().appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        let title = source.map { $0.record.displayName + EditorText.t(" · 编辑版", " · Edited") } ?? EditorText.t("新字体 ", "New typeface ") + String(number)
+        let title = source.map { $0.record.displayName + FloeL10n.l("app.font_design_library.edited") } ?? FloeL10n.l("app.font_design_library.new_typeface") + String(number)
         var record = FontDesignProject(id: id, title: title, revision: 0, modifiedAt: Date(), sourceID: source?.record.id, sourceFileName: source?.record.fileName, sourceDigest: source.map { Self.digest($0.data) }, sourceImported: source == nil)
         if let source {
             let ext = URL(fileURLWithPath: source.record.fileName).pathExtension.lowercased()

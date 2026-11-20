@@ -78,7 +78,7 @@ enum CADBasicMachiningText {
     static func t(_ zh:String,_ en:String)->String {
         FloeL10n.isChinese ? zh : en
     }
-    static var title:String { t("基础加工仿真","Basic Machining Simulation") }
+    static var title:String { FloeL10n.l("app.cadbasic_machining_model.basic_machining_simulation") }
 }
 
 /// Trusted native status event only. No provider turn or extra execution channel is created.

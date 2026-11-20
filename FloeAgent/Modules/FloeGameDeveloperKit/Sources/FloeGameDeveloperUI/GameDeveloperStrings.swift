@@ -20,11 +20,20 @@ public enum GameDeveloperLocale: String, CaseIterable, Sendable {
 /// All ordinary menu copy in one place. Field/action labels come from the
 /// engine bridge (each descriptor carries English and Simplified Chinese).
 public struct GameDeveloperStrings: Sendable {
+    private static let localizerLock = NSLock()
+    nonisolated(unsafe) private static var installedLocalizer: (@Sendable (String, String) -> String)?
+
+    public static var localizer: (@Sendable (String, String) -> String)? {
+        get { localizerLock.withLock { installedLocalizer } }
+        set { localizerLock.withLock { installedLocalizer = newValue } }
+    }
+
     public let locale: GameDeveloperLocale
     public init(locale: GameDeveloperLocale) { self.locale = locale }
 
     private func text(_ english: String, _ chinese: String) -> String {
-        locale.isChinese ? chinese : english
+        if locale == .automatic, let localizer = Self.localizer { return localizer(chinese, english) }
+        return locale.isChinese ? chinese : english
     }
 
     public var title: String { text("Developer menu", "开发者菜单") }

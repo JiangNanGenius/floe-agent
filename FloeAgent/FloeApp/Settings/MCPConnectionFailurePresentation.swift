@@ -49,7 +49,7 @@ nonisolated struct MCPConnectionFailurePresentation: Equatable, Sendable {
     var localizedMessage: String { message(chinese: FloeL10n.isChinese) }
     var displayDiagnostic: String { String(decoding: diagnostic.utf8.prefix(Self.displayByteLimit), as: UTF8.self) }
     var displayIsTruncated: Bool { diagnostic.utf8.count > Self.displayByteLimit }
-    static var diagnosticsTitle: String { FloeL10n.isChinese ? "连接诊断" : "Connection Diagnostics" }
+    static var diagnosticsTitle: String { FloeL10n.l("app.mcpconnection_failure_presentation.connection_diagnostics") }
     static func isCancellation(_ error: Error) -> Bool {
         if error is CancellationError { return true }
         if let client = error as? MCPClientError {
@@ -98,9 +98,9 @@ struct MCPConnectionDiagnosticText: View {
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
             if failure.displayIsTruncated {
-                Text(FloeL10n.isChinese ? "诊断较长，仅显示前一部分。" : "This diagnostic is long; only the first part is shown.")
+                Text(FloeL10n.l("app.mcpconnection_failure_presentation.this_diagnostic_is_long_only"))
                     .font(.caption).foregroundStyle(.secondary)
-                Button(FloeL10n.isChinese ? "复制完整诊断" : "Copy Full Diagnostic") {
+                Button(FloeL10n.l("app.mcpconnection_failure_presentation.copy_full_diagnostic")) {
                     UIPasteboard.general.string = failure.diagnostic
                 }.frame(minHeight: 44)
             }

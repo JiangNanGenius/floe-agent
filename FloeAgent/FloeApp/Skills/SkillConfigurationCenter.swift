@@ -177,7 +177,7 @@ final class SkillConfigurationCenter {
             accept(outcome)
             // The service canonicalizes numbers, URLs and whitespace.
             for field in requirements.fields where field.kind == .variable { values[field.key] = savedValue(field.key) }
-            if outcome.warnings.isEmpty { notice = SkillConfigurationCopy.text("Saved.", "已保存。") }
+            if outcome.warnings.isEmpty { notice = FloeL10n.l("app.skill_configuration_center.saved") }
             return true
         } catch { errorMessage = Self.safeError(error); return false }
     }
@@ -251,7 +251,7 @@ final class SkillConfigurationCenter {
         }), !requirements.environment.contains(where: {
             $0.name.caseInsensitiveCompare(name) == .orderedSame
         }) else {
-            errorMessage = SkillConfigurationCopy.text("This environment variable already exists.", "此环境变量已存在。")
+            errorMessage = FloeL10n.l("app.skill_configuration_center.this_environment_variable_already_exists")
             return false
         }
         isMutating = true
@@ -266,16 +266,12 @@ final class SkillConfigurationCenter {
             accept(outcome)
             do {
                 try await refreshDeclarations()
-                notice = SkillConfigurationCopy.text(
-                    "Variable added. Set its value or choose a credential below.",
-                    "变量已添加，可在下方填写内容或选择凭据。")
+                notice = FloeL10n.l("app.skill_configuration_center.variable_added_set_its_value")
             } catch {
                 // The declaration is already committed. Do not invite a
                 // duplicate creation because a subsequent read failed.
                 needsReload = true
-                errorMessage = SkillConfigurationCopy.text(
-                    "The variable was added. Reload to show the latest configuration.",
-                    "变量已添加，请重新载入以显示最新配置。")
+                errorMessage = FloeL10n.l("app.skill_configuration_center.the_variable_was_added_reload")
             }
             return true
         } catch { errorMessage = Self.safeError(error); return false }
@@ -294,9 +290,7 @@ final class SkillConfigurationCenter {
             do { try await refreshDeclarations() }
             catch {
                 needsReload = true
-                errorMessage = SkillConfigurationCopy.text(
-                    "The variable was deleted. Reload to show the latest configuration.",
-                    "变量已删除，请重新载入以显示最新配置。")
+                errorMessage = FloeL10n.l("app.skill_configuration_center.the_variable_was_deleted_reload")
             }
             await refreshBoundMetadata()
         } catch { errorMessage = Self.safeError(error) }
@@ -344,8 +338,7 @@ final class SkillConfigurationCenter {
         status = outcome.status
         updateInstallationState()
         errorMessage = nil
-        notice = outcome.warnings.isEmpty ? nil : SkillConfigurationCopy.text(
-            "Saved. Some cleanup needs attention; retry from this page.", "已保存，部分清理尚未完成，可在此页面重试。")
+        notice = outcome.warnings.isEmpty ? nil : FloeL10n.l("app.skill_configuration_center.saved_some_cleanup_needs_attention")
     }
 
     private func updateInstallationState() {
@@ -356,82 +349,80 @@ final class SkillConfigurationCenter {
 
     static func safeError(_ error: Error) -> String {
         if let keychainError = error as? KeychainStoreError, keychainError == .interactionNotAllowed {
-            return SkillConfigurationCopy.text("Unlock this device and try again. Your saved credentials were kept.", "请解锁此设备后重试，已保存的凭据仍保留。")
+            return FloeL10n.l("app.skill_configuration_center.unlock_this_device_and_try")
         }
         if let error = error as? SkillConfigurationError {
             switch error {
             case .credentialLocked:
-                return SkillConfigurationCopy.text("Unlock this device and try again. Your saved credentials were kept.", "请解锁此设备后重试，已保存的凭据仍保留。")
+                return FloeL10n.l("app.skill_configuration_center.unlock_this_device_and_try")
             case .configurationChanged:
-                return SkillConfigurationCopy.text("Configuration changed elsewhere. Reload before saving.", "配置已在其他位置更改，请重新载入后保存。")
+                return FloeL10n.l("app.skill_configuration_center.configuration_changed_elsewhere_reload_before")
             case .requiresExplicitSharing:
-                return SkillConfigurationCopy.text("Confirm sharing to reuse this credential.", "请确认共享后再复用此凭据。")
+                return FloeL10n.l("app.skill_configuration_center.confirm_sharing_to_reuse_this")
             case .invalidValue:
-                return SkillConfigurationCopy.text("Check the field's format and try again.", "请检查字段格式后重试。")
+                return FloeL10n.l("app.skill_configuration_center.check_the_field_s_format")
             case .sourceUnverified:
-                return SkillConfigurationCopy.text("Verify this skill's source before configuring it.", "请先确认此技能的来源，再进行配置。")
+                return FloeL10n.l("app.skill_configuration_center.verify_this_skill_s_source")
             default: break
             }
         }
         if let error = error as? SkillConfigurationStoreError {
             switch error {
             case .invalidLocalField, .localFieldConflict:
-                return SkillConfigurationCopy.text(
-                    "This variable name is invalid, reserved or already in use. Choose another name.",
-                    "此变量名格式不正确、被保留或已被使用，请更换名称。")
+                return FloeL10n.l("app.skill_configuration_center.this_variable_name_is_invalid")
             case .staleRevision:
-                return SkillConfigurationCopy.text("Configuration changed elsewhere. Reload before saving.", "配置已在其他位置更改，请重新载入后保存。")
+                return FloeL10n.l("app.skill_configuration_center.configuration_changed_elsewhere_reload_before")
             default: break
             }
         }
         // Never render arbitrary service/parser errors: those may quote input.
-        return SkillConfigurationCopy.text("The change could not be completed. Your saved configuration was kept; try again.", "未能完成更改，已保存的配置仍保留，请重试。")
+        return FloeL10n.l("app.skill_configuration_center.the_change_could_not_be")
     }
 }
 
 enum SkillConfigurationCopy {
-    static func text(_ en: String, _ zh: String) -> String { FloeL10n.isChinese ? zh : en }
+    static func text(_ en: String, _ zh: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 
     static func capabilityTitle(_ capability: String) -> String {
         switch capability {
-        case "credentials": text("Use saved credentials", "使用已保存的凭据")
-        case "device.observe": text("Read this device’s screen and state", "读取本机屏幕和状态")
-        case "device.interact": text("Control apps on this device", "操作本机应用")
+        case "credentials": FloeL10n.l("app.skill_configuration_center.use_saved_credentials")
+        case "device.observe": FloeL10n.l("app.skill_configuration_center.read_this_device_s_screen")
+        case "device.interact": FloeL10n.l("app.skill_configuration_center.control_apps_on_this_device")
         default: capability
         }
     }
-    static var title: String { text("Configuration & environment", "配置与环境变量") }
-    static var configure: String { text("Configure", "配置") }
-    static var save: String { text("Save", "保存") }
-    static var cancel: String { text("Cancel", "取消") }
-    static var done: String { text("Done", "完成") }
-    static var credentials: String { text("Credentials & accounts", "凭据与账户") }
-    static var parameters: String { text("Parameters", "参数") }
-    static var connections: String { text("Connections", "关联连接") }
+    static var title: String { FloeL10n.l("app.skill_configuration_center.configuration_environment") }
+    static var configure: String { FloeL10n.l("providers.service_offers.configure") }
+    static var save: String { FloeL10n.l("voice.cloud.profile.save") }
+    static var cancel: String { FloeL10n.l("cad.scene.cancel") }
+    static var done: String { FloeL10n.l("help.done") }
+    static var credentials: String { FloeL10n.l("app.skill_configuration_center.credentials_accounts") }
+    static var parameters: String { FloeL10n.l("cad.versions.section.parameters") }
+    static var connections: String { FloeL10n.l("app.skill_configuration_center.connections") }
 
     static func readiness(_ state: SkillConfigurationReadiness) -> String {
         switch state {
-        case .notInstalled: text("Not installed", "尚未安装")
-        case .sourceUnverified: text("Source needs verification", "来源待确认")
-        case .needsReconfirmation: text("Source changed · setup required", "来源已更改，需重新配置")
-        case .needsSetup: text("Installed · setup required", "已安装，待配置")
-        case .needsValidation: text("Validation pending", "待验证")
-        case .invalid: text("Validation failed", "验证失败")
-        case .configured: text("Configured · validation pending", "已配置，待验证")
-        case .ready: text("Ready", "已就绪")
-        case .locked: text("Unlock to continue", "解锁后继续")
+        case .notInstalled: FloeL10n.l("app.skill_configuration_center.not_installed")
+        case .sourceUnverified: FloeL10n.l("app.skill_configuration_center.source_needs_verification")
+        case .needsReconfirmation: FloeL10n.l("app.skill_configuration_center.source_changed_setup_required")
+        case .needsSetup: FloeL10n.l("app.skill_configuration_center.installed_setup_required")
+        case .needsValidation: FloeL10n.l("app.skill_configuration_center.validation_pending")
+        case .invalid: FloeL10n.l("app.skill_configuration_center.validation_failed")
+        case .configured: FloeL10n.l("app.skill_configuration_center.configured_validation_pending")
+        case .ready: FloeL10n.l("background.location.state.ready")
+        case .locked: FloeL10n.l("app.skill_configuration_center.unlock_to_continue")
         }
     }
 
     static func fieldState(_ state: SkillConfigurationFieldState) -> String {
         switch state {
-        case .missing, .missingSecret: text("Not configured", "未配置")
-        case .configured: text("Saved", "已保存")
-        case .locked: text("Locked", "已锁定")
-        case .validationRequired: text("Validation pending", "待验证")
-        case .validated: text("Verified", "已验证")
-        case .invalid: text("Validation failed", "验证失败")
-        case .unsupported: text("Connection check unavailable", "暂不支持检查此连接")
+        case .missing, .missingSecret: FloeL10n.l("voice.assistant.cloud.not_ready")
+        case .configured: FloeL10n.l("cad.host.saved")
+        case .locked: FloeL10n.l("app.skill_configuration_center.locked")
+        case .validationRequired: FloeL10n.l("app.skill_configuration_center.validation_pending")
+        case .validated: FloeL10n.l("app.skill_configuration_center.verified")
+        case .invalid: FloeL10n.l("app.skill_configuration_center.validation_failed")
+        case .unsupported: FloeL10n.l("app.skill_configuration_center.connection_check_unavailable")
         }
     }
 }

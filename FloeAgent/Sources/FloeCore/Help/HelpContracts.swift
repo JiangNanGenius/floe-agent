@@ -5,15 +5,36 @@ import Foundation
 public enum HelpLanguage: String, Codable, CaseIterable, Sendable {
     case english = "en"
     case simplifiedChinese = "zh-Hans"
+    case traditionalChinese = "zh-Hant"
+    case japanese = "ja"
+    case korean = "ko"
+    case french = "fr"
+    case german = "de"
+    case spanish = "es"
+    case brazilianPortuguese = "pt-BR"
 
     public init(preference: String) {
-        self = preference.lowercased().hasPrefix("zh") ? .simplifiedChinese : .english
+        self = FloeL10n.matchingLanguageCode(preference).flatMap(Self.init(rawValue:)) ?? .english
+    }
+
+    public var displayName: String {
+        switch self {
+        case .english: "English"
+        case .simplifiedChinese: "简体中文"
+        case .traditionalChinese: "繁體中文"
+        case .japanese: "日本語"
+        case .korean: "한국어"
+        case .french: "Français"
+        case .german: "Deutsch"
+        case .spanish: "Español"
+        case .brazilianPortuguese: "Português (Brasil)"
+        }
     }
 }
 
 public enum HelpBundleMetadata {
     public static let packageID = "floe.help.quickstart"
-    public static let bundledVersion = "1.2.0"
+    public static let bundledVersion = "1.3.0"
     public static let manifestPath = "help/manifest.json"
     public static let maximumFileBytes = 1_048_576
     public static let maximumManifestBytes = 262_144

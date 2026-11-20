@@ -17,7 +17,7 @@ import FloeExecution
 /// languages without depending on an unmerged catalog entry.
 enum IDELanguageRunText {
     static var isChinese: Bool { FloeL10n.isChinese }
-    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
+    static func t(_ zh: String, _ en: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 
     /// The measured dual-core equal-work ratio, stated once so every surface
     /// shows the same honest number (FloeExecution keeps the measured
@@ -545,16 +545,13 @@ struct IDELanguageRunView: View {
                   systemImage: "trash")
                 .font(.caption).foregroundStyle(.secondary)
             if let mapped = controller.capabilities.mapping {
-                Text(IDELanguageRunText.t("该项目还在该主机上配置了完整项目镜像：\(mapped.workingDirectory)（仅供参考，运行使用已校验的暂存副本）。",
-                                          "This project also has a full mirror on this host: \(mapped.workingDirectory) (informational; the run uses the verified staged copy)."))
+                Text(FloeL10n.l("app.idelanguage_run_view.this_project_also_has_a", mapped.workingDirectory))
                     .font(.caption).foregroundStyle(.secondary)
             }
             if case .remote(let command, _) = controller.plan {
-                Text(IDELanguageRunText.t("暂存路径：\(command.stagedSourcePath)",
-                                          "Staging path: \(command.stagedSourcePath)"))
+                Text(FloeL10n.l("app.idelanguage_run_view.staging_path", command.stagedSourcePath))
                     .font(.caption).foregroundStyle(.secondary)
-                Text(IDELanguageRunText.t("可执行探测：\(command.probeCommand)",
-                                          "Executable probe: \(command.probeCommand)"))
+                Text(FloeL10n.l("app.idelanguage_run_view.executable_probe", command.probeCommand))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -667,10 +664,7 @@ struct IDELanguageRunView: View {
                             .font(.system(.caption2, design: .monospaced))
                             .textSelection(.enabled)
                     }
-                    Text(IDELanguageRunText.t(
-                        "安装只写入 \(template.workflowPath)；若该路径已有不同内容，Floe 会改为导出到工作区 .floe/workflows/ 供你审查。",
-                        "Install writes only \(template.workflowPath); if that path already has different content Floe exports it to .floe/workflows/ for review instead."
-                    ))
+                    Text(FloeL10n.l("app.idelanguage_run_view.install_writes_only_if_that", template.workflowPath))
                     .font(.caption2).foregroundStyle(.secondary)
                 }
             }

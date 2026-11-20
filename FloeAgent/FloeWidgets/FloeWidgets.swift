@@ -31,7 +31,7 @@ struct FloeWidgetProvider: TimelineProvider {
     init() {
         // The extension runs in its own process; resolve the language chosen
         // in the main App (mirrored into the App Group).
-        FloeL10n.bootstrap()
+        FloeL10n.bootstrap(isExtension: true)
     }
 
     func placeholder(in context: Context) -> FloeWidgetEntry {
@@ -59,6 +59,7 @@ struct FloeWidgetProvider: TimelineProvider {
     }
 
     private func entry(now: Date) -> FloeWidgetEntry {
+        FloeL10n.bootstrap(isExtension: true)
         guard let store = WidgetTaskSnapshotStore.appGroup() else {
             return FloeWidgetEntry(date: now, content: .unavailable)
         }

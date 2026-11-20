@@ -6097,10 +6097,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let content = UNMutableNotificationContent()
         // Inline bilingual fallback: these keys may not have reached the
         // central catalog yet, and a raw key must never reach a notification.
-        content.title = FloeL10n.isChinese ? "定时任务待执行" : "Scheduled task pending"
-        content.body = FloeL10n.isChinese
-            ? "\(schedule.title) 已到执行时间，但尚未运行。打开 Floe 立即执行。"
-            : "\(schedule.title) is due but Floe has not run it yet. Open Floe to run it."
+        content.title = FloeL10n.l("background.schedule.pending_notification.title")
+        content.body = FloeL10n.l("background.schedule.pending_notification.body", schedule.title)
         // The payload carries the real identity; the conversation key is
         // OMITTED (never an empty string) when no task was launched, so the
         // tap path can distinguish "route to the pending run" from "no run".
@@ -6205,10 +6203,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard notificationAuthorization.canPresentAlert else { return }
         for entry in plan.register {
             let content = UNMutableNotificationContent()
-            content.title = FloeL10n.isChinese ? "定时任务提醒" : "Scheduled task reminder"
-            content.body = FloeL10n.isChinese
-                ? "\(entry.title) 即将到执行时间。iOS 可能不会唤醒应用；打开 Floe 以确保执行。"
-                : "\(entry.title) is due soon. iOS may not wake the app; open Floe to make sure it runs."
+            content.title = FloeL10n.l("app.background_run_coordinator.scheduled_task_reminder")
+            content.body = FloeL10n.l("app.background_run_coordinator.is_due_soon_ios_may", entry.title)
             content.userInfo = BackgroundWorkDeepLink(
                 kind: .schedule,
                 scheduleID: entry.scheduleID,
@@ -6594,9 +6590,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         switch link.kind {
         case .schedule:
             title = String(localized: "notification.unreachable.task.title")
-            body = FloeL10n.isChinese
-                ? "该定时任务当前没有运行中的任务。打开 Floe 查看它的计划与历史。"
-                : "The scheduled task is not running right now. Open Floe to see its schedule and history."
+            body = FloeL10n.l("app.background_run_coordinator.the_scheduled_task_is_not")
         case .modelRun:
             title = String(localized: "notification.unreachable.task.title")
             body = String(localized: "notification.unreachable.task.body")
@@ -9106,30 +9100,22 @@ final class BackgroundWorkSessionController: ObservableObject {
     private func qualificationStageText() -> String {
         let counts = snapshot.counts
         if snapshot.showsServiceOnlyActivity {
-            return FloeL10n.isChinese
-                ? "工作会话 · 服务 \(counts.activeServices)"
-                : "Work session · services \(counts.activeServices)"
+            return FloeL10n.l("app.background_run_coordinator.work_session_services", counts.activeServices)
         }
         if let reason = snapshot.waitReason, snapshot.state == .waiting {
             switch reason {
             case .approvals:
-                return FloeL10n.isChinese
-                    ? "工作会话 · 等待批准 \(counts.pendingApprovals)"
-                    : "Work session · awaiting \(counts.pendingApprovals) approval(s)"
+                return FloeL10n.l("app.background_run_coordinator.work_session_awaiting_approval_s", counts.pendingApprovals)
             case .environmentBusy:
-                return FloeL10n.isChinese
-                    ? "工作会话 · 等待环境空闲"
-                    : "Work session · waiting for the busy environment"
+                return FloeL10n.l("app.background_run_coordinator.work_session_waiting_for_the")
             case .network:
-                return FloeL10n.isChinese ? "工作会话 · 等待网络" : "Work session · waiting for network"
+                return FloeL10n.l("app.background_run_coordinator.work_session_waiting_for_network")
             case .dueWork:
-                return FloeL10n.isChinese ? "工作会话 · 等待到期任务" : "Work session · waiting for due work"
+                return FloeL10n.l("app.background_run_coordinator.work_session_waiting_for_due")
             }
         }
         let admitted = counts.totalAdmitted
-        return FloeL10n.isChinese
-            ? "工作会话 · \(admitted) 项进行中"
-            : "Work session · \(admitted) admitted"
+        return FloeL10n.l("app.background_run_coordinator.work_session_admitted", admitted)
     }
 
     // MARK: - User stop / clear

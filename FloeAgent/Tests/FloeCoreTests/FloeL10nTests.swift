@@ -81,6 +81,49 @@ struct FloeL10nTests {
             arguments: ["app"]) == nil)
     }
 
+    @Test("New language tags match the first supported system preference", arguments: [
+        ("zh-TW", "zh-Hant"), ("zh-HK", "zh-Hant"), ("zh-Hans-SG", "zh-Hans"),
+        ("ja-JP", "ja"), ("ko-KR", "ko"), ("fr-CA", "fr"),
+        ("de-AT", "de"), ("es-MX", "es"), ("pt-BR", "pt-BR"),
+    ])
+    func supportedRegionalLanguages(tag: String, expected: String) {
+        #expect(FloeL10n.resolveLanguageCode(
+            preferenceRaw: "system", forcedLanguageCode: nil,
+            systemPreferredLanguages: ["it-IT", tag, "en-AU"]) == expected)
+        #expect(FloeL10n.launchArgumentLanguageCode(
+            arguments: ["app", "-AppleLanguages", "(it-IT, \(tag), en)"]) == expected)
+    }
+
+    @Test("An extension reads the shared language without changing it")
+    func extensionFollowsSharedPreference() {
+        let d = makeDefaults()
+        defer { d.cleanup() }
+        withSystemLanguages(["fr-CA"]) {
+            d.standard.set("zhHans", forKey: FloeL10n.defaultsKey)
+            d.suite.set("pt-BR", forKey: FloeL10n.defaultsKey)
+            #expect(FloeL10n.bootstrap(
+                standardDefaults: d.standard, suiteDefaults: d.suite, arguments: [],
+                isExtension: true) == "pt-BR")
+            #expect(d.suite.string(forKey: FloeL10n.defaultsKey) == "pt-BR")
+            d.suite.removeObject(forKey: FloeL10n.defaultsKey)
+            #expect(FloeL10n.bootstrap(
+                standardDefaults: d.standard, suiteDefaults: d.suite, arguments: [],
+                isExtension: true) == "fr")
+            #expect(d.suite.string(forKey: FloeL10n.defaultsKey) == nil)
+        }
+    }
+
+    @Test("Singular routing follows the chosen language")
+    func singularRouting() {
+        #expect(FloeL10n.usesSingular(count: 0, code: "fr"))
+        #expect(FloeL10n.usesSingular(count: 0, code: "pt-BR"))
+        #expect(!FloeL10n.usesSingular(count: 0, code: "es"))
+        #expect(FloeL10n.usesSingular(count: 1, code: "de"))
+        #expect(!FloeL10n.usesSingular(count: 1, code: "ja"))
+        #expect(!FloeL10n.usesSingular(count: 1, code: "zh-Hant"))
+        #expect(FloeL10n.substituting(format: "%2$@ · %1$lld", arguments: [3, "x"]) == "x · 3")
+    }
+
     // MARK: - Stateful preference switching (the reported bug)
 
     @Test("English override then Follow System on a Chinese OS returns Chinese")

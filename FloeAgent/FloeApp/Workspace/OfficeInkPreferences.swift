@@ -42,7 +42,13 @@ enum OfficeInkText {
         }
         #endif
     }
-    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
+    static func t(_ zh: String, _ en: String) -> String {
+        #if canImport(FloeCore)
+        FloeL10n.bilingual(chinese: zh, english: en)
+        #else
+        isChinese ? zh : en
+        #endif
+    }
 }
 
 enum OfficeInkColor: String, CaseIterable, Codable, Identifiable, Sendable {

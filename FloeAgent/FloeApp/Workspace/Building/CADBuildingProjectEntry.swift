@@ -42,19 +42,18 @@ struct CADBuildingProjectEntry: ViewModifier {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { start() } label: {
-                        Label(t("工程", "Project"), systemImage: "building.columns")
+                        Label(FloeL10n.l("cad.cmd.category.project"), systemImage: "building.columns")
                     }
                     .disabled(blocked || preparing || document.isClosed)
                     .accessibilityIdentifier("cad.building.project")
                 }
             }
-            .confirmationDialog(t("从当前图形建立工程？", "Create a project from this drawing?"),
+            .confirmationDialog(FloeL10n.l("app.cadbuilding_project_entry.create_a_project_from_this"),
                                 isPresented: $confirming, titleVisibility: .visible) {
-                Button(t("建立工程", "Create project")) { createProject() }
-                Button(t("取消", "Cancel"), role: .cancel) {}
+                Button(FloeL10n.l("app.cadbuilding_project_entry.create_project")) { createProject() }
+                Button(FloeL10n.l("cad.scene.cancel"), role: .cancel) {}
             } message: {
-                Text(t("工程会复制当前已保存的 CAD 图形到工作区的“Building Projects”，原文件保持不变；之后请在工程中继续编辑。",
-                       "The project copies the saved CAD drawing into “Building Projects” in this workspace. The original file stays unchanged; continue in the project."))
+                Text(FloeL10n.l("app.cadbuilding_project_entry.the_project_copies_the_saved"))
             }
             .onChange(of: presentation?.id) { _, value in onCoverChange?(value != nil) }
             .fullScreenCover(item: $presentation) { item in
@@ -66,9 +65,9 @@ struct CADBuildingProjectEntry: ViewModifier {
                 }
                 .id(item.id)
             }
-            .alert(t("工程操作未完成", "The project operation did not finish"),
+            .alert(FloeL10n.l("app.cadbuilding_project_entry.the_project_operation_did_not"),
                    isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
-                Button(t("好", "OK"), role: .cancel) { failure = nil }
+                Button(FloeL10n.l("cad.ui.common.ok"), role: .cancel) { failure = nil }
             } message: { Text(failure ?? "") }
     }
 
@@ -100,8 +99,7 @@ struct CADBuildingProjectEntry: ViewModifier {
             if document.hasUnsavedChanges {
                 let outcome = await document.save()
                 guard outcome.succeeded else {
-                    failure = outcome.error ?? t("当前 CAD 图形未能保存，工程没有建立。",
-                                                 "The current CAD drawing could not be saved, so the project was not created.")
+                    failure = outcome.error ?? FloeL10n.l("app.cadbuilding_project_entry.the_current_cad_drawing_could")
                     return
                 }
             }

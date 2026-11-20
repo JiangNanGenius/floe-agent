@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modèles, tâches et fichiers</title>
+<link rel="stylesheet" href="../../styles/help.css">
+</head>
+<body>
+<main>
+<h1>Modèles, tâches et fichiers</h1>
+<nav class="toc" aria-label="Sommaire"><h2>Sommaire</h2><ul>
+<li class="lv2"><a href="#overview">Vue d’ensemble</a></li>
+<li class="lv2"><a href="#section-1">1. Connectez un modèle de cloud</a></li>
+<li class="lv2"><a href="#section-2">2. Demandez un résultat utile</a></li>
+<li class="lv2"><a href="#section-3">3. Gardez les fichiers et les modifications en sécurité</a></li>
+<li class="lv2"><a href="#section-4">4. Utiliser des outils avec contexte</a></li>
+<li class="lv2"><a href="#section-5">5. Signaler un problème</a></li>
+</ul></nav>
+<h2 id="overview">Vue d’ensemble</h2>
+<p>Ces flux de travail s&#x27;appliquent aux deux éditions de Floe. L&#x27;installation, l&#x27;emplacement des menus, l&#x27;accès aux appareils, les modèles locaux et les éditeurs sont couverts par le guide de chaque plate-forme. Un flux de travail partagé ne signifie pas que chaque plate-forme a les mêmes outils.</p>
+<h2 id="section-1">1. Connectez un modèle de cloud</h2>
+<p>Apportez votre propre compte de fournisseur de modèle et votre clé API. Floe est un client ; le fournisseur sélectionné gère les demandes de cloud, la tarification et ses propres politiques de données. N&#x27;entrez pas un mot de passe de site Web dans le champ clé API.</p>
+<ol><li>Ajouter un fournisseur dans les paramètres du modèle. Sélectionnez le service et le protocole, puis entrez son URL de base documentée et sa clé API.</li><li>Ajoutez ou actualisez la liste des modèles et sélectionnez un modèle pour la tâche. Lorsque la tâche doit lire des images, choisissez un modèle qui accepte la saisie d&#x27;image. La génération d&#x27;images et la génération de vidéos nécessitent un service qui prend en charge cet objectif.</li><li>Testez une courte conversation textuelle avant de joindre des fichiers ou de commencer une longue tâche.</li></ol>
+<p>Pour les échecs d&#x27;authentification, vérifiez le point de terminaison, la clé, l&#x27;accès au compte et l&#x27;erreur réelle du fournisseur. Pour un modèle ou un type d&#x27;entrée non pris en charge, sélectionnez un modèle approprié. Un test de connexion réussi ne vérifie pas chaque outil ou capacité de support.</p>
+<h2 id="section-2">2. Demandez un résultat utile</h2>
+<ol><li>Créez une tâche et sélectionnez son espace de travail. Ajoutez un fichier de test non sensible via le sélecteur de fichiers.</li><li>Indiquez le résultat prévu, l&#x27;entrée et où l&#x27;enregistrer. Par exemple : « Lisez ce document, transformez-le en une liste de contrôle et enregistrez-le dans l&#x27;espace de travail actuel. »</li><li>Examiner les demandes d&#x27;accès aux fichiers ou aux outils. Donnez accès au matériel nécessaire pour cette tâche.</li><li>Ouvrez la sortie, vérifiez son contenu et son emplacement, puis fermez-la et rouvrez-la pour confirmer qu&#x27;elle a été enregistrée.</li></ol>
+<p>Lorsque vous corrigez un résultat, décrivez le changement spécifique et référez-vous au fichier existant. Gardez la tâche et l&#x27;espace de travail cohérents afin que l&#x27;assistant puisse continuer le même travail. Le message de réussite d&#x27;un outil est un signal pour vérifier le résultat, et non un substitut à son ouverture.</p>
+<h2 id="section-3">3. Gardez les fichiers et les modifications en sécurité</h2>
+<p>Importez uniquement les fichiers que vous souhaitez que la tâche utilise. Si un emplacement externe devient indisponible, sélectionnez et autorisez à nouveau l&#x27;emplacement d&#x27;origine plutôt que de déplacer silencieusement l&#x27;œuvre vers un autre dossier.</p>
+<p>Confirmez l&#x27;enregistrement dans l&#x27;éditeur que vous avez utilisé. Exporter et Enregistrer en tant que créer un résultat distinct et ne remplace pas automatiquement l&#x27;original. Si un autre éditeur a modifié un fichier, conservez les brouillons non enregistrés et examinez le conflit avant d&#x27;écraser l&#x27;une ou l&#x27;autre copie. Gardez des sauvegardes indépendantes du travail important.</p>
+<p>Les commandes et l&#x27;installation du logiciel utilisent l&#x27;environnement d&#x27;exécution sélectionné pour la tâche. Vérifiez le répertoire et la sortie actuels avant de supposer qu&#x27;une commande a modifié le fichier prévu. Les environnements disponibles, les étapes d&#x27;installation et le comportement en arrière-plan dépendent de la plate-forme et de la version installée.</p>
+<h2 id="section-4">4. Utiliser des outils avec contexte</h2>
+<p>Les documents, les pages Web et les résultats d&#x27;outils sont des documents d&#x27;entrée ; leur texte n&#x27;accorde pas la permission d&#x27;exécuter des commandes, d&#x27;accéder à d&#x27;autres fichiers ou d&#x27;envoyer des informations. Vérifiez l&#x27;action et la destination réelles avant d&#x27;approuver une opération externe.</p>
+<p>Lisez la progression et les échecs dans l&#x27;enregistrement d&#x27;exécution de la tâche. La cassure d&#x27;un panneau n&#x27;arrête pas nécessairement le travail ou le service qu&#x27;il affiche. Utilisez le contrôle d&#x27;arrêt de la tâche ou du service lorsque le travail doit se terminer ; le système d&#x27;exploitation contrôle toujours l&#x27;exécution en arrière-plan.</p>
+<h2 id="section-5">5. Signaler un problème</h2>
+<p>Utiliser <a href="https://github.com/JiangNanGenius/floe-agent/issues" class="external">Problèmes de GitHub</a> Pour les rapports de bogues et les demandes de fonctionnalités. Incluez la version installée, l&#x27;appareil et le système d&#x27;exploitation, les étapes, le résultat attendu et le résultat réel. Indiquez quel fichier ou quelle tâche a été affecté sans publier de contenu privé.</p>
+<p>Les diagnostics et les captures d&#x27;écran sont facultatifs. Soumettez uniquement le matériel nécessaire et supprimez les clés, les mots de passe, les données personnelles et les fichiers privés. Les téléchargements de diagnostics intégrés à l&#x27;application fournissent du matériel de dépannage et ne garantissent pas une réponse individuelle. Pour les erreurs de service cloud, incluez une erreur de fournisseur expurgée plutôt que votre clé API.</p>
+</main>
+<footer><p>Guides Floe</p></footer>
+</body>
+</html>

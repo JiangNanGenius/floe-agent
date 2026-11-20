@@ -559,10 +559,7 @@ struct LinuxImageInstallCard: View {
         let old = model.imageID.split(separator: "-").last.map(String.init) ?? "old"
         let current = LinuxGuestImageDistributionCatalog.defaultImageID
             .split(separator: "-").last.map(String.init) ?? "current"
-        return IDELanguageRunText.t(
-            "已识别旧环境（对应 \(old) 组件），可升级至 \(current)。旧运行盘和资料会保留。",
-            "Older environment identified (\(old) component). Upgrade to \(current); the old runtime disk and data are retained."
-        )
+        return FloeL10n.l("app.linux_image_install_card.older_environment_identified_component_upgrade", old, current)
     }
 
     @ViewBuilder

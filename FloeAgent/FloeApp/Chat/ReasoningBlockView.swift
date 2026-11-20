@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import UIKit
 
 /// Shown only until the first response content, never beside live reasoning.
@@ -280,7 +281,7 @@ struct LongReasoningTestHarness: View {
             }
             .navigationTitle("长文性能测试")
             .safeAreaInset(edge: .bottom) {
-                Button("追加内容 \(additions)") {
+                Button(FloeL10n.l("chat.reasoning.additional_content", additions)) {
                     additions += 1
                     text += String(repeating: "追加思考内容，完整保留。", count: 200) + "追加结束标记\(additions)"
                 }

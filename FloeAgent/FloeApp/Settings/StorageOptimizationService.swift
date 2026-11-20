@@ -210,37 +210,35 @@ struct StorageOptimizationState: Codable, Sendable {
     var terminalNotice: String? {
         if let removedObsoleteItems, removedObsoleteItems > 0, attempted == 0 {
             if phase == .blocked {
-                return FloeL10n.isChinese ? "已移除 \(removedObsoleteItems) 项旧运行文件，其余项目尚待整理。"
-                    : "Removed \(removedObsoleteItems) obsolete runtime items. Some items still need attention."
+                return FloeL10n.l("app.storage_optimization_service.removed_obsolete_runtime_items_some", removedObsoleteItems)
             }
             if phase == .completed {
-                return FloeL10n.isChinese ? "已移除 \(removedObsoleteItems) 项旧运行文件。"
-                    : "Removed \(removedObsoleteItems) obsolete runtime items."
+                return FloeL10n.l("app.storage_optimization_service.removed_obsolete_runtime_items", removedObsoleteItems)
             }
         }
         switch terminalDisposition {
         case .notCovered:
-            return FloeL10n.isChinese ? "此入口未发现可整理的历史磁盘，其他资料未改动。" : "This tool found no historical disks it can optimize. Other data was left unchanged."
+            return FloeL10n.l("app.storage_optimization_service.this_tool_found_no_historical")
         case .eligibilityBlocked:
-            return FloeL10n.isChinese ? "历史资料仍需核对，尚未优化。请上传反馈日志。" : "Historical data needs further checks before optimization. Send a diagnostic report."
+            return FloeL10n.l("app.storage_optimization_service.historical_data_needs_further_checks")
         case .methodUnavailable:
-            return FloeL10n.isChinese ? "当前无法使用所需的无损整理方式，资料已保留。请上传反馈日志。" : "The required lossless optimization method is unavailable. Data was kept; send a diagnostic report."
+            return FloeL10n.l("app.storage_optimization_service.the_required_lossless_optimization_method")
         case .verifiedNoGain:
-            return FloeL10n.isChinese ? "已核对这些磁盘，未发现可无损缩减的空间。资料已保留。" : "These disks were verified, with no space that could be reduced losslessly. Data was kept."
+            return FloeL10n.l("app.storage_optimization_service.these_disks_were_verified_with")
         case .recoveryPending:
-            return FloeL10n.isChinese ? "有未完成的整理需要恢复，资料已保留。请稍后重试；若仍失败，请上传反馈日志。" : "An unfinished optimization needs recovery. Data was kept. Try again later; if it persists, send a diagnostic report."
+            return FloeL10n.l("app.storage_optimization_service.an_unfinished_optimization_needs_recovery")
         case .recovered:
-            return FloeL10n.isChinese ? "上次中断的整理已恢复，资料已保留。可再次整理以继续检查。" : "The interrupted optimization was recovered and data was kept. Start again to continue checking."
+            return FloeL10n.l("app.storage_optimization_service.the_interrupted_optimization_was_recovered")
         case .retained:
-            return FloeL10n.isChinese ? "已检查 \(attempted) 项；资料均已保留，尚未整理磁盘。" : "Checked \(attempted) items. Data was kept; no disks were optimized."
+            return FloeL10n.l("app.storage_optimization_service.checked_items_data_was_kept", attempted)
         case .partiallyOptimized:
             return phase == .blocked
-                ? (FloeL10n.isChinese ? "已整理 \(optimized) 项；其余未完成，资料已保留。" : "Optimized \(optimized) items. The rest could not finish; data was kept.")
-                : (FloeL10n.isChinese ? "已整理 \(optimized) 项，保留 \(skipped) 项。" : "Optimized \(optimized) items; kept \(skipped) unchanged.")
+                ? (FloeL10n.l("app.storage_optimization_service.optimized_items_the_rest_could", optimized))
+                : (FloeL10n.l("app.storage_optimization_service.optimized_items_kept_unchanged", optimized, skipped))
         case .busy:
-            return FloeL10n.isChinese ? "环境仍在使用，尚未优化。请结束相关运行后重试。" : "The environment is still in use. End the related activity, then try again."
+            return FloeL10n.l("app.storage_optimization_service.the_environment_is_still_in")
         case .stopped:
-            return FloeL10n.isChinese ? "本次整理未完成或结果详情未记录，资料已保留。请上传反馈日志。" : "Optimization did not finish or its detailed result was not recorded. Data was kept; send a diagnostic report."
+            return FloeL10n.l("app.storage_optimization_service.optimization_did_not_finish_or")
         case .optimized, .none: return nil
         }
     }
@@ -327,14 +325,10 @@ struct StorageOptimizationState: Codable, Sendable {
     var inventoryNotice: String? {
         guard phase == .blocked, let inventoryEvidence else { return nil }
         if inventoryEvidence.stopReasons.contains("rootChangedDuringScan") {
-            return FloeL10n.isChinese
-                ? "环境正在变化，尚未优化。请等待环境准备完成后重试。"
-                : "The environment changed during checking. Wait for preparation to finish, then try again."
+            return FloeL10n.l("app.storage_optimization_service.the_environment_changed_during_checking")
         }
         guard inventoryEvidence.isPartial || !inventoryEvidence.rootAvailable else { return nil }
-        return FloeL10n.isChinese
-            ? "暂未完成环境清点，尚未优化。请稍后重试；若仍失败，请上传反馈日志。"
-            : "The environment could not be fully checked, so optimization has not started. Try again later; if it keeps failing, send a diagnostic report."
+        return FloeL10n.l("app.storage_optimization_service.the_environment_could_not_be")
     }
 }
 

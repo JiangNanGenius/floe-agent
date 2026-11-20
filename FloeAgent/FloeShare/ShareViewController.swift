@@ -38,7 +38,7 @@ final class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        FloeL10n.bootstrap()
+        FloeL10n.bootstrap(isExtension: true)
         view.backgroundColor = .systemBackground
         installHostingControllerIfNeeded()
         updateConfirmation(.init(phase: .saving))

@@ -71,28 +71,37 @@ public struct HelpLibrarySnapshot: Sendable {
     public init(files: [String: Data], language: HelpLanguage,
                 digest: @escaping @Sendable (Data) -> String) throws {
         let validated = try HelpLibrarySnapshot.validatedPackage(files: files, digest: digest)
-        self.files = files
-        self.digest = digest
-        self.manifest = validated.manifest
-        guard let indexData = files[validated.manifest.indexPaths[language.rawValue] ?? ""] else {
+        guard let index = validated.decodedIndexes[language] else {
             throw HelpLibraryError.missingFile("help index for \(language.rawValue)")
         }
-        self.index = try HelpLibrarySnapshot.decodeJSON(HelpIndex.self, from: indexData,
-                                                        path: "help index \(language.rawValue)")
-        guard self.index.locale == language else {
-            throw HelpLibraryError.invalidIndex(locale: language.rawValue,
-                                                reason: "locale mismatch \(self.index.locale.rawValue)")
+        self.init(files: files, manifest: validated.manifest, index: index, digest: digest)
+    }
+
+    public static func localizedSnapshots(
+        files: [String: Data], digest: @escaping @Sendable (Data) -> String
+    ) throws -> [HelpLanguage: Self] {
+        let validated = try validatedPackage(files: files, digest: digest)
+        return validated.decodedIndexes.mapValues {
+            Self(files: files, manifest: validated.manifest, index: $0, digest: digest)
         }
+    }
+
+    private init(files: [String: Data], manifest: HelpPackageManifest, index: HelpIndex,
+                 digest: @escaping @Sendable (Data) -> String) {
+        self.files = files
+        self.digest = digest
+        self.manifest = manifest
+        self.index = index
         var byPath: [String: HelpResourceDescriptor] = [:]
-        byPath.reserveCapacity(validated.manifest.resources.count)
-        for descriptor in validated.manifest.resources { byPath[descriptor.path] = descriptor }
+        byPath.reserveCapacity(manifest.resources.count)
+        for descriptor in manifest.resources { byPath[descriptor.path] = descriptor }
         self.resourcesByPath = byPath
         var byID: [String: HelpArticle] = [:]
         byID.reserveCapacity(self.index.articles.count)
         for article in self.index.articles { byID[article.id] = article }
         self.articlesByID = byID
         self.searchEntries = HelpLibrarySnapshot.makeSearchEntries(index: self.index,
-                                                                   version: validated.manifest.version)
+                                                                   version: manifest.version)
     }
 
     // MARK: - Lookup
@@ -212,7 +221,7 @@ public struct HelpLibrarySnapshot: Sendable {
         _ = try validatedPackage(files: files, digest: digest)
     }
 
-    /// Validates both locales, every reference and every asset, and returns
+    /// Validates each catalog, reference and asset, and returns
     /// the decoded manifest. Shared by the initializer and `validatePackage`.
     private static func validatedPackage(files: [String: Data],
                                          digest: @Sendable (Data) -> String) throws -> (manifest: HelpPackageManifest, decodedIndexes: [HelpLanguage: HelpIndex]) {
@@ -272,9 +281,7 @@ public struct HelpLibrarySnapshot: Sendable {
 
         var decodedIndexes: [HelpLanguage: HelpIndex] = [:]
         for language in HelpLanguage.allCases {
-            guard let indexPath = manifest.indexPaths[language.rawValue] else {
-                throw HelpLibraryError.invalidManifest("indexPaths missing \(language.rawValue)")
-            }
+            guard let indexPath = manifest.indexPaths[language.rawValue] else { continue }
             try validateRelativePath(indexPath)
             guard let indexData = files[indexPath] else {
                 throw HelpLibraryError.missingFile(indexPath)
@@ -337,16 +344,19 @@ public struct HelpLibrarySnapshot: Sendable {
             identityByLocale[language] = try validatedIndexSemantics(index, manifest: manifest,
                                                                      documents: documents)
         }
-        guard let english = identityByLocale[.english],
-              let chinese = identityByLocale[.simplifiedChinese] else {
-            throw HelpLibraryError.invalidManifest("both locales are required")
+        guard let english = identityByLocale[.english], identityByLocale[.simplifiedChinese] != nil else {
+            throw HelpLibraryError.invalidManifest("en and zh-Hans indexes are required")
         }
-        guard english.articles == chinese.articles else {
-            throw HelpLibraryError.invalidManifest("article identities differ between locales")
-        }
-        for articleID in english.articles {
-            guard english.chapters[articleID] == chinese.chapters[articleID] else {
-                throw HelpLibraryError.invalidManifest("chapter identities differ for \(articleID)")
+        for (language, identity) in identityByLocale where language != .english {
+            guard english.articles == identity.articles else {
+                throw HelpLibraryError.invalidManifest("article identities differ for \(language.rawValue)")
+            }
+            for articleID in english.articles {
+                guard english.chapters[articleID] == identity.chapters[articleID] else {
+                    throw HelpLibraryError.invalidManifest(
+                        "chapter identities differ for \(articleID) in \(language.rawValue)"
+                    )
+                }
             }
         }
         return (manifest, decodedIndexes)

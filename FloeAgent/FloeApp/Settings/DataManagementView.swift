@@ -42,9 +42,7 @@ struct DataManagementView: View {
             // Exact for the measured files, plus a bounded allocation
             // allowance for the ones that could not be measured. It is an
             // upper bound, not the exact union and not iOS's app size.
-            return FloeL10n.isChinese
-                ? "文件占用估算（上限）"
-                : "Estimated file usage (upper bound)"
+            return FloeL10n.l("app.data_management_view.estimated_file_usage_upper_bound")
         }
         if report.isPartial || report.changedOrVanishedCount > 0 {
             return FloeL10n.l("settings.data_management_view.partial_file_estimate")
@@ -211,13 +209,9 @@ struct DataManagementView: View {
                 } footer: {
                     switch report.extentBasis {
                     case .available:
-                        Text(FloeL10n.isChinese
-                            ? "可能包含共享块的文件实测占用；共享块已在上方总计中只计一次。"
-                            : "Measured usage of files that may share storage blocks; shared blocks are already counted once in the total above.")
+                        Text(FloeL10n.l("app.data_management_view.measured_usage_of_files_that"))
                     case .partial:
-                        Text(FloeL10n.isChinese
-                            ? "可能包含共享块的文件在同一估算基础上计入；共享块已在上方总计中只计一次。"
-                            : "Files that may share storage blocks are included on the same estimated basis; shared blocks are already counted once in the total above.")
+                        Text(FloeL10n.l("app.data_management_view.files_that_may_share_storage"))
                     default:
                         Text("settings.data_management_view.shared_files_included")
                     }
@@ -691,7 +685,7 @@ struct FontManagementView: View {
             if isSelecting {
                 HStack {
                     if isWorking { ProgressView().controlSize(.small) }
-                    Text(FontDesignText.t("已选 \(selection.items.count) 项", "\(selection.items.count) selected"))
+                    Text(FloeL10n.l("app.data_management_view.selected", selection.items.count))
                         .font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
                     Button(FontDesignText.t("删除", "Delete"), role: .destructive) { pendingDeletion = selection.items }
@@ -719,7 +713,7 @@ struct FontManagementView: View {
         )) {
             Button("workspace.office_document_editor_view.ok") { errorMessage = nil; designer.errorMessage = nil }
         } message: { Text(errorMessage ?? designer.errorMessage ?? "") }
-        .confirmationDialog(FontDesignText.t("删除所选的 \(pendingDeletion.count) 项？", "Delete \(pendingDeletion.count) selected items?"),
+        .confirmationDialog(FloeL10n.l("app.data_management_view.delete_selected_items", pendingDeletion.count),
             isPresented: Binding(get: { !pendingDeletion.isEmpty }, set: { if !$0 { pendingDeletion.removeAll() } }),
             titleVisibility: .visible
         ) {
@@ -837,7 +831,7 @@ struct FontManagementView: View {
                         Text(family.displayName)
                         HStack(spacing: 8) {
                             Label(FontDesignText.t("内置", "Included"), systemImage: "lock")
-                            Text(FontDesignText.t("\(family.faces.count) 款", "\(family.faces.count) styles"))
+                            Text(FloeL10n.l("app.data_management_view.styles", family.faces.count))
                         }.font(.caption).foregroundStyle(.secondary)
                     }.frame(minHeight: FloeTheme.minimumTarget)
                 }
@@ -911,10 +905,10 @@ struct FontManagementView: View {
             fonts: records, store: store, host: environment.fontDesignAIHost)
         StorageDiagnosticService.shared.invalidate(.other("fontStore"))
         await designer.reload(); await reload()
-        if !result.removed.isEmpty { successMessage = FontDesignText.t("已删除 \(result.removed.count) 项", "Deleted \(result.removed.count) items") }
+        if !result.removed.isEmpty { successMessage = FloeL10n.l("app.data_management_view.deleted_items", result.removed.count) }
         if result.failures.isEmpty { isSelecting = false; selection.clear() }
         else {
-            errorMessage = FontDesignText.t("\(result.failures.count) 项未能删除。", "\(result.failures.count) items could not be deleted.")
+            errorMessage = FloeL10n.l("app.data_management_view.items_could_not_be_deleted", result.failures.count)
                 + "\n" + result.failures.prefix(3).map { $0.title + "：" + $0.message }.joined(separator: "\n")
         }
     }

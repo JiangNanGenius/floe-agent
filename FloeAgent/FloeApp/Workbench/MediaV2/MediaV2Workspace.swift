@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import AVKit
+import FloeCore
 import SwiftUI
 import UniformTypeIdentifiers
 import FloeWorkbench
@@ -392,7 +393,7 @@ struct MediaV2Workspace: View {
             Button(WorkbenchText.t("清除顶点", "Clear vertices"), systemImage: "trash") { session.polygonPoints = [] }
                 .disabled(session.polygonPoints.isEmpty)
         } label: {
-            Label(WorkbenchText.t("顶点 \(session.polygonPoints.count)", "Vertices \(session.polygonPoints.count)"),
+            Label(FloeL10n.l("app.media_v2_workspace.vertices", session.polygonPoints.count),
                   systemImage: "point.3.connected.trianglepath.dotted")
                 .font(.callout).frame(minHeight: 44)
         }.accessibilityIdentifier("media.v2.selection.polygon")

@@ -49,6 +49,39 @@ final class HelpContentCenterTests: XCTestCase {
         XCTAssertEqual(try center.snapshot(language: .simplifiedChinese).manifest.version, "2.0.0")
     }
 
+    func testNewLocaleUsesBundledEditionWhenInstalledPackageOmitsIt() async throws {
+        var legacy = try package("2.0.0").files
+        var manifest = try JSONDecoder().decode(HelpPackageManifest.self,
+            from: XCTUnwrap(legacy[HelpBundleMetadata.manifestPath]))
+        var content = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(legacy["content.json"])) as? [String: Any])
+        var documents = try XCTUnwrap(content["documents"] as? [String: String])
+        for language in HelpLanguage.allCases where language != .english && language != .simplifiedChinese {
+            let code = language.rawValue
+            let index = manifest.indexPaths.removeValue(forKey: code)
+            let document = documents.removeValue(forKey: code)
+            manifest.title[code] = nil
+            let localizedResources = manifest.resources.filter {
+                $0.path == index || $0.path == document || $0.path.hasPrefix("help/articles/\(code)/")
+            }
+            let paths = Set(localizedResources.map(\.path))
+            manifest.resources.removeAll { paths.contains($0.path) }
+            for path in paths { legacy[path] = nil }
+        }
+        content["documents"] = documents
+        legacy["content.json"] = try JSONSerialization.data(withJSONObject: content)
+        legacy[HelpBundleMetadata.manifestPath] = try JSONEncoder().encode(manifest)
+        let installed = HelpContentPackage(version: "2.0.0", files: legacy)
+        let center = try center(installed: { installed })
+        await center.prepare()
+        XCTAssertEqual(try center.snapshot(language: .english).manifest.version, "2.0.0")
+        let japanese = try center.snapshot(language: .japanese)
+        XCTAssertEqual(japanese.manifest.version, HelpBundleMetadata.bundledVersion)
+        XCTAssertEqual(Set(center.availableLanguages), Set(HelpLanguage.allCases))
+        let ref = try japanese.reference(articleID: "quickstart")
+        XCTAssertEqual(try center.snapshot(for: ref).index.locale, .japanese)
+    }
+
     func testEqualVersionKeepsInstalledAndStrictlyNewerBundleTakesOver() async throws {
         let equal = try package(HelpBundleMetadata.bundledVersion, title: "Installed guide")
         let installedCenter = try center(installed: { equal })

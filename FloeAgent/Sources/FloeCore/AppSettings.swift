@@ -17,6 +17,21 @@ public enum LanguagePreference: String, Sendable, Codable, CaseIterable, Hashabl
     case system
     case en
     case zhHans
+    case zhHant = "zh-Hant"
+    case ja
+    case ko
+    case fr
+    case de
+    case es
+    case ptBR = "pt-BR"
+
+    public var localizationCode: String? {
+        switch self {
+        case .system: nil
+        case .zhHans: "zh-Hans"
+        default: rawValue
+        }
+    }
 }
 
 /// How timestamps render in the UI (UserDefaults layer).

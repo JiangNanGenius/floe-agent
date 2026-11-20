@@ -1,0 +1,13 @@
+"keyboard.tone" = "Tono";
+"keyboard.volume" = "Volumen";
+"keyboard.expand" = "Expandir el teclado";
+"keyboard.collapse" = "Contraer teclado";
+"keyboard.sustain" = "Sostener";
+"keyboard.pitchbend" = "Flexión de paso";
+"keyboard.modulation" = "Modulación";
+"keyboard.attack" = "Ataque";
+"keyboard.noPresets" = "No hay tonos disponibles";
+"keyboard.release" = "Liberación";
+"keyboard.effect" = "Efecto";
+"keyboard.octave" = "Octava";
+"keyboard.filter" = "Filtro";

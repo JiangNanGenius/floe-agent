@@ -99,7 +99,7 @@ public struct NarrativeEditorView: View {
     // MARK: - Sections
 
     private func titleField(_ narrative: NarrativeDocument) -> some View {
-        TextField(locale == .chinese ? "标题" : "Title", text: Binding(
+        TextField(GameEditCopy("Title", "标题").text(locale), text: Binding(
             get: { narrative.title },
             set: { newValue in
                 guard newValue != narrative.title else { return }
@@ -113,7 +113,7 @@ public struct NarrativeEditorView: View {
     private func expandedEditor(_ narrative: NarrativeDocument) -> some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                Text(locale == .chinese ? "剧情与分支" : "Story & branches")
+                Text(GameEditCopy("Story & branches", "剧情与分支").text(locale))
                     .font(.subheadline.bold())
                     .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
                     .padding(.horizontal, 12)
@@ -121,7 +121,7 @@ public struct NarrativeEditorView: View {
                     Section { titleField(narrative) }
                     Section {
                         Button { selectedLabel = nil } label: {
-                            Label(locale == .chinese ? "全部命令" : "All commands", systemImage: "list.bullet")
+                            Label(GameEditCopy("All commands", "全部命令").text(locale), systemImage: "list.bullet")
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         }
                         .listRowBackground(selectedLabel == nil ? Color.accentColor.opacity(0.12) : Color.clear)
@@ -147,7 +147,7 @@ public struct NarrativeEditorView: View {
             Divider()
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
-                    TextField(locale == .chinese ? "搜索命令或内容" : "Search commands or content", text: $commandSearch)
+                    TextField(GameEditCopy("Search commands or content", "搜索命令或内容").text(locale), text: $commandSearch)
                         .textFieldStyle(.roundedBorder)
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("game.edit.event.search")
@@ -245,7 +245,7 @@ public struct NarrativeEditorView: View {
                        summary: GameEditCopy("Move command", "移动命令"))
             }
             if commands.isEmpty {
-                Text(locale == .chinese ? "没有匹配的命令" : "No matching commands")
+                Text(GameEditCopy("No matching commands", "没有匹配的命令").text(locale))
                     .font(.callout).foregroundStyle(.secondary)
             }
         } header: {
@@ -364,7 +364,7 @@ private struct CommandRow: View {
                         .lineLimit(1)
                 }
                 if !command.isSupported {
-                    Text(locale == .chinese ? "不支持 · 只读保留" : "Unsupported · kept read-only")
+                    Text(GameEditCopy("Unsupported · kept read-only", "不支持 · 只读保留").text(locale))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -390,8 +390,8 @@ private struct CommandRow: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel(systemName == "chevron.up"
-                ? (locale == .chinese ? "上移命令" : "Move command up")
-                : (locale == .chinese ? "下移命令" : "Move command down"))
+                ? (GameEditCopy("Move command up", "上移命令").text(locale))
+                : (GameEditCopy("Move command down", "下移命令").text(locale)))
         } else {
             Color.clear.frame(width: 44, height: 44)
         }
@@ -412,8 +412,8 @@ private struct CommandRow: View {
 
     private var branchText: String {
         switch command.branchRole {
-        case .open: return locale == .chinese ? "分支开始" : "Branch open"
-        case .close: return locale == .chinese ? "分支结束" : "Branch close"
+        case .open: return GameEditCopy("Branch open", "分支开始").text(locale)
+        case .close: return GameEditCopy("Branch close", "分支结束").text(locale)
         case .none: return ""
         }
     }
@@ -492,7 +492,7 @@ private struct CommandEditSheet: View {
                     Picker(selection: Binding<UUID?>(
                         get: { command.labelID },
                         set: { newValue in command.labelID = newValue })) {
-                        Text(locale == .chinese ? "无链接" : "No link").tag(UUID?.none)
+                        Text(GameEditCopy("No link", "无链接").text(locale)).tag(UUID?.none)
                         ForEach(knownLabels) { label in
                             Text(label.name).tag(Optional(label.id))
                         }
@@ -502,8 +502,8 @@ private struct CommandEditSheet: View {
                     .frame(minHeight: 44)
                     Picker(selection: $command.branchRole) {
                         Text("—").tag(NarrativeDocument.BranchRole.none)
-                        Text(locale == .chinese ? "开始" : "Open").tag(NarrativeDocument.BranchRole.open)
-                        Text(locale == .chinese ? "结束" : "Close").tag(NarrativeDocument.BranchRole.close)
+                        Text(GameEditCopy("Open", "开始").text(locale)).tag(NarrativeDocument.BranchRole.open)
+                        Text(GameEditCopy("Close", "结束").text(locale)).tag(NarrativeDocument.BranchRole.close)
                     } label: {
                         EditText(GameEditCopy("Branch role", "分支角色"))
                     }
@@ -584,6 +584,6 @@ private struct CommandEditSheet: View {
     }
 
     private func valuePlaceholder(_ field: GameParameterField) -> String {
-        field.placeholder ?? (locale == .chinese ? "未设置" : "Not set")
+        field.placeholder ?? (GameEditCopy("Not set", "未设置").text(locale))
     }
 }

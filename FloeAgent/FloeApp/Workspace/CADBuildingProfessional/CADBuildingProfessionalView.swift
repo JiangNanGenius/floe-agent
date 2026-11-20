@@ -24,10 +24,10 @@ struct CADBuildingProfessionalView: View {
     private func t(_ zh: String, _ en: String) -> String { FloeL10n.isChinese ? zh : en }
     private var title: String {
         switch action {
-        case .ifc: t("导出 IFC", "Export IFC")
-        case .structure: t("梁结构校核", "Beam analysis")
-        case .mep: t("机电碰撞检查", "MEP coordination")
-        case .information: t("信息要求检查", "Information requirements")
+        case .ifc: FloeL10n.l("app.cadbuilding_professional_view.export_ifc")
+        case .structure: FloeL10n.l("app.cadbuilding_professional_view.beam_analysis")
+        case .mep: FloeL10n.l("app.cadbuilding_professional_view.mep_coordination")
+        case .information: FloeL10n.l("app.cadbuilding_professional_view.information_requirements")
         }
     }
     private var structuralValid: Bool {
@@ -44,7 +44,7 @@ struct CADBuildingProfessionalView: View {
             Form {
                 Section {
                     Text(introduction).font(.callout).foregroundStyle(.secondary)
-                    Text(t("在此设备上计算，无需安装额外组件。", "Calculates on this device with no additional setup."))
+                    Text(FloeL10n.l("app.cadbuilding_professional_view.calculates_on_this_device_with"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if action == .structure { structuralInputs.disabled(starting || operation?.isRunning == true) }
@@ -52,12 +52,12 @@ struct CADBuildingProfessionalView: View {
                     if starting || operation?.isRunning == true {
                         HStack {
                             ProgressView()
-                            Text(cancelling || operation?.state == .cancelling ? t("正在取消…", "Cancelling…") : t("正在准备并计算…", "Preparing and calculating…"))
+                            Text(cancelling || operation?.state == .cancelling ? FloeL10n.l("app.core_aimodel_inspection.cancelling") : FloeL10n.l("app.cadbuilding_professional_view.preparing_and_calculating"))
                             Spacer()
                             if starting {
-                                Button(t("取消", "Cancel"), role: .destructive) { cancelling = true; startTask?.cancel() }.disabled(cancelling)
+                                Button(FloeL10n.l("cad.scene.cancel"), role: .destructive) { cancelling = true; startTask?.cancel() }.disabled(cancelling)
                             } else if let operation {
-                                Button(t("取消", "Cancel"), role: .destructive) { cancel(operation.id) }.disabled(cancelling)
+                                Button(FloeL10n.l("cad.scene.cancel"), role: .destructive) { cancel(operation.id) }.disabled(cancelling)
                             }
                         }.accessibilityIdentifier("cad.building.professional.progress")
                     } else {
@@ -65,37 +65,37 @@ struct CADBuildingProfessionalView: View {
                             .disabled(!canStart).accessibilityIdentifier("cad.building.professional.start")
                     }
                     if let operation {
-                        LabeledContent(t("状态", "Status"), value: stateTitle(operation.state))
+                        LabeledContent(FloeL10n.l("envdetail.status"), value: stateTitle(operation.state))
                         if operation.state == .ready {
-                            Text(t("结果对应此次计算启动时保存的模型。", "These results use the saved model captured when this study started."))
+                            Text(FloeL10n.l("app.cadbuilding_professional_view.these_results_use_the_saved"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     if let message {
-                        Text(t("未能完成本次计算，请检查模型与输入。", "The study could not complete. Check its model and inputs.")).foregroundStyle(.red)
-                        DisclosureGroup(t("错误详情", "Error details")) { Text(message).font(.caption).textSelection(.enabled) }
+                        Text(FloeL10n.l("app.cadbuilding_professional_view.the_study_could_not_complete")).foregroundStyle(.red)
+                        DisclosureGroup(FloeL10n.l("app.cadbuilding_professional_view.error_details")) { Text(message).font(.caption).textSelection(.enabled) }
                     }
                 }
                 if let result = operation?.result, operation?.state == .ready {
                     resultSections(result)
                     if !artifacts.isEmpty {
-                        Section(t("文件", "Files")) {
+                        Section(FloeL10n.l("app.floe_agent_app.files")) {
                             ForEach(artifacts, id: \.self) { url in
                                 ShareLink(item: url) { Label(url.lastPathComponent, systemImage: "square.and.arrow.up") }
                             }
                         }
                     }
                     Section {
-                        DisclosureGroup(t("计算详情", "Calculation details")) {
+                        DisclosureGroup(FloeL10n.l("app.cadbuilding_professional_view.calculation_details")) {
                             ForEach(result.backendVersions.keys.sorted(), id: \.self) { key in LabeledContent(key, value: result.backendVersions[key] ?? "") }
-                            LabeledContent(t("源版本", "Source revision"), value: "\(result.sourceRevision)")
-                            LabeledContent(t("显示三角形", "Display triangles"), value: "\(result.triangles)")
+                            LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.source_revision"), value: "\(result.sourceRevision)")
+                            LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.display_triangles"), value: "\(result.triangles)")
                         }
                     }
                 }
             }
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(t("完成", "Done")) { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(FloeL10n.l("help.done")) { dismiss() } } }
             .onAppear {
                 do { beams = try document.building()?.elements.filter { $0.kind == .beam } ?? [] }
                 catch { message = error.localizedDescription }
@@ -114,27 +114,27 @@ struct CADBuildingProfessionalView: View {
     }
     private var introduction: String {
         switch action {
-        case .ifc: t("从当前建筑构件与保存的几何生成 IFC4，并重新读取检查。", "Generate IFC4 from the current building elements and saved geometry, then read it back for validation.")
-        case .structure: t("对一根矩形梁进行线弹性计算。请明确选择梁、支撑条件、材料与均布载荷。", "Run a linear elastic calculation for one rectangular beam. Explicitly choose its supports, material and uniform load.")
-        case .mep: t("检查管道、风管与墙、板、屋顶、梁柱之间的几何相交。", "Check geometric intersections between pipes or ducts and walls, slabs, roofs, beams and columns.")
-        case .information: t("按 IDS 信息要求检查当前 IFC 构件是否具有名称。", "Use IDS information requirements to check that the current IFC elements have names.")
+        case .ifc: FloeL10n.l("app.cadbuilding_professional_view.generate_ifc4_from_the_current")
+        case .structure: FloeL10n.l("app.cadbuilding_professional_view.run_a_linear_elastic_calculation")
+        case .mep: FloeL10n.l("app.cadbuilding_professional_view.check_geometric_intersections_between_pipes")
+        case .information: FloeL10n.l("app.cadbuilding_professional_view.use_ids_information_requirements_to")
         }
     }
     private var structuralInputs: some View {
-        Section(t("计算输入", "Analysis inputs")) {
-            Picker(t("梁", "Beam"), selection: $structural.memberID) {
-                Text(t("请选择梁", "Choose a beam")).tag(Optional<UUID>.none)
+        Section(FloeL10n.l("app.cadbuilding_professional_view.analysis_inputs")) {
+            Picker(FloeL10n.l("cad.building.element.beam"), selection: $structural.memberID) {
+                Text(FloeL10n.l("app.cadbuilding_professional_view.choose_a_beam")).tag(Optional<UUID>.none)
                 ForEach(beams) { Text($0.name).tag(Optional($0.id)) }
             }.accessibilityIdentifier("cad.building.professional.beam")
-            if beams.isEmpty { Text(t("先在建筑模型中添加一根梁。", "Add a beam to the building first.")).foregroundStyle(.secondary) }
-            Picker(t("支撑", "Supports"), selection: $structural.support) {
-                Text(t("简支", "Simply supported")).tag(CADBuildingStructuralSettings.Support.simplySupported)
-                Text(t("悬臂", "Cantilever")).tag(CADBuildingStructuralSettings.Support.cantilever)
+            if beams.isEmpty { Text(FloeL10n.l("app.cadbuilding_professional_view.add_a_beam_to_the")).foregroundStyle(.secondary) }
+            Picker(FloeL10n.l("app.cadbuilding_professional_view.supports"), selection: $structural.support) {
+                Text(FloeL10n.l("app.cadbuilding_professional_view.simply_supported")).tag(CADBuildingStructuralSettings.Support.simplySupported)
+                Text(FloeL10n.l("app.cadbuilding_professional_view.cantilever")).tag(CADBuildingStructuralSettings.Support.cantilever)
             }
-            numberField(t("弹性模量 (N/mm²)", "Elastic modulus (N/mm²)"), value: $structural.elasticModulusNPerMM2)
-            numberField(t("泊松比", "Poisson ratio"), value: $structural.poissonRatio)
-            numberField(t("向下均布载荷 (kN/m)", "Downward uniform load (kN/m)"), value: $structural.lineLoadNPerMM)
-            Toggle(t("使用以上支撑、材料与载荷", "Use these supports, material and load"), isOn: $inputsConfirmed)
+            numberField(FloeL10n.l("app.cadbuilding_professional_view.elastic_modulus_n_mm"), value: $structural.elasticModulusNPerMM2)
+            numberField(FloeL10n.l("app.cadbuilding_professional_view.poisson_ratio"), value: $structural.poissonRatio)
+            numberField(FloeL10n.l("app.cadbuilding_professional_view.downward_uniform_load_kn_m"), value: $structural.lineLoadNPerMM)
+            Toggle(FloeL10n.l("app.cadbuilding_professional_view.use_these_supports_material_and"), isOn: $inputsConfirmed)
                 .accessibilityIdentifier("cad.building.professional.confirmInputs")
         }
     }
@@ -148,30 +148,30 @@ struct CADBuildingProfessionalView: View {
     }
     @ViewBuilder private func resultSections(_ result: CADBuildingProfessionalResult) -> some View {
         if let analysis = result.analysis {
-            Section(t("单梁结果", "Single-beam results")) {
-                LabeledContent(t("跨度", "Span"), value: number(analysis.spanMM, unit: "mm"))
-                LabeledContent(t("向下均布载荷", "Downward uniform load"), value: number(analysis.lineLoadNPerMM, unit: "kN/m"))
-                LabeledContent(t("最小竖向挠度", "Minimum vertical deflection"), value: number(analysis.minimumDeflectionMM, unit: "mm"))
-                LabeledContent(t("支座反力合计", "Total support reaction"), value: number(analysis.reactionSumN, unit: "N"))
+            Section(FloeL10n.l("app.cadbuilding_professional_view.single_beam_results")) {
+                LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.span"), value: number(analysis.spanMM, unit: "mm"))
+                LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.downward_uniform_load"), value: number(analysis.lineLoadNPerMM, unit: "kN/m"))
+                LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.minimum_vertical_deflection"), value: number(analysis.minimumDeflectionMM, unit: "mm"))
+                LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.total_support_reaction"), value: number(analysis.reactionSumN, unit: "N"))
             }.accessibilityIdentifier("cad.building.professional.structuralResult")
         }
         if let coordination = result.coordination {
-            Section(t("几何协调结果", "Geometric coordination")) {
+            Section(FloeL10n.l("app.cadbuilding_professional_view.geometric_coordination")) {
                 if coordination.status == "notEvaluated" {
-                    Text(t("未能完成几何检查。请检查管道、风管与建筑构件是否具有封闭几何。", "Geometry could not be evaluated. Check that pipes, ducts and building elements have closed geometry."))
+                    Text(FloeL10n.l("app.cadbuilding_professional_view.geometry_could_not_be_evaluated"))
                 } else {
                     if coordination.status == "partiallyEvaluated" {
-                        Text(t("部分构件未能计算，请查看保存的详细结果。", "Some geometry could not be evaluated. See the saved detailed result."))
+                        Text(FloeL10n.l("app.cadbuilding_professional_view.some_geometry_could_not_be"))
                             .foregroundStyle(.secondary)
                     }
-                    LabeledContent(t("相交数量", "Intersections"), value: "\(coordination.clashes.count)")
-                    if let count = coordination.unevaluatedMeshPairs, count > 0 { LabeledContent(t("未完成的构件对", "Unevaluated pairs"), value: "\(count)") }
-                    if let tolerance = coordination.toleranceM { LabeledContent(t("容差", "Tolerance"), value: number(tolerance * 1000, unit: "mm")) }
+                    LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.intersections"), value: "\(coordination.clashes.count)")
+                    if let count = coordination.unevaluatedMeshPairs, count > 0 { LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.unevaluated_pairs"), value: "\(count)") }
+                    if let tolerance = coordination.toleranceM { LabeledContent(FloeL10n.l("app.cadbuilding_professional_view.tolerance"), value: number(tolerance * 1000, unit: "mm")) }
                     ForEach(Array(coordination.clashes.prefix(50).enumerated()), id: \.offset) { _, clash in
                         VStack(alignment: .leading) {
                             Text("\(clash.a) ↔ \(clash.b)").font(.caption.monospaced())
                             if let volume = clash.overlapVolumeM3 {
-                                Text(t("相交体积 ", "Overlap volume ") + number(volume, unit: "m³")).font(.caption)
+                                Text(FloeL10n.l("app.cadbuilding_professional_view.overlap_volume") + number(volume, unit: "m³")).font(.caption)
                             } else if let distance = clash.distanceM {
                                 Text(number(distance * 1000, unit: "mm")).font(.caption)
                             }
@@ -181,11 +181,11 @@ struct CADBuildingProfessionalView: View {
             }.accessibilityIdentifier("cad.building.professional.mepResult")
         }
         if let information = result.information {
-            Section(t("信息要求结果", "Information requirements")) {
+            Section(FloeL10n.l("app.cadbuilding_professional_view.information_requirements_2")) {
                 ForEach(Array(information.checks.enumerated()), id: \.offset) { _, check in
                     VStack(alignment: .leading, spacing: 4) {
                         Label(check.name, systemImage: check.passed ? "checkmark.circle" : "exclamationmark.circle")
-                        Text(t("适用 \(check.applicable) · 未通过 \(check.failed)", "Applicable \(check.applicable) · Failed \(check.failed)")).font(.caption).foregroundStyle(.secondary)
+                        Text(FloeL10n.l("app.cadbuilding_professional_view.applicable_failed", check.applicable, check.failed)).font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }.accessibilityIdentifier("cad.building.professional.informationResult")
@@ -194,13 +194,13 @@ struct CADBuildingProfessionalView: View {
     private func number(_ value: Double, unit: String) -> String { "\(value.formatted(.number.precision(.significantDigits(5)))) \(unit)" }
     private func stateTitle(_ state: CADBuildingProfessionalOperation.State) -> String {
         switch state {
-        case .preparing: t("准备中", "Preparing")
-        case .running: t("计算中", "Running")
-        case .ready: t("已完成", "Ready")
-        case .cancelling: t("正在取消", "Cancelling")
-        case .cancelled: t("已取消", "Cancelled")
-        case .failed: t("失败", "Failed")
-        case .interrupted: t("已中断", "Interrupted")
+        case .preparing: FloeL10n.l("canvas.generation.state.preparing")
+        case .running: FloeL10n.l("app.cadbuilding_professional_view.running")
+        case .ready: FloeL10n.l("app.cadbuilding_professional_view.ready")
+        case .cancelling: FloeL10n.l("skills.authoring.phase.cancelling")
+        case .cancelled: FloeL10n.l("background.event.cancelled")
+        case .failed: FloeL10n.l("canvas.generation.state.failed")
+        case .interrupted: FloeL10n.l("core.linux_background_surface.interrupted")
         }
     }
     private func start() {

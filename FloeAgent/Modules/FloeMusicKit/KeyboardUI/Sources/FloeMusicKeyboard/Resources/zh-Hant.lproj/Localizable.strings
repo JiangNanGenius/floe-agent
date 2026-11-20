@@ -1,0 +1,13 @@
+"keyboard.tone" = "音色";
+"keyboard.volume" = "音量";
+"keyboard.expand" = "展開鍵盤";
+"keyboard.collapse" = "收起鍵盤";
+"keyboard.sustain" = "延音";
+"keyboard.pitchbend" = "彎音";
+"keyboard.modulation" = "調製";
+"keyboard.attack" = "起音";
+"keyboard.noPresets" = "暫無可用音色";
+"keyboard.release" = "釋放";
+"keyboard.effect" = "效果";
+"keyboard.octave" = "八度";
+"keyboard.filter" = "濾波";

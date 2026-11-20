@@ -77,6 +77,11 @@ final class WidgetSnapshotCenter: ObservableObject {
     func start(observing center: ConversationCenter) {
         guard conversationCenter == nil else { return }
         conversationCenter = center
+        NotificationCenter.default.publisher(for: .floeLanguageDidChange)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.reloadWidgets() }
+            }
+            .store(in: &cancellables)
 
         center.$activeRuns
             .dropFirst()

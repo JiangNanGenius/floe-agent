@@ -26,12 +26,12 @@ enum NoteInkShapeError: LocalizedError, Sendable {
     case drawingInUse, selectionUnavailable, emptySource, tooLarge, sourceChanged, noCandidate
     var errorDescription: String? {
         switch self {
-        case .drawingInUse: NotesInkShapeText.text("请先结束当前笔画并等待保存。", "Finish the stroke and wait for it to save.")
-        case .selectionUnavailable: NotesInkShapeText.text("此系统不支持读取套索笔迹，请选择本页修形。", "Use Convert on this page on this system.")
-        case .emptySource: NotesInkShapeText.text("请先选择笔迹，或在当前页书写。", "Select ink or draw on this page first.")
-        case .tooLarge: NotesInkShapeText.text("笔迹较多，请用套索选取较小范围。", "Use the lasso to select a smaller amount of ink.")
-        case .sourceChanged: NotesInkShapeText.text("这页笔迹已改变，请重新预览。", "The page ink changed. Preview it again.")
-        case .noCandidate: NotesInkShapeText.text("没有可应用的形状。", "There are no shapes to apply.")
+        case .drawingInUse: FloeL10n.l("app.notes_ink_shape_draft.finish_the_stroke_and_wait")
+        case .selectionUnavailable: FloeL10n.l("app.notes_ink_shape_draft.use_convert_on_this_page")
+        case .emptySource: FloeL10n.l("app.notes_ink_shape_draft.select_ink_or_draw_on")
+        case .tooLarge: FloeL10n.l("app.notes_ink_shape_draft.use_the_lasso_to_select")
+        case .sourceChanged: FloeL10n.l("app.notes_ink_shape_draft.the_page_ink_changed_preview")
+        case .noCandidate: FloeL10n.l("app.notes_ink_shape_draft.there_are_no_shapes_to")
         }
     }
 }
@@ -43,10 +43,10 @@ enum NoteInkShapeError: LocalizedError, Sendable {
         let strokes: [PKStroke]
         var title: String {
             switch geometry.kind {
-            case .line: NotesInkShapeText.text("直线", "Line")
-            case .rectangle: NotesInkShapeText.text("矩形", "Rectangle")
-            case .ellipse: NotesInkShapeText.text("椭圆", "Ellipse")
-            case .arrow: NotesInkShapeText.text("箭头", "Arrow")
+            case .line: FloeL10n.l("cad.pattern.line")
+            case .rectangle: FloeL10n.l("cad.datum.entity.rect")
+            case .ellipse: FloeL10n.l("cad.datum.entity.ellipse")
+            case .arrow: FloeL10n.l("notes.notes_document_editor.arrow")
             }
         }
     }
@@ -75,7 +75,7 @@ enum NoteInkShapeError: LocalizedError, Sendable {
     }
     func editBatch(resourceID: UUID) -> NoteEditBatch {
         .init(documentID: base.id, expectedRevision: base.revision,
-              title: NotesInkShapeText.text("修形", "Convert ink to shapes"),
+              title: FloeL10n.l("app.notes_ink_shape_draft.convert_ink_to_shapes"),
               edits: [.drawing(pageID: pageID, resourceID: resourceID)])
     }
 
@@ -193,6 +193,6 @@ enum NoteInkShapeError: LocalizedError, Sendable {
 }
 
 enum NotesInkShapeText {
-    static func text(_ zh: String, _ en: String) -> String { FloeL10n.isChinese ? zh : en }
+    static func text(_ zh: String, _ en: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 }
 #endif

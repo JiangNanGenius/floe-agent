@@ -6,6 +6,7 @@ import PackageDescription
 // App integration is deliberately separate (coordinator-owned).
 let package = Package(
     name: "FloeGameEditingKit",
+    defaultLocalization: "en",
     platforms: [.iOS(.v26), .macOS(.v15)],
     products: [
         .library(name: "FloeGameEditingCore", targets: ["FloeGameEditingCore"]),
@@ -18,7 +19,7 @@ let package = Package(
     targets: [
         .target(name: "FloeGameEditingCore", dependencies: [
             .product(name: "FloeGameCore", package: "FloeGameKit")
-        ]),
+        ], resources: [.process("Resources")]),
         .target(name: "FloeGameEditingUI", dependencies: ["FloeGameEditingCore", .product(name: "FloeGameCore", package: "FloeGameKit")]),
         .executableTarget(name: "GameEditingSample", dependencies: ["FloeGameEditingCore", "FloeGameEditingUI"]),
         .testTarget(name: "FloeGameEditingTests", dependencies: ["FloeGameEditingCore"])

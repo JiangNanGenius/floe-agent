@@ -277,7 +277,7 @@ extension AppEnvironment {
         if let host = target.remoteHostID {
             name = try await remoteHostStore.host(id: host)?.displayName ?? IDELanguageRunText.t("远程电脑", "Remote computer")
         } else { name = target.backend == .macBridge ? IDELanguageRunText.t("这台 Mac", "This Mac") : IDELanguageRunText.t("本机运行环境", "On-device environment") }
-        return IDELanguageRunText.t("已切换到 \(name)，可继续任务。", "Moved to \(name). You can continue the task.")
+        return FloeL10n.l("app.task_execution_target_services.moved_to_you_can_continue", name)
     }
 }
 

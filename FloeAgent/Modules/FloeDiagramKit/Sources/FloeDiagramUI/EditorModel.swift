@@ -340,7 +340,18 @@ public struct DiagramPreparedMerge: Identifiable {
     }
 }
 
+public enum FloeDiagramUIStrings {
+    private static let localizerLock = NSLock()
+    nonisolated(unsafe) private static var installedLocalizer: (@Sendable (String, String) -> String)?
+
+    public static var localizer: (@Sendable (String, String) -> String)? {
+        get { localizerLock.withLock { installedLocalizer } }
+        set { localizerLock.withLock { installedLocalizer = newValue } }
+    }
+}
+
 func DL(_ chinese: String, _ english: String) -> String {
-    Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese : english
+    if let localizer = FloeDiagramUIStrings.localizer { return localizer(chinese, english) }
+    return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese : english
 }
 #endif

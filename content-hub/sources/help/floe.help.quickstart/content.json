@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.help.quickstart",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "kind": "help",
   "minimumAppVersion": "1.7.0",
   "sourceRevision": "",
@@ -14,11 +14,25 @@
   },
   "title": {
     "en": "Floe Help",
-    "zh-Hans": "Floe 帮助中心"
+    "zh-Hans": "Floe 帮助中心",
+    "zh-Hant": "Floe 幫助中心",
+    "ja": "Floe ヘルプ",
+    "ko": "Floe 도움말",
+    "fr": "Aide de Floe",
+    "de": "Floe Hilfe",
+    "es": "Ayuda Floe",
+    "pt-BR": "Ajuda Floe"
   },
   "documents": {
     "en": "index.md",
-    "zh-Hans": "index.zh-Hans.md"
+    "zh-Hans": "index.zh-Hans.md",
+    "zh-Hant": "index.zh-Hant.md",
+    "ja": "index.ja.md",
+    "ko": "index.ko.md",
+    "fr": "index.fr.md",
+    "de": "index.de.md",
+    "es": "index.es.md",
+    "pt-BR": "index.pt-BR.md"
   },
   "helpManifest": "help/manifest.json"
 }

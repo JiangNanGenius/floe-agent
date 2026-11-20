@@ -2,7 +2,7 @@ import Foundation
 import FloeCore
 
 enum NativeExternalOAuthCopy {
-    static func text(_ en: String, _ zh: String) -> String { FloeL10n.isChinese ? zh : en }
+    static func text(_ en: String, _ zh: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 }
 
 /// Transient native form state. Never encoded, logged, synced or persisted to

@@ -33,9 +33,9 @@ public struct GameVisualEditorPanel: View {
         Group {
             if hasMap && hasEvents {
                 VStack(spacing: 0) {
-                    Picker(locale == .chinese ? "编辑内容" : "Edit content", selection: $showEvents) {
-                        Text(locale == .chinese ? "地图" : "Map").tag(false)
-                        Text(locale == .chinese ? "剧情／事件" : "Story / events").tag(true)
+                    Picker(GameEditCopy("Edit content", "编辑内容").text(locale), selection: $showEvents) {
+                        Text(GameEditCopy("Map", "地图").text(locale)).tag(false)
+                        Text(GameEditCopy("Story / events", "剧情／事件").text(locale)).tag(true)
                     }
                     .pickerStyle(.segmented)
                     .padding(8)
@@ -50,11 +50,11 @@ public struct GameVisualEditorPanel: View {
             else if visualAsset || isPNG { AssetPreviewView(session: session, path: path) }
             else {
                 ContentUnavailableView {
-                    Label(locale == .chinese ? "在 IDE 中打开" : "Open in IDE", systemImage: "curlybraces")
+                    Label(GameEditCopy("Open in IDE", "在 IDE 中打开").text(locale), systemImage: "curlybraces")
                 } description: {
                     Text(path.value)
                 } actions: {
-                    Button(locale == .chinese ? "打开 IDE" : "Open IDE") { onOpenIDE(path) }
+                    Button(GameEditCopy("Open IDE", "打开 IDE").text(locale)) { onOpenIDE(path) }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("game.visual.panel.openIDE")
                 }

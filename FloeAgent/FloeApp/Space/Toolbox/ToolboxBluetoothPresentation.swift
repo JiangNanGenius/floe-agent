@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeCore
 import FloeExecution
 
 @MainActor enum ToolboxBluetoothPresentation {
@@ -8,7 +9,7 @@ import FloeExecution
         switch channel.recognition {
         case .nordicUART: "Nordic UART"
         case .microchipUART: "Microchip UART"
-        case .unverified: IDELanguageRunText.t("数据通道 \(index + 1)", "Data channel \(index + 1)")
+        case .unverified: FloeL10n.l("app.toolbox_bluetooth_presentation.data_channel", index + 1)
         }
     }
     static func message(_ error: Error) -> String {

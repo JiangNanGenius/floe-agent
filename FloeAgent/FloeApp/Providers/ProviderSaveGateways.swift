@@ -63,9 +63,7 @@ final class ConversationCenterProviderSaveGateway: ProviderBundleCommitting {
             // Never report "verified" when verification could not run: a nil
             // return means the readback matched. An unavailable service is an
             // explicit, secret-free failure reason.
-            return FloeL10n.isChinese
-                ? "无法验证保存结果：会话服务不可用"
-                : "The save could not be verified because the conversation service is unavailable"
+            return FloeL10n.l("app.provider_save_gateways.the_save_could_not_be")
         }
         return await center.verifyProviderPersisted(
             provider: request.profile,

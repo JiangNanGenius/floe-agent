@@ -238,6 +238,12 @@ final class CADPreviewBindingTests: XCTestCase {
             FloeCADStrings.formatTemplate("%d-%i-%u", arguments: [1, 2, 3]),
             "1-2-3")
         XCTAssertEqual(
+            FloeCADStrings.formatTemplate("%2$@ : %1$.2f mm", arguments: [3.14159, "Sketch"]),
+            "Sketch : 3.14 mm")
+        XCTAssertEqual(
+            FloeCADStrings.formatTemplate("%4$lld bytes left", arguments: [1234]),
+            "%4$lld bytes left")
+        XCTAssertEqual(
             FloeCADStrings.formatTemplate("%.2f mm", arguments: [3.14159]),
             "3.14 mm")
         XCTAssertEqual(

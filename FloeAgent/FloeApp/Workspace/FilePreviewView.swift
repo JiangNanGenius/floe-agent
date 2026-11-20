@@ -573,7 +573,7 @@ struct FilePreviewView: View {
                 }.accessibilityIdentifier("file.preview.delete.confirm")
                 Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { deletionRequest = nil }
             } message: { request in
-                Text(IDELanguageRunText.t("“\(request.name)”将从当前工作区删除，此操作不能撤销。", "“\(request.name)” will be deleted from this workspace. This cannot be undone."))
+                Text(FloeL10n.l("app.file_preview_view.will_be_deleted_from_this", request.name))
             }
         .alert("inspector.preview.error", isPresented: Binding(
             get: { previewError != nil },
@@ -867,7 +867,7 @@ struct FilePreviewView: View {
                     }
                 }
                 Spacer(minLength: 8)
-                Button("Discard") {
+                Button("workspace.preview.discard_change") {
                     Task {
                         await environment.cadDocumentCenter
                             .rejectNativeCADProposal(proposal.id)
@@ -875,7 +875,7 @@ struct FilePreviewView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("cad.native.discard")
-                Button("Apply") {
+                Button("workspace.preview.apply_change") {
                     confirmNativeCADProposal(proposal.id)
                 }
                 .buttonStyle(.borderedProminent)
@@ -1010,10 +1010,7 @@ struct FilePreviewView: View {
         }
         if center.isNetworkWorkspacePath(displayedPath) {
             if let mount = center.networkWorkspaceMount(for: displayedPath), mount.readOnly {
-                return .unavailable(OfficeInkText.t(
-                    "“\(mount.name)”是只读网络挂载，无法写回文件。",
-                    "“\(mount.name)” is a read-only network mount, so the file cannot be written back."
-                ))
+                return .unavailable(FloeL10n.l("app.file_preview_view.is_a_read_only_network", mount.name))
             }
             return .unavailable(OfficeInkText.t(
                 "网络挂载文件仅供只读预览，本版本不支持写回原文件。",
@@ -1102,10 +1099,7 @@ struct FilePreviewView: View {
         } catch let error as WorkspaceToolError {
             if case .tooLarge(let limit) = error {
                 let mebibytes = limit / (1024 * 1024)
-                throw ImageEditSaveFailure(message: OfficeInkText.t(
-                    "编辑后的图片超过工作区单次写入上限（\(mebibytes) MiB），请先压缩原图再编辑。",
-                    "The edited image exceeds the workspace write limit (\(mebibytes) MiB); compress the original before editing."
-                ))
+                throw ImageEditSaveFailure(message: FloeL10n.l("app.file_preview_view.the_edited_image_exceeds_the", mebibytes))
             }
             throw error
         }

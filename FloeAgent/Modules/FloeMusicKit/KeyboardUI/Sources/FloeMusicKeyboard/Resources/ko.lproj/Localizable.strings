@@ -1,0 +1,13 @@
+"keyboard.tone" = "어조";
+"keyboard.volume" = "음량";
+"keyboard.expand" = "키보드 확장";
+"keyboard.collapse" = "키보드 접기";
+"keyboard.sustain" = "유지하다";
+"keyboard.pitchbend" = "피치 벤드";
+"keyboard.modulation" = "조절된 상태";
+"keyboard.attack" = "공격";
+"keyboard.noPresets" = "사용 가능한 톤이 없습니다";
+"keyboard.release" = "석방";
+"keyboard.effect" = "효과";
+"keyboard.octave" = "옥타브";
+"keyboard.filter" = "필터";

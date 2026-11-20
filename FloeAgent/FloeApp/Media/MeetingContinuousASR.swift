@@ -856,10 +856,10 @@ final class MeetingContinuousASR: @unchecked Sendable {
         guard snapshot.domains > 0 || reconnects > 0 || dropped > 0
             || silent > 0 || snapshot.lastError != nil else { return "" }
         var parts: [String] = []
-        parts.append(IDELanguageRunText.t("实时转写域 \(snapshot.domains)", "live domains \(snapshot.domains)"))
-        if reconnects > 0 { parts.append(IDELanguageRunText.t("重连 \(reconnects)", "reconnects \(reconnects)")) }
-        if dropped > 0 { parts.append(IDELanguageRunText.t("丢帧 \(dropped)", "dropped frames \(dropped)")) }
-        if silent > 0 { parts.append(IDELanguageRunText.t("忽略静音片段 \(silent)", "silent segments ignored \(silent)")) }
+        parts.append(FloeL10n.l("app.meeting_continuous_asr.live_domains", snapshot.domains))
+        if reconnects > 0 { parts.append(FloeL10n.l("app.meeting_continuous_asr.reconnects", reconnects)) }
+        if dropped > 0 { parts.append(FloeL10n.l("app.meeting_continuous_asr.dropped_frames", dropped)) }
+        if silent > 0 { parts.append(FloeL10n.l("app.meeting_continuous_asr.silent_segments_ignored", silent)) }
         if let lastError = snapshot.lastError {
             parts.append(IDELanguageRunText.t("最近错误", "last error") + ": \(lastError)")
         }

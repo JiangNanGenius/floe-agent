@@ -14,12 +14,11 @@ enum HelpContentError: Error, LocalizedError, Equatable {
     case preparing, unavailable, expiredReference, conflictingVersion
 
     var errorDescription: String? {
-        let chinese = Locale.preferredLanguages.first?.hasPrefix("zh") == true
         switch self {
-        case .preparing: return chinese ? "正在载入指南。" : "Loading the guides."
-        case .unavailable: return chinese ? "暂时无法打开指南。" : "The guides are currently unavailable."
-        case .expiredReference: return chinese ? "此版本指南已不可用，请重新搜索。" : "This guide version is unavailable. Search again for a current reference."
-        case .conflictingVersion: return chinese ? "指南更新未通过校验，已保留现有内容。" : "The guide update could not be verified. The existing content was retained."
+        case .preparing: return FloeL10n.l("help.error.preparing")
+        case .unavailable: return FloeL10n.l("help.error.unavailable")
+        case .expiredReference: return FloeL10n.l("help.error.expired_reference")
+        case .conflictingVersion: return FloeL10n.l("help.error.conflicting_version")
         }
     }
 }
@@ -96,6 +95,11 @@ final class HelpContentCenter: ObservableObject {
                 preferred = installed ?? bundled
             }
             guard let preferred else { throw HelpContentError.unavailable }
+            // Retain the bundled language editions for an installed package
+            // that provides only a subset of the app's supported languages.
+            if let bundled, bundled.version != preferred.version, snapshots[bundled.version] == nil {
+                try? cache(bundled)
+            }
             try select(preferred)
             errorMessage = nil
         } catch {
@@ -108,10 +112,10 @@ final class HelpContentCenter: ObservableObject {
 
     func snapshot(language: HelpLanguage) throws -> HelpLibrarySnapshot {
         guard isPrepared else { throw HelpContentError.preparing }
-        guard let selectedVersion, let snapshot = snapshots[selectedVersion]?[language] else {
-            throw HelpContentError.unavailable
-        }
-        return snapshot
+        guard let selectedVersion else { throw HelpContentError.unavailable }
+        if let snapshot = snapshots[selectedVersion]?[language] { return snapshot }
+        if let bundled, let snapshot = snapshots[bundled.version]?[language] { return snapshot }
+        throw HelpContentError.unavailable
     }
 
     func snapshot(for reference: HelpReference) throws -> HelpLibrarySnapshot {
@@ -134,7 +138,18 @@ final class HelpContentCenter: ObservableObject {
         try snapshot(for: reference).read(reference, offset: offset, maximumCharacters: maximumCharacters)
     }
 
+    var availableLanguages: [HelpLanguage] {
+        let selected = selectedVersion.flatMap { snapshots[$0] }
+        let bundled = bundled.flatMap { snapshots[$0.version] }
+        return HelpLanguage.allCases.filter { selected?[$0] != nil || bundled?[$0] != nil }
+    }
+
     private func select(_ package: HelpContentPackage) throws {
+        try cache(package)
+        selectedVersion = package.version
+    }
+
+    private func cache(_ package: HelpContentPackage) throws {
         guard let manifestBytes = package.files[HelpBundleMetadata.manifestPath] else {
             throw HelpContentError.unavailable
         }
@@ -143,26 +158,23 @@ final class HelpContentCenter: ObservableObject {
         if let existing = identities[package.version], existing != identity {
             throw HelpContentError.conflictingVersion
         }
-        try HelpLibrarySnapshot.validatePackage(files: package.files, digest: digest)
-        var localized: [HelpLanguage: HelpLibrarySnapshot] = [:]
-        for language in HelpLanguage.allCases {
-            let snapshot = try HelpLibrarySnapshot(files: package.files, language: language, digest: digest)
-            guard snapshot.manifest.id == HelpBundleMetadata.packageID,
-                  snapshot.manifest.version == package.version else {
-                throw HelpContentError.conflictingVersion
-            }
-            localized[language] = snapshot
+        if let existing = snapshots[package.version], !existing.isEmpty { return }
+        let localized = try HelpLibrarySnapshot.localizedSnapshots(files: package.files, digest: digest)
+        guard localized.values.allSatisfy({
+            $0.manifest.id == HelpBundleMetadata.packageID && $0.manifest.version == package.version
+        }) else {
+            throw HelpContentError.conflictingVersion
         }
         snapshots[package.version] = localized
         identities[package.version] = identity
         retainedVersions.removeAll { $0 == package.version }
         retainedVersions.append(package.version)
         while retainedVersions.count > maximumRetainedVersions {
-            let old = retainedVersions.removeFirst()
+            guard let index = retainedVersions.firstIndex(where: { $0 != bundled?.version }) else { break }
+            let old = retainedVersions.remove(at: index)
             snapshots[old] = nil
             identities[old] = nil
         }
-        selectedVersion = package.version
         revision &+= 1
     }
 

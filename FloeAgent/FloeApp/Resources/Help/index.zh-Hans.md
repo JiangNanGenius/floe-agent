@@ -1,4 +1,4 @@
-# Floe 帮助（floe.help.quickstart 1.2.0）
+# Floe 帮助（floe.help.quickstart 1.3.0）
 
 这是 Floe App 内置帮助中心的离线文档包。请在 App 的“设置 > 帮助”中阅读，支持目录、搜索与图文。
 

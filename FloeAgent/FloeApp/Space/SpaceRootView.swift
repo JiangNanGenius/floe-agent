@@ -224,8 +224,8 @@ struct SpaceRootView: View {
             Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { confirmingBatchDelete = false }
         } message: {
             Text(deletingToTrash
-                ? IDELanguageRunText.t("所选 \(deletionBatch.count) 项可以在回收站中恢复。", "The selected \(deletionBatch.count) items can be restored from Trash.")
-                : IDELanguageRunText.t("所选 \(deletionBatch.count) 项及其中所有内容都将被永久删除。此操作无法撤销。", "The selected \(deletionBatch.count) items and all their contents will be permanently deleted. This cannot be undone."))
+                ? FloeL10n.l("app.space_root_view.the_selected_items_can_be", deletionBatch.count)
+                : FloeL10n.l("app.personal_recently_deleted_view.the_selected_items_and_all", deletionBatch.count))
         }
         .sheet(item: $fileActionRequest, onDismiss: {
             if let record = fileActionEditor { fileActionEditor = nil; presentWork(record) }

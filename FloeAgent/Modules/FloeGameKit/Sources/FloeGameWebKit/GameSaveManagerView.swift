@@ -12,6 +12,14 @@ import AppKit
 #endif
 
 public enum GameSaveManagerLocale: String, CaseIterable, Sendable {
+    private static let localizerLock = NSLock()
+    nonisolated(unsafe) private static var installedLocalizer: (@Sendable (String, String) -> String)?
+
+    public static var localizer: (@Sendable (String, String) -> String)? {
+        get { localizerLock.withLock { installedLocalizer } }
+        set { localizerLock.withLock { installedLocalizer = newValue } }
+    }
+
     case automatic
     case english
     case simplifiedChinese
@@ -883,7 +891,10 @@ private struct GameSaveStrings: Sendable {
     init(locale: GameSaveManagerLocale) { self.locale = locale }
 
     private func text(_ english: String, _ chinese: String) -> String {
-        locale.isChinese ? chinese : english
+        if locale == .automatic, let localizer = GameSaveManagerLocale.localizer {
+            return localizer(chinese, english)
+        }
+        return locale.isChinese ? chinese : english
     }
 
     var title: String { text("Save slots", "存档") }

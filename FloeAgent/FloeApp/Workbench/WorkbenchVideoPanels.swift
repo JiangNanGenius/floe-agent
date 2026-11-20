@@ -1078,7 +1078,7 @@ struct VideoPropertiesView: View {
             }
             transcriptionMessage = added == 0
                 ? WorkbenchText.t("未识别到语音。", "No speech was recognized.")
-                : WorkbenchText.t("已添加 \(added) 条字幕。", "Added \(added) caption(s).")
+                : FloeL10n.l("app.workbench_video_panels.added_caption_s", added)
         } catch {
             transcriptionMessage = error.localizedDescription
         }

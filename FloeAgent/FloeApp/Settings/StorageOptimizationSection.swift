@@ -16,7 +16,7 @@ struct StorageOptimizationSection: View {
             HStack {
                 if service.isRunning { ProgressView().controlSize(.small) }
                 Text(service.launchGate.queued
-                     ? (FloeL10n.isChinese ? "恢复完成后开始整理" : "Optimization will start after recovery")
+                     ? (FloeL10n.l("app.storage_optimization_section.optimization_will_start_after_recovery"))
                      : status).font(.subheadline).foregroundStyle(.secondary)
             }
             if let fraction = service.state.fraction, service.isRunning {
@@ -42,17 +42,17 @@ struct StorageOptimizationSection: View {
                               service.state.inventoryEvidence == nil,
                               service.state.lastStage == "recovery-check" {
                         HStack {
-                            Text(FloeL10n.isChinese ? "恢复状态" : "Recovery status")
+                            Text(FloeL10n.l("app.storage_optimization_section.recovery_status"))
                             Spacer()
                             Text(recoveryStatus)
                                 .monospacedDigit().foregroundStyle(.secondary)
                         }.font(.caption)
-                        Text(FloeL10n.isChinese ? "磁盘整理尚未开始" : "Disk optimization has not started")
+                        Text(FloeL10n.l("app.storage_optimization_section.disk_optimization_has_not_started"))
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         if let count = service.state.removedObsoleteItems, count > 0 {
                             HStack {
-                                Text(FloeL10n.isChinese ? "已移除旧运行文件" : "Obsolete runtime items removed")
+                                Text(FloeL10n.l("app.storage_optimization_section.obsolete_runtime_items_removed"))
                                 Spacer()
                                 Text(String(count)).monospacedDigit()
                             }.font(.caption)
@@ -96,7 +96,7 @@ struct StorageOptimizationSection: View {
         case .idle: return FloeL10n.l("settings.storage_optimization.ready")
         case .checking:
             if service.state.lastStage == "retire-images" {
-                return FloeL10n.isChinese ? "正在整理旧运行文件…" : "Cleaning up obsolete runtime files…"
+                return FloeL10n.l("app.storage_optimization_section.cleaning_up_obsolete_runtime_files")
             }
             return FloeL10n.l("settings.storage_optimization.checking")
         case .optimizing:
@@ -118,10 +118,10 @@ struct StorageOptimizationSection: View {
     }
     private var recoveryStatus: String {
         switch service.state.phase {
-        case .completed: return FloeL10n.isChinese ? "已恢复" : "Recovered"
-        case .blocked: return FloeL10n.isChinese ? "未完成" : "Incomplete"
-        case .cancelled: return FloeL10n.isChinese ? "已取消" : "Cancelled"
-        default: return FloeL10n.isChinese ? "检查中" : "Checking"
+        case .completed: return FloeL10n.l("app.storage_optimization_section.recovered")
+        case .blocked: return FloeL10n.l("workbench.task_inspector_views.child_state_partial")
+        case .cancelled: return FloeL10n.l("background.event.cancelled")
+        default: return FloeL10n.l("cad.workbench.assembly.interference.phaseChecking")
         }
     }
     private func metric(_ key: String, value: String) -> some View {

@@ -32,7 +32,7 @@ struct GitHubSourceCard: View {
                     .frame(width: 34, height: 34).background(.tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    Text(sourceText("查看已读取的 GitHub 内容", "View saved GitHub source")).font(.caption).foregroundStyle(.secondary)
+                    Text(FloeL10n.l("app.git_hub_source_card.view_saved_github_source")).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -72,19 +72,19 @@ private struct GitHubSourceSheet: View {
                     GitHubSourceDetails(snapshot: resolved.snapshot, isBusy: acting, openCollaboration: resolved.opensCollaboration ? {
                         actionTask = Task { await openCollaboration() }
                     } : nil, workInNewTask: resolved.opensCollaboration ? { actionTask = Task { await workInNewTask() } } : nil)
-                } else if loading { ProgressView(sourceText("正在打开来源…", "Opening source…")) }
+                } else if loading { ProgressView(FloeL10n.l("app.git_hub_source_card.opening_source")) }
                 else {
                     ContentUnavailableView {
-                        Label(sourceText("无法打开此来源", "Source unavailable"), systemImage: "doc.questionmark")
-                    } description: { Text(error ?? sourceText("此读取结果已不在本机，请让助手重新读取。", "This saved read is no longer retained. Ask the assistant to read it again.")) }
-                    actions: { Button(sourceText("重试", "Retry")) { Task { await load() } } }
+                        Label(FloeL10n.l("app.git_hub_source_card.source_unavailable"), systemImage: "doc.questionmark")
+                    } description: { Text(error ?? FloeL10n.l("app.git_hub_source_card.this_saved_read_is_no")) }
+                    actions: { Button(FloeL10n.l("action.retry")) { Task { await load() } } }
                 }
-            }.navigationTitle(sourceText("GitHub 来源", "GitHub source"))
+            }.navigationTitle(FloeL10n.l("app.git_hub_source_card.github_source"))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button(sourceText("完成", "Done")) { dismiss() } }
+                    ToolbarItem(placement: .cancellationAction) { Button(FloeL10n.l("help.done")) { dismiss() } }
                     ToolbarItem(placement: .primaryAction) {
-                        Button(sourceText("返回原任务", "Return to task"), systemImage: "arrow.uturn.backward") {
+                        Button(FloeL10n.l("app.git_hub_source_card.return_to_task"), systemImage: "arrow.uturn.backward") {
                             returnToSource?(reference); dismiss()
                         }.accessibilityIdentifier("github.source.returnTask")
                     }
@@ -101,7 +101,7 @@ private struct GitHubSourceSheet: View {
                     onWorkOnIssue: { url in
                         try route.lease.check()
                         guard let root = route.lease.workspaceRoot, route.source.workspaceID != nil else {
-                            throw FloeError.validationFailed(sourceText("请先在原项目中打开此问题。", "Open this issue in its original project first."))
+                            throw FloeError.validationFailed(FloeL10n.l("app.git_hub_source_card.open_this_issue_in_its"))
                         }
                         let id = try await environment.sourceControlCenter.workOnIssue(url,
                             workspaceID: route.source.workspaceID, originRoot: root)
@@ -111,18 +111,18 @@ private struct GitHubSourceSheet: View {
                     authorize: {
                         try route.lease.check()
                         guard route.source.workspaceID != nil else {
-                            throw FloeError.validationFailed(sourceText("此历史来源仅供阅读。请从已关联的原项目打开协作。", "This historical source is read-only. Open collaboration from its linked original project."))
+                            throw FloeError.validationFailed(FloeL10n.l("app.git_hub_source_card.this_historical_source_is_read"))
                         }
                     })
                     .onDisappear { route.lease.cancel() }
             }
             .sheet(isPresented: $showSettings) {
                 NavigationStack { GitHubSettingsView(center: environment.sourceControlCenter)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(sourceText("完成", "Done")) { showSettings = false } } } }
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(FloeL10n.l("help.done")) { showSettings = false } } } }
             }
-            .alert(sourceText("无法打开协作", "Could not open collaboration"), isPresented: Binding(
+            .alert(FloeL10n.l("app.git_hub_source_card.could_not_open_collaboration"), isPresented: Binding(
                 get: { resolved != nil && error != nil }, set: { if !$0 { error = nil } })) {
-                Button(sourceText("好", "OK"), role: .cancel) { error = nil }
+                Button(FloeL10n.l("cad.ui.common.ok"), role: .cancel) { error = nil }
             } message: { Text(error ?? "") }
             .onDisappear { actionTask?.cancel(); collaboration?.lease.cancel() }
     }
@@ -136,7 +136,7 @@ private struct GitHubSourceSheet: View {
         defer { loading = false }
         do { let current = try await source(); try Task.checkCancellation(); resolved = current }
         catch is CancellationError { }
-        catch { self.error = sourceText("此读取结果无法恢复。请让助手重新读取，原任务仍然保留。", "This saved read could not be restored. Ask the assistant to read it again; the original task is preserved.") }
+        catch { self.error = FloeL10n.l("app.git_hub_source_card.this_saved_read_could_not") }
     }
     private func openCollaboration() async {
         guard !acting else { return }; acting = true
@@ -156,7 +156,7 @@ private struct GitHubSourceSheet: View {
                 client: environment.sourceControlCenter.github.collaborationClient(),
                 lease: .init(workspaceRoot: root, repositoryRoot: nil, workspaceID: current.workspaceID))
         } catch is CancellationError { }
-        catch { self.error = sourceText("无法打开协作。请重试或检查 GitHub 连接。", "Could not open collaboration. Retry or check the GitHub connection.") }
+        catch { self.error = FloeL10n.l("app.git_hub_source_card.could_not_open_collaboration_retry") }
     }
     private func workInNewTask() async {
         guard !acting else { return }; acting = true
@@ -167,7 +167,7 @@ private struct GitHubSourceSheet: View {
             guard current.opensCollaboration else { throw GitHubSourceResolutionError.invalidSource }
             let conversations = environment.conversationCenter
             guard let (provider, model) = conversations.providerAndModel(modelID: nil) else {
-                throw FloeError.invalidConfiguration(sourceText("请先选择一个可用的助手模型。", "Choose an available assistant model first."))
+                throw FloeError.invalidConfiguration(FloeL10n.l("app.git_hub_source_card.choose_an_available_assistant_model"))
             }
             let title = current.snapshot.link.repository.fullName + " #\(current.snapshot.link.number ?? 0)"
             let task = try await conversations.createConversation(title: title)
@@ -175,7 +175,7 @@ private struct GitHubSourceSheet: View {
             // clone, or imported repository is silently adopted.
             let workspace = try await environment.workspaceCenter.ensureReviewConversationWorkspace(
                 conversationID: task.id, workspaceID: nil, title: title)
-            let goal = sourceText("请研究并处理这个 GitHub 问题或拉取请求：", "Investigate and work on this GitHub issue or pull request: ")
+            let goal = FloeL10n.l("app.git_hub_source_card.investigate_and_work_on_this")
                 + current.snapshot.source.resolvedURL.absoluteString
             _ = try await conversations.startRun(goal: goal, in: task.id, provider: provider, model: model,
                 workspaceID: workspace, startOrigin: .explicitUserAction)

@@ -2,7 +2,20 @@
 import SwiftUI
 import FloeElectronicsCore
 
-func edText(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en }
+public enum FloeElectronicsUIStrings {
+    private static let localizerLock = NSLock()
+    nonisolated(unsafe) private static var installedLocalizer: (@Sendable (String, String) -> String)?
+
+    public static var localizer: (@Sendable (String, String) -> String)? {
+        get { localizerLock.withLock { installedLocalizer } }
+        set { localizerLock.withLock { installedLocalizer = newValue } }
+    }
+}
+
+func edText(_ zh: String, _ en: String) -> String {
+    if let localizer = FloeElectronicsUIStrings.localizer { return localizer(zh, en) }
+    return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
+}
 
 enum EDWorkspaceTab: String, CaseIterable, Identifiable {
     case schematic, board, symbols, footprints, checks, outputs, threeD

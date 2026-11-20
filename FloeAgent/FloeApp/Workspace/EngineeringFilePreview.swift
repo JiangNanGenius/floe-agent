@@ -1544,7 +1544,7 @@ struct EngineeringWebView: UIViewRepresentable {
 /// keys used here are listed in the private HANDOFF for promotion.
 enum EngineeringSceneText {
     static var isChinese: Bool { FloeL10n.isChinese }
-    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
+    static func t(_ zh: String, _ en: String) -> String { FloeL10n.bilingual(chinese: zh, english: en) }
 }
 
 /// Bilingual product text for source preflight issues. Kept in one place so
@@ -1553,35 +1553,27 @@ private enum EngineeringSceneIssueText {
     static func describe(_ issue: EngineeringPreviewIssue) -> String {
     switch issue.code {
             case .unsupportedRequiredExtension:
-                EngineeringSceneText.t("缺少必需扩展：\(issue.detail)",
-                                       "Required extension unavailable: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.required_extension_unavailable", issue.detail)
             case .missingBuffer:
-                EngineeringSceneText.t("缺少必需的缓冲区：\(issue.detail)",
-                                       "Required buffer missing: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.required_buffer_missing", issue.detail)
             case .unsupportedVersion:
-                EngineeringSceneText.t("不支持的 glTF 版本：\(issue.detail)",
-                                       "Unsupported glTF version: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.unsupported_gltf_version", issue.detail)
             case .unsupportedPrimitiveMode:
-                EngineeringSceneText.t("不支持的图元模式：\(issue.detail)",
-                                       "Unsupported primitive mode: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.unsupported_primitive_mode", issue.detail)
             case .invalidContainer:
                 EngineeringSceneText.t("文件容器或 JSON 已损坏。",
                                        "The file container or JSON is damaged.")
             case .externalResourceBlocked:
-                EngineeringSceneText.t("外部资源未被自动读取：\(issue.detail)",
-                                       "External resource was not fetched: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.external_resource_was_not_fetched", issue.detail)
             case .missingResource:
-                EngineeringSceneText.t("缺少引用资源：\(issue.detail)",
-                                       "Referenced resource missing: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.referenced_resource_missing", issue.detail)
             case .unsupportedExtension:
-                EngineeringSceneText.t("未支持的扩展：\(issue.detail)",
-                                       "Unsupported extension: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.unsupported_extension", issue.detail)
             case .sparseAccessor:
                 EngineeringSceneText.t("包含稀疏访问器（由查看器解码）。",
                                        "Contains sparse accessors (decoded by the viewer).")
             case .compressedAsset:
-                EngineeringSceneText.t("使用本地打包的压缩解码器：\(issue.detail)",
-                                       "Uses a locally bundled compression decoder: \(issue.detail)")
+                FloeL10n.l("app.engineering_file_preview.uses_a_locally_bundled_compression", issue.detail)
             case .packageTruncated:
                 EngineeringSceneText.t("预览包被资源上限截断。",
                                        "The preview package was truncated by its resource limit.")

@@ -31,6 +31,7 @@ document input revision.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 import html
 import json
@@ -45,7 +46,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from documentation_catalog import load_catalog, select_documents
 
 PACKAGE_ID = "floe.help.quickstart"
-PACKAGE_VERSION = "1.2.0"
+PACKAGE_VERSION = "1.3.0"
 PLATFORM = "ios"
 MANIFEST_PATH = "help/manifest.json"
 MAX_FILE_BYTES = 1_048_576
@@ -60,7 +61,10 @@ GUIDE_IMAGES_DIR = os.path.join(DOCS_DIR, "assets", "guide")
 BUILTIN_OUT = os.path.join(REPO_ROOT, "FloeAgent", "FloeApp", "Resources", "Help")
 AUTHORING_OUT = os.path.join(REPO_ROOT, "content-hub", "sources", "help", PACKAGE_ID)
 
-LOCALES = ("en", "zh-Hans")
+SOURCE_LOCALES = ("en", "zh-Hans")
+ADDITIONAL_LOCALES = ("zh-Hant", "ja", "ko", "fr", "de", "es", "pt-BR")
+LOCALES = SOURCE_LOCALES + ADDITIONAL_LOCALES
+HELP_TRANSLATIONS = os.path.join(os.path.dirname(__file__), "l10n", "help")
 SOURCE_LOCALE_SUFFIX = {"en": "", "zh-Hans": ".zh-CN"}
 
 GUIDE_SOURCES = {
@@ -753,9 +757,66 @@ def resolve_image(target: str) -> str:
     return f"../../assets/guide/{match.group(1)}.webp"
 
 
+def project_localized_article(source: Article, locale: str, text) -> Article:
+    """Translate the copy while preserving the audited article and link structure."""
+    article = deepcopy(source)
+    article.locale = locale
+    article.title = text(article.title)
+    article.summary = text(article.summary).strip()
+    article.keywords = [text(keyword) for keyword in article.keywords]
+
+    visited = set()
+
+    def localize_inlines(inlines):
+        for inline in inlines:
+            if id(inline) in visited:
+                continue
+            visited.add(id(inline))
+            if inline.kind != "code":
+                inline.text = text(inline.text)
+
+    for section in article.sections:
+        section.title = text(section.title)
+        section.aliases = [text(alias) for alias in section.aliases]
+        for block in section.blocks:
+            localize_inlines(block.inlines)
+            for item in block.items:
+                localize_inlines(item)
+            for row in block.rows:
+                for cell in row:
+                    localize_inlines(cell)
+        section.text = "\n\n".join(
+            piece for block in section.blocks if (piece := block_plain_text(block))
+        ).strip()
+    return article
+
+
+def help_translation(locale: str):
+    source = "zh-Hans" if locale == "zh-Hant" else "en"
+    if locale in SOURCE_LOCALES:
+        return lambda english, chinese: chinese if locale == "zh-Hans" else english
+    path = os.path.join(HELP_TRANSLATIONS, f"{locale}.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            messages = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise BuildError(f"invalid help localization {locale}: {error}") from error
+
+    def lookup(english, chinese):
+        value = chinese if source == "zh-Hans" else english
+        if not value.strip():
+            return value
+        if value not in messages or not messages[value].strip():
+            raise BuildError(f"missing {locale} help translation for {value!r}")
+        return messages[value]
+
+    return lookup
+
+
 def render_article_html(article: Article, locale: str, link_resolver,
-                        source_revision: str) -> str:
-    lang_attr = "zh-Hans" if locale == "zh-Hans" else "en"
+                        source_revision: str, text=None) -> str:
+    text = text or help_translation(locale)
+    lang_attr = locale
     out = [
         "<!doctype html>",
         f'<html lang="{lang_attr}">',
@@ -770,7 +831,7 @@ def render_article_html(article: Article, locale: str, link_resolver,
         f'<h1>{html.escape(article.title)}</h1>',
     ]
     if article.sections:
-        toc_label = "目录" if locale == "zh-Hans" else "Contents"
+        toc_label = html.escape(text("Contents", "目录"))
         out.append(f'<nav class="toc" aria-label="{toc_label}"><h2>{toc_label}</h2><ul>')
         for section in article.sections:
             if section.level > 2:
@@ -784,7 +845,7 @@ def render_article_html(article: Article, locale: str, link_resolver,
         for block in section.blocks:
             out.append(render_block(block, locale, link_resolver))
     out.append("</main>")
-    footer_note = "Floe 指南" if locale == "zh-Hans" else "Floe guides"
+    footer_note = html.escape(text("Floe guides", "Floe 指南"))
     out.append(f"<footer><p>{footer_note}</p></footer>")
     out.append("</body>")
     out.append("</html>")
@@ -900,7 +961,8 @@ def article_to_json(article: Article, locale: str, html_path: str) -> dict:
     }
 
 
-def index_document(articles: Dict[str, Article], locale: str) -> dict:
+def index_document(articles: Dict[str, Article], locale: str, text=None) -> dict:
+    text = text or help_translation(locale)
     by_id = articles
     categories = []
     for category_id, titles in CATEGORY_DEFS:
@@ -923,7 +985,7 @@ def index_document(articles: Dict[str, Article], locale: str) -> dict:
                     "title": article.title,
                     "summary": article.summary,
                 })
-        categories.append({"id": category_id, "title": titles[locale], "entries": entries})
+        categories.append({"id": category_id, "title": text(titles["en"], titles["zh-Hans"]), "entries": entries})
     order = ["quickstart", "shared-basics", "user-manual", "workspaces"] + list(HOWTO_ARTICLE_ORDER)
     article_docs = []
     for article_id in order:
@@ -934,18 +996,15 @@ def index_document(articles: Dict[str, Article], locale: str) -> dict:
             "categories": categories, "articles": article_docs}
 
 
-def legacy_document(articles: Dict[str, Article], locale: str, source_revision: str) -> str:
-    titles = {
-        "en": f"Floe Help ({PACKAGE_ID} {PACKAGE_VERSION})",
-        "zh-Hans": f"Floe 帮助（{PACKAGE_ID} {PACKAGE_VERSION}）",
-    }
-    lines = [f"# {titles[locale]}", ""]
-    if locale == "zh-Hans":
-        lines += ["这是 Floe App 内置帮助中心的离线文档包。请在 App 的“设置 > 帮助”中阅读，支持目录、搜索与图文。",
-                  ""]
-    else:
-        lines += ["This is the offline document package for the built-in Floe help center. Read it in the App under Settings > Help with contents, search and images.",
-                  ""]
+def legacy_document(articles: Dict[str, Article], locale: str, source_revision: str, text=None) -> str:
+    text = text or help_translation(locale)
+    title = text("Floe Help", "Floe 帮助")
+    suffix = f"（{PACKAGE_ID} {PACKAGE_VERSION}）" if locale == "zh-Hans" else f" ({PACKAGE_ID} {PACKAGE_VERSION})"
+    introduction = text(
+        "This is the offline document package for the built-in Floe help center. Read it in the App under Settings > Help with contents, search and images.",
+        "这是 Floe App 内置帮助中心的离线文档包。请在 App 的“设置 > 帮助”中阅读，支持目录、搜索与图文。",
+    )
+    lines = [f"# {title}{suffix}", "", introduction, ""]
     order = ["quickstart", "shared-basics", "user-manual", "workspaces"] + list(HOWTO_ARTICLE_ORDER)
     for article_id in order:
         article = articles[article_id]
@@ -960,17 +1019,21 @@ def legacy_document(articles: Dict[str, Article], locale: str, source_revision: 
             lines.append(f"{indent}- {section.title}")
         lines.append("")
     lines.append("---")
-    note = ("External links open the public floe-agent repository and need a network connection."
-            if locale == "en" else
-            "外部链接打开 floe-agent 公开仓库，需要联网。")
-    lines.append(note)
+    lines.append(text(
+        "External links open the public floe-agent repository and need a network connection.",
+        "外部链接打开 floe-agent 公开仓库，需要联网。",
+    ))
     if source_revision:
-        lines.append(f"Source revision: {source_revision}")
+        lines.append(f"{text('Source revision:', '来源版本：')} {source_revision}")
     lines.append("")
     return "\n".join(lines)
 
 
-def content_json(source_revision: str) -> dict:
+def legacy_path(locale: str) -> str:
+    return "index.md" if locale == "en" else f"index.{locale}.md"
+
+
+def content_json(source_revision: str, localized_titles: Dict[str, str]) -> dict:
     return {
         "schemaVersion": 1,
         "id": PACKAGE_ID,
@@ -985,13 +1048,13 @@ def content_json(source_revision: str) -> dict:
             "en": "Separate iOS/iPadOS help from Android, and reuse one shared guide for models, tasks and files. Keeps bilingual offline search, images and settings how-tos.",
             "zh-Hans": "分离 iOS/iPadOS 与 Android 教程，共用模型、任务与文件指南；保留双语离线搜索、图片和设置说明。",
         },
-        "title": {"en": "Floe Help", "zh-Hans": "Floe 帮助中心"},
-        "documents": {"en": "index.md", "zh-Hans": "index.zh-Hans.md"},
+        "title": localized_titles,
+        "documents": {locale: legacy_path(locale) for locale in LOCALES},
         "helpManifest": MANIFEST_PATH,
     }
 
 
-def manifest_json(source_revision: str, resources: List[dict]) -> dict:
+def manifest_json(source_revision: str, resources: List[dict], localized_titles: Dict[str, str]) -> dict:
     return {
         "schemaVersion": 1,
         "platform": PLATFORM,
@@ -999,8 +1062,8 @@ def manifest_json(source_revision: str, resources: List[dict]) -> dict:
         "id": PACKAGE_ID,
         "version": PACKAGE_VERSION,
         "sourceRevision": source_revision,
-        "title": {"en": "Floe Help", "zh-Hans": "Floe 帮助中心"},
-        "indexPaths": {"en": "help/index/en.json", "zh-Hans": "help/index/zh-Hans.json"},
+        "title": localized_titles,
+        "indexPaths": {locale: f"help/index/{locale}.json" for locale in LOCALES},
         "resources": resources,
     }
 
@@ -1062,7 +1125,7 @@ def temp_scratch() -> str:
     return _SCRATCH
 
 
-def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str, bytes]:
+def build_package(source_revision: str, *, with_images: bool = True, translation=help_translation) -> Dict[str, bytes]:
     """Build the complete package as a {relative path: bytes} mapping."""
     validate_source_revision(source_revision)
     configure_guide_sources()
@@ -1074,7 +1137,7 @@ def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str
     for article_id, stem in GUIDE_SOURCES.items():
         per_locale: Dict[str, Article] = {}
         chapter_shapes: Dict[str, List[str]] = {}
-        for locale in LOCALES:
+        for locale in SOURCE_LOCALES:
             article = build_guide_article(article_id, locale, source_revision)
             per_locale[locale] = article
             # Major (level-2) chapter anchors must be language-independent;
@@ -1087,7 +1150,7 @@ def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str
         # anchor): links inside each language reference that language's own
         # heading anchors (e.g. zh same-article fragments).
         slug_maps[article_id] = {}
-        for locale in LOCALES:
+        for locale in SOURCE_LOCALES:
             locale_blocks = parse_markdown(
                 os.path.join(DOCS_DIR, f"{stem}{SOURCE_LOCALE_SUFFIX[locale]}.md"))
             _, fragment_map = assign_anchors(locale_blocks)
@@ -1097,15 +1160,32 @@ def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str
     for article_id in HOWTO_ARTICLE_ORDER:
         articles[article_id] = {
             locale: build_howto_article(article_id, locale, source_revision)
-            for locale in LOCALES
+            for locale in SOURCE_LOCALES
         }
+
+    translations = {locale: translation(locale) for locale in LOCALES}
+    titles = {
+        locale: text("Floe Help", "Floe 帮助中心")
+        for locale, text in translations.items()
+    }
+    for locale in ADDITIONAL_LOCALES:
+        source = "zh-Hans" if locale == "zh-Hant" else "en"
+        text = translations[locale]
+
+        def project(value):
+            return text(value, value)
+
+        for article_id, per_locale in articles.items():
+            per_locale[locale] = project_localized_article(per_locale[source], locale, project)
+            if source_slugs := slug_maps.get(article_id, {}).get(source):
+                slug_maps[article_id][locale] = source_slugs
 
     # Render per-locale HTML.
     for locale in LOCALES:
         for article_id, per_locale in articles.items():
             article = per_locale[locale]
             resolver = make_link_resolver(locale, slug_maps, article_id)
-            body = render_article_html(article, locale, resolver, source_revision)
+            body = render_article_html(article, locale, resolver, source_revision, translations[locale])
             files[f"help/articles/{locale}/{article_id}.html"] = body.encode("utf-8")
 
     files["help/styles/help.css"] = HELP_CSS.encode("utf-8")
@@ -1113,14 +1193,15 @@ def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str
     # Indexes.
     for locale in LOCALES:
         per_locale = {aid: articles[aid][locale] for aid in articles}
-        files[f"help/index/{locale}.json"] = json_bytes(index_document(per_locale, locale),
+        files[f"help/index/{locale}.json"] = json_bytes(index_document(per_locale, locale, translations[locale]),
                                                         compact=True)
 
     # Legacy projection.
     for locale in LOCALES:
         per_locale = {aid: articles[aid][locale] for aid in articles}
-        name = "index.md" if locale == "en" else "index.zh-Hans.md"
-        files[name] = legacy_document(per_locale, locale, source_revision).encode("utf-8")
+        files[legacy_path(locale)] = legacy_document(
+            per_locale, locale, source_revision, translations[locale]
+        ).encode("utf-8")
 
     # Images.
     if with_images:
@@ -1130,7 +1211,7 @@ def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str
             files[f"help/assets/guide/{name}.webp"] = b""
 
     # Envelope + manifest.
-    files["content.json"] = json_bytes(content_json(source_revision), compact=False)
+    files["content.json"] = json_bytes(content_json(source_revision, titles), compact=False)
     resources = []
     for path in sorted(files):
         if path in ("content.json", MANIFEST_PATH):
@@ -1142,7 +1223,7 @@ def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str
             "byteCount": len(data),
             "sha256": sha256_hex(data),
         })
-    files[MANIFEST_PATH] = json_bytes(manifest_json(source_revision, resources), compact=False)
+    files[MANIFEST_PATH] = json_bytes(manifest_json(source_revision, resources, titles), compact=False)
 
     validate_package_constraints(files)
     validate_html_graph(files)
@@ -1214,7 +1295,7 @@ def validate_package_constraints(files: Dict[str, bytes]) -> None:
     if manifest["sourceRevision"] != content["sourceRevision"]:
         raise BuildError("manifest/content.json sourceRevision mismatch")
     if set(manifest["indexPaths"]) != set(LOCALES):
-        raise BuildError("manifest indexPaths must cover both locales")
+        raise BuildError("manifest indexPaths must cover all supported locales")
     listed = {r["path"] for r in manifest["resources"]}
     expected = set(files) - {"content.json", MANIFEST_PATH}
     if listed != expected:

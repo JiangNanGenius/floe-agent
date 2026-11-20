@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeCore
 import SwiftUI
 import Observation
 import SwiftMath
@@ -54,7 +55,7 @@ import FloeLaTeXHostAdapter
         else if operation?.cancelling==true {status=IDELanguageRunText.t("正在停止…","Stopping…")}
         else if phase?.stage == .downloading,let bytes=phase?.downloadBytes,bytes>0 {
             let amount=ByteCountFormatter.string(fromByteCount:bytes,countStyle:.file)
-            status=IDELanguageRunText.t("正在下载排版所需内容（约 \(amount)）…","Downloading typesetting resources (about \(amount))…")
+            status=FloeL10n.l("app.la_te_xproject_session.downloading_typesetting_resources_about", amount)
         } else {status=preparing ? IDELanguageRunText.t("正在准备排版所需内容…","Preparing typesetting resources…"):IDELanguageRunText.t("正在排版…","Typesetting…")}
         return .init(status:status,stopLabel:preparing ? IDELanguageRunText.t("停止准备","Stop preparation"):IDELanguageRunText.t("停止排版","Stop typesetting"),stop:{self.cancelPreparation()})
     }
