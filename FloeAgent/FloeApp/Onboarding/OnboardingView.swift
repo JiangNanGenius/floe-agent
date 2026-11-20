@@ -22,6 +22,7 @@ struct OnboardingView: View {
     @StateObject private var guide: SetupGuideModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     init(center: ConversationCenter) {
         _guide = StateObject(wrappedValue: SetupGuideModel(center: center))
@@ -63,7 +64,7 @@ struct OnboardingView: View {
     // MARK: - iPad: native group navigation
 
     private var groupedShell: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: sectionSelection) {
                 Section {
                     ForEach(SetupGuideSection.configurable) { section in
@@ -79,6 +80,11 @@ struct OnboardingView: View {
                 }
             }
             .navigationTitle("more.setup_guide")
+            // Same quick collapse as the workbench and Settings; the guide
+            // detail column's system sidebar toggle reopens the sections.
+            .collapseSidebarOnRightSwipe {
+                withAnimation(.snappy) { columnVisibility = .detailOnly }
+            }
             // Exiting is a single decision on the active section. The detail
             // column owns the only Exit control so the sidebar and detail
             // never present two identical dismiss buttons (and two identical

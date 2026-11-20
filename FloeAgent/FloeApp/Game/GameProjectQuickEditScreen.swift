@@ -27,11 +27,12 @@ struct GameProjectQuickEditScreen: View {
     @State private var preparing = true
     @State private var openingIDE = false
     @State private var visualContentGeneration: UInt64 = 0
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     private var engine: GameEngineID? { session.project.selectionSnapshot?.selectedEngine }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             Group {
                 if entries.isEmpty {
                     ContentUnavailableView {
@@ -67,6 +68,11 @@ struct GameProjectQuickEditScreen: View {
                         Task { await openIDE() }
                     }.disabled(preparing || openingIDE)
                 }
+            }
+            // Same quick collapse as the workbench and Settings; the detail
+            // column's system sidebar toggle reopens the file list.
+            .collapseSidebarOnRightSwipe {
+                withAnimation(.snappy) { columnVisibility = .detailOnly }
             }
         } detail: {
             Group {

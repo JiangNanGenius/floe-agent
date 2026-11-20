@@ -82,8 +82,9 @@ check("OfficeDocumentEditorView" not in ide,
       "IDE: the tab embeds the shared Office surface, not a second editor chrome")
 check("OfficeDocumentSurface(session: session)" in ide,
       "IDE: office tab embeds the session surface")
-check("officeLoadKey" in ide and "needsOfficeLoad" in ide,
-      "IDE: office loader keyed on the stable container")
+check(".task(id: IDEOfficeLoadTrigger.identity(activeTab: tab))" in ide
+      and 'activeTab?.id ?? ""' in tabs and "await openOfficeDocument(tab: tab, session: session)" in ide,
+      "IDE: the embedded Office loader follows the active tab identity")
 check(".task(id: tab.id)" not in ide,
       "IDE: no office loader tied to a replaced branch")
 check("await tabs.releaseAll()" in ide, "IDE: teardown happens on IDE close")
@@ -111,10 +112,83 @@ check("refreshGeneration &+= 1" in center,
       "SourceControlCenter: every refresh captures a new generation")
 check("isCurrentRefresh(generation, root: root)" in center,
       "SourceControlCenter: stale results cannot publish")
-check("generation == refreshGeneration && environment.workspaceCenter.currentRootURL == root" in center,
+check("generation == refreshGeneration && workspaceCenter.currentRootURL == root" in center,
       "SourceControlCenter: generation and workspace root both guard publishing")
 check("await refreshTask.value" not in center,
       "SourceControlCenter: a workspace switch no longer joins the stale task")
+
+# --- IDE Run eligibility: no play affordance for an unrelated workspace -----
+# An ordinary workspace that merely contains index.html must not show a Run
+# play button at all: the toolbar item renders only for a genuine target —
+# an explicit project run extension, a recognized game root, or an active
+# file the language-runner policy can actually run. Recognition comes from a
+# bounded read-only game probe of the pinned root; tap-time
+# `prepare`/`resolve` stay the single run path.
+run_provider = read("FloeAgent/FloeApp/Game/GameIDERunExtensionProvider.swift")
+check("enum IDEGameRootRecognition" in run_provider
+      and "case recognized" in run_provider
+      and "case notRecognized" in run_provider
+      and "case unknown" in run_provider,
+      "Run provider: recognition is tri-state with an unknown fallback")
+check("func recognize(_ center: WorkspaceCenter)" in run_provider
+      and "GameProjectInspector.hasGameCandidate(rootURL:" in run_provider,
+      "Run provider: recognition is the bounded read-only hasGameCandidate preflight")
+check("gameRootRecognition = result" in ide and "func probeGameRootIfNeeded()" in ide,
+      "IDE: the pinned root is probed once per presentation for Run eligibility")
+check("guard gameRootRecognition == nil," in ide and "projectRunExtension == nil," in ide,
+      "IDE: the probe is a one-shot and defers to an explicit project extension")
+check("private var runVisible: Bool" in ide
+      and "if projectRunExtension != nil { return true }" in ide,
+      "IDE: an explicit project run extension always keeps its run entry")
+check("if gameRootRecognition == .recognized { return true }" in ide,
+      "IDE: a recognized game root keeps Run without a text selection")
+check("guard let path = state.activePath, !path.isEmpty else { return false }" in ide,
+      "IDE: Run is absent when nothing is selected (the screenshot case)")
+check("IDELanguageRunPolicy.definition(forRelativePath: path) != nil" in ide
+      and "IDELanguageRunPolicy.isSafeWorkspaceRelativePath(path)" in ide,
+      "IDE: Run is absent for active files the language runner cannot run")
+check("if runVisible {" in ide
+      and re.search(r'if runVisible \{.*?accessibilityIdentifier\("workspace\.ide\.run"\)',
+                    ide, re.S) is not None,
+      "IDE: the toolbar play renders only inside the runVisible gate")
+check(re.search(r'if runVisible \{.*?\.disabled\(gameLookupTask != nil \|\| root == nil',
+                ide, re.S) is not None,
+      "IDE: the gated play keeps its transient busy/workspace guards")
+ui_tests = read("FloeAgent/Tests/FloeAgentUITests/WorkspaceIDEUITests.swift")
+check("XCTAssertFalse(app.buttons[\"workspace.ide.run\"].exists" in ui_tests
+      and "workspace.ide.nativeRun" in ui_tests,
+      "UI: an unsupported active file asserts the play affordance is absent")
+check("ide-run-affordance-absent" in ui_tests,
+      "UI: the absence assertion captures the screenshot case")
+check("renameFixtureFile" in ui_tests and "IDE验收.py" in ui_tests,
+      "UI: a runnable file makes the same play appear for the run-sheet checks")
+
+# --- Sidebar quick collapse: one shared gesture on every persistent family ----
+# Every persistent sidebar family must offer the shared quick-collapse route
+# in addition to its reopen control (system sidebar toggle, activity rail or
+# the phone drawer button); no family grows a second competing button.
+check("collapseSidebarOnRightSwipe" in read("FloeAgent/FloeApp/App/FloeAgentApp.swift"),
+      "Sidebar: the workbench split uses the shared quick collapse")
+check("collapseSidebarOnRightSwipe" in read("FloeAgent/FloeApp/Settings/SettingsRootView.swift"),
+      "Sidebar: the settings split uses the shared quick collapse")
+github_view = read("FloeAgent/FloeApp/Workspace/GitHubCollaboration/GitHubCollaborationView.swift")
+check("NavigationSplitView(columnVisibility: $columnVisibility," in github_view
+      and "collapseSidebarOnRightSwipe" in github_view,
+      "Sidebar: GitHub collaboration folds with the shared quick collapse")
+quick_edit = read("FloeAgent/FloeApp/Game/GameProjectQuickEditScreen.swift")
+check("NavigationSplitView(columnVisibility: $columnVisibility)" in quick_edit
+      and "collapseSidebarOnRightSwipe" in quick_edit,
+      "Sidebar: the game quick-edit split folds with the shared quick collapse")
+canvas_view = read("FloeAgent/FloeApp/Workspace/WorkspaceCanvasView.swift")
+check("collapseSidebarOnRightSwipe" in canvas_view
+      and "columnVisibility = .detailOnly" in canvas_view,
+      "Sidebar: the canvas document list folds with the shared quick collapse")
+onboarding_view = read("FloeAgent/FloeApp/Onboarding/OnboardingView.swift")
+check("NavigationSplitView(columnVisibility: $columnVisibility)" in onboarding_view
+      and "collapseSidebarOnRightSwipe" in onboarding_view,
+      "Sidebar: the setup guide split folds with the shared quick collapse")
+check("workspace.ide.sidebar.close" in read("FloeAgent/FloeApp/Workspace/IDESidebar.swift"),
+      "Sidebar: the IDE keeps its own accessible close control")
 
 print(f"\n{checks - len(failures)}/{checks} review invariant checks passed")
 if failures:

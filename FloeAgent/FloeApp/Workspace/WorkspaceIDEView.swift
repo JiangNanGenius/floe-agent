@@ -37,6 +37,11 @@ struct WorkspaceIDEView: View {
     @Environment(\.gameIDERunExtensionProvider) private var gameRunProvider
     @State private var gameRunExtension: IDEProjectRunExtension?
     @State private var gameRunRequest: GameIDEGameRunRequest?
+    /// Read-only game recognition of the pinned root; it only drives whether
+    /// the Run affordance renders. `nil` until the bounded probe finishes
+    /// (or the view disappears mid-probe); tap-time `prepare`/`resolve` stay
+    /// the only path that can create a session or run.
+    @State private var gameRootRecognition: IDEGameRootRecognition?
     @State private var gameLookupTask: Task<Void, Never>?
     @State private var gameLookupGeneration: UInt64 = 0
     @State private var gameOwnedSession: GameWorkspaceSession?
@@ -188,7 +193,10 @@ struct WorkspaceIDEView: View {
             }
             .navigationTitle(workspaceName)
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear { seedInitialSidebar() }
+            .onAppear {
+                seedInitialSidebar()
+                probeGameRootIfNeeded()
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { requestCloseIDE() } label: {
@@ -197,13 +205,14 @@ struct WorkspaceIDEView: View {
                     .accessibilityIdentifier("workspace.ide.close")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { presentRun() } label: {
-                        Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
+                    if runVisible {
+                        Button { presentRun() } label: {
+                            Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
+                        }
+                        .frame(minWidth: 44, minHeight: 44)
+                        .disabled(gameLookupTask != nil || root == nil || center.currentWorkspace?.id != workspaceID)
+                        .accessibilityIdentifier("workspace.ide.run")
                     }
-                    .frame(minWidth: 44, minHeight: 44)
-                    .disabled(gameLookupTask != nil || root == nil || center.currentWorkspace?.id != workspaceID
-                              || (projectRunExtension == nil && gameRunProvider == nil && state.activePath == nil))
-                    .accessibilityIdentifier("workspace.ide.run")
                     Button { Task { if await saveAllSurfaces() { onSaved() } } } label: {
                         Label("ide.save.all", systemImage: "square.and.arrow.down")
                     }.disabled(!state.canSave).accessibilityIdentifier("workspace.ide.save").keyboardShortcut("s", modifiers: .command)
@@ -215,7 +224,9 @@ struct WorkspaceIDEView: View {
                     // Files, search, source control and the terminal live in
                     // the persistent left activity rail and bottom panel, so
                     // the compact top bar only keeps the high-frequency run,
-                    // save and routed-surface actions.
+                    // save and routed-surface actions. Run only renders for a
+                    // genuine target (recognized game or runnable file), so
+                    // an unrelated workspace never shows a dead play glyph.
                 }
                 // The IDE text editor is native Swift/UIKit only; there is no
                 // Web/Monaco text kernel or kernel-switch entry, and no
@@ -236,6 +247,8 @@ struct WorkspaceIDEView: View {
                 workspaceVideoRouteGeneration = UUID()
                 gameLookupGeneration &+= 1
                 gameLookupTask?.cancel()
+            } else {
+                probeGameRootIfNeeded()
             }
         }
         .fullScreenCover(item: $gameRunRequest) { request in
@@ -659,6 +672,45 @@ struct WorkspaceIDEView: View {
     }
 
     // MARK: - Actions
+
+    /// The Run affordance's visibility for the pinned workspace. An explicit
+    /// project extension (a game project's own IDE) always runs; a recognized
+    /// game root runs through its chooser/run flow without a text selection;
+    /// any other workspace only offers the real language runner, which needs
+    /// an active file with a runnable type — so an ordinary workspace that
+    /// merely contains index.html never shows a play button that would
+    /// silently do nothing, and unsupported active files (plain text, docs)
+    /// do not present it either. While the bounded recognition probe runs,
+    /// nothing runnable is selected, so the item stays hidden; genuine games
+    /// resolve to `.recognized` and keep their run entry in this toolbar.
+    private var runVisible: Bool {
+        if projectRunExtension != nil { return true }
+        if gameRootRecognition == .recognized { return true }
+        guard let path = state.activePath, !path.isEmpty else { return false }
+        return IDELanguageRunPolicy.definition(forRelativePath: path) != nil
+            && IDELanguageRunPolicy.isSafeWorkspaceRelativePath(path)
+    }
+
+    /// Probes the pinned root once per IDE presentation so the Run affordance
+    /// can tell a genuine game workspace from an unrelated one. The bounded
+    /// read never creates a session, owner or run; tap-time
+    /// `prepare`/`resolve` stay the only run path and re-verify everything.
+    private func probeGameRootIfNeeded() {
+        guard gameRootRecognition == nil,
+              gameLookupTask == nil,
+              projectRunExtension == nil,
+              let provider = gameRunProvider,
+              pinnedWorkspaceIsCurrent,
+              root != nil else { return }
+        gameLookupGeneration &+= 1
+        let epoch = gameLookupGeneration
+        gameLookupTask = Task { @MainActor in
+            defer { if gameLookupGeneration == epoch { gameLookupTask = nil } }
+            let result = await provider.recognize(center)
+            guard !Task.isCancelled, gameLookupGeneration == epoch, pinnedWorkspaceIsCurrent else { return }
+            gameRootRecognition = result
+        }
+    }
 
     /// The run controller is created once per pinned workspace and reuses the
     /// same pinned values for every dispatch. A successful dispatch asks the

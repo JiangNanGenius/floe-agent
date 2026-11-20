@@ -143,6 +143,15 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
 
+    /// The toolbar Run affordance is eligibility-gated. The shared fixture
+    /// workspace is an ordinary one whose only file is a plain .txt, so the
+    /// IDE must show no play button at all — never a dead enabled one — and
+    /// the editor status bar agrees. Renaming the file to a runnable Python
+    /// name through the IDE's own file tree makes the affordance appear with
+    /// the unchanged first-run sheet (including its web-service entry); the
+    /// durable fixture name is restored before the test ends. Recognized
+    /// game projects keep their IDE run in
+    /// PredevelopmentWorkspaceEntryUITests.
     func testFirstRunSheetAndWebServiceEntry() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -153,7 +162,33 @@ final class WorkspaceIDEUITests: XCTestCase {
         app.launch()
         defer { app.terminate() }
         try openWorkbench(app, ipad: ipad)
-        app.buttons["workspace.ide.run"].tap()
+        // Screenshot case: an ordinary workspace whose active file is not
+        // runnable shows no Run affordance anywhere in the IDE chrome.
+        XCTAssertFalse(app.buttons["workspace.ide.run"].exists,
+                       "the toolbar play must be absent for an unsupported active file")
+        XCTAssertFalse(app.buttons["workspace.ide.nativeRun"].exists,
+                       "the editor status bar must agree for plain text")
+        capture("ide-run-affordance-absent")
+        // The durable .txt fixture is renamed to a runnable Python name and
+        // restored before the test ends; `restored` records that so the
+        // teardown cleanup below is a no-op on the happy path.
+        var restored = false
+        addTeardownBlock { @MainActor in
+            // Failure-path cleanup only. Silent by design: a teardown must
+            // never re-fail a test that already failed, and must not touch
+            // the fixture once the normal restore completed.
+            guard !restored else { return }
+            if app.state == .notRunning { app.launch() }
+            self.silentRestoreFixtureName(app, ipad: ipad)
+        }
+        // Make the active file runnable, proving the gate follows the real
+        // language-runner policy rather than hiding the sheet wholesale.
+        try renameFixtureFile(app, ipad: ipad, from: "IDE验收.txt", to: "IDE验收.py")
+        openFixtureFileInIDE(app, ipad: ipad, name: "IDE验收.py")
+        let run = app.buttons["workspace.ide.run"]
+        XCTAssertTrue(run.waitForExistence(timeout: 10),
+                      "the toolbar play must appear for a runnable active file")
+        run.tap()
         let serviceEntry = app.buttons["workspace.ide.run.webService"]
         XCTAssertTrue(serviceEntry.waitForExistence(timeout: 15), "the first run presentation must contain its controls")
         capture("ide-run-sheet-content")
@@ -162,6 +197,162 @@ final class WorkspaceIDEUITests: XCTestCase {
         capture("ide-web-service-options")
         app.navigationBars["网页服务"].buttons.firstMatch.tap()
         app.buttons["workspace.ide.run.close"].tap()
+        try renameFixtureFile(app, ipad: ipad, from: "IDE验收.py", to: "IDE验收.txt")
+        restored = true
+    }
+
+    /// Best-effort, assertion-free restore of the durable IDE fixture name
+    /// after a failed `testFirstRunSheetAndWebServiceEntry`. Navigates the
+    /// same route a user takes; any missing control simply ends the attempt
+    /// so the cleanup can never fail the already-failing test.
+    private func silentRestoreFixtureName(_ app: XCUIApplication, ipad: Bool) {
+        if !ipad {
+            let sidebar = app.buttons["phone.sidebar.open"]
+            guard sidebar.waitForExistence(timeout: 15) else { return }
+            sidebar.tap()
+        }
+        let settings = app.buttons["sidebar.settings"]
+        guard settings.waitForExistence(timeout: 15) else { return }
+        settings.tap()
+        let files = ipad ? app.staticTexts["settings.section.files"].firstMatch : app.buttons["settings.section.files"]
+        let filesDeadline = Date().addingTimeInterval(30)
+        while Date() < filesDeadline {
+            if files.exists && files.isHittable {
+                let frame = files.frame
+                let screen = app.windows.firstMatch.frame
+                let center = CGPoint(x: frame.midX, y: frame.midY)
+                guard frame.width > 0, screen.contains(center) else { break }
+                app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: center.x - screen.minX, dy: center.y - screen.minY))
+                    .tap()
+                break
+            }
+            let anchor = app.staticTexts
+                .matching(NSPredicate(format: "identifier BEGINSWITH %@", "settings.section."))
+                .allElementsBoundByIndex.first { $0.isHittable }
+            if let anchor { anchor.swipeUp() } else { app.swipeUp() }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        let manage = app.buttons["settings.files.manage"]
+        guard manage.waitForExistence(timeout: 10) else { return }
+        manage.tap()
+        let workspace = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "files.workspace.", "批量选择测试"
+        )).firstMatch
+        if !workspace.waitForExistence(timeout: 5) {
+            let search = app.searchFields["搜索工作区或聊天"]
+            guard search.waitForExistence(timeout: 10) else { return }
+            search.tap()
+            search.typeText("批量选择测试\n")
+        }
+        guard workspace.waitForExistence(timeout: 30) else { return }
+        workspace.tap()
+        guard app.staticTexts["IDE验收.py"].waitForExistence(timeout: 30) else { return }
+        app.staticTexts["IDE验收.py"].firstMatch.tap()
+        guard app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10) else { return }
+        app.buttons["file.preview.openIDE"].tap()
+        silentRenameInOpenIDE(app, ipad: ipad, from: "IDE验收.py", to: "IDE验收.txt")
+    }
+
+    /// Assertion-free variant of the IDE file-tree rename used only by
+    /// teardown cleanup. Returns after the rename attempt; the visible tree
+    /// row is the success signal and is not asserted.
+    private func silentRenameInOpenIDE(
+        _ app: XCUIApplication, ipad: Bool, from oldName: String, to newName: String
+    ) {
+        if !ipad {
+            let rail = app.buttons["workspace.ide.files"]
+            guard rail.waitForExistence(timeout: 10) else { return }
+            rail.tap()
+        }
+        let menuButton = app.buttons["fileTree.row.menu." + oldName]
+        guard menuButton.waitForExistence(timeout: 10) else { return }
+        menuButton.tap()
+        let rename = app.menuItems["重命名"].firstMatch
+        let renameButton = app.buttons["重命名"].firstMatch
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, !rename.exists, !renameButton.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        guard rename.exists || renameButton.exists else { return }
+        (rename.exists ? rename : renameButton).tap()
+        let alert = app.alerts.firstMatch
+        guard alert.waitForExistence(timeout: 10) else { return }
+        let field = alert.textFields.firstMatch
+        field.tap()
+        field.press(forDuration: 1.2)
+        let selectAll = app.menuItems["全选"].firstMatch
+        if selectAll.waitForExistence(timeout: 3) { selectAll.tap() }
+        field.typeText(newName)
+        alert.buttons["确定"].tap()
+        _ = app.buttons["fileTree.row.menu." + newName].waitForExistence(timeout: 10)
+        if !ipad {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        }
+    }
+
+    /// Renames a fixture workspace file through the IDE file tree's own row
+    /// menu (the same path a user takes). Assumes the IDE is open; restores
+    /// nothing on failure — callers own teardown.
+    private func renameFixtureFile(
+        _ app: XCUIApplication, ipad: Bool,
+        from oldName: String, to newName: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        if !ipad {
+            let rail = app.buttons["workspace.ide.files"]
+            XCTAssertTrue(rail.waitForExistence(timeout: 10), file: file, line: line)
+            rail.tap()
+        }
+        let menuButton = app.buttons["fileTree.row.menu." + oldName]
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 10),
+                      "the file tree must expose the row menu for \(oldName)", file: file, line: line)
+        menuButton.tap()
+        let rename = app.menuItems["重命名"].firstMatch
+        let renameButton = app.buttons["重命名"].firstMatch
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, !rename.exists, !renameButton.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        XCTAssertTrue(rename.exists || renameButton.exists, "the row menu must offer 重命名", file: file, line: line)
+        (rename.exists ? rename : renameButton).tap()
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 10), "the rename alert must appear", file: file, line: line)
+        let field = alert.textFields.firstMatch
+        field.tap()
+        field.press(forDuration: 1.2)
+        let selectAll = app.menuItems["全选"].firstMatch
+        if selectAll.waitForExistence(timeout: 3) { selectAll.tap() }
+        field.typeText(newName)
+        alert.buttons["确定"].tap()
+        XCTAssertTrue(app.buttons["fileTree.row.menu." + newName].waitForExistence(timeout: 10),
+                      "the tree must list \(newName) after the rename", file: file, line: line)
+        if !ipad {
+            // Dismiss the drawer so the editor and toolbar are reachable.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        }
+    }
+
+    /// Opens a fixture workspace file from the IDE file tree into the native
+    /// editor, replacing any active buffer selection.
+    private func openFixtureFileInIDE(
+        _ app: XCUIApplication, ipad: Bool, name: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        if !ipad {
+            let rail = app.buttons["workspace.ide.files"]
+            XCTAssertTrue(rail.waitForExistence(timeout: 10), file: file, line: line)
+            rail.tap()
+        }
+        let row = app.buttons["fileTree.row." + name]
+        XCTAssertTrue(row.waitForExistence(timeout: 10),
+                      "the file tree must list \(name)", file: file, line: line)
+        row.tap()
+        if !ipad {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(app.textViews["workspace.ide.nativeEditor"].waitForExistence(timeout: 30),
+                      "\(name) must open in the native editor", file: file, line: line)
     }
 
     /// The Git sidebar stays usable at the workbench's narrow split width:

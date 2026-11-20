@@ -7,6 +7,7 @@ struct GitHubCollaborationView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var center: GitHubCollaborationCenter
     @State private var panel: Panel?
     @State private var pendingDraftID: UUID?
@@ -32,7 +33,8 @@ struct GitHubCollaborationView: View {
     }
     var body: some View {
         @Bindable var center = center
-        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+        NavigationSplitView(columnVisibility: $columnVisibility,
+                            preferredCompactColumn: $preferredCompactColumn) {
             VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 10) {
                     Label(center.scope.repository.fullName, systemImage: "shippingbox")
@@ -75,9 +77,15 @@ struct GitHubCollaborationView: View {
                             systemImage: center.section == .issues ? "exclamationmark.circle" : "arrow.triangle.pull")
                     }
                 }
-                .listStyle(.sidebar).refreshable { await center.loadList() }
-                .accessibilityIdentifier("github.collaboration.list")
+            .listStyle(.sidebar).refreshable { await center.loadList() }
+            .accessibilityIdentifier("github.collaboration.list")
+            // The same quick collapse as the workbench and Settings: a
+            // deliberate right swipe folds the list away; the detail column's
+            // system sidebar toggle reopens it.
+            .collapseSidebarOnRightSwipe {
+                withAnimation(.snappy) { columnVisibility = .detailOnly }
             }
+        }
             .navigationTitle("GitHub")
             .toolbar {
                 if horizontalSizeClass != .compact || preferredCompactColumn == .sidebar { collaborationToolbar }

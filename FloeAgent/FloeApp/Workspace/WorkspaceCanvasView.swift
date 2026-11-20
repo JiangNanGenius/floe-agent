@@ -6666,6 +6666,11 @@ struct WorkspaceCanvasView: View {
             }
         }
         .navigationTitle("settings.settings_root_view.canvas")
+        // The same quick collapse as the workbench and Settings; the canvas
+        // detail column's system sidebar toggle reopens the document list.
+        .collapseSidebarOnRightSwipe {
+            withAnimation(.snappy) { columnVisibility = .detailOnly }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
