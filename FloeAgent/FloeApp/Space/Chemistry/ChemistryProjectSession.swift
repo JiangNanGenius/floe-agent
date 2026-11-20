@@ -90,6 +90,11 @@ private enum ChemistryLibraryPurgeScope {
     let editor: ChemistryEditorState
     @ObservationIgnored weak var environment: AppEnvironment?
     var diagnostic: String?
+    /// Transient, informative lifecycle feedback for the native surface
+    /// (calculation completed / stopped). Distinct from `diagnostic`, which
+    /// reports errors that block an operation.
+    var notice: String?
+    @ObservationIgnored private var seenRunStatuses: [UUID: ChemistryRunStatus] = [:]
     private(set) var closing = false
     private var owners: [UUID: ChemistryHostRunOwner] = [:]
 
@@ -181,7 +186,42 @@ private enum ChemistryLibraryPurgeScope {
         defer { opening[id] = nil }
         return try await pending.value
     }
-    func refreshFromHost() async { if !editor.hasPendingEdits { await editor.refresh() } }
+    func refreshFromHost() async {
+        if !editor.hasPendingEdits { await editor.refresh() }
+        await refreshCalculationNotice()
+    }
+    /// Surfaces a calculation that transitioned from live to terminal since
+    /// the last observed refresh. Runs first seen already terminal (for
+    /// example after reopening a restored project) stay quiet, so restoring
+    /// history never invents a new completion event.
+    private func refreshCalculationNotice() async {
+        let active: Set<ChemistryRunStatus> = [.queued, .running]
+        guard let runs = editor.project?.runs else { seenRunStatuses = [:]; return }
+        var next: [UUID: ChemistryRunStatus] = [:]
+        var lines: [String] = []
+        for run in runs {
+            let previous = seenRunStatuses[run.id]
+            next[run.id] = run.status
+            guard let previous, previous != run.status,
+                  active.contains(previous), !active.contains(run.status) else { continue }
+            lines.append(calculationNoticeLine(for: run))
+        }
+        seenRunStatuses = next
+        guard !lines.isEmpty else { return }
+        let text = lines.prefix(3).joined(separator: "\n")
+        notice = String(text.prefix(600))
+    }
+    private func calculationNoticeLine(for run: ChemistryRun) -> String {
+        let state: String
+        switch run.status {
+        case .succeeded: state = IDELanguageRunText.t("已完成", "Completed")
+        case .failed: state = IDELanguageRunText.t("未完成", "Failed")
+        case .cancelled: state = IDELanguageRunText.t("已停止", "Stopped")
+        case .interrupted: state = IDELanguageRunText.t("已中断", "Interrupted")
+        case .queued, .running: state = run.status.rawValue
+        }
+        return run.method + " · " + run.input.title + " · " + state
+    }
     func flushForClose() async -> Bool {
         await editor.flush()
         guard !editor.hasPendingEdits else {

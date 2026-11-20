@@ -177,6 +177,47 @@ import FloeExecution
         #expect(reopened.selected?.id == derivedAsset.id)
     }
 
+    @Test func microscopyRegionAnnotationPersistsReopensAndReachesAssistantRead() async throws {
+        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        // Import a generic synthetic microscopy slide (ASCII PGM) via the real tool.
+        let importer = try #require(f.registry.runner(named: "biology.import"))
+        let pgm = "P2\n8 8\n255\n" + (0..<64).map { String($0 * 4) }.joined(separator: " ") + "\n"
+        let imported = try await importer.execute(argumentsJSON: BiologyCoding.encode(BiologyJSON.object([
+            "projectID": .string(f.projectID.uuidString), "title": .string("Generic slide"),
+            "format": .string("pgm"), "base64": .string(Data(pgm.utf8).base64EncodedString())])), context: f.context("biology.import"))
+        #expect(imported.exitStatus == 0)
+        let visible = BiologyWorkbenchModel(service: f.service, projectID: f.projectID)
+        await visible.refresh()
+        let image = try #require(visible.selected)
+        guard case .microscopyImage = image.payload else { Issue.record("Imported slide is not a native microscopy image"); return }
+        // Annotate the slide: persist a bounded region selection via the real select tool.
+        let region: [Double] = [1, 2, 4, 3]
+        let select = try #require(f.registry.runner(named: "biology.select"))
+        let annotated = try await select.execute(argumentsJSON: BiologyCoding.encode(BiologyJSON.object([
+            "projectID": .string(f.projectID.uuidString), "assetID": .string(image.id.uuidString),
+            "expectedRevision": .number(Double(image.revision)),
+            "selection": .object(["channel": .number(0), "slice": .number(0), "frame": .number(0),
+                                  "region": .array(region.map { .number($0) })])])), context: f.context("biology.select"))
+        #expect(annotated.exitStatus == 0)
+        // The shared project assistant reads the same persisted selection through biology.read.
+        let reader = try #require(f.registry.runner(named: "biology.read"))
+        let read = try await reader.execute(argumentsJSON: BiologyCoding.encode(BiologyJSON.object([
+            "projectID": .string(f.projectID.uuidString)])), context: f.context("biology.read"))
+        #expect(read.exitStatus == 0)
+        let payload = try #require(read.capturedOutput.flatMap { try? JSONDecoder().decode(BiologyJSON.self, from: Data($0.utf8)) })
+        let active = try #require(payload["activeSelection"])
+        guard case .object(let fields) = active else { Issue.record("Assistant read returned no persisted selection"); return }
+        #expect(fields["region"]?.array?.compactMap { $0.number } == region)
+        // Cold reopen: a fresh store/service over the same files sees the same annotation.
+        let coldStore = try BiologyProjectStore(root: f.store.root)
+        let coldService = try BiologyService(store: coldStore, authorize: { try await f.access.permit($0) })
+        let reopened = BiologyWorkbenchModel(service: coldService, projectID: f.projectID)
+        await reopened.refresh()
+        #expect(reopened.selectedID == image.id)
+        let reopenedSelection = try #require(reopened.project?.selections?[image.id.uuidString])
+        #expect(reopenedSelection["region"]?.array?.compactMap { $0.number } == region)
+    }
+
     @Test func backgroundSelectionAndEditsKeepTheVisibleAssetAndRefuseStaleDraftSave() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         let first = try await f.service.importAsset(f.projectID, title: "Draft source", format: "fasta", data: Data(">a\nATGGCCATT\n".utf8))

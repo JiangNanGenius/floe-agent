@@ -499541,6 +499541,65 @@
         }
       }
     },
+    "execution.runtime_rebuild.verify_existing_disk": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der vorhandene Linux-Datenträger konnte nicht überprüft werden. Öffne in den Einstellungen die Ausführungsumgebung, um die Wiederherstellungsoptionen einzusehen, bei denen deine Daten erhalten bleiben."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The existing Linux disk could not be verified. Open Execution Environment in Settings to review recovery options that preserve your data."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se ha podido verificar el disco Linux existente. Abre el entorno de ejecución en Ajustes para ver las opciones de recuperación que conservan tus datos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de vérifier le disque Linux existant. Dans les réglages, ouvrez l’environnement d’exécution pour consulter les options de récupération qui préservent vos données."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既存の Linux ディスクを確認できませんでした。「設定」の「実行環境」で、データを保持する復旧方法を確認してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기존 Linux 디스크를 확인할 수 없습니다. 설정의 실행 환경에서 데이터를 보존하는 복구 옵션을 확인하세요."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Não foi possível verificar o disco Linux existente. Abra o ambiente de execução nos ajustes para ver as opções de recuperação que preservam seus dados."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法核实现有 Linux 磁盘。请打开「设置」中的「执行环境」，查看保留数据的恢复选项。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法驗證現有的 Linux 磁碟。請開啟「設定」中的「執行環境」，查看可保留資料的復原選項。"
+          }
+        }
+      }
+    },
     "execution.runtime_rebuild.title": {
       "localizations": {
         "en": {

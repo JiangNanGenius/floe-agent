@@ -277,4 +277,84 @@ final class LinuxResidentRecoveryTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(LinuxResidentImageResolutionError.sourceUnavailable(imageID: "original-only").permitsPreservingRebuild)
         XCTAssertFalse(LinuxResidentImageResolutionError.storageUnavailable.permitsPreservingRebuild)
     }
+
+    // MARK: - Reboot-stable committed identity (volume UUID + inode)
+
+    private func node(device: UInt64, inode: UInt64, mode: UInt32 = UInt32(S_IFDIR) | 0o755, volumeUUID: String? = nil) -> LinuxResidentRecoveryStore.Node {
+        LinuxResidentRecoveryStore.Node(device: device, inode: inode, mode: mode, size: 128,
+            modificationSeconds: 1, modificationNanoseconds: 0, volumeUUID: volumeUUID)
+    }
+
+    /// A host reboot remounts the same volume under a new `st_dev`. New
+    /// receipts carry the volume UUID, so the same disk must still be
+    /// recognized; the historical device+inode check would refuse it here.
+    func testCommittedIdentityAcceptsSameVolumeAndInodeAcrossDeviceRenumbering() {
+        let before = node(device: 16777231, inode: 147868626, volumeUUID: "EB0E1FF7-34D6-48EB-B16C-1BE038E1E803")
+        let after = node(device: 16777230, inode: 147868626, volumeUUID: "EB0E1FF7-34D6-48EB-B16C-1BE038E1E803")
+        XCTAssertTrue(before.sameDirectory(as: after))
+        XCTAssertTrue(before.sameFile(as: after))
+    }
+
+    /// A different volume reusing an inode is not the same filesystem object.
+    func testCommittedIdentityRefusesSameInodeOnDifferentVolume() {
+        let first = node(device: 16777231, inode: 147868626, volumeUUID: "EB0E1FF7-34D6-48EB-B16C-1BE038E1E803")
+        let second = node(device: 16777231, inode: 147868626, volumeUUID: "992012D2-29F9-4B6B-827E-ECD7A284F2AA")
+        XCTAssertFalse(first.sameDirectory(as: second))
+        XCTAssertFalse(first.sameFile(as: second))
+    }
+
+    /// A replaced disk has a new inode on the same volume and must be refused.
+    func testCommittedIdentityRefusesReplacedInode() {
+        let original = node(device: 16777230, inode: 147868627, mode: UInt32(S_IFREG) | 0o644, volumeUUID: "EB0E1FF7-34D6-48EB-B16C-1BE038E1E803")
+        let replaced = node(device: 16777230, inode: 150000001, mode: UInt32(S_IFREG) | 0o644, volumeUUID: "EB0E1FF7-34D6-48EB-B16C-1BE038E1E803")
+        XCTAssertFalse(original.sameFile(as: replaced))
+        XCTAssertFalse(original.sameDirectory(as: replaced))
+    }
+
+    /// Old committed receipts have no volume UUID: they keep the historical
+    /// device+inode comparison and are never silently matched against a new
+    /// observation from a renumbered volume.
+    func testOldReceiptWithoutVolumeUUIDFallsBackToDeviceAndRefusesRenumbering() {
+        let oldReceipt = node(device: 16777231, inode: 147868626, volumeUUID: nil)
+        let renumbered = node(device: 16777230, inode: 147868626, volumeUUID: "EB0E1FF7-34D6-48EB-B16C-1BE038E1E803")
+        let sameBoot = node(device: 16777231, inode: 147868626, volumeUUID: nil)
+        XCTAssertTrue(oldReceipt.sameDirectory(as: sameBoot))
+        XCTAssertFalse(oldReceipt.sameDirectory(as: renumbered))
+        // Upgrade compatibility: a persisted legacy receipt (no UUID) against
+        // a fresh observation of the same device and inode must pass.
+        let freshKnownSameDevice = node(device: 16777231, inode: 147868626, volumeUUID: "EB0E1FF7-34D6-48EB-B16C-1BE038E1E803")
+        XCTAssertTrue(oldReceipt.sameDirectory(as: freshKnownSameDevice))
+        XCTAssertTrue(oldReceipt.sameFile(as: freshKnownSameDevice))
+        XCTAssertFalse(freshKnownSameDevice.sameFile(as: sameBoot))
+        // A renumbered device with only one UUID present is never accepted.
+        XCTAssertFalse(oldReceipt.sameFile(as: renumbered))
+    }
+
+    /// Receipts persisted before volume-UUID capture decode with a nil field.
+    func testLegacyNodeJSONWithoutVolumeUUIDDecodesAsNil() throws {
+        let legacy = """
+        {"device":16777231,"inode":147868626,"mode":16877,"size":128,"modificationSeconds":1794685712,"modificationNanoseconds":727593709}
+        """
+        let nodeValue = try JSONDecoder().decode(LinuxResidentRecoveryStore.Node.self, from: Data(legacy.utf8))
+        XCTAssertNil(nodeValue.volumeUUID)
+        XCTAssertEqual(nodeValue.inode, 147868626)
+    }
+
+    /// A real committed receipt is accepted by the recovery guard, and a disk
+    /// replaced afterwards (new inode) is refused as tampering.
+    func testCommittedReceiptRoundTripsAndRefusesReplacedDisk() throws {
+        let f = try Fixture(); defer { f.remove() }
+        let store = try LinuxResidentRecoveryStore(root: f.root)
+        let transaction = try store.begin(imageID: "trusted-new")
+        defer { transaction.endAdmission() }
+        _ = try transaction.replace(prepare: { try f.prepare($0) })
+        let guard1 = try LinuxResidentDiskBarrier.acquireRecoveryGuard(root: f.root)
+        XCTAssertEqual(guard1.receipt?.imageID, "trusted-new")
+        guard1.finish()
+        // Replace the disk through a new path (new inode): identity changed.
+        try Data("tampered-replacement".utf8).write(to: f.current.appendingPathComponent("disk.img"), options: .atomic)
+        XCTAssertThrowsError(try LinuxResidentDiskBarrier.acquireRecoveryGuard(root: f.root)) {
+            XCTAssertEqual($0 as? LinuxResidentRecoveryError, .identityChanged)
+        }
+    }
 }

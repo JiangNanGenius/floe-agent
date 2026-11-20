@@ -2,6 +2,7 @@
 
 ## 简体中文
 
+- 界面新增繁体中文、日语、韩语、法语、德语、西班牙语和巴西葡萄牙语，也覆盖权限说明、分享、小组件、离线帮助和用户协议。
 - CAM 圆形型腔在每一层补上沿壁走刀，保留设置的侧壁余量。工程助手可以导出经过回读核对的 G-code。
 - 打印预览支持圆弧和空走抬升后的层高。选中另一个零件时保留镜头，同板共用的网格只需读取一次。
 - 工作区可以直接打开已切片的 3MF，选择打印板并逐层查看实际挤出路径。只有模型的 3MF 继续显示三维模型。
@@ -11,9 +12,11 @@
 - 反馈页面支持分次添加截图。游戏首页合并了引擎设置入口，打开 IDE、编辑器和源码管理时显示对应进度。
 - 游戏操作按当前工作区文件识别工程，重新进入已打开的游戏时减少一次历史索引读取。
 - 用户协议更新了授权操作的责任说明。此前的同意记录继续有效。
+- 新建的 Linux 磁盘恢复记录使用稳定的卷标识。旧记录遇到无法核实的磁盘时，提示会指向保留数据的恢复入口。
 
 ## English
 
+- The app now supports Traditional Chinese, Japanese, Korean, French, German, Spanish and Brazilian Portuguese, including permissions, sharing, widgets, offline help and the user agreement.
 - Circular CAM pockets now include a wall pass at every depth and preserve the configured wall allowance. The project assistant can export G-code verified by reading it back.
 - Print previews handle arcs and track layer height through travel moves. Selecting another part preserves the camera, and parts on the same plate can share a single mesh read.
 - Open a sliced 3MF from the workspace, choose a plate and inspect its actual extrusion paths layer by layer. Model-only 3MF files open in the 3D viewer.
@@ -23,3 +26,4 @@
 - Add screenshots to feedback in multiple selections. Game projects now have a single engine settings entry and show which editor or source-control view is opening.
 - Game actions identify projects from files in the active workspace. Returning to an open game avoids a redundant history read.
 - The user agreement clarifies responsibility for authorized operations. Previous acceptance carries forward.
+- New Linux disk recovery records use a stable volume identifier. When an older record cannot verify the disk, the app points to recovery options that preserve existing data.

@@ -53,6 +53,24 @@ final class ChemistryNativePreviewUITests: XCTestCase {
         capture("Space-reopened-3D", in: app)
     }
 
+    func testMolecularViewerResultRestoresWhenEditorReopensWithoutRelaunch() {
+        let app = launchApp()
+        let title = newTitle("ChemRestore")
+        createProject(title, in: app)
+        startDrawing(in: app)
+        drawRing(6, in: app)
+        showPreview(in: app)
+        requireScene("generated", atoms: 18, bonds: 18, in: app)
+        capture("Space-generated-3D", in: app)
+
+        tap(app.buttons["space.editor.done"])
+        XCTAssertTrue(app.segmentedControls["space.sections"].waitForExistence(timeout: 15))
+        openProject(title, in: app)
+        showPreview(in: app)
+        requireScene("cached", atoms: 18, bonds: 18, in: app)
+        capture("Space-editor-reopened-3D", in: app)
+    }
+
     func testNotesLinkedProjectEditsAndReopensItsNativePreview() {
         let app = launchApp()
         let title = newTitle("ChemNote")

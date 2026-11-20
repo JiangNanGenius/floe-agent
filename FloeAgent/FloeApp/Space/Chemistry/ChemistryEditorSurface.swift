@@ -38,11 +38,30 @@ struct ChemistryEditorSurface: View {
                 Task { await session.editor.refreshCapabilities(); await session.refreshFromHost() }
             }) { ChemistryEnvironmentPanel(session: session, preparingObjectID: preparationObjectID) }
             .safeAreaInset(edge: .bottom) {
-                if let error = session.diagnostic {
-                    DisclosureGroup(IDELanguageRunText.t("操作未完成，查看详情", "Unable to finish. View details")) {
-                        Text(error).font(.caption).textSelection(.enabled)
-                        Button(IDELanguageRunText.t("关闭", "Dismiss")) { session.diagnostic = nil }
-                    }.padding().background(.regularMaterial)
+                VStack(spacing: 8) {
+                    if let notice = session.notice {
+                        Label(notice, systemImage: "checkmark.circle")
+                            .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .accessibilityIdentifier("chemistry.notice")
+                            .task(id: notice) {
+                                do {
+                                    try await Task.sleep(for: .seconds(5))
+                                } catch {
+                                    // Cancellation (view swap or a newer notice):
+                                    // never clear a message that may have been
+                                    // re-shown under this identifier.
+                                    return
+                                }
+                                if session.notice == notice { session.notice = nil }
+                            }
+                    }
+                    if let error = session.diagnostic {
+                        DisclosureGroup(IDELanguageRunText.t("操作未完成，查看详情", "Unable to finish. View details")) {
+                            Text(error).font(.caption).textSelection(.enabled)
+                            Button(IDELanguageRunText.t("关闭", "Dismiss")) { session.diagnostic = nil }
+                        }.padding().background(.regularMaterial)
+                    }
                 }
             }
             .accessibilityElement(children: .contain)

@@ -55,8 +55,14 @@ public enum LinuxResidentRecoveryError: Error, LocalizedError, Equatable, Sendab
         switch self {
         case .busy:
             return zh ? "运行环境仍在使用中，请稍后重试。已有资料已保留。" : "The runtime is still in use. Try again later. Existing data was kept."
-        case .invalidStorage, .identityChanged:
+        case .invalidStorage:
             return zh ? "无法安全恢复运行环境，已有资料已保留。" : "The runtime could not be recovered safely. Existing data was kept."
+        case .identityChanged:
+            // An ambiguous or foreign disk identity keeps its explicit
+            // recovery route rather than a generic storage failure: point to
+            // the existing Settings / Execution Environment recovery flow
+            // that preserves user data.
+            return FloeL10n.l("execution.runtime_rebuild.verify_existing_disk")
         case .interrupted, .persistence:
             return zh ? "环境恢复尚未完成，请重试。已有资料已保留。" : "Runtime recovery is incomplete. Try again. Existing data was kept."
         case .unsupported:
@@ -189,6 +195,13 @@ struct LinuxResidentRecoveryStore {
         var size: Int64
         var modificationSeconds: Int64
         var modificationNanoseconds: Int64
+        /// Stable filesystem identity captured on Apple: the containing
+        /// volume's UUID does not change across host reboots or remounts,
+        /// unlike `st_dev`. `nil` on platforms without it, or when the query
+        /// fails; comparisons then fall back to the historical
+        /// device-plus-inode check. Old persisted receipts lack this field
+        /// and decode as `nil`, keeping their explicit-recovery semantics.
+        var volumeUUID: String? = nil
 
         static func read(_ url: URL) throws -> Node? {
             var info = stat()
@@ -203,14 +216,56 @@ struct LinuxResidentRecoveryStore {
             #endif
             return Node(device: UInt64(bitPattern: Int64(info.st_dev)), inode: UInt64(info.st_ino),
                 mode: UInt32(info.st_mode), size: Int64(info.st_size),
-                modificationSeconds: Int64(modified.tv_sec), modificationNanoseconds: Int64(modified.tv_nsec))
+                modificationSeconds: Int64(modified.tv_sec), modificationNanoseconds: Int64(modified.tv_nsec),
+                volumeUUID: LinuxResidentRecoveryStore.residentVolumeUUID(at: url.path))
         }
         var isDirectory: Bool { mode & UInt32(S_IFMT) == UInt32(S_IFDIR) }
         var isRegular: Bool { mode & UInt32(S_IFMT) == UInt32(S_IFREG) }
+        /// Original on-disk equality for pending-tree convergence: every
+        /// captured field except `volumeUUID`, which is deliberately excluded
+        /// so a legacy record without it still compares equal within the same
+        /// boot. Reboot tolerance is decided only by `sameFile`.
+        static func == (lhs: Node, rhs: Node) -> Bool {
+            lhs.device == rhs.device && lhs.inode == rhs.inode && lhs.mode == rhs.mode
+                && lhs.size == rhs.size && lhs.modificationSeconds == rhs.modificationSeconds
+                && lhs.modificationNanoseconds == rhs.modificationNanoseconds
+        }
+        /// Same filesystem object across host reboots. Requires the inode
+        /// plus at least one stable identity: when the receipt carries a
+        /// volume UUID the current observation must match (a renumbered `st_dev` after reboot is
+        /// accepted); otherwise (legacy receipts without a UUID) the
+        /// historical device identity decides, so an intact legacy receipt on
+        /// the same boot still passes while a renumbered one keeps its
+        /// explicit recovery. Never inode alone.
+        func sameFile(as other: Node) -> Bool {
+            guard inode == other.inode else { return false }
+            if let volumeUUID { return volumeUUID == other.volumeUUID }
+            return device == other.device
+        }
         func sameDirectory(as other: Node) -> Bool {
-            isDirectory && other.isDirectory && device == other.device && inode == other.inode
+            isDirectory && other.isDirectory && sameFile(as: other)
         }
     }
+
+    #if canImport(Darwin)
+    /// The containing volume's UUID via the public SDK `getattrlist`
+    /// `ATTR_VOL_UUID`, stable across reboots/remounts (unlike `st_dev`).
+    /// Measured layout: `u_int32` total length, then the 16-byte `guid_t`.
+    private static func residentVolumeUUID(at path: String) -> String? {
+        var attributes = attrlist()
+        attributes.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+        attributes.volattr = UInt32(ATTR_VOL_UUID)
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let status = buffer.withUnsafeMutableBytes { raw in
+            getattrlist(path, &attributes, raw.baseAddress, raw.count, 0)
+        }
+        guard status == 0, buffer.count >= 20 else { return nil }
+        let bytes = Array(buffer[(4..<20)])
+        return NSUUID(uuidBytes: bytes).uuidString
+    }
+    #else
+    private static func residentVolumeUUID(at path: String) -> String? { nil }
+    #endif
 
     struct Tree: Codable, Equatable {
         var directory: Node
@@ -511,7 +566,7 @@ struct LinuxResidentRecoveryStore {
               fresh.directory.sameDirectory(as: observed.directory),
               let originalDisk = fresh.disk, let currentDisk = observed.disk,
               originalDisk.isRegular, currentDisk.isRegular,
-              originalDisk.device == currentDisk.device, originalDisk.inode == currentDisk.inode else {
+              originalDisk.sameFile(as: currentDisk) else {
             throw LinuxResidentRecoveryError.identityChanged
         }
         return record.receipt

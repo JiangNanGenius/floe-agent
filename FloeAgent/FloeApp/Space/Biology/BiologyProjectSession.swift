@@ -227,10 +227,30 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
             guard intent.projectID == projectID else { throw BiologyHostError.readOnly }
             let source: BiologyNativeUIIntent.Source
             switch intent.source { case .analysis: source = .analysis; case .imageRegion: source = .imageRegion }
-            return try await host.runNativeAnalysis(projectID: projectID, assetID: intent.assetID,
+            let run = try await host.runNativeAnalysis(projectID: projectID, assetID: intent.assetID,
                 assetRevision: intent.assetRevision, method: intent.method, options: intent.options,
                 environmentID: intent.environmentID, source: source, isCancelled: { !token.isOpen })
+            // A region read is the image annotation the user asked to keep.
+            // Persist it through the existing select path so the project
+            // reopens on the same region and the shared assistant reads the
+            // same persisted selection via biology.read.
+            if case .imageRegion = intent.source {
+                await persistImageRegionAnnotation(assetID: intent.assetID, assetRevision: intent.assetRevision, options: intent.options)
+            }
+            return run
         }
+    }
+    /// Best-effort persistence of a just-read image region. The analysis run
+    /// remains the authoritative result; a selection conflict never rewrites
+    /// it or fails the caller.
+    private func persistImageRegionAnnotation(assetID: UUID, assetRevision: UInt64, options: BiologyJSON) async {
+        guard let fields = options.object else { return }
+        let allowed: Set<String> = ["series", "level", "channel", "slice", "frame", "region"]
+        let selection = BiologyJSON.object(fields.filter { allowed.contains($0.key) })
+        guard selection.object?.isEmpty == false else { return }
+        guard let saved = try? await host.service.project(projectID),
+              let asset = saved.assets.first(where: { $0.id == assetID && $0.revision == assetRevision }) else { return }
+        _ = try? await host.service.select(projectID, assetID: assetID, selection: selection, expectedAssetRevision: asset.revision)
     }
     func importFile(_ id: UUID, url: URL) async throws -> BiologyNativeImportedFile {
         try await nativeOperation { [self] token in
@@ -269,7 +289,16 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         let run = runID.flatMap { id in saved.runs.first { $0.id == id } }
         guard (assetID == nil || asset != nil), (runID == nil || run != nil) else { throw BiologyHostError.changed }
         var lines = [saved.title]
-        if let asset { lines.append("\(asset.title) · \(asset.kind.rawValue) · r\(asset.revision)") }
+        if let asset {
+            lines.append("\(asset.title) · \(asset.kind.rawValue) · r\(asset.revision)")
+            // Surface the saved annotation (plane/region selection) so the
+            // Notes preview and the shared assistant payload show the same
+            // persisted selection the workbench reopens with.
+            if let selection = saved.selections?[asset.id.uuidString], let fields = selection.object, !fields.isEmpty {
+                let summary = String(decoding: (try? BiologyCoding.encode(selection)) ?? Data(), as: UTF8.self)
+                lines.append(IDELanguageRunText.t("选区", "Selection") + ": " + String(summary.prefix(2000)))
+            }
+        }
         if let run {
             lines.append("\(run.method) · \(run.status.rawValue) · source r\(run.assetRevision)")
             if let result = run.result {
