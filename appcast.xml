@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.0</title>
+      <pubDate>Fri, 20 Nov 2026 15:41:25 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.0</link>
+      <sparkle:version>30</sparkle:version>
+      <sparkle:shortVersionString>1.11.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>创意模式支持画布、生图和生视频。 Create canvases and generate images and videos in Creative mode.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.0/Floe-Agent-1.11.0.dmg" length="32529066" type="application/octet-stream" sparkle:edSignature="bV2m9SaGcxWWj4k39ON0INvXBVq2UmAko9bGbsvoTvbzXikli8Hv84Puz1ywYoJ0t26QFFzJ95SykUjoC1i9AA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.10.10</title>
       <pubDate>Fri, 20 Nov 2026 14:25:51 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.10</link>
