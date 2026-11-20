@@ -20,6 +20,7 @@ public struct MusicDocument: Sendable, Codable, Hashable, Identifiable {
     public var revision: Int64
     public var tempoMap: MusicTempoMap
     public var assets: [MusicAsset]
+    public var timbres: [MusicTimbre]
     public var tracks: [MusicTrack]
     public var buses: [MusicBus]
     public var masterStrip: MusicStripSettings
@@ -35,7 +36,7 @@ public struct MusicDocument: Sendable, Codable, Hashable, Identifiable {
                                            beatsPerBar: 4, beatUnit: 4)
                 ]),
                 assets: [MusicAsset] = [], tracks: [MusicTrack] = [],
-                buses: [MusicBus] = [],
+                buses: [MusicBus] = [], timbres: [MusicTimbre] = [],
                 masterStrip: MusicStripSettings = try! MusicStripSettings(),
                 automationLanes: [MusicAutomationLane] = []) throws {
         self.schemaVersion = schemaVersion
@@ -47,6 +48,7 @@ public struct MusicDocument: Sendable, Codable, Hashable, Identifiable {
         self.tempoMap = tempoMap
         self.assets = assets
         self.tracks = tracks
+        self.timbres = timbres
         self.buses = buses
         self.masterStrip = masterStrip
         self.automationLanes = automationLanes
@@ -72,6 +74,9 @@ public struct MusicDocument: Sendable, Codable, Hashable, Identifiable {
         }
         guard revision >= 0 else {
             throw MusicError.invalidBatch(reason: "negative revision")
+        }
+        guard Set(timbres.map(\.name)).count == timbres.count else {
+            throw MusicError.invalidTrack(reason: "Duplicate timbre name")
         }
         // Deep revalidation of nested mutable state.
         _ = try MusicTempoMap(ticksPerQuarter: tempoMap.ticksPerQuarter,
@@ -280,7 +285,7 @@ public struct MusicDocument: Sendable, Codable, Hashable, Identifiable {
             try self.init(schemaVersion: schemaVersion, id: id, name: name,
                           createdAt: createdAt, updatedAt: updatedAt,
                           revision: revision, tempoMap: tempoMap, assets: assets,
-                          tracks: tracks, buses: buses, masterStrip: master,
+                          tracks: tracks, buses: buses, timbres: c.decodeIfPresent([MusicTimbre].self, forKey: .timbres) ?? [], masterStrip: master,
                           automationLanes: lanes)
         } catch let error as MusicError {
             throw DecodingError.dataCorruptedError(forKey: .tracks, in: c,

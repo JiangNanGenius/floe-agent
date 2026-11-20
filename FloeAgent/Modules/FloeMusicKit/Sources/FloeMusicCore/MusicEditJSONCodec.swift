@@ -105,6 +105,35 @@ public enum MusicEditJSONCodec {
         let fields = try object(command, path: path)
         let operation = try string(required(fields, "op", path), path: path + ".op")
         switch operation {
+        case "instrument.design":
+            try keys(fields, allowed: ["op", "trackID", "name", "presetIndex", "parameters"], path: path)
+            let id = try identifier(required(fields, "trackID", path), path: path + ".trackID")
+            guard let track = document.tracks.first(where: { $0.id.rawValue == id && $0.kind == .midi }) else {
+                throw failure("unknown_id", path + ".trackID", "An existing MIDI track was not found.", "a MIDI trackID from studio.read")
+            }
+            let name = try string(required(fields, "name", path), path: path + ".name")
+            let index = try integer(required(fields, "presetIndex", path), path: path + ".presetIndex")
+            guard let preset = Int(exactly: index), MusicPresetCatalog.preset(index: preset) != nil else {
+                throw failure("invalid_value", path + ".presetIndex", "Unknown base preset.", "an index from musicCapabilities.presets")
+            }
+            let values = try object(required(fields, "parameters", path), path: path + ".parameters")
+            var parameters: [String: Double] = [:]
+            for (key, raw) in values {
+                let location = path + ".parameters." + key
+                let v = try number(raw, path: location)
+                guard MusicTimbre.parameterRanges[key]?.contains(v) == true else {
+                    throw failure("invalid_value", location, "Unknown parameter or out of range.", "a value within musicCapabilities.timbreParameterRanges")
+                }
+                parameters[key] = v
+            }
+            let timbre: MusicTimbre
+            do { timbre = try MusicTimbre(name: name, presetIndex: preset, parameters: parameters) }
+            catch { throw failure("invalid_value", path, String(describing: error), "a named playable synth patch") }
+            let instrument = try timbre.instrument()
+            var ops: [MusicEditOp] = []
+            if !document.timbres.contains(timbre) { ops.append(.saveTimbre(timbre)) }
+            if track.instrument != instrument { ops.append(.setInstrument(track.id, instrument)) }
+            return ops
         case "midi.clip.update":
             try keys(fields, allowed: ["op", "clipID", "name", "durationTicks", "notesMode", "notes", "controllerPoints", "controllerPointsMode", "programChanges", "programChangesMode"], path: path)
             let rawID = try identifier(required(fields, "clipID", path), path: path + ".clipID")
@@ -225,7 +254,7 @@ public enum MusicEditJSONCodec {
             try addBudget(planned.reduce(0) { $0 + plannedNotes($1) }, to: &noteCount, path: path + ".bars")
             return planned
         default:
-            throw failure("unknown_operation", path + ".op", "This plain operation is unsupported.", "a documented midi.clip.* or midi.template.insert operation")
+            throw failure("unknown_operation", path + ".op", "This plain operation is unsupported.", "a documented instrument.design or MIDI command")
         }
     }
 

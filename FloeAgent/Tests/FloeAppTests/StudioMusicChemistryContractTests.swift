@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import ImageIO
 import Testing
 import FloePersistence
 import FloeTools
@@ -91,6 +92,40 @@ import AVFoundation
         FileHandle.standardOutput.write(Data("FLOE_MUSIC_REGRESSION_FIXTURE|\(id)|muted=\(muted)\n".utf8))
         return (id, saved.document)
     }
+    @Test func designedTimbreIsDiscoverableAndSavedOnTheAuthorizedProject() async throws {
+        try await withSavedTask { initial in
+            var context = initial
+            let fixture = try await musicFixture(context, muted: false)
+            let track = try #require(fixture.document.tracks.only)
+            let before = try await completeMusic(fixture.id, context)
+            let capabilities = try #require(before.page["musicCapabilities"] as? [String: Any])
+            #expect(capabilities["timbreCommand"] as? String == "instrument.design")
+            let commands: [[String: Any]] = [["op": "instrument.design", "trackID": track.id.rawValue,
+                "name": "QA glass keys", "presetIndex": 42, "parameters": ["release": 0.52, "fmRatio": 2.8]]]
+            context.toolCallID = "design-timbre"
+            let json = String(decoding: try JSONSerialization.data(withJSONObject: commands), as: UTF8.self)
+            _ = try await invoke("studio.edit", ["projectID": fixture.id, "expectedRevision": String(fixture.document.revision),
+                "operationsJSON": json], context)
+            let after = try await completeMusic(fixture.id, context)
+            let design = try #require(after.document.timbres.first)
+            #expect(design.name == "QA glass keys")
+            #expect(after.document.tracks.first?.instrument == (try design.instrument()))
+            #expect(after.document.tracks.first?.clips == track.clips)
+            #expect(after.document.revision == fixture.document.revision + 1)
+            context.toolCallID = "export-designed-reference"
+            let image = try await invoke("studio.run", ["projectID": fixture.id, "action": "exportWaveform",
+                "inputJSON": String(decoding: try JSONEncoder().encode(["trackID": track.id.rawValue]), as: UTF8.self)], context)
+            let output = try #require(image.outputFiles.first)
+            let ref = try #require(image.artifacts.first)
+            #expect(output.sha256 == ref.sha256 && output.mimeType == "image/png")
+            let verified = try VerifiedToolImageArtifact.load(ref, root: FloeArtifactStore.root())
+            let delivery = try verified.providerDelivery()
+            let source = try #require(CGImageSourceCreateWithData(delivery.data as CFData, nil))
+            let decoded = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            #expect(decoded.width > 256 && decoded.height > 100 && delivery.sourceSHA256 == output.sha256)
+        }
+    }
+
     @Test func thirtySecondPlainUpdateSavesReopensAndRendersTheExactMixThroughRegisteredTools() async throws {
         try await withSavedTask { initial in
             var context = initial
@@ -121,7 +156,7 @@ import AVFoundation
                 let disk = try NativeMusicRepository(root: location.url.appendingPathComponent("Music"))
                 #expect(try await disk.load(projectID: saved.document.id) == saved.document)
                 let capabilities = try #require(saved.page["musicCapabilities"] as? [String: Any])
-                #expect((capabilities["presets"] as? [Any])?.count == 41)
+                #expect((capabilities["presets"] as? [Any])?.count == MusicPresetCatalog.all.count)
                 let guide = try #require(saved.page["editFormat"] as? String)
                 #expect(guide.contains("midi.clip.update") && guide.contains("midi.clip.insert"))
                 context.toolCallID = "render-exact-thirty-second-phrase-\(muted)"

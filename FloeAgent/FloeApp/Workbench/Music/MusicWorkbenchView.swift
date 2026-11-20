@@ -112,10 +112,9 @@ struct MusicWorkbenchView: View {
                 Button(WorkbenchText.t("作品助手", "Work assistant"), systemImage: "sparkles", action: onAssistant)
                     .accessibilityIdentifier("music.assistant")
             }
-            if usesWideLayout && dock != .score && dock != .dj {
-                Button(showsInspector ? WorkbenchText.t("隐藏检查器", "Hide inspector")
-                    : WorkbenchText.t("显示检查器", "Show inspector"), systemImage: "sidebar.right") {
-                    showsInspector.toggle()
+            if usesWideLayout && dock != .score && dock != .dj && !showsInspector {
+                Button(WorkbenchText.t("显示检查器", "Show inspector"), systemImage: "sidebar.right") {
+                    showsInspector = true
                 }.accessibilityIdentifier("music.inspector.toggle")
                     .accessibilityValue(showsInspector ? WorkbenchText.t("已展开", "Expanded") : WorkbenchText.t("已收起", "Collapsed"))
             }
@@ -341,8 +340,15 @@ struct MusicWorkbenchView: View {
     }
     private var inspectorContent: some View {
         VStack(spacing: 0) {
-            Text(WorkbenchText.t("检查器", "Inspector")).font(.headline)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            HStack {
+                Text(WorkbenchText.t("检查器", "Inspector")).font(.headline)
+                Spacer()
+                Button { showsInspector = false } label: {
+                    Image(systemName: "sidebar.right").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(WorkbenchText.t("收起检查器", "Collapse inspector"))
+                .accessibilityIdentifier("music.inspector.toggle")
+            }.padding(.horizontal, 12)
             Divider()
             MusicEffectsInspector(session: session)
         }

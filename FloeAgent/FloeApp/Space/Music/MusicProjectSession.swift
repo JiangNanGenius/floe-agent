@@ -514,7 +514,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     /// Auditions never write an instrument or enter the keyboard recording sink.
     /// One session-owned voice and cancellation fence cover every exit path.
-    func previewPreset(_ index: Int) {
+    func previewPreset(_ index: Int, parameters: [String: Double] = [:]) {
         guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
         guard MusicPresetCatalog.preset(index: index) != nil else {
             diagnostic = IDELanguageRunText.t("此音色不可用。", "This preset is unavailable."); return
@@ -528,7 +528,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         let owner = keyboard.owner.rawValue + ":preset-preview:" + identity.uuidString
         diagnostic = nil
         do {
-            let voice = try MusicLiveInstrument(ownerToken: owner, authority: audio, preset: index)
+            let voice = try MusicLiveInstrument(ownerToken: owner, authority: audio, preset: index, parameters: parameters)
             try voice.start()
             previewInstrument = voice; previewPresetIndex = index
             previewIdentity = identity; previewResumeTrack = resumeTrack
@@ -1010,7 +1010,15 @@ private nonisolated struct MusicImportDirectory: Sendable {
         guard capturedControllers.count < MusicMIDIClipPayload.maxControllerPoints else { throw MusicError.boundsExceeded(field: "controllerPoints", limit: MusicMIDIClipPayload.maxControllerPoints) }
         capturedControllers["\(controller):0:\(tick)"] = try MusicMIDIControllerPoint(controller: controller, tick: .init(tick), value: value, channel: 0)
     }
+    enum AudioExport {
+        case wav, mp3, waveform(MusicPluginState?)
+    }
+
     func render(asMP3: Bool, play: Bool = false, tailFrames: Int64 = 48_000) {
+        render(asMP3 ? .mp3 : .wav, play: play, tailFrames: tailFrames)
+    }
+
+    func render(_ format: AudioExport, play: Bool = false, tailFrames: Int64 = 48_000) {
         guard !isRendering, !notationRestoring, !notationImporting, !djCaptureBusy, !isRecording, !isMIDIRecording else { return }
         do { try validateRenderTail(tailFrames) }
         catch { renderError = error; diagnostic = error.localizedDescription; return }
@@ -1027,16 +1035,38 @@ private nonisolated struct MusicImportDirectory: Sendable {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let base = "mix-r\(frozen.revision)-" + UUID().uuidString
                 let wav = directory.appendingPathComponent(base + ".wav")
+                var renderDocument = frozen
+                let drawsWaveform: Bool
+                if case .waveform(let patch) = format {
+                    drawsWaveform = true
+                    if let patch {
+                        // A one-second A4 exercises this patch even on an empty arrangement.
+                        let note = try MusicMIDINote(pitch: 69, startTick: .init(0), durationTicks: 960, velocity: 96)
+                        var track = try MusicTrack(name: "Timbre", kind: .midi, instrument: patch)
+                        track.clips = [try MusicClip(name: "A4", trackID: track.id, offset: .init(0),
+                            body: .midi(.init(durationTicks: 960, notes: [note])))]
+                        renderDocument = try MusicDocument(id: frozen.id, name: frozen.name, revision: frozen.revision,
+                            tempoMap: .init(ticksPerQuarter: 960, sampleRate: frozen.tempoMap.sampleRate,
+                                            segments: [.init(startTick: .init(0), bpm: 60, beatsPerBar: 4, beatUnit: 4)]), tracks: [track])
+                    }
+                } else { drawsWaveform = false }
+                defer { if drawsWaveform { try? FileManager.default.removeItem(at: wav) } }
                 var sources: [ResolvedMusicSource] = []
-                for asset in frozen.assets {
+                for asset in renderDocument.assets {
                     if asset.kind == .midiFile { continue }
                     sources.append(.init(asset: asset, url: try await repository.resolvedURL(for: asset)))
                 }
-                _ = try await renderer.render(document: frozen, sources: sources, destination: wav, lease: lease, tailFrames: frozenTailFrames) { [weak self] frames in
+                _ = try await renderer.render(document: renderDocument, sources: sources, destination: wav, lease: lease, tailFrames: frozenTailFrames) { [weak self] frames in
                     Task { @MainActor in self?.renderedFrames = frames }
                 }
                 var output = wav
-                if asMP3 {
+                if drawsWaveform {
+                    let png = try await MusicWaveformPNG.render(audioURL: wav)
+                    try Task.checkCancellation()
+                    try lease.validate(document: document)
+                    output = directory.appendingPathComponent(base + ".png")
+                    try png.write(to: output, options: .atomic)
+                } else if case .mp3 = format {
                     output = try await mp3.encode(wav: wav, destination: directory.appendingPathComponent(base + ".mp3"),
                         document: frozen, lease: lease)
                 }
@@ -1063,9 +1093,12 @@ private nonisolated struct MusicImportDirectory: Sendable {
         }
     }
     func renderAndWait(asMP3: Bool, tailFrames: Int64 = 48_000) async throws -> URL {
-        guard !isRendering, !djCaptureBusy, !notationRestoring, !notationImporting else { throw MusicError.invalidBatch(reason: "another render, recording or restore is running") }
+        try await renderAndWait(asMP3 ? .mp3 : .wav, tailFrames: tailFrames)
+    }
+    func renderAndWait(_ format: AudioExport, tailFrames: Int64 = 48_000) async throws -> URL {
+        guard !isRendering, !isRecording, !isMIDIRecording, !djCaptureBusy, !notationRestoring, !notationImporting else { throw MusicError.invalidBatch(reason: "another render, recording or restore is running") }
         try validateRenderTail(tailFrames)
-        render(asMP3: asMP3, tailFrames: tailFrames)
+        render(format, tailFrames: tailFrames)
         await withTaskCancellationHandler { await renderTask?.value } onCancel: {
             Task { @MainActor in self.cancelRender() }
         }

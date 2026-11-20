@@ -29,7 +29,8 @@ import XCTest
            ProcessInfo.processInfo.environment["FLOE_QA_ENABLE_EDITOR_INPUT_OBSERVATION"] == "1" {
             app.launchArguments.append("--floe-editor-input-ownership-observation")
         }
-        if name.contains("testDiagnosticsRefreshExpandAndFeedbackAreIndependent") {
+        if name.contains("testDiagnosticsRefreshExpandAndFeedbackAreIndependent")
+            || name.contains("testMusicTimbreWaveformWithoutRecordedClips") {
             app.launchArguments += ["--ui-test-skip-onboarding", "-ui-testing", "-ui-testing-ipad"]
             XCUIDevice.shared.orientation = .landscapeLeft
         }
@@ -1802,6 +1803,37 @@ import XCTest
         closeEditor()
         // The unique fixture is retained only until the run owner exports
         // its evidence and performs scoped QA cleanup.
+    }
+
+    func testMusicTimbreWaveformWithoutRecordedClips() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        app.buttons["space.new"].tap()
+        let music = app.buttons["space.create.music"].firstMatch
+        XCTAssertTrue(music.waitForExistence(timeout: 10))
+        // The iPad menu animates and scrolls within its popover. Tap the actual
+        // label after layout, keeping the finger clear of the scrolling edge.
+        XCTAssertTrue(music.isHittable)
+        music.coordinate(withNormalizedOffset: .init(dx: 0.28, dy: 0.5)).tap()
+        confirmWorkCreation(appendTitle: " QA-Wave-" + UUID().uuidString.prefix(8))
+        let add = app.buttons["添加轨道或导入素材"].firstMatch
+        XCTAssertTrue(add.waitForExistence(timeout: 25))
+        add.tap()
+        app.buttons["乐器轨"].firstMatch.tap()
+        app.buttons["素材"].firstMatch.tap()
+        app.buttons["music.library.presets"].firstMatch.tap()
+        let design = app.buttons["设计音色"].firstMatch
+        XCTAssertTrue(design.waitForExistence(timeout: 10))
+        design.tap()
+        let render = app.buttons["生成音色波形图"].firstMatch
+        for _ in 0..<8 where !render.isHittable { app.swipeUp() }
+        XCTAssertTrue(render.isHittable)
+        render.tap()
+        let share = app.buttons["分享波形 PNG"].firstMatch
+        XCTAssertTrue(share.waitForExistence(timeout: 25))
+        XCTAssertTrue(app.images["导出的音频波形图"].firstMatch.waitForExistence(timeout: 5))
+        app.buttons["保存并应用"].tap()
+        XCTAssertTrue(app.buttons["我的音色"].firstMatch.waitForExistence(timeout: 10))
     }
 
     func testProfessionalMusicPanelsKeepNativeControlsAndAvailableHeight() {

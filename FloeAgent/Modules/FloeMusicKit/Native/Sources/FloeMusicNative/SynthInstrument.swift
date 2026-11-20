@@ -36,38 +36,7 @@ struct MusicSynthPatch: Equatable, Sendable {
     }
 
     static func resolve(preset: Int, overrides: [String: Double]) throws -> Self {
-        guard let entry = MusicPresetCatalog.preset(index: preset) else {
-            throw MusicNativeError.unsupported("synth preset \(preset)")
-        }
-        let ranges: [String: ClosedRange<Double>] = [
-            "waveform": 0...8, "attack": 0...99, "decay": 0...99,
-            "sustain": 0...1, "release": 0...99, "gain": 0...1,
-            "pulseWidth": 0.05...0.95, "fmRatio": 0.1...16, "fmIndex": 0...12,
-            "transpose": -48...48, "fixedNote": -1...127, "detune": -50...50,
-            "highpass": 0...20_000, "lowpass": 20...20_000
-        ]
-        let harmonicKeys = Set((2...8).map { "harmonic\($0)" })
-        guard overrides.keys.allSatisfy({ ranges[$0] != nil || harmonicKeys.contains($0) }) else {
-            throw MusicNativeError.unsupported("synth parameter")
-        }
-        var values = entry.parameters
-        values.merge(overrides) { _, replacement in replacement }
-        for (key, value) in values {
-            guard value.isFinite, (ranges[key] ?? (0...1)).contains(value) else {
-                throw MusicNativeError.invalid("synth parameter range: \(key)")
-            }
-        }
-        guard values["waveform"]!.rounded() == values["waveform"],
-              (values["fixedNote"] ?? -1).rounded() == (values["fixedNote"] ?? -1),
-              (values["highpass"] ?? 0) < (values["lowpass"] ?? 20_000) else {
-            throw MusicNativeError.invalid("synth waveform, fixed note or filter range")
-        }
-        if values["waveform"] == 8 {
-            let kitKeys: Set<String> = ["waveform", "attack", "decay", "sustain", "release", "gain"]
-            guard Set(overrides.keys).isSubset(of: kitKeys) else {
-                throw MusicNativeError.unsupported("drum kit parameter")
-            }
-        }
+        let values = try MusicTimbre.resolvedParameters(presetIndex: preset, overrides: overrides)
         return Self(presetIndex: preset, parameters: values)
     }
 

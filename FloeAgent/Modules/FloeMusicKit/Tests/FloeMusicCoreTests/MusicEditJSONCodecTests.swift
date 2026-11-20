@@ -93,6 +93,21 @@ final class MusicEditJSONCodecTests: XCTestCase {
         XCTAssertEqual(a, b, file: file, line: line)
     }
 
+    func testInstrumentDesignIsAnAtomicPlayableLibraryEntry() throws {
+        let command = #"[{"op":"instrument.design","trackID":"actual-midi-track","name":"Air","presetIndex":48,"parameters":{"fmRatio":1.75,"release":0.55}}]"#
+        let original = try document()
+        let ops = try MusicEditJSONCodec.decode(command, document: original)
+        XCTAssertEqual(ops.count, 2)
+        let saved = try apply(ops, to: original)
+        let design = try XCTUnwrap(saved.timbres.first)
+        XCTAssertEqual(saved.tracks[0].instrument, try design.instrument())
+        XCTAssertEqual(saved.tracks[0].clips, original.tracks[0].clips)
+        XCTAssertEqual(saved.tracks[0].strip, original.tracks[0].strip)
+        XCTAssertTrue(try MusicEditJSONCodec.decode(command, document: saved).isEmpty)
+        let invalid = command.replacingOccurrences(of: "1.75", with: "true")
+        try error(invalid, document: original, code: "type_mismatch", path: "operations[0].parameters.fmRatio")
+    }
+
     func testPlainAppendThirtySecondsPreservesThreeNotesMixAndRevisionOnSaveReopen() async throws {
         let original = try document()
         let repository = InMemoryMusicRepository()

@@ -2,11 +2,15 @@
 
 Music document, editing, keyboard and audio services used by the native Floe workbench. See the historical [predevelopment handoff](../../../docs/FLOE_MUSIC_WORKBENCH_PREDEVELOPMENT_HANDOFF.zh-CN.md) and [Chinese module guide](README.zh-CN.md).
 
-## Current integration checkpoint — 2026-11-08
+## Timbres and waveform export
+
+The editor has 49 synthesized presets. Use the preset library to design, import or export a JSON timbre. An empty instrument track can produce a reference-note waveform. Export the stereo mix to draw the whole arrangement. The project assistant uses `instrument.design` and `studio.run exportWaveform`. For workspace audio files, `audio.exportWaveform` returns a downloadable PNG and a verified visual attachment.
+
+## Integration checkpoint — 2026-11-08
 
 The main App uses its existing Space editor, personal original repository and
 task-authorized `studio` tools. The workbench keeps one top assistant entry.
-The same native live/offline bank supplies 41 synthesized presets in nine
+The same native live/offline bank supplies 49 synthesized presets in nine
 categories, including a GM electronic drum kit; these are not acoustic samples.
 The preset browser supports category/search, audition, saved application and
 undo. Quantize, transpose, velocity edits and four additive clip templates use

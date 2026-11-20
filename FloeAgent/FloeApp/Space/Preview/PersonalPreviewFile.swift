@@ -62,7 +62,16 @@ nonisolated struct PersonalPreviewFile: Sendable {
     func sha256(checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try consume(keepBytes: false, checkCancellation: checkCancellation).digest
     }
-    private func consume(keepBytes: Bool,
+    /// Copy from the anchored descriptor so the decoder never reopens a mutable workspace path.
+    func copy(to destination: URL, checkCancellation: @Sendable () throws -> Void) throws -> String {
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw PersonalContentPreviewError.unavailable
+        }
+        let writer = try FileHandle(forWritingTo: destination)
+        defer { try? writer.close() }
+        return try consume(keepBytes: false, writeChunk: { try writer.write(contentsOf: $0) }, checkCancellation: checkCancellation).digest
+    }
+    private func consume(keepBytes: Bool, writeChunk: ((Data) throws -> Void)? = nil,
                          checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> (bytes: Data, digest: String) {
         try Task.checkCancellation(); try checkCancellation()
         let result = try Self.withFile(root: root, relative: relativePath) { fd in
@@ -78,6 +87,7 @@ nonisolated struct PersonalPreviewFile: Sendable {
                 count += readCount; guard count <= maximumBytes else { throw PersonalContentPreviewError.tooLarge }
                 let chunk = Data(buffer.prefix(readCount)); hasher.update(data: chunk)
                 if keepBytes { output.append(chunk) }
+                try writeChunk?(chunk)
             }
             var after = stat()
             guard fstat(fd, &after) == 0, Identity(after) == identity, Int64(count) == identity.size else { throw PersonalContentPreviewError.sourceChanged }

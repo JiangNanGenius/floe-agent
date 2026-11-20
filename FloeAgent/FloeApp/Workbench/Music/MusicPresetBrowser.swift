@@ -3,6 +3,7 @@
 import SwiftUI
 import FloeMusicCore
 import FloeMusicNative
+import UniformTypeIdentifiers
 
 enum MusicInstrumentPresentation {
     static func name(_ patch: MusicPluginState?) -> String {
@@ -10,6 +11,7 @@ enum MusicInstrumentPresentation {
         guard patch.pluginID == MusicNativeBuiltins.synth else {
             return WorkbenchText.t("其他乐器", "Other instrument")
         }
+        if let name = patch.timbreName { return name }
         return MusicPresetCatalog.preset(index: patch.presetIndex)?.displayName(isChinese: WorkbenchText.isChinese)
             ?? WorkbenchText.t("未知音色", "Unknown preset") + " #\(patch.presetIndex)"
     }
@@ -26,6 +28,14 @@ struct MusicPresetBrowser: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var query = ""
     @State private var category: MusicPresetCategory?
+
+    @State private var draft: TimbreDraft?
+    @State private var importing = false
+    @State private var importTarget: TimbreTarget?
+    private var target: TimbreTarget? {
+        guard let track = session.currentTrack, track.kind == .midi else { return nil }
+        return TimbreTarget(trackID: track.id, revision: session.document.revision)
+    }
 
     private var canApply: Bool {
         session.currentTrack?.kind == .midi && !session.saving && !session.isRecording && !session.isMIDIRecording
@@ -51,6 +61,32 @@ struct MusicPresetBrowser: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
+            Section(WorkbenchText.t("自定义音色", "Custom timbres")) {
+                Button(WorkbenchText.t("设计音色", "Design timbre"), systemImage: "slider.horizontal.3") {
+                    guard let target else { return }
+                    let patch = session.currentTrack?.instrument
+                    let base = MusicInstrumentPresentation.isEditable(patch) ? patch : nil
+                    draft = TimbreDraft(target: target, name: base?.timbreName ?? WorkbenchText.t("我的音色", "My timbre"),
+                                        index: base?.presetIndex ?? 0, parameters: base?.parameters ?? [:])
+                }
+                Button(WorkbenchText.t("导入音色文件", "Import timbre file"), systemImage: "square.and.arrow.down") {
+                    importTarget = target
+                    importing = true
+                }
+                ForEach(session.document.timbres.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }, id: \.name) { timbre in
+                    Button {
+                        guard let target else { return }
+                        draft = TimbreDraft(target: target, name: timbre.name, index: timbre.presetIndex, parameters: timbre.parameters)
+                    } label: {
+                        Label(timbre.name, systemImage: "waveform")
+                    }
+                    .swipeActions {
+                        Button(WorkbenchText.t("从音色库删除", "Remove from library"), role: .destructive) {
+                            session.edit([.removeTimbre(timbre.name)])
+                        }
+                    }
+                }
+            }.disabled(!canApply)
             Section {
                 Picker(WorkbenchText.t("分类", "Category"), selection: $category) {
                     Text(WorkbenchText.t("全部音色", "All presets")).tag(Optional<MusicPresetCategory>.none)
@@ -73,6 +109,24 @@ struct MusicPresetBrowser: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: WorkbenchText.t("搜索音色", "Search presets"))
         .accessibilityIdentifier("music.presets")
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
+            guard case .success(let url) = result, let target = importTarget else {
+                if case .failure(let error) = result, (error as NSError).code != NSUserCancelledError {
+                    session.diagnostic = error.localizedDescription
+                }
+                return
+            }
+            Task {
+                do {
+                    let patch = try await Task.detached(priority: .userInitiated) { try TimbreFile.read(from: url) }.value
+                    guard session.selectedTrack == target.trackID else { return }
+                    draft = TimbreDraft(target: target, name: patch.name, index: patch.presetIndex, parameters: patch.parameters)
+                } catch {
+                    session.diagnostic = WorkbenchText.t("无法读取音色，请选择导出的音色 JSON 文件。", "Choose a valid exported timbre JSON file.")
+                }
+            }
+        }
+        .sheet(item: $draft) { item in MusicTimbreEditor(session: session, draft: item) }
         .onDisappear { session.stopPresetPreview() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { session.stopPresetPreview() } }
     }
@@ -97,7 +151,7 @@ struct MusicPresetBrowser: View {
     }
     private func presetRow(_ preset: MusicInstrumentPreset) -> some View {
         let patch = session.currentTrack?.instrument
-        let selected = patch?.pluginID == MusicNativeBuiltins.synth && patch?.presetIndex == preset.index
+        let selected = patch?.pluginID == MusicNativeBuiltins.synth && patch?.presetIndex == preset.index && patch?.timbreName == nil && patch?.parameters.isEmpty == true
         let previewing = session.previewPresetIndex == preset.index
         return HStack(spacing: 8) {
             Button {
@@ -169,6 +223,183 @@ struct MusicActionNotice: View {
                 DisclosureGroup(WorkbenchText.t("详情", "Details")) { Text(diagnostic).textSelection(.enabled) }
             }
         }
+    }
+}
+private struct TimbreTarget {
+    let trackID: MusicTrackID
+    let revision: Int64
+}
+
+private struct TimbreDraft: Identifiable {
+    let id = UUID()
+    let target: TimbreTarget
+    var name: String
+    let index: Int
+    var parameters: [String: Double]
+}
+
+private struct TimbreFile: FileDocument {
+    static let readableContentTypes: [UTType] = [.json]
+    let timbre: MusicTimbre
+
+    nonisolated static func read(from url: URL) throws -> MusicTimbre {
+        let scope = url.startAccessingSecurityScopedResource()
+        defer { if scope { url.stopAccessingSecurityScopedResource() } }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var bytes = Data()
+        while bytes.count <= MusicTimbre.maximumFileBytes {
+            let next = try handle.read(upToCount: MusicTimbre.maximumFileBytes + 1 - bytes.count)
+            guard let next, !next.isEmpty else { return try JSONDecoder().decode(MusicTimbre.self, from: bytes) }
+            bytes.append(next)
+        }
+        throw CocoaError(.fileReadTooLarge)
+    }
+
+    init(_ timbre: MusicTimbre) { self.timbre = timbre }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents, data.count <= MusicTimbre.maximumFileBytes else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        timbre = try JSONDecoder().decode(MusicTimbre.self, from: data)
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return FileWrapper(regularFileWithContents: try encoder.encode(timbre))
+    }
+}
+
+private struct MusicTimbreEditor: View {
+    @Bindable var session: MusicProjectSession
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var draft: TimbreDraft
+    @State private var exportFile: TimbreFile?
+    @State private var exporting = false
+    @State private var waveformURL: URL?
+    @State private var saving = false
+    @State private var errorMessage: String?
+
+    init(session: MusicProjectSession, draft: TimbreDraft) {
+        self.session = session
+        _draft = State(initialValue: draft)
+    }
+
+    private var base: [String: Double] { MusicPresetCatalog.preset(index: draft.index)?.parameters ?? [:] }
+    private var waveform: Int { Int(value("waveform", fallback: 0)) }
+    private func value(_ key: String, fallback: Double) -> Double {
+        draft.parameters[key] ?? base[key] ?? fallback
+    }
+    private func timbre() throws -> MusicTimbre {
+        try MusicTimbre(name: draft.name, presetIndex: draft.index, parameters: draft.parameters)
+    }
+    private func slider(_ label: String, _ key: String, range: ClosedRange<Double>, fallback: Double = 0) -> some View {
+        let current = value(key, fallback: fallback)
+        // Imported envelopes can be longer than the usual editing range.
+        let bounds = min(range.lowerBound, current)...max(range.upperBound, current)
+        return VStack(alignment: .leading) {
+            LabeledContent(label) { Text(current.formatted(.number.precision(.fractionLength(0...3)))).monospacedDigit() }
+            Slider(value: Binding(get: { value(key, fallback: fallback) }, set: { draft.parameters[key] = $0 }), in: bounds)
+                .accessibilityLabel(label)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField(WorkbenchText.t("音色名称", "Timbre name"), text: $draft.name)
+                    if waveform != 8 {
+                        Picker(WorkbenchText.t("波形", "Waveform"), selection: Binding(get: { waveform }, set: { draft.parameters["waveform"] = Double($0) })) {
+                            let names = WorkbenchText.isChinese ? ["正弦", "锯齿", "三角", "方波", "脉冲", "泛音", "调频", "噪声"] :
+                                ["Sine", "Saw", "Triangle", "Square", "Pulse", "Harmonics", "FM", "Noise"]
+                            ForEach(names.indices, id: \.self) { Text(names[$0]).tag($0) }
+                        }
+                    }
+                    if waveform == 4 { slider(WorkbenchText.t("脉宽", "Pulse width"), "pulseWidth", range: 0.05...0.95, fallback: 0.25) }
+                    if waveform == 6 {
+                        slider(WorkbenchText.t("调频比", "FM ratio"), "fmRatio", range: 0.1...16, fallback: 2)
+                        slider(WorkbenchText.t("调制指数", "FM index"), "fmIndex", range: 0...12, fallback: 1)
+                    }
+                    if waveform == 5 {
+                        DisclosureGroup(WorkbenchText.t("泛音", "Harmonics")) {
+                            ForEach(2...8, id: \.self) { n in slider("\(n)", "harmonic\(n)", range: 0...1) }
+                        }
+                    }
+                    if waveform != 8 { slider(WorkbenchText.t("低通频率 (Hz)", "Low-pass frequency (Hz)"), "lowpass", range: 20...20_000, fallback: 20_000) }
+                }
+                Section(WorkbenchText.t("音量包络", "Amplitude envelope")) {
+                    slider(WorkbenchText.t("起音 (秒)", "Attack (s)"), "attack", range: 0...4)
+                    slider(WorkbenchText.t("衰减 (秒)", "Decay (s)"), "decay", range: 0...4)
+                    slider(WorkbenchText.t("延音", "Sustain"), "sustain", range: 0...1)
+                    slider(WorkbenchText.t("释音 (秒)", "Release (s)"), "release", range: 0...6)
+                    slider(WorkbenchText.t("音量", "Gain"), "gain", range: 0...1, fallback: 1)
+                }
+                Section {
+                    Button(session.previewPresetIndex == nil ? WorkbenchText.t("试听", "Audition") : WorkbenchText.t("停止试听", "Stop audition"),
+                           systemImage: session.previewPresetIndex == nil ? "speaker.wave.2" : "stop.fill") {
+                        if session.previewPresetIndex != nil { session.stopPresetPreview() }
+                        else { session.previewPreset(draft.index, parameters: draft.parameters) }
+                    }
+                    Button(WorkbenchText.t("生成音色波形图", "Render timbre waveform"), systemImage: "waveform") {
+                        Task {
+                            do {
+                                let patch = try timbre()
+                                let url = try await session.renderAndWait(.waveform(patch.instrument()))
+                                if try timbre() == patch { waveformURL = url }
+                            }
+                            catch { errorMessage = message(error) }
+                        }
+                    }.disabled(session.isRendering)
+                    if let waveformURL {
+                        MusicWaveformPreview(file: waveformURL)
+                        ShareLink(item: waveformURL) { Label(WorkbenchText.t("分享波形 PNG", "Share waveform PNG"), systemImage: "square.and.arrow.up") }
+                    }
+                    Button(WorkbenchText.t("导出音色文件", "Export timbre file"), systemImage: "square.and.arrow.up") {
+                        do { exportFile = try TimbreFile(timbre()); exporting = true }
+                        catch { errorMessage = message(error) }
+                    }
+                }
+                MusicActionNotice(diagnostic: errorMessage ?? session.diagnostic)
+            }
+            .onChange(of: draft.parameters) { waveformURL = nil }
+            .onChange(of: draft.name) { waveformURL = nil }
+            .navigationTitle(WorkbenchText.t("设计音色", "Design timbre"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button(WorkbenchText.t("取消", "Cancel")) { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(WorkbenchText.t("保存并应用", "Save and apply")) {
+                        saving = true
+                        Task { @MainActor in
+                            defer { saving = false }
+                            do {
+                                let design = try timbre()
+                                try await session.apply([.saveTimbre(design), .setInstrument(draft.target.trackID, try design.instrument())],
+                                                        expectedRevision: draft.target.revision)
+                                dismiss()
+                            } catch { errorMessage = message(error) }
+                        }
+                    }.disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .disabled(saving)
+        }
+        .interactiveDismissDisabled(saving)
+        .fileExporter(isPresented: $exporting, document: exportFile, contentType: .json, defaultFilename: "timbre") { result in
+            if case .failure(let error) = result { errorMessage = message(error) }
+        }
+        .onDisappear { session.stopPresetPreview() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { session.stopPresetPreview() } }
+    }
+    private func message(_ error: Error) -> String {
+        if case MusicError.staleRevision = error {
+            return WorkbenchText.t("工程已更改，请重新打开音色编辑器。", "The project changed. Reopen the timbre editor.")
+        }
+        return (error as? MusicError)?.description ?? error.localizedDescription
     }
 }
 #endif

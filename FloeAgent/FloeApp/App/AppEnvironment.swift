@@ -2440,6 +2440,8 @@ final class AppEnvironment: ObservableObject {
         ToolRunnerRegistry.shared.register(AudioTranscribeTool(assistant: assistantAudioService))
         ToolCatalog.register(AudioSynthesizeTool.self)
         ToolRunnerRegistry.shared.register(AudioSynthesizeTool(assistant: assistantAudioService))
+        ToolCatalog.register(AudioExportWaveformTool.self)
+        ToolRunnerRegistry.shared.register(AudioExportWaveformTool())
         ToolCatalog.register(AudioServicesTool.self)
         ToolRunnerRegistry.shared.register(AudioServicesTool(assistant: assistantAudioService))
         // Real shared enhancement processor (VideoToolbox frame-rate

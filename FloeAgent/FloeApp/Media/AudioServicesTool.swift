@@ -3,6 +3,8 @@
 import Foundation
 import FloeCore
 import FloeTools
+import FloeMusicNative
+import FloeWorkspace
 
 struct AudioServicesTool: AgentTool {
     struct Arguments: Decodable, Sendable {
@@ -70,6 +72,62 @@ struct AudioServicesTool: AgentTool {
         let automaticSynthesis: String?
         let selectedTranscription: String?
         let selectedSynthesis: String?
+    }
+}
+
+/// Produces a task-owned visual result from an existing workspace audio file.
+struct AudioExportWaveformTool: AgentTool {
+    struct Arguments: Decodable, Sendable { let path: String }
+    static let name = "audio.exportWaveform"
+    static let toolDescription = "Export the actual decoded waveform of a task workspace audio file as a PNG. Returns a downloadable file and visual evidence for a vision-capable model. Use audio.inspect for time-window measurements. For a music project use studio.run exportWaveform."
+    static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Existing workspace-relative audio file"}},"required":["path"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    func validate(_ args: Arguments) throws {
+        guard !args.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw FloeError.validationFailed("Choose a workspace audio file") }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard !context.temporaryReadOnly, let root = context.workspaceRootURL else { throw FloeError.unauthorized }
+        try context.cancellation.throwIfCancelled()
+        try context.authorizeWorkspacePath(args.path)
+        let guardrail = WorkspacePathGuard(rootURL: root)
+        let url = try guardrail.resolve(args.path)
+        let source = try PersonalPreviewFile(root: guardrail.rootURL, url: url, maximumBytes: RunOutputCaps.standard.perFileBytes)
+        try context.authorizeWorkspacePath(source.relativePath)
+        let token = context.cancellation
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("floe-waveform-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let staged = folder.appendingPathComponent("input").appendingPathExtension(url.pathExtension)
+        let sourceHash = try await personalPreviewOffMain { try source.copy(to: staged) { try token.throwIfCancelled() } }
+        let png = try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask { try await MusicWaveformPNG.render(audioURL: staged) }
+            group.addTask {
+                while true {
+                    try token.throwIfCancelled()
+                    try await Task.sleep(for: .milliseconds(150))
+                }
+            }
+            defer { group.cancelAll() }
+            guard let data = try await group.next() else { throw CancellationError() }
+            return data
+        }
+        try token.throwIfCancelled()
+        try source.validate()
+        let file = folder.appendingPathComponent("waveform.png")
+        try png.write(to: file, options: .atomic)
+        let digest = FloeDigest.sha256Hex(png)
+        let output = try RunOutputSnapshotStore.publish(.init(producerTool: Self.name, slot: "waveform",
+            commit: .init(sourceURL: file, sha256: digest, byteCount: png.count, displayName: "waveform.png", mimeType: "image/png")), using: context)
+        let artifact = try await StudioResultPublication.imageArtifact(png, context: context)
+        try token.throwIfCancelled()
+        try source.validate()
+        let receipt = try JSONEncoder().encode(["fileName": "waveform.png", "sourceSHA256": sourceHash, "imageSHA256": digest])
+        return ToolExecutionOutput(digesting: String(decoding: receipt, as: UTF8.self), exitStatus: 0,
+                                   artifacts: [artifact], outputFiles: [output])
     }
 }
 #endif

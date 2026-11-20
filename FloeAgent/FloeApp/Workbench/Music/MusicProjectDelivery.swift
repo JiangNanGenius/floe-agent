@@ -4,6 +4,25 @@ import SwiftUI
 import UniformTypeIdentifiers
 import FloeMusicCore
 
+struct MusicWaveformPreview: View {
+    let file: URL
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .accessibilityLabel(WorkbenchText.t("导出的音频波形图", "Exported audio waveform"))
+            } else { Color.clear.frame(height: 1) }
+        }
+        .task(id: file) {
+            image = nil
+            let prepared = await UIImage(contentsOfFile: file.path)?.byPreparingForDisplay()
+            if !Task.isCancelled { image = prepared }
+        }
+    }
+}
+
 struct MusicAssetLibrary: View {
     @Bindable var session: MusicProjectSession
     let onImport: () -> Void
@@ -89,7 +108,7 @@ struct MusicExportSheet: View {
                         Text(WorkbenchText.t("已编辑 MIDI", "Edited MIDI")).tag("midi")
                     }
                     if content == "mix" || content == "dj" {
-                        Picker(WorkbenchText.t("格式", "Format"), selection: $format) { Text("MP3").tag("mp3"); Text("WAV").tag("wav") }.pickerStyle(.segmented)
+                        Picker(WorkbenchText.t("格式", "Format"), selection: $format) { Text("MP3").tag("mp3"); Text("WAV").tag("wav"); if content == "mix" { Text(WorkbenchText.t("波形图", "Waveform")).tag("png") } }.pickerStyle(.segmented)
                     } else { Text(content == "stems" ? "WAV" : content == "midi" ? "MIDI" : "ZIP").font(.caption).foregroundStyle(.secondary) }
                     if content == "dj" {
                         HStack {
@@ -103,7 +122,8 @@ struct MusicExportSheet: View {
                     LabeledContent(WorkbenchText.t("时长", "Duration"), value: MusicWorkbenchFormat.time(content == "dj" ? djSeconds : session.durationSeconds))
                     LabeledContent(WorkbenchText.t("保存到", "Save to"), value: WorkbenchText.t("当前工程", "Current project"))
                     Button {
-                        if content == "mix" { session.render(asMP3: format == "mp3") }
+                        if content == "mix" && format == "png" { session.render(.waveform(nil)) }
+                        else if content == "mix" { session.render(asMP3: format == "mp3") }
                         else if content == "dj" { session.exportDJ(asMP3: format == "mp3", durationSeconds: djSeconds) }
                         else if content == "midi" { session.exportMIDI() }
                         else { session.exportOriginals(stems: content == "stems") }
@@ -132,6 +152,7 @@ struct MusicExportSheet: View {
                 if !session.exportedFiles.isEmpty {
                     Section(WorkbenchText.t("已保存文件", "Saved files")) {
                         ForEach(session.exportedFiles, id: \.self) { file in
+                            if file.pathExtension == "png" { MusicWaveformPreview(file: file) }
                             ShareLink(item: file) { Label(file.lastPathComponent, systemImage: "square.and.arrow.up").lineLimit(2).frame(minHeight: 44) }
                             if let onExported {
                                 Button(WorkbenchText.t("返回此文件", "Return this file")) { onExported(file); dismiss() }.frame(minHeight: 44)
@@ -150,6 +171,7 @@ struct MusicExportSheet: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { dismiss() } } }
         }
         .onAppear { djSeconds = session.suggestedDJExportSeconds }
+        .onChange(of: content) { _, new in if new != "mix", format == "png" { format = "wav" } }
         .fileImporter(isPresented: $restoringBackup, allowedContentTypes: [.zip]) { result in
             switch result {
             case .success(let source):

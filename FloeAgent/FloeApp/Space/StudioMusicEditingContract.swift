@@ -25,6 +25,11 @@ enum StudioMusicEditingContract {
         var guide = "Preferred MIDI clip editing format: operationsJSON is a JSON ARRAY of explicit commands. IDs are plain strings and note startTick/durationTicks are integer musical ticks in this format. Do not mix these commands with the legacy Codable cases below in one batch. Outer expectedRevision is still the fresh studio.read revision. midi.clip.update identifies an ACTUAL existing MIDI clipID; it keeps its track, offset, controller points and all undeclared fields. If notes are supplied, notesMode MUST explicitly be append (retain every old note) or replace (replace notes deliberately). Omit note IDs for newly generated native IDs; explicit note IDs must be unique. midi.clip.insert requires an ACTUAL existing MIDI trackID, name, positive durationTicks, notes and optional offsetSamples (integer sample time, default 0); the native service creates its new clip ID. Never invent a target or use UI selection as an implicit target. No command changes mute, gain, routing, monitoring or recording state."
         guide += " A 50-quarter-note piece at 100 BPM lasts 30 seconds. With 960 ticks per quarter this is 48000 ticks; the final two-quarter chord begins at 46080. Other tempi/tempo maps change seconds. Offset uses SAMPLES, not ticks. studio.run renderWAV/renderMP3 accepts inputJSON {\"tailFrames\":0} for an exact content-length file; omitted tailFrames keeps the existing 48000-frame effect tail. Render respects the saved mix, including master mute. A saved muted mix produces a silent file; do not silently unmute it. Render returns actual output metadata and audioObservation; saving alone is not audio generation."
         let targetTrack = document?.tracks.first(where: { $0.kind == .midi })
+        let design: [[String: Any]] = [["op": "instrument.design", "trackID": targetTrack?.id.rawValue ?? "ACTUAL_MIDI_TRACK_ID",
+            "name": "Soft glass", "presetIndex": 42, "parameters": ["waveform": 6, "fmRatio": 2.5, "fmIndex": 1.2, "release": 0.45]]]
+        if let example = json(design) {
+            guide += "\nDesign a playable timbre by choosing a base preset and generating its synth parameters. instrument.design saves a named project preset and applies it to the MIDI track in one undoable edit. Same name updates that library entry. The current mix and notes are preserved. Use the capabilities for parameter bounds; waveform codes 0 sine, 1 saw, 2 triangle, 3 square, 4 pulse, 5 harmonics, 6 FM, 7 noise, 8 drum kit. Example: " + example
+        }
         let targetClip = targetTrack?.clips.first(where: { if case .midi = $0.body { return true }; return false })
         let chord: [[String: Any]] = [60, 64, 67].map {
             ["pitch": $0, "startTick": quarter * 48, "durationTicks": quarter * 2, "velocity": 96]
@@ -59,6 +64,7 @@ enum StudioMusicEditingContract {
             guide += "\nMaster output settings are document.masterStrip, separate from auxiliary buses. The virtual routing ID master is NOT a target for setBusStrip. Complete legacy setMasterStrip shape using the ACTUAL current settings, unchanged; change only an intended mix setting and preserve the rest. This example is documentation, not an instruction to unmute:\n" + example
         }
         guide += "\nMIDI editing commands also return ordinary saved native edits: midi.clip.quantize {clipID,gridTicks,strength?:0...1,quantizeEnds?:bool}; midi.clip.transpose {clipID,semitones,outOfRange?:reject|clamp}; midi.clip.velocity {clipID,delta}; midi.template.insert {trackID,template:drumGroove|chordProgression|arpeggio|bassLine,atTick,bars?:1...64,rootPitch?:0...127,velocity?:1...127,name?:string}. Each is one object with op inside the same preferred array. Templates add a new clip and never replace the existing piece or select an instrument implicitly. Drum templates use GM notes on channel 9; select preset 40 explicitly on a MIDI track if an electronic drum kit is intended. A pure no-op returns the current revision without committing an empty edit."
+        guide += "\nInspect a synthesized timbre with studio.run action=exportWaveform and inputJSON {trackID}. Omit trackID for the entire mix. The returned PNG is both a downloadable output and visual evidence. Use inspectAudio for numeric source measurements."
         return guide
     }
 
@@ -66,6 +72,8 @@ enum StudioMusicEditingContract {
         let presets: [MusicInstrumentPreset]
         let templates: [MusicPatternTemplate]
         let clipCommands: [String]
+        let timbreCommand: String
+        let timbreParameterRanges: [String: [Double]]
         let presetKind: String
         let defaultRenderTailFrames: Int64
         let maximumRenderTailFrames: Int64
@@ -73,6 +81,7 @@ enum StudioMusicEditingContract {
     static func capabilities(sampleRate: Int) -> Capabilities {
         .init(presets: MusicPresetCatalog.all, templates: MusicPatternTemplate.allCases,
               clipCommands: ["midi.clip.insert", "midi.clip.update", "midi.clip.quantize", "midi.clip.transpose", "midi.clip.velocity", "midi.template.insert"],
+              timbreCommand: "instrument.design", timbreParameterRanges: MusicTimbre.parameterRanges.mapValues { [$0.lowerBound, $0.upperBound] },
               presetKind: "Native synthesized timbres; not sampled acoustic instruments",
               defaultRenderTailFrames: 48_000, maximumRenderTailFrames: Int64(sampleRate) * 10)
     }

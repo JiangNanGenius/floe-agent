@@ -9,6 +9,9 @@ import FloeMedia
 import FloeAgentRuntime
 import FloeSecurity
 import FloeTestSupport
+#if canImport(UIKit)
+@testable import FloeApp
+#endif
 
 /// Uses the real registered audio decoder, CatalogToolExecutor, capture store
 /// and request selector. Only provider transport is scripted by MockAdapter.
@@ -29,6 +32,53 @@ struct AudioWaveformModelVisibilityTests {
         let writer = try AVAudioFile(forWriting:url,settings:format.settings,commonFormat:.pcmFormatFloat32,interleaved:false)
         try writer.write(from:buffer)
     }
+
+#if canImport(UIKit)
+    @Test("A workspace WAV visualization reaches the next vision request as verified PNG bytes")
+    func exportedWaveformPNGReachesTheNextVisionRequest() async throws {
+        let run = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("waveform-vision-" + run.uuidString).resolvingSymlinksInPath()
+        let artifacts = try FloeArtifactStore.root()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            for prefix in ["RunOutputs", "GeneratedImages/Studio"] {
+                try? FileManager.default.removeItem(at: artifacts.appendingPathComponent(prefix).appendingPathComponent(run.uuidString))
+            }
+        }
+        try writePCM(to: root.appendingPathComponent("source.caf"))
+        let adapter = MockAdapter(), provider = TestFixtures.localhostProvider()
+        var model = TestFixtures.testModel(providerID: provider.id)
+        model.capabilities.insert(.vision)
+        let name = AudioExportWaveformTool.name
+        let call = try TestFixtures.toolCall(id: "export-waveform", toolName: name, arguments: #"{"path":"source.caf"}"#)
+        adapter.script = [[.toolRequest(call), .completed(.init(stopReason: .toolUse))],
+                          [.textDelta(.init(text: "Received waveform.")), .completed(.init(stopReason: .endTurn))]]
+        let production = try #require(ToolRunnerRegistry.shared.runner(named: name))
+        let registry = ToolRunnerRegistry(), observed = AsyncLock<ToolExecutionOutput?>(nil)
+        registry.register(AnyAgentTool(descriptor: production.descriptor, run: { args, context in
+            let output = try await production.run(args, context)
+            observed.withLock { $0 = output }
+            return output
+        }, validateArguments: production.validateArguments, preflightSubmission: production.preflightSubmission,
+           routing: ToolEnvironmentRouting()))
+        let runtime = FloeAgentRuntime(configuration: .init(conversationID: UUID(), provider: provider, model: model,
+            allowedToolNames: [name], workspaceRootURL: root, allowedWorkspacePaths: ["source.caf"]),
+            adapter: adapter, policy: TaskFullAccessPolicy(), executor: CatalogToolExecutor(runners: registry), runID: run)
+        try await runtime.start(goal: "Export source.caf as a waveform PNG and inspect the image.")
+        let output = try #require(observed.withLock { $0 })
+        let file = try #require(output.outputFiles.first), ref = try #require(output.artifacts.first)
+        #expect(ref.mimeType == "image/png" && ref.sha256 == file.sha256)
+        let png = try VerifiedToolImageArtifact.load(ref, root: artifacts).providerDelivery().data
+        #expect(adapter.requests.count == 2)
+        let request = try #require(adapter.requests.last)
+        let images = request.contentMessages.flatMap(\.content).compactMap { part -> Data? in
+            guard case .imageData("image/png", let base64) = part else { return nil }
+            return Data(base64Encoded: base64)
+        }
+        #expect(images == [png])
+    }
+#endif
 
     @Test("Real PCM bins beyond the 4K UI preview reach the next provider request")
     func actualAudioResultReachesTheModelWithItsFinalBin() async throws {

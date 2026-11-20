@@ -10,7 +10,7 @@ Native audio services for the independent [Floe music predevelopment](../README.
 | `MusicMIDINoteImport.read` | Import SMF notes and tempo with AudioKit's AppleSequencer; retain original SMF as an immutable asset |
 | `MusicRecordingService` | Bounded off-realtime PCM chunks, WAV completion, controlled cancellation recovery and old-handle rejection; no microphone acquisition |
 | `MusicDJBounce.render` | Actual offline dual-deck source reading, crossfader, beat loop and rate/reverse/jog gesture sequence using bounded page caches |
-| `MusicLiveInstrument` | Host-authorized live generated synth with 8 voices and 41 stable presets, note lifecycle, pedal, bend and modulation; no session-category writes |
+| `MusicLiveInstrument` | Host-authorized live generated synth with 8 voices and 49 stable presets, note lifecycle, pedal, bend and modulation; no session-category writes |
 | `MusicRenderLease` | Snapshot lifecycle fence and synchronous staged-output commit; host must invalidate it after edits/navigation/cancellation |
 
 All destinations must be new local files. Services never resolve a model-authored file locator, replace original media, or use a host command-line encoder. Decoder/encoder work is service-owned and checks cancellation. No Swift timers drive musical time and no module-owned realtime callback performs file I/O or waits on a lock.
@@ -29,7 +29,7 @@ The MIDI importer is explicitly `notes-and-tempo`. No sampled piano or licensed 
 
 ## Built-in preset contract
 
-`FloeMusicCore.MusicPresetCatalog.all` exposes 41 stable, bilingual generated patches across keys, bass, strings, pads, leads, plucks, bells, percussion and organ. `MusicInstrumentPreset.index` (also its `id`) persists in `MusicPluginState.presetIndex`; defaults live in `parameters`. Empty saved parameters select the defaults, and explicit values override them. Indices 0 and 1 retain the original sine/saw waveform, 8 ms attack, 80 ms decay/release, 0.75 sustain and unity gain. Unknown indices or parameter keys and invalid ranges fail explicitly, preserving stored opaque state.
+`FloeMusicCore.MusicPresetCatalog.all` exposes 49 stable, bilingual generated patches across keys, bass, strings, pads, leads, plucks, bells, percussion and organ. `MusicInstrumentPreset.index` (also its `id`) persists in `MusicPluginState.presetIndex`; defaults live in `parameters`. Empty saved parameters select the defaults, and explicit values override them. Indices 0 and 1 retain the original sine/saw waveform, 8 ms attack, 80 ms decay/release, 0.75 sustain and unity gain. Unknown indices or parameter keys and invalid ranges fail explicitly, preserving stored opaque state.
 
 Live performance and `MusicOfflineRenderer` both instantiate the same `MusicSynthBank` and patch resolver. The new presets use different ADSR envelopes, oscillator shapes, normalized additive spectra, FM ratios/indices or filtered noise. Their names describe synthesis styles rather than sampled acoustic instruments. No external soundbank download or new library/license is required.
 

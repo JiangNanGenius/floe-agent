@@ -161,7 +161,23 @@ public enum MusicPresetCatalog {
               tone: ["harmonic2": 0.6, "harmonic3": 0.8, "harmonic4": 0.15,
                      "harmonic5": 0.3, "harmonic6": 0.08, "harmonic7": 0.2, "harmonic8": 0.1]),
         patch(40, .percussion, "Electronic drum kit", "电子鼓组", 8,
-              attack: 0.001, decay: 0.18, sustain: 0, release: 0.04)
+              attack: 0.001, decay: 0.18, sustain: 0, release: 0.04),
+        patch(41, .pluck, "Koto pluck", "琴筝拨弦", 5, attack: 0.002, decay: 0.65, sustain: 0.01, release: 0.25,
+              tone: ["harmonic2": 0.35, "harmonic3": 0.6, "harmonic7": 0.14]),
+        patch(42, .bell, "Celesta", "钢片琴", 6, attack: 0.003, decay: 1.2, sustain: 0, release: 0.42,
+              tone: ["fmRatio": 4, "fmIndex": 1.5]),
+        patch(43, .keyboard, "Felt keys", "毡音键盘", 5, attack: 0.018, decay: 0.82, sustain: 0.1, release: 0.24,
+              tone: ["harmonic2": 0.24, "harmonic3": 0.09, "lowpass": 1_850]),
+        patch(44, .organ, "Chapel organ", "礼拜堂风琴", 5, attack: 0.08, sustain: 0.93, release: 0.45,
+              tone: ["harmonic2": 0.8, "harmonic4": 0.42, "harmonic8": 0.23]),
+        patch(45, .lead, "Bamboo flute", "竹笛", 5, attack: 0.07, sustain: 0.8, release: 0.14,
+              tone: ["harmonic2": 0.1, "harmonic3": 0.18, "lowpass": 4_200]),
+        patch(46, .bass, "Rubber bass", "弹性贝斯", 4, attack: 0.003, decay: 0.25, sustain: 0.3, release: 0.08,
+              tone: ["pulseWidth": 0.35, "lowpass": 850, "transpose": -12]),
+        patch(47, .strings, "Pizzicato strings", "拨奏弦乐", 2, attack: 0.002, decay: 0.19, sustain: 0.01, release: 0.17,
+              tone: ["lowpass": 2_700]),
+        patch(48, .pad, "Aurora pad", "极光氛围", 6, attack: 1.35, decay: 0.9, sustain: 0.65, release: 2.3,
+              tone: ["fmRatio": 1.5, "fmIndex": 0.75])
     ]
 
     public static func preset(index: Int) -> MusicInstrumentPreset? {

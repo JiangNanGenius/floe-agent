@@ -449,6 +449,9 @@ enum ToolDiscovery {
         if names.contains("audio.inspect") {
             lines.append("For direct waveform observation, use \(n("audio.inspect")) on an authorized workspace audio file. It returns actual decoded per-channel min/max/RMS bins, exact frame/time coverage and source SHA; the default covers at most the first 30 seconds. Request explicit windows for the rest. These unweighted PCM measurements are not speech/content recognition, proof of clipping, or standard LUFS. Use the actual result limits rather than claiming you heard the file.")
         }
+        if names.contains("audio.exportWaveform") {
+            lines.append("For a downloadable waveform image or visual inspection of an existing workspace audio file, use \(n("audio.exportWaveform")). It decodes the audio natively and returns the PNG and image evidence.")
+        }
         if names.contains("audio.synthesize") {
             lines.append("For file transcription or generated speech, use the configured audio tools. Call \(n("audio.services")) to read available local/cloud services and the assistant-only preference; never guess an unavailable service or change the ordinary read-aloud voice. Return the generated audio artifact or file receipt in the final response so the user can play or save it.")
         }

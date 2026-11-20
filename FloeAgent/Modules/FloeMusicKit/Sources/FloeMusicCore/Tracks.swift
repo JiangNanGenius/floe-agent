@@ -8,6 +8,7 @@ public struct MusicPluginState: Sendable, Codable, Hashable {
     public var pluginID: String
     public var enabled: Bool
     /// Program/preset index when known.
+    public var timbreName: String?
     public var presetIndex: Int
     /// Named parameter values. The core does not interpret them.
     public var parameters: [String: Double]
@@ -15,7 +16,7 @@ public struct MusicPluginState: Sendable, Codable, Hashable {
     public var stateBlob: Data
 
     public init(pluginID: String, enabled: Bool = true, presetIndex: Int = 0,
-                parameters: [String: Double] = [:], stateBlob: Data = Data()) throws {
+                parameters: [String: Double] = [:], stateBlob: Data = Data(), timbreName: String? = nil) throws {
         guard !pluginID.isEmpty else {
             throw MusicError.invalidTrack(reason: "empty pluginID")
         }
@@ -30,6 +31,7 @@ public struct MusicPluginState: Sendable, Codable, Hashable {
                 throw MusicError.invalidTrack(reason: "non-finite value for parameter \(key)")
             }
         }
+        self.timbreName = timbreName
         self.pluginID = pluginID
         self.enabled = enabled
         self.presetIndex = presetIndex
@@ -46,7 +48,7 @@ public struct MusicPluginState: Sendable, Codable, Hashable {
         let blob = try c.decodeIfPresent(Data.self, forKey: .stateBlob) ?? Data()
         do {
             try self.init(pluginID: id, enabled: enabled, presetIndex: preset,
-                          parameters: params, stateBlob: blob)
+                          parameters: params, stateBlob: blob, timbreName: c.decodeIfPresent(String.self, forKey: .timbreName))
         } catch let error as MusicError {
             throw DecodingError.dataCorruptedError(forKey: .pluginID, in: c,
                                                    debugDescription: error.description)

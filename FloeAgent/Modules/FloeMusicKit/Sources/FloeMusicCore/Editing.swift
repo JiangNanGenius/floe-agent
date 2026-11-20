@@ -4,6 +4,8 @@ import Foundation
 /// values; `MusicProjectStore` re-validates the whole resulting document, so
 /// an invalid op anywhere in a batch leaves the store untouched.
 public enum MusicEditOp: Sendable, Hashable, Codable {
+    case saveTimbre(MusicTimbre)
+    case removeTimbre(String)
     case insertAsset(MusicAsset)
     case insertTrack(MusicTrack)
     case removeTrack(MusicTrackID)
@@ -49,6 +51,11 @@ extension MusicDocument {
     /// `validate()` on the finished draft.
     mutating func apply(_ op: MusicEditOp) throws {
         switch op {
+        case .saveTimbre(let timbre):
+            if let i = timbres.firstIndex(where: { $0.name == timbre.name }) { timbres[i] = timbre }
+            else { timbres.append(timbre) }
+        case .removeTimbre(let name):
+            timbres.removeAll { $0.name == name }
         case .insertAsset(let asset):
             guard !assets.contains(where: { $0.id == asset.id }) else {
                 throw MusicError.invalidAsset(reason: "duplicate asset id \(asset.id)")

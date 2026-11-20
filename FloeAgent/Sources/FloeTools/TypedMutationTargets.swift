@@ -564,7 +564,7 @@ public enum TypedMutationContract {
                    ["note","todo","decision","summary"].contains(action) { return [] }
             case "studio.run":
                 guard keys(["projectID","action","inputJSON"]), let action = arguments["action"] as? String,
-                      ["undo","redo","calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.backAnnotation","eda.refillCopper","eda.export"].contains(action), inputIsNative() else { return [] }
+                      ["undo","redo","calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportWaveform","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.backAnnotation","eda.refillCopper","eda.export"].contains(action), inputIsNative() else { return [] }
                 if action == "eda.backAnnotation" {
                     guard let json = arguments["inputJSON"] as? String,
                           let input = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
