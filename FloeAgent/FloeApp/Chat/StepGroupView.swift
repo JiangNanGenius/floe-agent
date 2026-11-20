@@ -291,7 +291,9 @@ struct StepGroupView: View {
     private func isPairedToolResult(_ event: RunEventRecord, snapshot: StepGroupMetadata.Snapshot) -> Bool {
         guard event.kind == .toolResult,
               let resultID = callID(for: event, payloads: snapshot.payloads) else { return false }
-        return snapshot.requests.contains(resultID)
+        // Only the result presented inside the request card can be hidden.
+        // A late retry can reuse a call ID after an earlier export succeeded.
+        return snapshot.pairsResult(event.id, with: resultID)
     }
 
     private func isDetachedApproval(_ event: RunEventRecord, snapshot: StepGroupMetadata.Snapshot) -> Bool {
@@ -311,6 +313,9 @@ final class StepGroupMetadata: ObservableObject {
         var payloads: [UUID: [String: String]] = [:]
         var results: [String: RunEventRecord] = [:]
         var requests = Set<String>()
+        func pairsResult(_ eventID: UUID, with callID: String) -> Bool {
+            requests.contains(callID) && results[callID]?.id == eventID
+        }
         var createdGameID: UUID?
         // Empty marks an implicit automatic approval, localized when rendered.
         var approvals: [String: String] = [:]

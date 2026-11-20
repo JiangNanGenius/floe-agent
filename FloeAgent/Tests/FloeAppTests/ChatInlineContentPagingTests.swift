@@ -241,13 +241,19 @@ struct ChatInlineContentPagingTests {
         let second = projection.read(events + [appended], conversationID: taskID)
         #expect(second.payloads[appended.id] != nil)
         #expect(second.payloads[appended.id]?["status"] == "failed")
-        #expect(second.receiptEventIDs == first.receiptEventIDs)
+        #expect(second.results["call-1-0"]?.id == appended.id)
+        #expect(second.pairsResult(appended.id, with: "call-1-0"))
+        #expect(!second.pairsResult(firstResult.id, with: "call-1-0"))
+        // The earlier export remains visible on its own result. The request
+        // now presents the later failure, which carries no export.
+        #expect(second.receiptEventIDs == first.receiptEventIDs.subtracting([firstRequest.id]))
         // Earlier-page prepend (bounded history paging) also refreshes.
         let prepended = RunEventRecord(
-            runID: runID, sequence: 0, kind: .reasoning,
-            payloadJSON: "{\"text\":\"earlier page\"}")
+            runID: runID, sequence: 0, kind: .toolRequest,
+            payloadJSON: "{\"id\":\"earlier-page\",\"tool\":\"workspace.readFile\"}")
         let third = projection.read([prepended] + events + [appended], conversationID: taskID)
-        #expect(third.payloads[prepended.id]?["text"] == "earlier page")
+        #expect(third.payloads[prepended.id]?["id"] == "earlier-page")
+        #expect(third.requests.contains("earlier-page"))
         #expect(third.payloads.count == second.payloads.count + 1)
     }
 
