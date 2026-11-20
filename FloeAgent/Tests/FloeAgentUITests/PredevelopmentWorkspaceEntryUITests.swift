@@ -39,7 +39,7 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         app.buttons["创建"].tap()
         let setup = app.buttons["game.setup.open"]
         XCTAssertTrue(setup.waitForExistence(timeout: 25))
-        let assistant = app.buttons["game.assistant.open"]
+        let assistant = app.buttons["game.overview.aiModify"]
         XCTAssertTrue(assistant.waitForExistence(timeout: 10))
         assistant.tap()
         let panel = app.descendants(matching: .any).matching(identifier: "studio.assistant.content").firstMatch
