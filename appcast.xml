@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.10.8</title>
+      <pubDate>Fri, 20 Nov 2026 10:50:05 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.8</link>
+      <sparkle:version>27</sparkle:version>
+      <sparkle:shortVersionString>1.10.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;输入栏沿用 iPad 的模式菜单，可选择 Agent、聊天、计划或目标。运行中可加入队列或引导当前任务。&lt;/p&gt;&lt;p&gt;Choose Agent, Chat, Plan or Goal from the same composer menu as on iPad. Queue a follow-up or steer the current run.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.10.8/Floe-Agent-1.10.8.dmg" length="31449454" type="application/octet-stream" sparkle:edSignature="QaWbfZpvjVwBzRkxxlrehgXx3gjGvr2qjeKbxKeaD0d/lZfQNGmrZ+FIvyIYrvG3NbBKMLW0mIQWm0Baq9AyCg==" />
+    </item>
+    <item>
       <title>Floe Agent 1.10.7</title>
       <pubDate>Fri, 20 Nov 2026 08:26:06 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.10.7</link>
