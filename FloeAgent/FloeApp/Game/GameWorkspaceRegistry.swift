@@ -1061,28 +1061,34 @@ final class GameWorkspaceRegistry {
                           gitHub: GameGitHubExecutionConfiguration? = nil) async throws -> GameWorkspaceExecutionSession {
         try requireOpen(session)
         try await ensurePlayableSession(for: session)
+        return try await composeExecution(for: session, gitHub: gitHub)
+    }
+
+    /// Native WebKit playback uses the project root and revision directly.
+    /// Shell and external builds still resolve their actual bound authority.
+    private func composeExecution(for session: GameWorkspaceSession,
+                                  gitHub: GameGitHubExecutionConfiguration? = nil) async throws -> GameWorkspaceExecutionSession {
+        try requireOpen(session)
         if let existing = session.execution { return existing }
         let candidateGitHub = gitHub ?? GameBuildRepositorySettings.configuration()
         // A selected repository without the existing GitHub credential is not
         // a usable CI route. Keep local/source routes instead of presenting a
         // configured route that must fail later.
         let resolvedGitHub = candidateGitHub.flatMap(GameBuildRepositorySettings.validated)
-        guard let environmentID = session.environmentID else {
-            throw GameWorkspaceRegistryError.noSavedRun
-        }
-        let conversationID: UUID
-        if let existing = session.executionConversationID {
-            conversationID = existing
+        let project = session.project
+        let environmentID = try project.context.environmentID
+        let boundConversationID: UUID?
+        if environmentID == nil {
+            boundConversationID = nil
+        } else if let existing = session.executionConversationID {
+            boundConversationID = existing
         } else {
-            // Reopening an existing bound project can resolve its environment
-            // without a cached assistant id. Resolve/create the real assistant
-            // conversation now; a play/build never requires the user to open
-            // the AI surface first.
-            conversationID = try await executionConversationID(for: session)
-            session.setExecutionConversation(conversationID)
+            let owner = try await executionConversationID(for: session)
+            session.setExecutionConversation(owner)
+            boundConversationID = owner
         }
-        let contexts = session.project.contexts
-        let repository = session.project.repository
+        let contexts = project.contexts
+        let repository = project.repository
         let support = session.support
         let registry = self
         await runtimeResources.refresh()
@@ -1104,7 +1110,8 @@ final class GameWorkspaceRegistry {
                 return try current.project.context
             },
             authority: { context in
-                try await registry.resolveAuthority(context: context, conversationID: conversationID)
+                guard let boundConversationID else { throw GameWorkspaceRegistryError.runBindingMissing }
+                return try await registry.resolveAuthority(context: context, conversationID: boundConversationID)
             },
             shell: MainLocalShellRunner(shell: environment.localShellService, runs: environment.runStore),
             gitHub: resolvedGitHub,
@@ -1127,6 +1134,8 @@ final class GameWorkspaceRegistry {
                 try GameDeveloperBridgeFactory.configuration(for: request)
             }))
         try requireOpen(session)
+        guard session.project === project else { throw GameIDEBridgeError.superseded }
+        if let existing = session.execution { return existing }
         session.setExecution(execution)
         return execution
     }
@@ -1282,7 +1291,26 @@ final class GameWorkspaceRegistry {
     }
 
     func makeRunExtension(for session: GameWorkspaceSession) async throws -> IDEProjectRunExtension {
-        try await ensurePlayableSession(for: session)
+        try requireOpen(session)
+        guard let selection = session.project.selectionSnapshot?.runSelection else {
+            throw GameWorkspaceRegistryError.ambiguousGameProject
+        }
+        switch selection.engine {
+        case .rpgMakerXP, .rpgMakerVX, .rpgMakerVXAce:
+            try await ensurePlayableSession(for: session)
+        case .phaser, .kaplay, .babylon, .playcanvas, .rpgMakerMV, .tic80, .wasm4, .ink, .twine, .microStudio:
+            break // These adapters serve or assemble the game on device.
+        case .rpgMakerMZ, .godot, .unity, .gdevelop, .cocosCreator, .love, .renpy:
+            let context = try session.project.context
+            let execution = try await composeExecution(for: session)
+            let root = try GameRunSelection(context: context, root: selection.gameRoot?.value ?? ".")
+            let plan = try await execution.preparer.plan(context: context, engine: selection.engine, selection: root)
+            guard session.project.selectionSnapshot?.runSelection == selection,
+                  try session.project.context == context else { throw GameIDEBridgeError.superseded }
+            if [.portableAssembly, .externalBuild, .guestRuntime].contains(plan.action) {
+                try await ensurePlayableSession(for: session)
+            }
+        }
         try ensureIDEHost(session)
         return try await session.project.makeRunExtension()
     }
@@ -1378,7 +1406,7 @@ final class GameWorkspaceRegistry {
     private func performWebLaunch(session: GameWorkspaceSession,
                                   request: GameIDEProjectRunRequest,
                                   token: UInt64) async throws {
-        let execution = try await executionSession(for: session)
+        let execution = try await composeExecution(for: session)
         do {
             try await execution.launch(request)
             try Task.checkCancellation()

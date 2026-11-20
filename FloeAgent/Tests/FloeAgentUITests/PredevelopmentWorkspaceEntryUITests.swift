@@ -35,7 +35,8 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         XCTAssertFalse(app.buttons["创建"].isEnabled)
         XCTAssertFalse(app.descendants(matching: .any)["引擎"].exists)
         title.tap()
-        title.typeText("QA-Game-" + String(UUID().uuidString.prefix(8)))
+        let name = "QA-Game-" + String(UUID().uuidString.prefix(8))
+        title.typeText(name)
         app.buttons["创建"].tap()
         let setup = app.buttons["game.setup.open"]
         XCTAssertTrue(setup.waitForExistence(timeout: 25))
@@ -61,6 +62,67 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         close.tap()
         XCTAssertTrue(close.waitForNonExistence(timeout: 10))
         XCTAssertTrue(setup.isHittable)
+        app.buttons["完成"].firstMatch.tap()
+        deleteGame(named: name, in: app)
+    }
+
+    func testGameRunsFromHomeAndIDEAndReturnsToItsCaller() {
+        let app = application()
+        app.launchArguments += ["-floe.settings.language", "zh-Hans"]
+        app.launch()
+        openNewFileMenu(app)
+        app.buttons["space.new.game"].tap()
+        let name = "QA-Game-Run-" + String(UUID().uuidString.prefix(8))
+        let title = app.textFields["game.new.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        title.typeText(name)
+        app.buttons["创建"].tap()
+        let starter = app.buttons["创建起始模板"]
+        XCTAssertTrue(starter.waitForExistence(timeout: 25))
+        starter.tap()
+        let engine = app.buttons["game.starter.engine.phaser"]
+        let engines = app.collectionViews.firstMatch
+        for _ in 0..<8 where !engine.isHittable { engines.swipeUp() }
+        XCTAssertTrue(engine.isHittable)
+        engine.tap()
+        let create = app.buttons["game.starter.create"]
+        XCTAssertEqual(XCTWaiter.wait(for: [
+            XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: create)
+        ], timeout: 10), .completed)
+        create.tap()
+
+        let homeRun = app.buttons["game.overview.play"]
+        let ideRun = app.buttons["workspace.ide.run"]
+        let stop = app.buttons["game.play.stop"]
+        func runAndReturn(_ run: XCUIElement) {
+            XCTAssertTrue(run.waitForExistence(timeout: 30))
+            run.tap()
+            XCTAssertTrue(stop.waitForExistence(timeout: 45), "The running game must expose its player controls")
+            stop.tap()
+            XCTAssertTrue(stop.waitForNonExistence(timeout: 20))
+            XCTAssertTrue(run.waitForExistence(timeout: 15))
+        }
+        runAndReturn(homeRun)
+        app.buttons["game.overview.ide"].tap()
+        runAndReturn(ideRun)
+        app.buttons["workspace.ide.close"].tap()
+        XCTAssertTrue(homeRun.waitForExistence(timeout: 15))
+        app.buttons["完成"].firstMatch.tap()
+        deleteGame(named: name, in: app)
+    }
+
+    private func deleteGame(named name: String, in app: XCUIApplication) {
+        let search = app.searchFields["查找作品和文件"]
+        XCTAssertTrue(search.waitForExistence(timeout: 15))
+        search.tap()
+        search.typeText(name)
+        let menu = app.buttons["更多操作：" + name]
+        XCTAssertTrue(menu.waitForExistence(timeout: 15))
+        menu.tap()
+        app.buttons["space.files.delete"].tap()
+        app.buttons["space.files.delete.confirm"].tap()
+        XCTAssertTrue(menu.waitForNonExistence(timeout: 15))
     }
 
     func testNewBuildingDrawsConnectedWallsAndChangesOneFinish() {

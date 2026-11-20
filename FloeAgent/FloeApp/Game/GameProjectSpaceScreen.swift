@@ -639,14 +639,9 @@ struct GameProjectSpaceScreen: View {
             }
             return
         }
-        var stage = ExecutionBreadcrumbs.Operation.gameEnvironment
-        playProgress = IDELanguageRunText.t("正在准备运行环境…", "Preparing the game environment…")
+        let stage = ExecutionBreadcrumbs.Operation.gameLaunch
+        playProgress = IDELanguageRunText.t("正在加载游戏文件…", "Loading game files…")
         do {
-            trace.record(stage, .began, id: attempt)
-            _ = try await environment.gameWorkspaces.ensurePlayableSession(for: session)
-            trace.record(stage, .completed, id: attempt)
-            stage = .gameLaunch
-            playProgress = IDELanguageRunText.t("正在加载游戏文件…", "Loading game files…")
             trace.record(stage, .began, id: attempt)
             let play = environment.gameWorkspaces.playCoordinator(for: session)
             _ = try await play.start()
@@ -889,7 +884,11 @@ struct GameStarterCreationSheet: View {
                                     }
                                 }
                             }
-                        }.buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .accessibilityIdentifier("game.starter.engine." + entry.engine.rawValue)
+                        .accessibilityAddTraits(selected == entry.engine ? .isSelected : [])
                     }
                 }
                 if let selected,
@@ -913,6 +912,7 @@ struct GameStarterCreationSheet: View {
                         onCreate(selected)
                     }
                     .disabled(selected == nil)
+                    .accessibilityIdentifier("game.starter.create")
                 }
             }
         }
