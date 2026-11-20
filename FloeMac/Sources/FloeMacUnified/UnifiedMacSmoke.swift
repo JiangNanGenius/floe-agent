@@ -699,7 +699,12 @@ final class UnifiedMacSmoke {
                 }
                 capture(view, extension: "creative-" + expected + "-settings.png")
             }
-            return true
+            model.closeSettingsWindow()
+            let closed = ContinuousClock.now + .seconds(3)
+            while (visibleWorkbench?.isKeyWindow != true || model.smokeAgentSettingsSheet != nil) && ContinuousClock.now < closed {
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            return visibleWorkbench?.isKeyWindow == true && model.smokeAgentSettingsSheet == nil
         } catch {
             settingsDiagnostics.append("Creative fixture: " + error.localizedDescription)
             return false
