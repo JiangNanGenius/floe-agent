@@ -1538,15 +1538,22 @@ struct RootView: View {
                 if !environment.workspaceCenter.projectWorkspaces.isEmpty {
                     Section("workspace.title") {
                         ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
-                            DisclosureGroup(
+                            FloeWorkbenchProjectRow(
+                                workspaceID: workspace.id, name: workspace.name,
                                 isExpanded: Binding(
                                     get: { expandedWorkspaceIDs.contains(workspace.id) },
                                     set: { expanded in
                                         if expanded { expandedWorkspaceIDs.insert(workspace.id) }
                                         else { expandedWorkspaceIDs.remove(workspace.id) }
                                     }
-                                )
+                                ),
+                                openWorkspace: {
+                                    router.selectWorkspace(workspace.id)
+                                    Task { try? await environment.workspaceCenter.openWorkspace(id: workspace.id) }
+                                }
                             ) {
+                                workspaceAddControl(workspace)
+                            } content: {
                                 if WorkspaceCanvasRegistry.exists(workspaceID: workspace.id) {
                                     Button {
                                         presentedCanvasWorkspace = workspace
@@ -1559,22 +1566,7 @@ struct RootView: View {
                                 ForEach(conversations(in: workspace.id)) { conversation in
                                     conversationSidebarRow(conversation)
                                 }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Button {
-                                        router.selectWorkspace(workspace.id)
-                                        Task {
-                                            try? await environment.workspaceCenter.openWorkspace(id: workspace.id)
-                                        }
-                                    } label: {
-                                        Label(workspace.name, systemImage: "folder")
-                                    }
-                                    .buttonStyle(.plain)
-                                    Spacer(minLength: 4)
-                                    workspaceAddControl(workspace)
-                                }
                             }
-                            .accessibilityIdentifier("sidebar.workspace.\(workspace.id.uuidString)")
                             .contextMenu {
                                 Button(role: .destructive) {
                                     deletingWorkspace = workspace

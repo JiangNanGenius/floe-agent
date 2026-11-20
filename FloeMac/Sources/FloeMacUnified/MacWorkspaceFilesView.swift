@@ -26,6 +26,13 @@ enum MacWorkspaceFilesLayout: Sendable {
     case split
     /// Always stack the file list above the inline preview/editor.
     case stacked
+    /// Inspector browsing flow for the narrow task-sidebar column, mirroring
+    /// the iPad `FileInspectorView`: the file list fills the whole column
+    /// first, and selecting a file pushes its preview (or the text editor)
+    /// as the next page in place of the list, with a Back button returning
+    /// to the list. Unlike `.stacked`, the preview/editor never squeezes the
+    /// list into a half-height pair inside the narrow column.
+    case inspector
 }
 
 /// Real Mac workspace files + preview surface.
@@ -62,7 +69,10 @@ enum MacWorkspaceFilesLayout: Sendable {
 /// the available width and switches between side-by-side and stacked, so one
 /// instance works both as the full Files workspace and inside the task
 /// inspector; `.split` and `.stacked` pin the arrangement when the host wants
-/// explicit control.
+/// explicit control; `.inspector` gives the narrow task-inspector column the
+/// iPad file-inspector browsing flow — list first, preview/editor pushed in
+/// place, Back returning to the list — and leaves every selection,
+/// attachment, editing and security behavior to the existing paths.
 ///
 /// `remembersRoot` (default `true`) persists the chosen root as a bookmark so
 /// the folder survives relaunch. Smoke/embedder hosts that must never touch
@@ -311,6 +321,82 @@ struct MacWorkspaceFilesView: View {
             wideContent
         case .stacked:
             narrowContent
+        case .inspector:
+            inspectorContent
+        }
+    }
+
+    // MARK: - Inspector layout (iPad FileInspectorView browsing flow)
+
+    /// The narrow task-inspector column behaves like the iPad file
+    /// inspector: the file list is the first page, and the focused preview
+    /// or the active editor becomes the next page shown in its place. There
+    /// is deliberately no list-above-detail stacking here — at sidebar width
+    /// that pairing squeezed both halves; pushing the detail keeps the
+    /// preview, editor and its toolbar at full column height.
+    @ViewBuilder private var inspectorContent: some View {
+        if editing != nil || focusedEntry?.openable == true {
+            inspectorDetailPage
+        } else {
+            fileSidebar
+        }
+    }
+
+    /// Preview/editor page for `.inspector`. The header rows are the
+    /// existing preview toolbar and editor toolbar with a Back button
+    /// prepended, so every action (Open, Edit, quote, attachments, save,
+    /// conflict, discard) is literally the existing control set.
+    @ViewBuilder private var inspectorDetailPage: some View {
+        VStack(spacing: 0) {
+            if let session = editing {
+                editorBar(session, showsBack: true)
+                Divider()
+                editorBody(session)
+            } else if let entry = focusedEntry, entry.openable {
+                inspectorPreviewBar(entry)
+                Divider()
+                MacWorkspaceQuickLook(url: entry.url)
+            }
+        }
+    }
+
+    /// Inspector preview header: Back, the file name, then the same action
+    /// buttons as the wide/narrow preview toolbar.
+    @ViewBuilder private func inspectorPreviewBar(_ entry: MacWorkspaceFileEntry) -> some View {
+        HStack(spacing: 10) {
+            inspectorBackButton()
+            Text(verbatim: entry.name).font(.headline).lineLimit(1)
+            Spacer()
+            previewActions(entry)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .controlSize(.small)
+    }
+
+    private func inspectorBackButton() -> some View {
+        Button(action: inspectorBack) {
+            Label(t("返回", "Back"), systemImage: "chevron.left")
+        }
+        .help(t("返回文件列表", "Back to File List"))
+        .accessibilityLabel(t("返回", "Back"))
+        .accessibilityIdentifier("workspace.files.back")
+    }
+
+    /// Inspector Back navigation. From the editor this is exactly the
+    /// existing Done path: a dirty session still passes through the
+    /// "Discard Unsaved Changes?" confirmation before it closes. From a
+    /// preview it clears the focused file and removes it from the selection
+    /// (without touching any other multi-selection) so the list page
+    /// reappears and the same row can be selected again. No data path
+    /// changes: the same selection, attachment, conflict, discard and
+    /// security-domain checks keep governing what the pages show and do.
+    private func inspectorBack() {
+        if editing != nil {
+            closeEdits()
+        } else if let focused {
+            selection.remove(focused)
+            self.focused = nil
         }
     }
 
@@ -407,101 +493,124 @@ struct MacWorkspaceFilesView: View {
         HStack(spacing: 10) {
             Text(verbatim: entry.name).font(.headline).lineLimit(1)
             Spacer()
-            if entry.openable {
-                Button { open(entry) } label: { Image(systemName: "arrow.up.forward.app") }
-                    .help(t("打开", "Open"))
-                    .accessibilityLabel(t("打开", "Open"))
-                    .accessibilityIdentifier("workspace.files.open")
-                if isEditableText(entry) {
-                    Button { edit(entry) } label: { Image(systemName: "pencil") }
-                        .help(t("编辑", "Edit"))
-                        .accessibilityLabel(t("编辑", "Edit"))
-                        .accessibilityIdentifier("workspace.files.edit")
-                }
-                if UTType(filenameExtension: entry.url.pathExtension)?.conforms(to: .text) == true {
-                    Button { quoteText(entry) } label: { Image(systemName: "text.quote") }
-                        .help(t("将文本插入新任务", "Insert Text in New Task"))
-                        .accessibilityLabel(t("将文本插入新任务", "Insert Text in New Task"))
-                        .disabled(!canInsertInDraft || importingText)
-                }
-                Button {
-                    if effectiveAttachments.contains(entry.url) {
-                        updateAttachments(effectiveAttachments.subtracting([entry.url]))
-                    } else {
-                        updateAttachments(effectiveAttachments.union([entry.url]))
-                    }
-                } label: {
-                    Image(systemName: effectiveAttachments.contains(entry.url) ? "paperclip.fill" : "paperclip")
-                }
-                .help(effectiveAttachments.contains(entry.url) ? t("从附件移除", "Remove Attachment") : t("添加为附件", "Add as Attachment"))
-                .accessibilityIdentifier("workspace.files.attach")
-            }
-            Button {
-                if canAccess(entry, allowLink: true) { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
-            } label: { Image(systemName: "folder") }
-            .help(t("在 Finder 中显示", "Show in Finder"))
-            .accessibilityLabel(t("在 Finder 中显示", "Show in Finder"))
+            previewActions(entry)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .controlSize(.small)
     }
 
+    /// The preview action buttons (Open / Edit / quote / attach / Finder)
+    /// shared verbatim by the wide/narrow preview toolbar and the inspector
+    /// preview header.
+    @ViewBuilder private func previewActions(_ entry: MacWorkspaceFileEntry) -> some View {
+        if entry.openable {
+            Button { open(entry) } label: { Image(systemName: "arrow.up.forward.app") }
+                .help(t("打开", "Open"))
+                .accessibilityLabel(t("打开", "Open"))
+                .accessibilityIdentifier("workspace.files.open")
+            if isEditableText(entry) {
+                Button { edit(entry) } label: { Image(systemName: "pencil") }
+                    .help(t("编辑", "Edit"))
+                    .accessibilityLabel(t("编辑", "Edit"))
+                    .accessibilityIdentifier("workspace.files.edit")
+            }
+            if UTType(filenameExtension: entry.url.pathExtension)?.conforms(to: .text) == true {
+                Button { quoteText(entry) } label: { Image(systemName: "text.quote") }
+                    .help(t("将文本插入新任务", "Insert Text in New Task"))
+                    .accessibilityLabel(t("将文本插入新任务", "Insert Text in New Task"))
+                    .disabled(!canInsertInDraft || importingText)
+            }
+            Button {
+                if effectiveAttachments.contains(entry.url) {
+                    updateAttachments(effectiveAttachments.subtracting([entry.url]))
+                } else {
+                    updateAttachments(effectiveAttachments.union([entry.url]))
+                }
+            } label: {
+                Image(systemName: effectiveAttachments.contains(entry.url) ? "paperclip.fill" : "paperclip")
+            }
+            .help(effectiveAttachments.contains(entry.url) ? t("从附件移除", "Remove Attachment") : t("添加为附件", "Add as Attachment"))
+            .accessibilityIdentifier("workspace.files.attach")
+            Button {
+                if canAccess(entry, allowLink: true) { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
+            } label: { Image(systemName: "folder") }
+            .help(t("在 Finder 中显示", "Show in Finder"))
+            .accessibilityLabel(t("在 Finder 中显示", "Show in Finder"))
+        }
+    }
+
     @ViewBuilder private func editorPane(_ session: MacWorkspaceTextEditSession) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(verbatim: session.entry.name).font(.headline).lineLimit(1)
-                if session.dirty {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 7))
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                }
-                Spacer()
-                Button { saveEdits() } label: { Image(systemName: "square.and.arrow.down") }
-                    .help(t("保存", "Save"))
-                    .accessibilityLabel(t("保存", "Save"))
-                    .accessibilityIdentifier("workspace.files.save")
-                    .keyboardShortcut("s", modifiers: .command)
-                    .disabled(!session.dirty || session.saving)
-                Button { saveEditsAsCopy() } label: { Image(systemName: "doc.on.doc") }
-                    .help(t("另存副本", "Save a Copy"))
-                    .accessibilityLabel(t("另存副本", "Save a Copy"))
-                    .accessibilityIdentifier("workspace.files.saveCopy")
-                    .keyboardShortcut("s", modifiers: [.command, .shift])
-                    .disabled(!session.dirty || session.saving)
-                Button { reloadEdits() } label: { Image(systemName: "arrow.clockwise") }
-                    .help(t("重新加载", "Reload From Disk"))
-                    .accessibilityLabel(t("重新加载", "Reload From Disk"))
-                    .disabled(session.saving)
-                Button { closeEdits() } label: { Image(systemName: "xmark") }
-                    .help(t("完成", "Done"))
-                    .accessibilityLabel(t("完成", "Done"))
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(session.saving)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .controlSize(.small)
+            editorBar(session, showsBack: false)
             Divider()
-            TextEditor(text: editorBinding)
-                .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .padding(4)
-                .accessibilityIdentifier("workspace.files.editor")
-            Divider()
-            HStack(spacing: 8) {
-                Text(byteCountLabel(session.text))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Label(sessionStatus(session), systemImage: sessionStatusIcon(session))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            editorBody(session)
         }
+    }
+
+    /// Editor header row shared by the wide/narrow editor pane and the
+    /// inspector editor page. `showsBack` prepends the inspector Back
+    /// navigation; the name, dirty marker and every action (Save, Save a
+    /// Copy, Reload, Done with the unsaved-changes guard) are unchanged.
+    @ViewBuilder private func editorBar(_ session: MacWorkspaceTextEditSession, showsBack: Bool) -> some View {
+        HStack(spacing: 10) {
+            if showsBack {
+                inspectorBackButton()
+            }
+            Text(verbatim: session.entry.name).font(.headline).lineLimit(1)
+            if session.dirty {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 7))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            Spacer()
+            Button { saveEdits() } label: { Image(systemName: "square.and.arrow.down") }
+                .help(t("保存", "Save"))
+                .accessibilityLabel(t("保存", "Save"))
+                .accessibilityIdentifier("workspace.files.save")
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!session.dirty || session.saving)
+            Button { saveEditsAsCopy() } label: { Image(systemName: "doc.on.doc") }
+                .help(t("另存副本", "Save a Copy"))
+                .accessibilityLabel(t("另存副本", "Save a Copy"))
+                .accessibilityIdentifier("workspace.files.saveCopy")
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(!session.dirty || session.saving)
+            Button { reloadEdits() } label: { Image(systemName: "arrow.clockwise") }
+                .help(t("重新加载", "Reload From Disk"))
+                .accessibilityLabel(t("重新加载", "Reload From Disk"))
+                .disabled(session.saving)
+            Button { closeEdits() } label: { Image(systemName: "xmark") }
+                .help(t("完成", "Done"))
+                .accessibilityLabel(t("完成", "Done"))
+                .keyboardShortcut(.cancelAction)
+                .disabled(session.saving)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .controlSize(.small)
+    }
+
+    /// Text editor surface and status footer shared by all layouts.
+    @ViewBuilder private func editorBody(_ session: MacWorkspaceTextEditSession) -> some View {
+        TextEditor(text: editorBinding)
+            .font(.system(.body, design: .monospaced))
+            .scrollContentBackground(.hidden)
+            .padding(4)
+            .accessibilityIdentifier("workspace.files.editor")
+        Divider()
+        HStack(spacing: 8) {
+            Text(byteCountLabel(session.text))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Label(sessionStatus(session), systemImage: sessionStatusIcon(session))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
     }
 
     private var editorBinding: Binding<String> {

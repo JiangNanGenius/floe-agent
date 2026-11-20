@@ -216,6 +216,37 @@ struct FloeThreadComposerChrome: ViewModifier {
     }
 }
 
+struct FloeThreadComposerChip: View {
+    let title: Text
+    let systemImage: String
+    var betaBadge = false
+    var maximumWidth: CGFloat = 280
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label { title } icon: { Image(systemName: systemImage) }
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if betaBadge {
+                Text("localmodels.beta_badge")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(FloeTheme.pending)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .font(FloeTheme.Typography.metadata)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .frame(maxWidth: maximumWidth, alignment: .leading)
+        .accessibilityLabel(betaBadge ? Text("\(title) \(Text("localmodels.beta_badge"))") : title)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(FloeTheme.groupedSurface, in: Capsule())
+    }
+}
+
 struct FloeComposerActionGlyph: View {
     let systemImage: String
     var enabled = true

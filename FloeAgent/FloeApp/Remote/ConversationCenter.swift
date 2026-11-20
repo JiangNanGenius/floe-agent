@@ -590,44 +590,6 @@ struct ApprovalCardRegistry: Sendable {
     }
 }
 
-/// A human-decision prompt surfaced by a run in `.waitingApproval`. Wraps
-/// the runtime's waiting payload with the tool descriptor's deterministic
-/// risk labels so the approval card can show scope and rationale.
-struct PendingApproval: Identifiable, Hashable, Sendable {
-    let runID: UUID
-    let conversationID: UUID
-    let toolCall: ToolCall
-    /// Why the policy escalated to a human.
-    let reason: String
-    /// Deterministic catalog risk labels (never model-derived).
-    let riskLabels: Set<String>
-    let isSideEffecting: Bool
-    let requestedAt: Date
-    /// Workspace identity captured when the approval first became visible.
-    /// An allowed workspace action is denied if the user switches roots.
-    let workspaceID: UUID?
-
-    var id: String { toolCall.id }
-
-    /// Exact card identity. Model call ids are NOT unique across concurrent
-    /// runs; every membership/removal predicate must match runID+callID.
-    func matches(runID: UUID, callID: String) -> Bool {
-        self.runID == runID && self.id == callID
-    }
-
-    /// Human-readable scope description for the approval card.
-    var scopeDescription: String {
-        switch toolCall.scope {
-        case .local:
-            return "local"
-        case .host(let id):
-            return "host \(id.uuidString)"
-        case .hostPath(let hostID, let path):
-            return "host \(hostID.uuidString) · \(path)"
-        }
-    }
-}
-
 /// Owns one invocation from synchronous admission through its last cleanup.
 /// A detached task dictionary or a late cleanup cannot admit/erase another
 /// invocation of the same durable run. Cancellation keeps the cleanup barrier.

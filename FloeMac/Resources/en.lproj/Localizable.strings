@@ -292,6 +292,9 @@
 "mac.workspace.newTask" = "New Task";
 "mac.workspace.taskCenter" = "Task Center";
 "mac.workspace.files" = "Workspace Files";
+"space.title" = "Space";
+"mac.workspace.spaceFiles" = "Files";
+"mac.workspace.toolbox" = "Toolbox";
 "mac.workspace.services" = "Services";
 "mac.workspace.findTask" = "Find a task";
 "mac.workspace.task" = "Task";
@@ -425,3 +428,23 @@
 "mac.provider.images" = "Image input";
 "mac.provider.tools" = "Tool calling";
 "mac.images.attachToTask" = "Attach to Task";
+
+"approval.required" = "Approval required";
+"approval.action" = "Action";
+"approval.scope" = "Scope";
+"approval.risks" = "Risk labels";
+"approval.evidence" = "Details & diff";
+"approval.scope.once" = "Just once";
+"action.approve" = "Approve";
+"action.deny" = "Deny";
+"risk.writes_files" = "Writes files";
+
+"plan.title" = "Plan";
+"chat.thread_detail_view.suggest_converting_to_goal" = "Suggest converting to Goal";
+"chat.thread_detail_view.recommend_normal_execution" = "Recommend normal execution";
+"chat.thread_detail_view.execute_on_the_normal_plan" = "Execute on the normal plan";
+"chat.thread_detail_view.convert_to_goal" = "Convert to Goal";
+
+"workspace.title" = "Workspaces";
+"settings.all_workspaces_files_view.chat" = "Chat";
+"mac.workspace.projectTasksUnavailable" = "Couldn’t load project tasks";

@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: MPL-2.0
+
+import FloeAgentRuntime
+import FloeCore
+import SwiftUI
+
+/// View-only dismissal identity. A new revision or another conversation is
+/// a different card; this value has no plan/Goal persistence or authority.
+struct ThreadPlanConfirmationPresentationKey: Hashable {
+    let conversationID: UUID
+    let planID: UUID
+    let revision: Int
+
+    init(_ plan: PlanDraft) {
+        conversationID = plan.conversationID
+        planID = plan.id
+        revision = plan.revision
+    }
+}
+
+struct ThreadPlanReview: View {
+    let plan: PlanDraft
+    let isAccepting: Bool
+    var actionsDisabled = false
+    let onDismiss: () -> Void
+    #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+    var onNormalActionFrame: ((CGRect) -> Void)? = nil
+    #endif
+    let onExecute: (PlanExecutionRecommendation) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Label("plan.title", systemImage: "list.bullet.clipboard").font(.headline)
+                Spacer()
+                Text(plan.status == .ready
+                    ? planReviewText("等待确认", "Awaiting confirmation")
+                    : planReviewText("待完善", "In preparation"))
+                    .font(.caption).foregroundStyle(.secondary)
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark").font(.body.weight(.medium))
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(planReviewText("关闭计划卡片", "Close plan card"))
+                .accessibilityIdentifier("thread.plan.close")
+            }
+            Text(plan.title).font(.subheadline).lineLimit(2)
+            if let recommendation = plan.executionRecommendation {
+                Label(
+                    recommendation == .goal
+                        ? "chat.thread_detail_view.suggest_converting_to_goal"
+                        : "chat.thread_detail_view.recommend_normal_execution",
+                    systemImage: recommendation == .goal ? "target" : "play.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if let reason = plan.recommendationReason, !reason.isEmpty {
+                    Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                }
+            }
+            DisclosureGroup(planReviewText("计划详情", "Plan details")) {
+                ScrollView {
+                    ThreadPlanDetails(plan: plan)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 230)
+                .textSelection(.enabled)
+            }
+            if plan.status == .ready && plan.isDecisionComplete {
+                HStack {
+                    Button("chat.thread_detail_view.execute_on_the_normal_plan") { onExecute(.normal) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("thread.plan.executeNormal")
+                        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { frame in onNormalActionFrame?(frame) })
+                        #endif
+                    Button("chat.thread_detail_view.convert_to_goal") { onExecute(.goal) }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("thread.plan.executeGoal")
+                    if isAccepting { ProgressView().controlSize(.small) }
+                }
+                .disabled(isAccepting || actionsDisabled)
+            }
+        }
+        .padding(12)
+        .background(FloeTheme.groupedSurface)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct ThreadPlanDetails: View {
+    let plan: PlanDraft
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !plan.summary.isEmpty { Text(plan.summary).foregroundStyle(.secondary) }
+            ForEach(plan.sections.sorted { $0.order < $1.order }) { section in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(section.title).font(.subheadline.weight(.semibold))
+                    Text(section.body).font(.subheadline)
+                }
+            }
+            if !plan.acceptanceCriteria.isEmpty {
+                Text(planReviewText("验收", "Acceptance")).font(.subheadline.weight(.semibold))
+                ForEach(plan.acceptanceCriteria) { criterion in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(criterion.text).font(.subheadline)
+                        Text(criterion.verification).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            ForEach(plan.assumptions) { assumption in
+                Label(assumption.text, systemImage: "checkmark.circle").font(.caption)
+            }
+            ForEach(plan.risks) { risk in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(risk.text).font(.caption.weight(.medium))
+                    if let mitigation = risk.mitigation { Text(mitigation).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }
+    }
+}
+
+struct ConfirmedPlanMessageCard: View {
+    let snapshot: PlanConfirmationSnapshot
+    var onRetryStart: (() -> Void)? = nil
+    @State private var expanded = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Spacer(minLength: 28)
+            VStack(alignment: .leading, spacing: 10) {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ThreadPlanDetails(plan: snapshot.plan)
+                    }
+                    .padding(.top, 8)
+                    .textSelection(.enabled)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(snapshot.execution == .goal
+                            ? planReviewText("已确认计划 · 转为目标", "Plan confirmed · Goal")
+                            : planReviewText("已确认计划", "Plan confirmed"),
+                              systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        Text(snapshot.plan.title).font(.body.weight(.semibold)).lineLimit(2)
+                    }
+                }
+                if let onRetryStart {
+                    Button(action: onRetryStart) {
+                        Label(planReviewText("重试启动", "Retry start"), systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("thread.plan.retryStart")
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: 680, alignment: .leading)
+            .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 16))
+            .accessibilityIdentifier("thread.plan.confirmedHistory")
+        }
+    }
+}
+
+private func planReviewText(_ zh: String, _ en: String) -> String {
+    FloeL10n.isChinese ? zh : en
+}

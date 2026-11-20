@@ -11,11 +11,50 @@
 // chosen scope. Approve/Deny funnel through ConversationCenter so the
 // runtime and the persisted thread never diverge.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 import FloeSecurity
-
 import FloeCore
+import FloeModels
+
+/// A human-decision prompt surfaced by a run in `.waitingApproval`. Wraps
+/// the runtime's waiting payload with the tool descriptor's deterministic
+/// risk labels so the approval card can show scope and rationale.
+struct PendingApproval: Identifiable, Hashable, Sendable {
+    let runID: UUID
+    let conversationID: UUID
+    let toolCall: ToolCall
+    /// Why the policy escalated to a human.
+    let reason: String
+    /// Deterministic catalog risk labels (never model-derived).
+    let riskLabels: Set<String>
+    let isSideEffecting: Bool
+    let requestedAt: Date
+    /// Workspace identity captured when the approval first became visible.
+    /// An allowed workspace action is denied if the user switches roots.
+    let workspaceID: UUID?
+
+    var id: String { toolCall.id }
+
+    /// Exact card identity. Model call ids are NOT unique across concurrent
+    /// runs; every membership/removal predicate must match runID+callID.
+    func matches(runID: UUID, callID: String) -> Bool {
+        self.runID == runID && self.id == callID
+    }
+
+    /// Human-readable scope description for the approval card.
+    var scopeDescription: String {
+        switch toolCall.scope {
+        case .local:
+            return "local"
+        case .host(let id):
+            return "host \(id.uuidString)"
+        case .hostPath(let hostID, let path):
+            return "host \(hostID.uuidString) · \(path)"
+        }
+    }
+}
+
 /// The four authorization scopes offered on an inline approval card.
 /// Mapping to ApprovalScope (§6.1/§10):
 /// - once    → singleUse = true
@@ -45,6 +84,15 @@ enum ApprovalScopeChoice: String, CaseIterable, Identifiable, Sendable {
 /// An actionable, inline approval prompt bound to one PendingApproval.
 struct ApprovalCardView: View {
     let approval: PendingApproval
+    var singleUseOnly = false
+    var canApprove = true
+    var isResolving = false
+    var displayedScope: String? = nil
+    var displayedAction: String? = nil
+    var evidenceOverride: AnyView? = nil
+    #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+    var onActionFrame: ((Bool, CGRect) -> Void)? = nil
+    #endif
     let onResolve: (ApprovalDecision) -> Void
 
     @State private var scopeChoice: ApprovalScopeChoice = .once
@@ -58,10 +106,12 @@ struct ApprovalCardView: View {
             if !approval.riskLabels.isEmpty {
                 riskLabels
             }
-            if requiresExactEvidence {
+            if let evidenceOverride {
+                evidenceOverride
+            } else if requiresExactEvidence {
                 evidenceDisclosure
             }
-            scopePicker
+            if !singleUseOnly { scopePicker }
             actionButtons
         }
         .padding(12)
@@ -112,14 +162,14 @@ struct ApprovalCardView: View {
     private var detailRows: some View {
         VStack(alignment: .leading, spacing: 6) {
             LabeledContent {
-                Text(approval.toolCall.toolName)
+                Text(displayedAction ?? approval.toolCall.toolName)
                     .font(FloeTheme.Typography.evidence)
                     .textSelection(.enabled)
             } label: {
                 Text("approval.action")
             }
             LabeledContent {
-                Text(approval.scopeDescription)
+                Text(displayedScope ?? approval.scopeDescription)
                     .font(FloeTheme.Typography.evidence)
                     .textSelection(.enabled)
             } label: {
@@ -249,19 +299,31 @@ struct ApprovalCardView: View {
             .frame(minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("action.deny")
             .accessibilityIdentifier("approval.deny")
+            #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { frame in onActionFrame?(false, frame) })
+            #endif
 
             Button {
                 onResolve(.allow(scope: approvalScope, expiresAt: nil))
             } label: {
-                Text("action.approve")
+                Text(approveTitle)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .tint(approval.isSideEffecting ? FloeTheme.destructive : FloeTheme.primary)
             .frame(minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel("action.approve")
+            .accessibilityLabel(Text(approveTitle))
             .accessibilityIdentifier("approval.approve")
+            .disabled(!canApprove)
+            #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { frame in onActionFrame?(true, frame) })
+            #endif
         }
+        .disabled(isResolving)
+    }
+
+    private var approveTitle: LocalizedStringKey {
+        singleUseOnly ? "approval.scope.once" : "action.approve"
     }
 
     /// Maps the four-tier choice onto ApprovalScope. The catastrophic
@@ -270,6 +332,7 @@ struct ApprovalCardView: View {
     /// what the human's "allow" remembers.
     private var approvalScope: ApprovalScope {
         let toolName = approval.toolCall.toolName
+        let scopeChoice: ApprovalScopeChoice = singleUseOnly ? .once : self.scopeChoice
         switch approval.toolCall.scope {
         case .local:
             return ApprovalScope(

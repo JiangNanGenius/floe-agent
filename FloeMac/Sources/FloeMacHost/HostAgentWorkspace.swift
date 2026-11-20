@@ -130,12 +130,23 @@ struct HostAgentApproval: Equatable {
     let runID: UUID
     let workspaceID: UUID
     let requestedAt: Date
-    let callID: String
-    let toolName: String
+    let toolCall: ToolCall
+    let reason: String
     let path: String?
     let text: String?
     let previousText: String?
+    var callID: String { toolCall.id }
+    var toolName: String { toolCall.toolName }
     var canAllow: Bool { path?.isEmpty == false && text != nil }
+
+    #if FLOE_UNIFIED_MAC
+    var cardRequest: PendingApproval {
+        let writesFiles = MacAgentWorkspaceTools.writeToolNames.contains(toolName)
+        return PendingApproval(runID: runID, conversationID: conversationID, toolCall: toolCall,
+                               reason: reason, riskLabels: writesFiles ? ["writesFiles"] : [],
+                               isSideEffecting: writesFiles, requestedAt: requestedAt, workspaceID: workspaceID)
+    }
+    #endif
 }
 
 #if FLOE_UNIFIED_MAC
@@ -199,7 +210,10 @@ final class HostAgentWorkspace: ObservableObject {
     func isTaskRunning(_ id: UUID) -> Bool { liveRuns[id] != nil }
     func hasPendingApproval(in id: UUID) -> Bool { liveRuns[id]?.approval != nil }
     #if FLOE_UNIFIED_MAC
-    enum WindowAction { case newTask, findTask, stopTask }
+    enum WindowAction {
+        case newTask, findTask, stopTask
+        case openSpace(MacSpacePage)
+    }
     struct WindowCommand {
         let id = UUID()
         let action: WindowAction
@@ -211,6 +225,12 @@ final class HostAgentWorkspace: ObservableObject {
     var smokeTaskFindInvocations = 0
     var smokeConversationSearchMounted = false
     var smokeApprovalFrames: [Bool: CGRect] = [:]
+    var smokePlanExecuteFrame: CGRect?
+    var smokeProjectNewTaskFrames: [UUID: CGRect] = [:]
+    var smokeProjectNameFrames: [UUID: CGRect] = [:]
+    var smokeSpacePage: MacSpacePage?
+    var smokeSpaceFrame: CGRect?
+    var smokeSpacePickerFrame: CGRect?
     #endif
     @Published var allowsWorkspaceWrites: Bool { didSet { preferences.set(allowsWorkspaceWrites, forKey: "floe.mac.workspace.allowWrites") } }
     @Published var verifyAgentAnswers: Bool { didSet { preferences.set(verifyAgentAnswers, forKey: "floe.mac.agent.verifyAnswers") } }
@@ -276,14 +296,18 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var recentTaskRuns: [UUID: RunRecord] = [:]
     @Published private(set) var taskRunLookupFailed = false
     @Published private(set) var selectedID: UUID?
+    #if FLOE_UNIFIED_MAC
+    @Published private(set) var admittedDraftID: UUID?
+    #endif
     @Published private(set) var messages: [PersistedMessage] = []
     @Published private(set) var hasEarlierMessages = false
     @Published private(set) var isLoadingHistory = false
     @Published private(set) var isLoadingEarlierMessages = false
     @Published private(set) var historyLoadFailed = false
-    /// Durable project workspaces for task selection; nil selection means
-    /// "all tasks". Selection never changes a task's immutable workspace.
+    /// Projects the user can choose for a new task.
     @Published private(set) var workspaces: [WorkspaceRecord] = []
+    @Published private(set) var projectTaskMembership: [UUID: Set<UUID>]?
+    @Published private(set) var projectTasksUnavailable = false
     @Published private(set) var selectedWorkspaceID: UUID?
     @Published private(set) var selectedConversationWorkspace: WorkspaceRecord?
     /// Files staged for the next send; cleared once a run starts.
@@ -326,6 +350,7 @@ final class HostAgentWorkspace: ObservableObject {
     var saveAttachmentDraft: ((UUID?, [AttachmentRef]) -> Void)?
     private var runtime: FloeMacSelfRuntime?
     private var conversationListReload = UUID()
+    private var projectMembershipLoad = UUID()
     private var changingTasks = Set<UUID>()
     #if FLOE_UNIFIED_MAC
     private var isSynchronizingCloudModels = false
@@ -374,6 +399,7 @@ final class HostAgentWorkspace: ObservableObject {
             // reachable again after an explicit restore.
             conversations = try await runtime.conversations(includeArchived: true)
             workspaces = try await runtime.workspaces()
+            await reloadProjectTasks(using: runtime)
             if let recent = conversations.first(where: { $0.isVisibleInOrdinaryList }) {
                 selectedID = recent.id
                 applyHistory(try await runtime.conversationMessagePage(conversationID: recent.id))
@@ -565,23 +591,7 @@ final class HostAgentWorkspace: ObservableObject {
         guard isReady, !isTerminating, !isAcceptingPlan, let runtime else { return }
         guard let release = admit() else { return }
         defer { release() }
-        let selection = UUID()
-        historySelection = selection
-        isLoadingHistory = id != nil
-        isLoadingEarlierMessages = false
-        historyLoadFailed = false
-        applyHistory(.init(messages: [], earlierCursor: nil, hasEarlier: false))
-        selectedID = id
-        selectedConversationWorkspace = nil
-        #if FLOE_UNIFIED_MAC
-        applyComposerRun(nil)
-        let liveIDs = Set(liveRuns.values.compactMap { $0.handle?.identity.runID })
-        runToolActivity = runToolActivity.filter { liveIDs.contains($0.key) }
-        #endif
-        plan = nil
-        goal = nil
-        notice = nil
-        restoreStagedAttachments(for: id)
+        let selection = resetTaskSelection(to: id)
         guard let id else { return }
         defer {
             if historySelection == selection { isLoadingHistory = false }
@@ -603,6 +613,38 @@ final class HostAgentWorkspace: ObservableObject {
         } catch {
             if historySelection == selection, !Task.isCancelled { historyLoadFailed = true }
         }
+    }
+
+    #if FLOE_UNIFIED_MAC
+    func selectNewDraft(in projectID: UUID?) -> Bool {
+        guard isReady, !isTerminating, !isAcceptingPlan, let release = admit() else { return false }
+        defer { release() }
+        selectedWorkspaceID = projectID
+        if selectedID != nil { clearStagedAttachments() }
+        _ = resetTaskSelection(to: nil)
+        return true
+    }
+    #endif
+
+    private func resetTaskSelection(to id: UUID?) -> UUID {
+        let selection = UUID()
+        historySelection = selection
+        isLoadingHistory = id != nil
+        isLoadingEarlierMessages = false
+        historyLoadFailed = false
+        applyHistory(.init(messages: [], earlierCursor: nil, hasEarlier: false))
+        selectedID = id
+        selectedConversationWorkspace = nil
+        #if FLOE_UNIFIED_MAC
+        applyComposerRun(nil)
+        let liveIDs = Set(liveRuns.values.compactMap { $0.handle?.identity.runID })
+        runToolActivity = runToolActivity.filter { liveIDs.contains($0.key) }
+        #endif
+        plan = nil
+        goal = nil
+        notice = nil
+        restoreStagedAttachments(for: id)
+        return selection
     }
 
     func loadEarlierMessages() async {
@@ -704,9 +746,8 @@ final class HostAgentWorkspace: ObservableObject {
         hasEarlierMessages = page.hasEarlier
     }
 
-    /// Chooses the project workspace shown for task selection. Nil shows
-    /// every task. This never rebinds an existing conversation: a task's
-    /// workspace is fixed after its first message.
+    /// Sets the project for the next draft submission. Existing tasks keep
+    /// the workspace captured when their run was admitted.
     func selectWorkspace(_ id: UUID?) {
         guard isReady, !isSending, !isTerminating else { return }
         selectedWorkspaceID = id
@@ -883,6 +924,12 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     #if FLOE_UNIFIED_MAC
+    func retryProjectTasks() async {
+        guard isReady, !isTerminating, let runtime, let release = admit() else { return }
+        defer { release() }
+        await reloadProjectTasks(using: runtime)
+    }
+
     func moveTask(_ id: UUID, to workspaceID: UUID?) async -> Bool {
         guard let runtime, isReady, !isTaskRunning(id), !changingTasks.contains(id), !isTerminating,
               !isAcceptingPlan, let release = admit() else { return false }
@@ -892,6 +939,7 @@ final class HostAgentWorkspace: ObservableObject {
             let owner = try await runtime.moveConversation(id: id, toWorkspaceID: workspaceID)
             if selectedID == id { selectedConversationWorkspace = owner }
             if let latest = try? await runtime.workspaces() { workspaces = latest }
+            await reloadProjectTasks(using: runtime)
             return true
         } catch {
             return false
@@ -903,7 +951,24 @@ final class HostAgentWorkspace: ObservableObject {
         let generation = UUID()
         conversationListReload = generation
         let records = try await runtime.conversations(includeArchived: true)
-        if conversationListReload == generation { conversations = records }
+        if conversationListReload == generation {
+            conversations = records
+            await reloadProjectTasks(using: runtime)
+        }
+    }
+
+    private func reloadProjectTasks(using runtime: FloeMacSelfRuntime) async {
+        let generation = UUID()
+        projectMembershipLoad = generation
+        do {
+            let members = try await runtime.projectConversationIDs()
+            guard !Task.isCancelled, generation == projectMembershipLoad else { return }
+            projectTaskMembership = members
+            projectTasksUnavailable = false
+        } catch {
+            guard !Task.isCancelled, generation == projectMembershipLoad else { return }
+            projectTasksUnavailable = true
+        }
     }
 
     func loadTaskRuns() async {
@@ -975,7 +1040,7 @@ final class HostAgentWorkspace: ObservableObject {
         liveRuns[taskID] = LiveRun(prompt: acceptedPlan == nil ? text : nil, mode: mode)
         notice = nil
         rejectedPrompt = nil
-        let drafts = resumingGoal ? [] : stagedAttachments
+        let drafts = resumingGoal || acceptedPlan != nil ? [] : stagedAttachments
         #if FLOE_UNIFIED_MAC
         let readOnly = mode == .plan || !allowsWorkspaceWrites
         let finalReview = mode != .chat && mode != .plan && verifyAgentAnswers
@@ -1080,6 +1145,9 @@ final class HostAgentWorkspace: ObservableObject {
                 if hasOriginSelection && currentID == nil {
                     selectedConversationWorkspace = project
                     selectedID = handle.identity.conversationID
+                    #if FLOE_UNIFIED_MAC
+                    admittedDraftID = handle.identity.conversationID
+                    #endif
                 }
                 if newDraftRunID == taskID { newDraftRunID = nil }
                 #if FLOE_UNIFIED_MAC
@@ -1272,20 +1340,44 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
-    func acceptPlan(_ candidate: PlanDraft) async -> Bool {
+    @discardableResult
+    func confirmAndRunPlan(_ candidate: PlanDraft, as execution: PlanExecutionRecommendation) async -> Bool {
+        guard isReady, !isSending, !isTerminating, !isAcceptingPlan,
+              candidate == plan, selectedID == candidate.conversationID else { return false }
+        do {
+            guard let config = try configuration(), config.model.capabilities.contains(.tools) else {
+                notice = String(localized: "mac.agent.toolsModelRequired")
+                return false
+            }
+            return await acceptPlan(candidate, as: execution, launchWith: config.binding())
+        } catch {
+            notice = String(localized: "host.chat.keychainUnavailable")
+            return false
+        }
+    }
+
+    private func acceptPlan(_ candidate: PlanDraft, as execution: PlanExecutionRecommendation = .normal,
+                            launchWith provider: FloeMacSelfProviderBinding? = nil) async -> Bool {
         guard isReady, let runtime, !isSending, !isTerminating, !isAcceptingPlan,
-              candidate == plan, selectedID == candidate.conversationID, let release = admit() else { return false }
+              candidate == plan, selectedID == candidate.conversationID,
+              candidate.status == .ready, candidate.isDecisionComplete, let release = admit() else { return false }
         isAcceptingPlan = true
+        notice = nil
         defer { isAcceptingPlan = false; release() }
         do {
-            _ = try await runtime.acceptPlan(candidate, conversationID: candidate.conversationID, execution: .normal)
+            let receipt = try await runtime.acceptPlan(candidate, conversationID: candidate.conversationID,
+                                                       execution: execution)
             let updated = try await runtime.conversationMessagePage(conversationID: candidate.conversationID)
             applyHistory(updated, retainingVisibleHistory: true)
             await loadPlanning(conversationID: candidate.conversationID, runtime: runtime)
+            let mode: HostAgentMode = execution == .goal ? .goal : .agent
             #if FLOE_UNIFIED_MAC
-            if plan?.status == .accepted { saveTaskMode(.agent, for: candidate.conversationID) }
+            saveTaskMode(mode, for: candidate.conversationID)
             #endif
-            return plan?.status == .accepted
+            guard let provider else { return true }
+            let snapshot = receipt.snapshot
+            return beginSend(snapshot.executionPrompt, runtime: runtime, provider: provider,
+                             mode: mode, acceptedPlan: snapshot)
         } catch {
             #if FLOE_MAC_HOST_SMOKE
             if vault == nil { smokeRunDiagnostics.append("acceptPlan: \(error)") }
@@ -1305,14 +1397,14 @@ final class HostAgentWorkspace: ObservableObject {
 
     func runAcceptedPlan(_ saved: PlanConfirmationSnapshot) {
         guard isReady, let runtime, !isSending, !isTerminating, !isAcceptingPlan,
-              saved == pendingAcceptedPlan, selectedID == saved.plan.conversationID,
-              stagedAttachments.isEmpty else { return }
+              saved == pendingAcceptedPlan, selectedID == saved.plan.conversationID else { return }
         do {
             guard let config = try configuration(), config.model.capabilities.contains(.tools) else {
                 notice = String(localized: "mac.agent.toolsModelRequired")
                 return
             }
-            _ = beginSend(saved.executionPrompt, runtime: runtime, provider: config.binding(), mode: .agent,
+            let mode: HostAgentMode = saved.execution == .goal ? .goal : .agent
+            _ = beginSend(saved.executionPrompt, runtime: runtime, provider: config.binding(), mode: mode,
                           acceptedPlan: saved)
         } catch {
             notice = String(localized: "host.chat.keychainUnavailable")
@@ -1353,7 +1445,7 @@ final class HostAgentWorkspace: ObservableObject {
         let card = HostAgentApproval(conversationID: handle.identity.conversationID,
                                      runID: handle.identity.runID, workspaceID: handle.identity.workspaceID,
                                      requestedAt: request.requestedAt,
-                                     callID: call.id, toolName: call.toolName, path: preview.path,
+                                     toolCall: call, reason: request.reason, path: preview.path,
                                      text: preview.text, previousText: preview.previousText)
         if liveRuns[taskID]?.approval != card { liveRuns[taskID]?.approval = card }
     }
@@ -1432,6 +1524,9 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func configuration() throws -> HostAgentProvider? {
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        if vault == nil { return composerProvider }
+        #endif
         guard let vault else { return nil }
         let store = try loadProviderStore()
         #if FLOE_UNIFIED_MAC
@@ -1868,12 +1963,16 @@ final class HostAgentWorkspace: ObservableObject {
         await select(id)
         let messagesBefore = messages.map(\.id)
         guard !messagesBefore.isEmpty, let personal = selectedConversationWorkspace, personal.kind == .privateTask,
-              await moveTask(id, to: project.id), selectedConversationWorkspace?.id == project.id else { return false }
+              await moveTask(id, to: project.id), selectedConversationWorkspace?.id == project.id,
+              projectTaskMembership?[project.id]?.contains(id) == true else {
+            return false
+        }
         await select(nil)
         await select(id)
         guard selectedConversationWorkspace?.id == project.id, messages.map(\.id) == messagesBefore,
               await moveTask(id, to: nil) else { return false }
         await select(id)
+        guard let detached = projectTaskMembership, detached[project.id]?.contains(id) != true else { return false }
         return selectedConversationWorkspace?.id == personal.id && messages.map(\.id) == messagesBefore
             && conversations.first(where: { $0.id == id })?.isPinned == true
     }
@@ -2022,6 +2121,89 @@ final class HostAgentWorkspace: ObservableObject {
             .filter { $0.lastPathComponent.hasPrefix(".floe-previous-") })
     }
 
+    func verifyProjectTaskWorkflowSmoke(
+        project: WorkspaceRecord, folder: URL, attachment: URL, endpoint: URL,
+        confirm: () -> Bool, approve: () -> Bool
+    ) async -> Bool {
+        guard vault == nil, let runtime, selectedID == nil, selectedWorkspaceID == project.id, activeRunCount == 0,
+              endpoint.scheme == "http", endpoint.host == "127.0.0.1",
+              let chosen = try? HostAgentProvider(endpoint: endpoint.absoluteString,
+                  protocolKind: .openAIChatCompletions, modelID: "project-task-fixture", apiKey: "",
+                  supportsTools: true, allowsPlainHTTP: true),
+              let other = try? HostAgentProvider(endpoint: endpoint.absoluteString,
+                  protocolKind: .openAIChatCompletions, modelID: "uncalled-fixture", apiKey: "",
+                  supportsTools: true, allowsPlainHTTP: true) else { return false }
+        let oldProviders = providers
+        let oldProviderID = selectedProviderID
+        defer {
+            providers = oldProviders
+            selectedProviderID = oldProviderID
+        }
+        providers = [other, chosen]
+        selectedProviderID = other.profile.id
+        selectComposerProvider(chosen.profile.id)
+        composerMode = .plan
+        smokePlanExecuteFrame = nil
+
+        func exercise() async -> Bool {
+            let prompt = "Use the attached brief to write and save the project acceptance report."
+            let report = folder.appendingPathComponent("acceptance-report.md")
+            guard composerProvider?.model.id == chosen.model.id,
+                  let brief = stageAttachments([attachment]).first, brief.kind == .document,
+                  send(prompt, workspaceID: selectedWorkspaceID, mode: composerMode),
+                  await waitForSmokeRun(),
+                  let taskID = selectedID, selectedConversationWorkspace?.id == project.id,
+                  let proposal = plan, proposal.title == "Project acceptance report", proposal.status == .ready,
+                  let planningRun = try? await runtime.recentRuns(conversationID: taskID, limit: 1).first,
+                  planningRun.modelID == chosen.model.id, planningRun.conversationMode == "plan" else {
+                smokeRunDiagnostics.append("Project task did not reach plan review with the selected model.")
+                return false
+            }
+            guard confirm() else {
+                smokeRunDiagnostics.append("Project task plan confirmation control was unavailable.")
+                return false
+            }
+            let deadline = ContinuousClock.now + .seconds(8)
+            while pendingApproval == nil && ContinuousClock.now < deadline {
+                if notice != nil && !isSending { break }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            guard let approval = pendingApproval, approval.conversationID == taskID,
+                  approval.workspaceID == project.id, approval.path == report.lastPathComponent,
+                  !FileManager.default.fileExists(atPath: report.path), approve(),
+                  await waitForSmokeRun(),
+                  (try? String(contentsOf: report, encoding: .utf8)) == "# Acceptance\nSynthetic attachment verified.\n" else {
+                smokeRunDiagnostics.append("Project task did not write the approved report.")
+                return false
+            }
+
+            await select(nil)
+            await select(taskID)
+            let runs = try? await runtime.recentRuns(conversationID: taskID, limit: 3)
+            let owners = projectTaskMembership
+            var reopenedAttachment: URL?
+            await withSavedAttachment(id: brief.id, conversationID: taskID) { reopenedAttachment = $0 }
+            guard selectedConversationWorkspace?.id == project.id, owners?[project.id]?.contains(taskID) == true,
+                  reopenedAttachment?.standardizedFileURL == attachment.standardizedFileURL,
+                  composerProvider?.model.id == chosen.model.id, plan?.status == .accepted,
+                  runs?.count == 2, let execution = runs?.first,
+                  execution.modelID == chosen.model.id, execution.id == approval.runID,
+                  let message = messages.first(where: { PlanConfirmationSnapshot.from(message: $0) != nil }),
+                  message.runID == execution.id,
+                  messages.contains(where: { $0.content.contains("Acceptance report saved.") }) else {
+                smokeRunDiagnostics.append("Project task lost its folder, selected model, plan or attachment after reopening.")
+                return false
+            }
+            return true
+        }
+        let passed = await exercise()
+        if isSending {
+            stop()
+            _ = await waitForSmokeRun()
+        }
+        return passed
+    }
+
     func verifyPlanningSmoke(project: WorkspaceRecord) async -> (planSaved: Bool, goalSaved: Bool) {
         guard vault == nil, let runtime, !isSending,
               let planner = smokeProvider(.submitPlan), let worker = smokeProvider(.workOnGoal) else {
@@ -2112,12 +2294,13 @@ final class HostAgentWorkspace: ObservableObject {
         return true
     }
 
-    func verifyConcurrentTasksSmoke(project: WorkspaceRecord, folder: URL) async -> Bool {
+    func verifyConcurrentTasksSmoke(project: WorkspaceRecord, folder: URL, otherProject: WorkspaceRecord,
+                                    otherFolder: URL, openProjectTask: (UUID) async -> Bool) async -> Bool {
         guard vault == nil, let runtime, activeRunCount == 0 else { return false }
         let firstName = "background-approved.txt"
         let secondName = "background-stopped.txt"
         let firstFile = folder.appendingPathComponent(firstName)
-        let secondFile = folder.appendingPathComponent(secondName)
+        let secondFile = otherFolder.appendingPathComponent(secondName)
         func waitForApproval() async -> HostAgentApproval? {
             let deadline = ContinuousClock.now + .seconds(4)
             while pendingApproval == nil && isSending && ContinuousClock.now < deadline {
@@ -2126,23 +2309,37 @@ final class HostAgentWorkspace: ObservableObject {
             return pendingApproval
         }
         func exercise() async -> Bool {
-            await select(nil)
-            guard let first = smokeProvider(.createFile(firstName)),
-                  beginSend("Create the first fixture", runtime: runtime, provider: first, workspaceID: project.id, mode: .agent),
-                  let approval = await waitForApproval(), approval.path == firstName else { return false }
+            guard await openProjectTask(project.id), selectedWorkspaceID == project.id,
+                  let first = smokeProvider(.createFile(firstName)),
+                  beginSend("Create the first fixture", runtime: runtime, provider: first, workspaceID: selectedWorkspaceID, mode: .agent),
+                  let approval = await waitForApproval(), approval.path == firstName,
+                  approval.workspaceID == project.id else {
+                smokeRunDiagnostics.append("Concurrent projects: the first approval did not arrive.")
+                return false
+            }
             let firstID = approval.conversationID
-            await select(nil)
-            guard !isSending, pendingApproval == nil, backgroundTaskIDs == [firstID],
-                  let second = smokeProvider(.createFile(secondName)),
-                  beginSend("Create the second fixture", runtime: runtime, provider: second, workspaceID: project.id, mode: .agent),
+            guard await openProjectTask(otherProject.id), selectedWorkspaceID == otherProject.id,
+                  !isSending, pendingApproval == nil, backgroundTaskIDs == [firstID] else {
+                smokeRunDiagnostics.append("Concurrent projects: could not open an empty task in the second project.")
+                return false
+            }
+            guard let second = smokeProvider(.createFile(secondName)),
+                  beginSend("Create the second fixture", runtime: runtime, provider: second, workspaceID: selectedWorkspaceID, mode: .agent),
                   let secondApproval = await waitForApproval(), secondApproval.path == secondName,
-                  secondApproval.conversationID != firstID, activeRunCount == 2 else { return false }
+                  secondApproval.workspaceID == otherProject.id, secondApproval.conversationID != firstID,
+                  activeRunCount == 2 else {
+                smokeRunDiagnostics.append("Concurrent projects: the second approval did not arrive with its project identity.")
+                return false
+            }
             let secondID = secondApproval.conversationID
             await resolveApproval(approval, allow: true)
             let scopeIsolated = pendingApproval == secondApproval && !FileManager.default.fileExists(atPath: firstFile.path)
                 && hasPendingApproval(in: firstID)
             let activeCannotArchive = !(await changeConversationMetadata(id: firstID, change: .archive(true)))
-            guard scopeIsolated, activeCannotArchive else { return false }
+            guard scopeIsolated, activeCannotArchive else {
+                smokeRunDiagnostics.append("Concurrent projects: first approval or archive was accepted from the second task.")
+                return false
+            }
             await select(firstID)
             guard pendingApproval == approval, selectedID == firstID, backgroundTaskIDs == [secondID] else { return false }
             stopTask(secondID)
@@ -2152,17 +2349,21 @@ final class HostAgentWorkspace: ObservableObject {
             while activeRunCount != 0 && ContinuousClock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(25))
             }
-            guard activeRunCount == 0, selectedID == firstID,
+            guard activeRunCount == 0, selectedID == firstID, selectedConversationWorkspace?.id == project.id,
                   (try? String(contentsOf: firstFile, encoding: .utf8)) == "Synthetic workspace output.",
                   !FileManager.default.fileExists(atPath: secondFile.path),
                   messages.contains(where: { $0.content == "Create the first fixture" }),
-                  messages.allSatisfy({ $0.conversationID == firstID }) else { return false }
+                  messages.allSatisfy({ $0.conversationID == firstID }) else {
+                smokeRunDiagnostics.append("Concurrent projects: final file or task ownership checks failed.")
+                return false
+            }
             let stoppedRun = try? await runtime.recentRuns(conversationID: secondID, limit: 1).first
             let stoppedAdmission = try? await runtime.admissionRecord(conversationID: secondID)
             guard stoppedRun?.state == "checkpointed", stoppedRun?.endedAt != nil,
                   stoppedAdmission?.phase.isUnresolved == false else { return false }
             await select(secondID)
-            return messages.contains(where: { $0.content == "Create the second fixture" })
+            return selectedConversationWorkspace?.id == otherProject.id
+                && messages.contains(where: { $0.content == "Create the second fixture" })
                 && messages.allSatisfy { $0.conversationID == secondID }
         }
         let passed = await exercise()

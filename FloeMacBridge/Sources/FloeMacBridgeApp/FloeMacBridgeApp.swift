@@ -31,7 +31,6 @@ struct FloeMacBridgeApp: App {
                     .disabled(model.isSwitchingMode)
                 if model.isAgentMode {
                     Button("host.menu.bridge") { model.requestBridgeMode() }.disabled(model.isSwitchingMode)
-                    Button("host.menu.tools") { model.openToolbox() }.disabled(model.isSwitchingMode)
                 }
             }
             #endif
@@ -70,7 +69,11 @@ private struct BridgeMenuView: View {
         Button(LocalizedStringKey(model.isAgentMode ? "host.menu.openAgent" : "host.bridge.switchToAgent")) { model.openAgentWorkspace() }
             .disabled(model.isSwitchingMode)
         if model.isAgentMode {
-            Button("host.menu.tools") { model.openToolbox() }.disabled(model.isSwitchingMode)
+            Menu("space.title") {
+                Button("mac.workspace.spaceFiles", systemImage: "folder") { model.openSpace(.files) }
+                Button("mac.workspace.toolbox", systemImage: "wrench.and.screwdriver") { model.openSpace(.toolbox) }
+            }
+            .disabled(model.isSwitchingMode)
         }
         #endif
         Button("Settings…") { model.openSettings(.bridge) }
@@ -364,6 +367,11 @@ final class BridgeAppModel: ObservableObject {
     func openToolbox(toolID: String? = nil) {
         guard isAgentMode, !isSwitchingMode else { return }
         macWorkspace?.openToolbox(toolID: toolID)
+    }
+
+    func openSpace(_ page: MacSpacePage) {
+        guard isAgentMode, !isSwitchingMode else { return }
+        macWorkspace?.openSpace(page)
     }
 
     func requestBridgeMode() {

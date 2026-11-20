@@ -72,7 +72,7 @@ final class UnifiedMacSmoke {
                 try? await Task.sleep(for: .milliseconds(30))
             }
             let startedInAgent = model.isAgentMode && model.listenerReady && NSApp.activationPolicy() == .regular
-                && NSApp.windows.contains { $0.isVisible && $0.title == String(localized: "host.role.agent") }
+                && visibleWorkbench != nil
                 && model.smokeSettingsWindow?.isVisible != true
             if let agent = model.macWorkspace?.agent {
                 await agent.prepare()
@@ -110,9 +110,7 @@ final class UnifiedMacSmoke {
         // the insulated fixture to keep independent task tests runnable.
         if model.macWorkspace?.agent == nil { model.openAgentWorkspace() }
         let switchedToAgent = model.macWorkspace?.agent != nil
-        let workbenchVisible = NSApp.windows.contains {
-            $0.isVisible && $0.title == String(localized: "host.role.agent")
-        }
+        let workbenchVisible = visibleWorkbench != nil
         let modeRoundTrip = await exerciseModeRoundTrip(model: model)
         let unifiedSettings = await exerciseUnifiedSettings(model: model)
         var nativeChat = false
@@ -125,6 +123,7 @@ final class UnifiedMacSmoke {
         var conversationHistoryVerified = false
         var workspaceTextEditsVerified = false
         var workspaceModelReadTools = false
+        var projectWorkflow = false
         var concurrentTasks = false
         var catalog = false
         var providerConnectionVerified = false
@@ -144,9 +143,7 @@ final class UnifiedMacSmoke {
                 try? await Task.sleep(for: .milliseconds(50))
             }
             workspaceAndAttachmentStaging = await verifyWorkspaceAndAttachmentStaging(agent)
-            if let window = NSApp.windows.first(where: {
-                $0.isVisible && $0.title == String(localized: "host.role.agent")
-            }), let content = window.contentView {
+            if let window = visibleWorkbench, let content = window.contentView {
                 capture(content, extension: "png")
                 // The welcome page has exactly one trailing toolbar action.
                 // Press it before sending so the same file pane remains open
@@ -181,9 +178,7 @@ final class UnifiedMacSmoke {
                 archivedTaskRestored = archived && archivedRunIsVisible && archivedRow?.archivedAt != nil && restored
                     && restoredRow?.isVisibleInOrdinaryList == true && restoredRow?.isPinned == true
             }
-            if let content = NSApp.windows.first(where: {
-                $0.isVisible && $0.title == String(localized: "host.role.agent")
-            })?.contentView {
+            if let content = visibleWorkbench?.contentView {
                 capture(content, extension: "task.png")
             }
             if let project = agent.workspaces.first(where: { $0.name == "Fixture Project" }) {
@@ -193,19 +188,9 @@ final class UnifiedMacSmoke {
                 }
                 let openedNewTask = await openNewTaskFromMenu(workspace: agent)
                 agentApproval = await agent.verifyAgentApprovalSmoke(project: project, checkingFile: folder) { allow in
-                    guard openedNewTask, let window = NSApp.windows.first(where: {
-                        $0.isVisible && $0.title == String(localized: "host.role.agent")
-                    }), let content = window.contentView else { return false }
-                    capture(content, extension: "approval.png")
-                    let id = allow ? "mac.agent.allowOnce" : "mac.agent.deny"
-                    if pressAccessibilityButton(content, id: id) {
-                        pressedApprovalButtons.insert(allow)
-                        return true
+                    guard openedNewTask, clickApproval(in: agent, allow: allow, screenshot: "approval.png") else {
+                        return false
                     }
-                    guard let frame = agent.smokeApprovalFrames[allow], !frame.isEmpty else { return false }
-                    let point = NSPoint(x: frame.midX, y: frame.midY)
-                    guard content.bounds.contains(content.convert(point, from: nil)),
-                          clickWindowLocation(point, in: window) else { return false }
                     pressedApprovalButtons.insert(allow)
                     return true
                 }
@@ -216,8 +201,30 @@ final class UnifiedMacSmoke {
                     workspaceModelReadTools = await agent.verifyReadOnlyModelToolsSmoke(
                         project: project, documentName: document.lastPathComponent
                     )
+                    if let endpoint = projectTaskFixtureEndpoint,
+                       await openNewProjectTask(workspace: agent, projectID: project.id) {
+                        projectWorkflow = await agent.verifyProjectTaskWorkflowSmoke(project: project,
+                            folder: folder, attachment: document, endpoint: endpoint) {
+                                clickWorkbenchButton(ids: ["thread.plan.executeNormal"],
+                                                     frame: agent.smokePlanExecuteFrame, screenshot: "project-task-plan.png")
+                            } approve: {
+                                clickApproval(in: agent, allow: true, screenshot: "project-task-approval.png")
+                            }
+                    }
                 }
-                concurrentTasks = await agent.verifyConcurrentTasksSmoke(project: project, folder: folder)
+                let otherFolder = root.appendingPathComponent("Second Fixture Project", isDirectory: true)
+                if (try? FileManager.default.createDirectory(at: otherFolder, withIntermediateDirectories: false)) != nil,
+                   await agent.addWorkspace(name: otherFolder.lastPathComponent, rootURL: otherFolder),
+                   let otherProject = agent.workspaces.first(where: { $0.id == agent.selectedWorkspaceID }) {
+                    concurrentTasks = await agent.verifyConcurrentTasksSmoke(project: project, folder: folder,
+                        otherProject: otherProject, otherFolder: otherFolder) { projectID in
+                            await openNewProjectTask(workspace: agent, projectID: projectID,
+                                screenshot: projectID == otherProject.id ? "project-task-concurrent.png" : nil,
+                                fromName: projectID != otherProject.id)
+                        }
+                } else {
+                    settingsDiagnostics.append("The second project test folder could not be registered.")
+                }
             }
             if let normalChatID {
                 let removed = await agent.changeConversationMetadata(id: normalChatID, change: .delete)
@@ -228,6 +235,7 @@ final class UnifiedMacSmoke {
             standardTaskMenus = await verifyTaskMenus(model: model, workspace: agent)
             imageGeneration = await verifyImageGeneration()
         }
+        let spaceNavigation = await exerciseSpaceNavigation(model: model)
         let toolbox = await exerciseToolbox(model: model)
         let fileEditorFailures = MacWorkspaceFileEditingSmoke.runSyntheticChecks()
         if let agent = model.macWorkspace?.agent, agent.beginTermination() { try? await agent.finishTermination() }
@@ -257,6 +265,7 @@ final class UnifiedMacSmoke {
             "fileEditorSaveVerified": fileEditorFailures.isEmpty,
             "fileEditorFailures": fileEditorFailures,
             "workspaceModelReadToolsVerified": workspaceModelReadTools,
+            "projectTaskWorkflowVerified": projectWorkflow,
             "concurrentTasksIsolated": concurrentTasks,
             "conversationHistoryVerified": conversationHistoryVerified,
             "agentApprovedFileCreated": agentApproval.allowed,
@@ -266,9 +275,9 @@ final class UnifiedMacSmoke {
             "goalControlsVerified": goalControls,
             "workspaceApprovalUserEvents": pressedApprovalButtons.count == 2,
             "taskDiagnostics": model.macWorkspace?.agent?.smokeRunDiagnostics ?? [],
+            "spaceFilesAndToolboxVerified": spaceNavigation,
             "toolboxAndLoopbackVerified": toolbox,
-            "enabledToolboxEntries": MacToolboxCatalog.groups(locale: .current)
-                .flatMap(\.tools).filter(\.isAvailable).count,
+            "enabledToolboxEntries": MacToolboxCatalog.availableTools.count,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
         ]
@@ -494,10 +503,10 @@ final class UnifiedMacSmoke {
     private func verifyTaskMenus(model: BridgeAppModel, workspace: HostAgentWorkspace) async -> Bool {
         model.openAgentWorkspace()
         let activated = ContinuousClock.now + .seconds(2)
-        while NSApp.keyWindow?.title != String(localized: "host.role.agent") && ContinuousClock.now < activated {
+        while NSApp.keyWindow?.identifier != UnifiedMacWorkspace.workbenchWindowIdentifier && ContinuousClock.now < activated {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        guard NSApp.keyWindow?.title == String(localized: "host.role.agent") else {
+        guard NSApp.keyWindow?.identifier == UnifiedMacWorkspace.workbenchWindowIdentifier else {
             settingsDiagnostics.append("Workbench was not key during the shortcut test.")
             return false
         }
@@ -532,6 +541,32 @@ final class UnifiedMacSmoke {
             try? await Task.sleep(for: .milliseconds(30))
         }
         return workspace.selectedID == nil
+    }
+
+    private func openNewProjectTask(workspace: HostAgentWorkspace, projectID: UUID,
+                                    screenshot: String? = "project-task-start.png", fromName: Bool = false) async -> Bool {
+        let action = fromName ? "open" : "new"
+        guard clickWorkbenchButton(ids: ["sidebar.workspace.\(action).\(projectID.uuidString)"],
+                                   frame: (fromName ? workspace.smokeProjectNameFrames : workspace.smokeProjectNewTaskFrames)[projectID],
+                                   screenshot: nil) else {
+            settingsDiagnostics.append("The sidebar’s project control was unavailable.")
+            return false
+        }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < deadline {
+            if workspace.selectedID == nil && workspace.selectedWorkspaceID == projectID {
+                if let screenshot {
+                    try? await Task.sleep(for: .milliseconds(75))
+                    if let content = visibleWorkbench?.contentView {
+                        capture(content, extension: screenshot)
+                    }
+                }
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        settingsDiagnostics.append("The sidebar’s project control did not switch to the selected project’s draft.")
+        return false
     }
 
     private func performMenuShortcut(_ key: String, title: String) -> Bool {
@@ -614,8 +649,61 @@ final class UnifiedMacSmoke {
         return true
     }
 
+    private func exerciseSpaceNavigation(model: BridgeAppModel) async -> Bool {
+        guard let workspace = model.macWorkspace, let agent = workspace.agent else { return false }
+        let priorToolbox = workspace.toolbox
+        func waitForPage(_ page: MacSpacePage) async -> Bool {
+            let deadline = ContinuousClock.now + .seconds(2)
+            while (agent.smokeSpacePage != page || agent.smokeSpacePickerFrame == nil) && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            if agent.smokeSpacePage == page, agent.smokeSpacePickerFrame != nil { return true }
+            settingsDiagnostics.append("Space did not display \(page). Current page: \(String(describing: agent.smokeSpacePage)).")
+            return false
+        }
+        func clickSpaceSegment(_ index: Int, screenshot: String) -> Bool {
+            guard let window = visibleWorkbench, let content = window.contentView else { return false }
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            guard let frame = agent.smokeSpacePickerFrame, !frame.isEmpty else { return false }
+            capture(content, extension: screenshot)
+            let location = NSPoint(x: frame.minX + frame.width * (CGFloat(index) + 0.5) / 2, y: frame.midY)
+            let point = content.convert(location, from: nil)
+            if content.bounds.contains(point), click(content, at: point, in: window) { return true }
+            settingsDiagnostics.append("The Space picker could not receive an event at \(point) from \(frame).")
+            return false
+        }
+        let spaceTitle = String(localized: "space.title")
+        let toolboxTitle = String(localized: "mac.workspace.toolbox")
+        let spaceMenu = NSApp.mainMenu?.item(withTitle: spaceTitle)?.submenu
+        spaceMenu?.update()
+        guard let spaceMenu, let toolboxItem = spaceMenu.item(withTitle: toolboxTitle), toolboxItem.isEnabled else {
+            settingsDiagnostics.append("The Space menu did not contain an enabled Toolbox item.")
+            return false
+        }
+        spaceMenu.performActionForItem(at: spaceMenu.index(of: toolboxItem))
+        guard await waitForPage(.toolbox), workspace.toolbox === priorToolbox else {
+            settingsDiagnostics.append("The Toolbox menu did not enter Space without opening a second tool window.")
+            return false
+        }
+        guard clickWorkbenchButton(ids: ["workspace.space"], frame: agent.smokeSpaceFrame, screenshot: "space-menu.png") else {
+            settingsDiagnostics.append("The Space sidebar control did not accept a click.")
+            return false
+        }
+        guard await waitForPage(.files), clickSpaceSegment(1, screenshot: "space-files.png"),
+              await waitForPage(.toolbox), workspace.toolbox === priorToolbox,
+              clickSpaceSegment(0, screenshot: "space-toolbox.png") else { return false }
+        return await waitForPage(.files)
+    }
+
     private func exerciseToolbox(model: BridgeAppModel) async -> Bool {
-        guard let workspace = model.macWorkspace else { return false }
+        guard let workspace = model.macWorkspace, workspace.toolbox == nil else { return false }
+        let activity = model.updates.installation.activity.activityCount
+        let catalog = MacToolboxCatalog.groups(locale: Locale(identifier: "en")).flatMap(\.tools)
+        let unavailable = catalog.filter { !$0.isAvailable }.map(\.id)
+        guard Set(unavailable) == ["level", "motion", "compass", "measure", "barometer"] else { return false }
+        for toolID in unavailable { model.openToolbox(toolID: toolID) }
+        guard workspace.toolbox == nil, model.updates.installation.activity.activityCount == activity else { return false }
         model.openToolbox(toolID: "ping")
         guard let first = workspace.toolbox, first.window?.isVisible == true else { return false }
         let command = first.services.networkOwner
@@ -623,13 +711,12 @@ final class UnifiedMacSmoke {
         let completed = await command.drain(timeout: 9)
         let pingPassed = started && completed && command.result?.contains("4 packets received") == true
         guard await workspace.closeToolbox() else { return false }
-        model.openToolbox()
+        model.openToolbox(toolID: "ping")
         let reopened = workspace.toolbox
         let distinctOwner = reopened?.window?.isVisible == true
             && reopened?.services.mediaEnvironment !== first.services.mediaEnvironment
-        let tools = MacToolboxCatalog.groups(locale: Locale(identifier: "en")).flatMap(\.tools)
         let remoteToolsAvailable = ["terminal", "vnc"].allSatisfy { id in
-            tools.contains { $0.id == id && $0.isAvailable }
+            MacToolboxCatalog.isAvailable(toolID: id)
         }
         model.openToolbox(toolID: "terminal")
         let terminalVisible = workspace.toolbox === reopened && reopened?.window?.isVisible == true
@@ -637,6 +724,39 @@ final class UnifiedMacSmoke {
         let vncVisible = workspace.toolbox === reopened && reopened?.window?.isVisible == true
         let closed = await workspace.closeToolbox()
         return pingPassed && distinctOwner && remoteToolsAvailable && terminalVisible && vncVisible && closed
+    }
+
+    private var projectTaskFixtureEndpoint: URL? {
+        let arguments = CommandLine.arguments
+        guard let flag = arguments.firstIndex(of: "--project-task-fixture"), flag + 1 < arguments.count,
+              let endpoint = URL(string: arguments[flag + 1]), endpoint.scheme == "http",
+              endpoint.host == "127.0.0.1", endpoint.port != nil else { return nil }
+        return endpoint
+    }
+
+    private func clickApproval(in workspace: HostAgentWorkspace, allow: Bool, screenshot: String) -> Bool {
+        clickWorkbenchButton(ids: allow ? ["approval.approve", "mac.agent.allowOnce"] : ["approval.deny", "mac.agent.deny"],
+                             frame: workspace.smokeApprovalFrames[allow], screenshot: screenshot)
+    }
+
+    private var visibleWorkbench: NSWindow? {
+        NSApp.windows.first { $0.isVisible && $0.identifier == UnifiedMacWorkspace.workbenchWindowIdentifier }
+    }
+
+    private func clickWorkbenchButton(ids: [String], frame: @autoclosure () -> CGRect?, screenshot: String?) -> Bool {
+        guard let window = visibleWorkbench, let content = window.contentView else { return false }
+        content.layoutSubtreeIfNeeded()
+        refreshButtonFrames(in: content)
+        if let screenshot { capture(content, extension: screenshot) }
+        if ids.contains(where: { pressAccessibilityButton(content, id: $0) }) { return true }
+        guard let frame = frame(), !frame.isEmpty else { return false }
+        let point = NSPoint(x: frame.midX, y: frame.midY)
+        return content.bounds.contains(content.convert(point, from: nil)) && clickWindowLocation(point, in: window)
+    }
+
+    private func refreshButtonFrames(in view: NSView) {
+        (view as? MacWorkbenchButtonFrameReader.Anchor)?.recordFrame()
+        for subview in view.subviews { refreshButtonFrames(in: subview) }
     }
 
     private func verifyWorkspaceAndAttachmentStaging(_ agent: HostAgentWorkspace) async -> Bool {
@@ -713,6 +833,7 @@ final class UnifiedMacSmoke {
         }
         guard !model.isAgentMode, model.macWorkspace == nil, initialWorkspace.agent == nil,
               initialWorkspace.toolbox == nil, !toolboxWindow.isVisible, NSApp.activationPolicy() == .accessory,
+              NSApp.mainMenu?.item(withTitle: String(localized: "space.title")) == nil,
               NSApp.windows.contains(where: { $0.title == "Floe Bridge" && $0.isVisible }) else { return false }
         guard let port = model.smokePort, (try? await callPairedBridge(port: port)) == true else { return false }
         model.reopenPreferredWindow()
@@ -721,7 +842,7 @@ final class UnifiedMacSmoke {
         model.openAgentWorkspace()
         return NSApp.activationPolicy() == .regular && model.isAgentMode
             && model.macWorkspace?.agent != nil && model.macWorkspace !== initialWorkspace
-            && NSApp.windows.contains { $0.isVisible && $0.title == String(localized: "host.role.agent") }
+            && visibleWorkbench != nil
     }
 
     private func exerciseUnifiedSettings(model: BridgeAppModel) async -> Bool {

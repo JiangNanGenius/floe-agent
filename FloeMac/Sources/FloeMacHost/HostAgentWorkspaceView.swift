@@ -25,6 +25,7 @@ struct HostAgentWorkspaceView: View {
     @State private var showAttachmentError = false
     @State private var criterion = ""
     @State private var goalForConfirmation: ConversationGoal?
+    @State private var hiddenPlanConfirmations: Set<ThreadPlanConfirmationPresentationKey> = []
     private var mode: HostAgentMode { workspace.composerMode }
     #else
     @State private var showingSettings = false
@@ -114,7 +115,7 @@ struct HostAgentWorkspaceView: View {
                         .onDisappear { workspace.smokeConversationSearchMounted = false }
                         #endif
                 }
-                if let plan = workspace.plan { planCard(plan) }
+                pendingPlanReview
                 if let goal = workspace.goal { goalCard(goal) }
                 conversation
                 if let failed = workspace.failedUserMessage,
@@ -262,21 +263,22 @@ struct HostAgentWorkspaceView: View {
                 }
             }
             if let openModelSettings {
-                HStack(spacing: 6) {
-                    modelControl(openSettings: openModelSettings)
-                    if let openFiles {
-                        if let owner = workspace.selectedConversationWorkspace, owner.kind == .project {
-                            Button(action: openFiles) {
-                                Label(owner.name, systemImage: "folder").font(FloeTheme.Typography.metadata)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        modelControl(openSettings: openModelSettings)
+                        if let openFiles {
+                            if let owner = workspace.selectedConversationWorkspace, owner.kind == .project {
+                                Button(action: openFiles) {
+                                    FloeThreadComposerChip(title: Text(verbatim: owner.name), systemImage: "folder")
+                                }
+                                .buttonStyle(.plain)
+                                .help("mac.workspace.browseFiles")
+                            } else if workspace.selectedID == nil {
+                                projectControl(openFiles: openFiles)
                             }
-                            .buttonStyle(.borderless)
-                            .help("mac.workspace.browseFiles")
-                        } else if workspace.selectedID == nil {
-                            projectControl(openFiles: openFiles)
                         }
+                        modeControl
                     }
-                    modeControl
-                    Spacer()
                 }
                 .padding(.leading, 4)
                 .disabled(workspace.isSending || workspace.isTerminating || workspace.isAcceptingPlan)
@@ -313,65 +315,31 @@ struct HostAgentWorkspaceView: View {
         .disabled(workspace.isSending || workspace.isTerminating)
     }
 
-    private func planCard(_ plan: PlanDraft) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            DisclosureGroup {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(verbatim: plan.summary)
-                        ForEach(plan.sections.sorted { $0.order < $1.order }) { section in
-                            Text(verbatim: section.title).font(.headline)
-                            Text(verbatim: section.body)
-                        }
-                        if !plan.assumptions.isEmpty {
-                            Text("mac.agent.planAssumptions").font(.headline)
-                            ForEach(plan.assumptions) { Text(verbatim: $0.text) }
-                        }
-                        if !plan.risks.isEmpty {
-                            Text("mac.agent.planRisks").font(.headline)
-                            ForEach(plan.risks) { risk in
-                                Text(verbatim: risk.text)
-                                if let mitigation = risk.mitigation { Text(verbatim: mitigation).foregroundStyle(.secondary) }
-                            }
-                        }
-                        Text("mac.agent.acceptanceCriteria").font(.headline)
-                        ForEach(plan.acceptanceCriteria) { criterion in
-                            Text(verbatim: criterion.text)
-                            Text(verbatim: criterion.verification).foregroundStyle(.secondary)
-                        }
-                        if plan.status == .ready {
-                            Button("mac.agent.acceptPlan") {
-                                Task {
-                                    _ = await workspace.acceptPlan(plan)
-                                }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(workspace.isSending || workspace.isAcceptingPlan || workspace.isTerminating)
-                            .accessibilityIdentifier("mac.agent.acceptPlan")
-                        } else if let accepted = workspace.pendingAcceptedPlan {
-                            Button("mac.agent.runPlan") { workspace.runAcceptedPlan(accepted) }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(workspace.isSending || workspace.isTerminating || !workspace.stagedAttachments.isEmpty)
-                                .accessibilityIdentifier("mac.agent.runPlan")
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
-                    .textSelection(.enabled)
-                }
-                .frame(maxHeight: 230)
-            } label: {
-                Label {
-                    Text(verbatim: plan.title).lineLimit(1)
-                } icon: {
-                    Image(systemName: plan.status == .accepted ? "checkmark.circle" : "list.bullet.clipboard")
-                }
-                .accessibilityLabel(plan.status == .accepted ? Text("mac.agent.planAccepted") : Text("mac.agent.planReview"))
-            }
-            .id(plan.id)
-            .accessibilityIdentifier("mac.agent.planCard")
+    @ViewBuilder
+    private var pendingPlanReview: some View {
+        if let plan = workspace.plan, plan.awaitsConfirmation,
+           !hiddenPlanConfirmations.contains(.init(plan)) {
+            planReview(for: plan)
+                .id(ThreadPlanConfirmationPresentationKey(plan))
         }
-        .modifier(HostTaskCardChrome())
+    }
+
+    private func planReview(for plan: PlanDraft) -> some View {
+        var review = ThreadPlanReview(plan: plan, isAccepting: workspace.isAcceptingPlan,
+                                      actionsDisabled: workspace.isSending || workspace.isTerminating,
+                                      onDismiss: { hiddenPlanConfirmations.insert(.init(plan)) }) { execution in
+            Task { await workspace.confirmAndRunPlan(plan, as: execution) }
+        }
+        #if FLOE_MAC_HOST_SMOKE
+        review.onNormalActionFrame = { frame in workspace.smokePlanExecuteFrame = frame }
+        #endif
+        return review
+    }
+
+    private func retryPlan(_ snapshot: PlanConfirmationSnapshot) -> (() -> Void)? {
+        guard workspace.pendingAcceptedPlan == snapshot, !workspace.isSending,
+              !workspace.isAcceptingPlan, !workspace.isTerminating else { return nil }
+        return { workspace.runAcceptedPlan(snapshot) }
     }
 
     private func goalCard(_ goal: ConversationGoal) -> some View {
@@ -436,97 +404,12 @@ struct HostAgentWorkspaceView: View {
                 }
             }
         } label: {
-            Label(mode.title, systemImage: mode.symbol)
-                .font(FloeTheme.Typography.metadata)
+            FloeThreadComposerChip(title: Text(mode.title), systemImage: mode.symbol)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityIdentifier("mac.composer.mode")
-    }
-
-    private func approvalCard(_ approval: HostAgentApproval) -> some View {
-        let title: LocalizedStringKey = if approval.previousText != nil {
-            "mac.agent.replaceTextApproval"
-        } else if approval.path != nil {
-            "mac.agent.createFileApproval"
-        } else {
-            "mac.agent.approvalRequired"
-        }
-        return VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: "hand.raised")
-                .font(.headline)
-            Text(verbatim: approval.path ?? approval.toolName)
-                .font(.callout.monospaced())
-                .textSelection(.enabled)
-            if let project = workspace.workspaces.first(where: { $0.id == approval.workspaceID }) {
-                Label {
-                    Text(verbatim: project.name)
-                } icon: {
-                    Image(systemName: "folder")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            if let previousText = approval.previousText, let text = approval.text {
-                DisclosureGroup("mac.agent.reviewReplacement") {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("mac.agent.originalText").font(.caption.weight(.semibold))
-                        approvalText(previousText)
-                            Text("mac.agent.replacementText").font(.caption.weight(.semibold))
-                            if text.isEmpty {
-                                Text("mac.agent.removeText").font(.caption).foregroundStyle(.secondary)
-                            } else {
-                                approvalText(text)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: 135)
-                }
-            } else if let text = approval.text, !text.isEmpty {
-                DisclosureGroup("mac.agent.reviewFileContents") {
-                    ScrollView {
-                        approvalText(text)
-                    }
-                    .frame(maxHeight: 120)
-                }
-            }
-            HStack {
-                Spacer()
-                Button("mac.agent.deny") { Task { await workspace.resolveApproval(approval, allow: false) } }
-                    .accessibilityIdentifier("mac.agent.deny")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(ApprovalButtonAnchor { frame in workspace.smokeApprovalFrames[false] = frame })
-                    #endif
-                Button("mac.agent.allowOnce") { Task { await workspace.resolveApproval(approval, allow: true) } }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("mac.agent.allowOnce")
-                    .disabled(!approval.canAllow)
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(ApprovalButtonAnchor { frame in workspace.smokeApprovalFrames[true] = frame })
-                    #endif
-            }
-            .disabled(workspace.isStopping || workspace.isResolvingApproval || workspace.isTerminating)
-        }
-        .modifier(HostTaskCardChrome())
-        .accessibilityIdentifier("mac.agent.approvalCard")
-    }
-
-    private func approvalText(_ text: String) -> some View {
-        let preview = text.prefix(24_000)
-        return VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: String(preview))
-                .font(.caption.monospaced())
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if preview.endIndex != text.endIndex {
-                Button("mac.agent.copyFullApprovalText") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                }
-            }
-        }
     }
 
     private func toolActivityCard(_ activity: [HostAgentToolActivity]) -> some View {
@@ -620,19 +503,18 @@ struct HostAgentWorkspaceView: View {
             Divider()
             Button("mac.workspace.browseFiles", action: openFiles)
         } label: {
-            Label(project?.name ?? String(localized: "mac.workspace.noProject"), systemImage: "folder")
-                .font(FloeTheme.Typography.metadata)
-                .lineLimit(1)
+            FloeThreadComposerChip(title: Text(verbatim: project?.name ?? String(localized: "mac.workspace.noProject")),
+                                   systemImage: "folder")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder private func modelControl(openSettings: @escaping () -> Void) -> some View {
         if workspace.providers.isEmpty {
             Button(action: openSettings) {
-                Label("host.chat.provider", systemImage: "cpu")
-                    .font(FloeTheme.Typography.metadata)
+                FloeThreadComposerChip(title: Text("host.chat.provider"), systemImage: "cpu")
             }
             .buttonStyle(.plain)
         } else {
@@ -651,11 +533,13 @@ struct HostAgentWorkspaceView: View {
                 Divider()
                 Button("host.chat.provider", action: openSettings)
             } label: {
-                Label(workspace.composerProvider?.displayTitle ?? String(localized: "host.chat.provider"), systemImage: "cpu")
-                    .font(FloeTheme.Typography.metadata)
-                    .lineLimit(1)
+                FloeThreadComposerChip(
+                    title: Text(verbatim: workspace.composerProvider?.displayTitle ?? String(localized: "host.chat.provider")),
+                    systemImage: "cpu"
+                )
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize(horizontal: true, vertical: false)
         }
     }
@@ -674,9 +558,8 @@ struct HostAgentWorkspaceView: View {
                             earlierHistoryButton(scroll)
                             ForEach(workspace.messages) { message in
                                 VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
-                                    if PlanConfirmationSnapshot.from(message: message) != nil {
-                                        Label("mac.agent.planAccepted", systemImage: "checkmark.circle")
-                                            .foregroundStyle(.secondary)
+                                    if let confirmation = PlanConfirmationSnapshot.from(message: message) {
+                                        ConfirmedPlanMessageCard(snapshot: confirmation, onRetryStart: retryPlan(confirmation))
                                     } else if message.role == "user" {
                                         UserMessageBubble(text: message.content,
                                                           attachments: AttachmentChipItem.items(in: message.parts),
@@ -719,7 +602,7 @@ struct HostAgentWorkspaceView: View {
                                 if !steps.isEmpty { toolActivityCard(steps) }
                             }
                             if let approval = workspace.pendingApproval {
-                                approvalCard(approval).id(approval.callID)
+                                MacWorkspaceApprovalView(workspace: workspace, approval: approval)
                             }
                             if !workspace.streamedText.isEmpty {
                                 MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
@@ -884,36 +767,6 @@ extension HostAgentMode {
         case .agent: "bolt"
         case .plan: "list.bullet.clipboard"
         case .goal: "scope"
-        }
-    }
-}
-#endif
-
-#if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
-private struct ApprovalButtonAnchor: NSViewRepresentable {
-    let record: (CGRect) -> Void
-
-    func makeNSView(context: Context) -> Anchor { Anchor() }
-
-    func updateNSView(_ view: Anchor, context: Context) {
-        view.record = record
-        view.recordFrame()
-    }
-
-    final class Anchor: NSView {
-        var record: ((CGRect) -> Void)?
-
-        override func viewDidMoveToWindow() { recordFrame() }
-
-        override func layout() {
-            super.layout()
-            recordFrame()
-        }
-
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-        func recordFrame() {
-            if window != nil, !bounds.isEmpty { record?(convert(bounds, to: nil)) }
         }
     }
 }

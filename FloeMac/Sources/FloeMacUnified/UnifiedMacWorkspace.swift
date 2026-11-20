@@ -9,6 +9,8 @@ import SwiftUI
 /// admitted conversation or the shutdown of an open toolbox.
 @MainActor
 final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidation {
+    static let workbenchWindowIdentifier = NSUserInterfaceItemIdentifier("floe.agent.workbench")
+
     enum CloseError: LocalizedError {
         case agentBusy, pendingFiles, draftSaveFailed, runtimeCloseFailed
 
@@ -29,6 +31,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
     private(set) var images: MacImageGeneration?
     private var agentWindow: NSWindow?
     private var taskMenuItem: NSMenuItem?
+    private var spaceMenuItem: NSMenuItem?
     private var draftStore: MacWorkspaceDraftStore?
     private var agentLeases = Set<BridgeUpdateActivity.Lease>()
     private(set) var toolbox: MacToolboxWindowController?
@@ -86,6 +89,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
                 remembersFileRoot: testSupport == nil, draftStore: drafts
             ))
             let window = NSWindow(contentViewController: host)
+            window.identifier = Self.workbenchWindowIdentifier
             window.title = String(localized: "host.role.agent")
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.setContentSize(NSSize(width: 1150, height: 750))
@@ -98,7 +102,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         }
         agentWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        installTaskMenu()
+        installWorkbenchMenus()
     }
 
     private func performWindowAction(_ action: HostAgentWorkspace.WindowAction) {
@@ -107,9 +111,11 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         agent.windowCommand = .init(action: action)
     }
 
-    private func installTaskMenu() {
-        guard let mainMenu = NSApp.mainMenu, taskMenuItem?.menu !== mainMenu else { return }
+    private func installWorkbenchMenus() {
+        guard let mainMenu = NSApp.mainMenu,
+              taskMenuItem?.menu !== mainMenu || spaceMenuItem?.menu !== mainMenu else { return }
         if let taskMenuItem { taskMenuItem.menu?.removeItem(taskMenuItem) }
+        if let spaceMenuItem { spaceMenuItem.menu?.removeItem(spaceMenuItem) }
         let title = String(localized: "Tasks")
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let menu = NSMenu(title: title)
@@ -126,6 +132,21 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         item.submenu = menu
         mainMenu.insertItem(item, at: min(2, mainMenu.items.count))
         taskMenuItem = item
+
+        let spaceTitle = String(localized: "space.title")
+        let spaceItem = NSMenuItem(title: spaceTitle, action: nil, keyEquivalent: "")
+        let spaceMenu = NSMenu(title: spaceTitle)
+        let files = spaceMenu.addItem(withTitle: String(localized: "mac.workspace.spaceFiles"),
+                                      action: #selector(openSpaceFromMenu(_:)), keyEquivalent: "")
+        files.target = self
+        files.representedObject = MacSpacePage.files
+        let toolbox = spaceMenu.addItem(withTitle: String(localized: "mac.workspace.toolbox"),
+                                        action: #selector(openSpaceFromMenu(_:)), keyEquivalent: "")
+        toolbox.target = self
+        toolbox.representedObject = MacSpacePage.toolbox
+        spaceItem.submenu = spaceMenu
+        mainMenu.insertItem(spaceItem, at: mainMenu.index(of: item) + 1)
+        spaceMenuItem = spaceItem
     }
 
     @objc private func newTaskFromMenu(_ sender: NSMenuItem) {
@@ -141,18 +162,24 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         performWindowAction(.stopTask)
     }
 
+    @objc private func openSpaceFromMenu(_ sender: NSMenuItem) {
+        guard let page = sender.representedObject as? MacSpacePage else { return }
+        openSpace(page)
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard let agent, !agent.isTerminating, !agent.isSettingsPresented else { return false }
         if menuItem.action == #selector(newTaskFromMenu(_:)) {
             return agent.isReady && !agent.isAcceptingPlan
         }
+        if menuItem.action == #selector(openSpaceFromMenu(_:)) { return true }
         guard agentWindow === NSApp.keyWindow, agentWindow?.attachedSheet == nil else { return false }
         if menuItem.action == #selector(stopTaskFromMenu(_:)) { return agent.canStop }
         return true
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        if notification.object as? NSWindow === agentWindow { installTaskMenu() }
+        if notification.object as? NSWindow === agentWindow { installWorkbenchMenus() }
     }
 
     #if FLOE_MAC_HOST_SMOKE
@@ -173,6 +200,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         if let sheet = agentWindow?.attachedSheet { agentWindow?.endSheet(sheet) }
         if let item = taskMenuItem { item.menu?.removeItem(item) }
         taskMenuItem = nil
+        if let item = spaceMenuItem { item.menu?.removeItem(item) }
+        spaceMenuItem = nil
         agentWindow?.close()
         agentWindow?.contentViewController = nil
         agentWindow = nil
@@ -182,13 +211,26 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, NSMenuItemValidatio
         return true
     }
 
+    func openSpace(_ page: MacSpacePage) {
+        guard let agent, !agent.isTerminating else { return }
+        agent.windowCommand = .init(action: .openSpace(page))
+        agentWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func openToolbox(toolID: String?) {
         guard agent?.isTerminating == false, !drainingToolbox else { return }
+        guard let toolID else {
+            openSpace(.toolbox)
+            return
+        }
+        guard MacToolboxCatalog.isAvailable(toolID: toolID) else { return }
         if toolbox == nil {
             guard let lease = try? activity.begin(.maintenance) else { return }
             let storage = testSupport?.appendingPathComponent("Toolbox", isDirectory: true)
             let services = MacToolboxServices(storageRoot: storage, mediaEnvironment: .init())
-            let controller = MacToolboxWindowController(services: services, autosavesFrame: testSupport == nil)
+            let controller = MacToolboxWindowController(services: services, autosavesFrame: testSupport == nil,
+                                                        preferences: preferences)
             controller.window?.delegate = self
             toolbox = controller
             toolboxLease = lease

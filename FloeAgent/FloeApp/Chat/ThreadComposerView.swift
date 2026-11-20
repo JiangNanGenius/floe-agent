@@ -1752,31 +1752,8 @@ struct ThreadComposerView: View {
         systemImage: String,
         betaBadge: Bool = false
     ) -> some View {
-        HStack(spacing: 6) {
-            Label(title, systemImage: systemImage)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            if betaBadge {
-                Text("localmodels.beta_badge")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(FloeTheme.pending)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-        }
-        .font(FloeTheme.Typography.metadata)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        // A model may include an availability explanation. Keep the other
-        // controls reachable in narrow document/Canvas assistant panes.
-        .frame(maxWidth: embedded ? 200 : 280, alignment: .leading)
-        .accessibilityLabel(betaBadge
-            ? "\(title) \(String(localized: "localmodels.beta_badge"))"
-            : title)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(FloeTheme.groupedSurface, in: Capsule())
+        FloeThreadComposerChip(title: Text(verbatim: title), systemImage: systemImage,
+                               betaBadge: betaBadge, maximumWidth: embedded ? 200 : 280)
     }
 
     // MARK: - Attachments

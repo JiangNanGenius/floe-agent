@@ -21,6 +21,9 @@ targets:
       - path: Sources/FloeMacHost/HostAgentWorkspaceView.swift
       - path: Sources/FloeMacUnified
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
+      - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
+      - path: ../FloeAgent/FloeApp/Chat/ApprovalCardView.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadPlanReview.swift
       - path: ../FloeAgent/FloeApp/Chat/ErrorEventView.swift
       - path: ../FloeAgent/FloeApp/Chat/UserMessageBubble.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/CodeBlockView.swift

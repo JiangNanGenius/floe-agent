@@ -26,6 +26,13 @@ enum MacToolboxAvailability {
 }
 
 public enum MacToolboxCatalog {
+    public static var availableTools: Set<ToolboxTool> { MacToolboxAvailability.available }
+
+    public static func isAvailable(toolID: String) -> Bool {
+        guard let tool = ToolboxTool(rawValue: toolID) else { return false }
+        return availableTools.contains(tool)
+    }
+
     public struct Tool: Identifiable {
         public let id: String
         public let title: String
@@ -53,17 +60,23 @@ public enum MacToolboxCatalog {
 @MainActor
 fileprivate final class MacToolboxSelection: ObservableObject {
     private static let defaultsKey = "floe.mac.toolbox.selectedTool"
+    private let preferences: UserDefaults
     @Published private(set) var tool: ToolboxTool
 
-    init() {
-        let stored = UserDefaults.standard.string(forKey: Self.defaultsKey)
-        tool = stored.flatMap(ToolboxTool.init(rawValue:)) ?? .hash
+    init(preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        let stored = preferences.string(forKey: Self.defaultsKey).flatMap(ToolboxTool.init(rawValue:))
+        if let stored, MacToolboxCatalog.availableTools.contains(stored) {
+            tool = stored
+        } else {
+            tool = .hash
+        }
     }
 
     func select(_ tool: ToolboxTool) {
-        guard self.tool != tool else { return }
+        guard self.tool != tool, MacToolboxCatalog.availableTools.contains(tool) else { return }
         self.tool = tool
-        UserDefaults.standard.set(tool.rawValue, forKey: Self.defaultsKey)
+        preferences.set(tool.rawValue, forKey: Self.defaultsKey)
     }
 }
 
@@ -94,18 +107,14 @@ public struct MacToolboxWindow: View {
         NavigationSplitView {
             List(selection: selection) {
                 ForEach(ToolboxGroup.allCases, id: \.rawValue) { group in
-                    Section(MacToolboxAvailability.groupTitle(group, locale: locale)) {
-                        ForEach(ToolboxTool.allCases.filter { $0.group == group }) { tool in
-                            HStack {
+                    let tools = ToolboxTool.allCases.filter { $0.group == group && MacToolboxCatalog.availableTools.contains($0) }
+                    if !tools.isEmpty {
+                        Section(MacToolboxAvailability.groupTitle(group, locale: locale)) {
+                            ForEach(tools) { tool in
                                 Label(tool.title(in: locale), systemImage: tool.symbol)
-                                if !MacToolboxAvailability.available.contains(tool) {
-                                    Spacer()
-                                    Text(MacToolboxText.t("暂不可用", "Unavailable", locale))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
+                                    .tag(Optional(tool))
+                                    .accessibilityIdentifier("mac.toolbox.sidebar.\(tool.rawValue)")
                             }
-                            .tag(Optional(tool))
-                            .accessibilityIdentifier("mac.toolbox.sidebar.\(tool.rawValue)")
                         }
                     }
                 }
@@ -166,17 +175,8 @@ public struct MacToolboxWindow: View {
             }
         case .timer:
             MacSilentTimerView(service: services.silentTimekeeping())
-        default:
-            if let instrument = MacInstrument.allCases.first(where: { $0.toolboxTool == selection.wrappedValue }),
-               case .unsupported(let notice) = MacInstrumentCatalog().availability(for: instrument) {
-                MacInstrumentLimitationView(instrument: instrument, notice: notice)
-            } else {
-                ContentUnavailableView(
-                    MacToolboxText.t("暂不可用", "Not available yet", locale),
-                    systemImage: "wrench.and.screwdriver",
-                    description: Text(MacToolboxText.t("此工具尚未在 Mac 上提供。", "This tool is not yet available on Mac.", locale))
-                )
-            }
+        case .level, .motion, .compass, .measure, .barometer:
+            EmptyView()
         }
     }
 }
@@ -186,9 +186,9 @@ public final class MacToolboxWindowController: NSWindowController {
     public let services: MacToolboxServices
     private let selectedTool: MacToolboxSelection
 
-    public init(services: MacToolboxServices, autosavesFrame: Bool = true) {
+    public init(services: MacToolboxServices, autosavesFrame: Bool = true, preferences: UserDefaults = .standard) {
         self.services = services
-        let selectedTool = MacToolboxSelection()
+        let selectedTool = MacToolboxSelection(preferences: preferences)
         self.selectedTool = selectedTool
         let hosting = NSHostingController(rootView: MacToolboxWindow(services: services, selectedTool: selectedTool))
         let window = NSWindow(contentViewController: hosting)

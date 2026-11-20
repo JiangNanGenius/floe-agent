@@ -278,6 +278,22 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         }
     }
 
+    public func projectConversationIDs() async throws -> [UUID: Set<UUID>] {
+        try await database.reader { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT ownership.workspace_id, ownership.conversation_id
+                FROM conversation_workspace_ownership AS ownership
+                JOIN workspaces AS workspace ON workspace.id = ownership.workspace_id
+                WHERE workspace.kind = 'project'
+                """)
+            return rows.reduce(into: [UUID: Set<UUID>]()) { groups, row in
+                guard let workspaceID = UUID(uuidString: row["workspace_id"]),
+                      let conversationID = UUID(uuidString: row["conversation_id"]) else { return }
+                groups[workspaceID, default: []].insert(conversationID)
+            }
+        }
+    }
+
     public func workspaceID(conversationID: UUID) async throws -> UUID? {
         try await database.reader { db in
             try String.fetchOne(

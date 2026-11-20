@@ -1333,6 +1333,11 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    public func projectConversationIDs() async throws -> [UUID: Set<UUID>] {
+        let stores = try requireStores()
+        return try await stores.workspaces.projectConversationIDs()
+    }
+
     /// The durable workspace that owns this conversation, if any. This is the
     /// project binding the host presents; it grants no execution authority by
     /// itself (tool sessions still require the verified lease above).
