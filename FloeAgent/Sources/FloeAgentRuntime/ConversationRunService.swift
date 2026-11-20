@@ -650,14 +650,13 @@ public actor ConversationRunService {
         if case .checkpointed = state { return "checkpointed" }
         if case .waitingUserQuestion = state { return "waitingUserQuestion" }
         if isReviewingApproval { return "reviewingApproval" }
+        if liveness.isReconnecting { return "reconnecting" }
         switch liveness.phase {
         case .waitingTool:
             return "waitingTool"
         case .preparingToolCall:
             if case .streamingModel = state { return "preparingToolCall" }
             return state.name
-        case .retrying:
-            return "reconnecting"
         case .persisting:
             return "committingResults"
         case .compacting:

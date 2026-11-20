@@ -48858,19 +48858,19 @@
         }
       }
     },
-    "feedback.success.message": {
+    "feedback.success.reference": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reference: %@. Thank you for helping improve Floe Agent."
+            "value": "Feedback reference"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "参考编号：%@。感谢你帮助改进 Floe Agent。"
+            "value": "反馈编号"
           }
         }
       }

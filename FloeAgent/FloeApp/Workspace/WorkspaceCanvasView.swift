@@ -13468,7 +13468,8 @@ private struct SharedCanvasAgentConversation: View {
                 .environment(\.chatInlineContentScope, ChatInlineContentScope(
                     conversationID: viewModel.conversationID, isTemporary: viewModel.isTemporary))
         case .liveThinking:
-            ModelResponseWaitingView()
+            ModelResponseWaitingView(title: RunStateLocalizer.responseWaitingTitle(
+                for: viewModel.liveStateName ?? viewModel.selectedRun?.state))
         case .approval(let approval):
             ApprovalCardView(approval: approval) { decision in
                 Task { await viewModel.resolve(approval, decision: decision) }

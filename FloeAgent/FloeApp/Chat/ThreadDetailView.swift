@@ -1124,7 +1124,8 @@ struct ThreadDetailView: View {
             #endif
 
         case .liveThinking:
-            ModelResponseWaitingView(title: RunStateLocalizer.responseWaitingTitle(for: viewModel.selectedRun?.state))
+            ModelResponseWaitingView(title: RunStateLocalizer.responseWaitingTitle(
+                for: viewModel.liveStateName ?? viewModel.selectedRun?.state))
 
         case .approval(let approval):
             ApprovalCardView(approval: approval) { decision in

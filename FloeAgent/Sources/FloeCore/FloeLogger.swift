@@ -128,9 +128,13 @@ public struct FloeLogger: Sendable {
 
         /// Renders the buffer as redacted plain text for export.
         public func renderedText() -> String {
+            Self.renderedText(recentEntries)
+        }
+
+        public static func renderedText(_ entries: [Entry]) -> String {
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return recentEntries
+            return entries
                 .map { entry in
                     "[\(formatter.string(from: entry.timestamp))] [\(entry.category)] [\(entry.level)] \(entry.message)"
                 }

@@ -16,6 +16,7 @@ struct FeedbackReportView: View {
     @State private var isSubmitting = false
     @State private var errorMessage: String?
     @State private var submittedID: String?
+    @State private var copiedReference = false
     @State private var pendingPackageURL: URL?
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var imageAttachments: [FeedbackImageAttachment] = []
@@ -30,6 +31,75 @@ struct FeedbackReportView: View {
     }
 
     var body: some View {
+        Group {
+            if let submittedID {
+                ContentUnavailableView {
+                    Label("feedback.success.title", systemImage: "checkmark.circle")
+                } description: {
+                    VStack(spacing: 6) {
+                        Text("feedback.success.reference")
+                        Text(verbatim: submittedID)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("feedback.reference")
+                    }
+                } actions: {
+                    Button {
+                        UIPasteboard.general.string = submittedID
+                        copiedReference = true
+                    } label: {
+                        if copiedReference {
+                            Label("action.copied", systemImage: "checkmark")
+                        } else {
+                            Label("action.copy", systemImage: "doc.on.doc")
+                        }
+                    }
+                }
+            } else {
+                reportForm.disabled(isSubmitting)
+            }
+        }
+        .navigationTitle(FloeL10n.l("feedback.title"))
+        .navigationBarTitleDisplayMode(.inline)
+        .interactiveDismissDisabled(isSubmitting)
+        .toolbar {
+            if submittedID != nil {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("action.done") { dismiss() }
+                        .accessibilityIdentifier("feedback.done")
+                }
+            } else {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("action.cancel") { dismiss() }
+                        .disabled(isSubmitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await submit() }
+                    } label: {
+                        if isSubmitting {
+                            ProgressView()
+                        } else {
+                            Text("feedback.submit")
+                        }
+                    }
+                    .disabled(
+                        isSubmitting
+                            || trimmedProblem.isEmpty
+                            || problem.count > FeedbackUploadService.maximumProblemCharacters
+                            || isLoadingImages
+                            || retryAvailableAt.map { Date() < $0 } == true
+                    )
+                    .accessibilityIdentifier("feedback.submit")
+                }
+            }
+        }
+        .onChange(of: selectedPhotoItems) { _, items in
+            Task { await loadImages(items) }
+        }
+    }
+
+    private var reportForm: some View {
         Form {
             Section {
                 ZStack(alignment: .topLeading) {
@@ -135,57 +205,10 @@ struct FeedbackReportView: View {
                 }
             }
         }
-        .navigationTitle(FloeL10n.l("feedback.title"))
-        .navigationBarTitleDisplayMode(.inline)
-        .interactiveDismissDisabled(isSubmitting)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("action.cancel") { dismiss() }
-                    .disabled(isSubmitting)
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button {
-                    Task { await submit() }
-                } label: {
-                    if isSubmitting {
-                        ProgressView()
-                    } else {
-                        Text("feedback.submit")
-                    }
-                }
-                .disabled(
-                    isSubmitting
-                        || trimmedProblem.isEmpty
-                        || problem.count > FeedbackUploadService.maximumProblemCharacters
-                        || isLoadingImages
-                        || retryAvailableAt.map { Date() < $0 } == true
-                )
-                .accessibilityIdentifier("feedback.submit")
-            }
-        }
-        .alert("feedback.success.title", isPresented: successBinding) {
-            Button("action.done") { dismiss() }
-        } message: {
-            if let submittedID {
-                Text(String(
-                    format: String(localized: "feedback.success.message"),
-                    String(submittedID.prefix(12))
-                ))
-            }
-        }
-        .onChange(of: selectedPhotoItems) { _, items in
-            Task { await loadImages(items) }
-        }
-    }
-
-    private var successBinding: Binding<Bool> {
-        Binding(
-            get: { submittedID != nil },
-            set: { if !$0 { submittedID = nil } }
-        )
     }
 
     private func submit() async {
+        guard !isSubmitting, submittedID == nil else { return }
         isSubmitting = true
         errorMessage = nil
         pendingPackageURL = nil

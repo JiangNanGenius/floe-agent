@@ -2807,9 +2807,11 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.isCompacting = false
                     self.inlineStatusSource = .compression
                 case .livenessChanged(let snapshot):
-                    if snapshot.phase == .preparingToolCall {
+                    if snapshot.isReconnecting {
+                        self.liveStateName = "reconnecting"
+                    } else if snapshot.phase == .preparingToolCall {
                         self.liveStateName = "preparingToolCall"
-                    } else if self.liveStateName == "preparingToolCall" {
+                    } else if self.liveStateName == "preparingToolCall" || self.liveStateName == "reconnecting" {
                         self.liveStateName = "streamingModel"
                     }
                     if snapshot.phase == .compacting {

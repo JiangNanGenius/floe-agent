@@ -29,8 +29,42 @@ import XCTest
            ProcessInfo.processInfo.environment["FLOE_QA_ENABLE_EDITOR_INPUT_OBSERVATION"] == "1" {
             app.launchArguments.append("--floe-editor-input-ownership-observation")
         }
+        if name.contains("testDiagnosticsRefreshExpandAndFeedbackAreIndependent") {
+            app.launchArguments += ["--ui-test-skip-onboarding", "-ui-testing", "-ui-testing-ipad"]
+            XCUIDevice.shared.orientation = .landscapeLeft
+        }
         app.launch()
     }
+    func testDiagnosticsRefreshExpandAndFeedbackAreIndependent() {
+        let settings = app.buttons["sidebar.settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 20))
+        settings.tap()
+        let sections = app.descendants(matching: .any)["settings.sections"].firstMatch
+        let diagnostics = app.descendants(matching: .any)["settings.section.diagnostics"].firstMatch
+        for _ in 0..<6 where !diagnostics.isHittable { sections.swipeUp() }
+        XCTAssertTrue(diagnostics.isHittable)
+        diagnostics.tap()
+
+        let form = app.descendants(matching: .any)["diagnostics.form"].firstMatch
+        let refresh = app.buttons["diagnostics.refresh"].firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 10))
+        for _ in 0..<8 where !refresh.isHittable { form.swipeUp() }
+        XCTAssertTrue(refresh.isHittable)
+        refresh.tap()
+        let done = app.buttons["diagnostics.fullLog.done"]
+        XCTAssertFalse(done.exists)
+        app.buttons["diagnostics.expand"].tap()
+        XCTAssertTrue(done.waitForExistence(timeout: 10))
+        done.tap()
+
+        let feedback = app.buttons["diagnostics.feedback"]
+        for _ in 0..<4 where !feedback.isHittable { form.swipeUp() }
+        XCTAssertTrue(feedback.isHittable)
+        feedback.tap()
+        XCTAssertTrue(app.textViews["feedback.problem"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["feedback.submit"].isEnabled)
+    }
+
     override func tearDownWithError() throws {
         app.terminate()
         XCUIDevice.shared.orientation = .portrait

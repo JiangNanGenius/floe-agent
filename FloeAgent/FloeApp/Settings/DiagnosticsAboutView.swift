@@ -16,7 +16,8 @@ import FloeCore
 
 struct DiagnosticsAboutView: View {
     @ObservedObject var center: SettingsCenter
-    @State private var logText: String = ""
+    @State private var logEntries: [FloeLogger.Entry] = []
+    @State private var fullLogText = ""
     @State private var exportURL: IdentifiableDiagnosticsURL?
     @State private var isExporting = false
     @State private var errorMessage: String?
@@ -103,35 +104,50 @@ struct DiagnosticsAboutView: View {
             }
 
             Section {
-                if logText.isEmpty {
+                if logEntries.isEmpty {
                     Text("settings.diagnostics.logs.empty")
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(logText)
-                        .font(FloeTheme.Typography.evidence)
-                        .textSelection(.enabled)
-                        .lineLimit(20)
+                    ForEach(Array(logEntries.suffix(4).reversed().enumerated()), id: \.offset) { _, entry in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(verbatim: "\(entry.category) · \(entry.level)")
+                                Spacer()
+                                Text(entry.timestamp, format: .dateTime.month().day().hour().minute().second())
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            Text(verbatim: entry.message)
+                                .font(FloeTheme.Typography.evidence)
+                                .lineLimit(2)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
                 }
                 HStack {
                     Button {
-                        logText = FloeLogger.buffer.renderedText()
+                        logEntries = FloeLogger.buffer.recentEntries
                     } label: {
-                        Label("settings.diagnostics.logs", systemImage: "arrow.clockwise")
+                        Label("envmgr.refresh", systemImage: "arrow.clockwise")
                     }
+                    .accessibilityIdentifier("diagnostics.refresh")
                     Spacer()
                     Button {
-                        UIPasteboard.general.string = logText
+                        UIPasteboard.general.string = FloeLogger.RingBuffer.renderedText(logEntries)
                     } label: {
                         Label("action.copy", systemImage: "doc.on.doc")
                     }
-                    .disabled(logText.isEmpty)
+                    .disabled(logEntries.isEmpty)
                     Button {
+                        fullLogText = FloeLogger.RingBuffer.renderedText(logEntries)
                         presentsFullLog = true
                     } label: {
                         Label("pdf.reader.expand", systemImage: "arrow.up.left.and.arrow.down.right")
                     }
-                    .disabled(logText.isEmpty)
+                    .accessibilityIdentifier("diagnostics.expand")
+                    .disabled(logEntries.isEmpty)
                 }
+                .buttonStyle(.borderless)
             } header: {
                 Text("settings.diagnostics.logs")
             } footer: {
@@ -190,10 +206,11 @@ struct DiagnosticsAboutView: View {
                 }
             }
         }
+        .accessibilityIdentifier("diagnostics.form")
         .navigationTitle(FloeL10n.l("settings.section.diagnostics"))
         .task {
             await center.load()
-            logText = FloeLogger.buffer.renderedText()
+            logEntries = FloeLogger.buffer.recentEntries
         }
         .sheet(item: $exportURL) { wrapper in
             DiagnosticsShareSheet(items: [wrapper.url])
@@ -206,19 +223,21 @@ struct DiagnosticsAboutView: View {
         }
         .fullScreenCover(isPresented: $presentsFullLog) {
             NavigationStack {
-                DiagnosticLogTextView(text: logText)
+                DiagnosticLogTextView(text: fullLogText)
                     .ignoresSafeArea(edges: .bottom)
                 .navigationTitle(FloeL10n.l("settings.diagnostics_about_view.diagnostic_logs"))
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("workspace.workspace_canvas_view.done") { presentsFullLog = false }
+                            .accessibilityIdentifier("diagnostics.fullLog.done")
                     }
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button("envmgr.refresh", systemImage: "arrow.clockwise") {
-                            logText = FloeLogger.buffer.renderedText()
+                            logEntries = FloeLogger.buffer.recentEntries
+                            fullLogText = FloeLogger.RingBuffer.renderedText(logEntries)
                         }
                         Button("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc") {
-                            UIPasteboard.general.string = logText
+                            UIPasteboard.general.string = fullLogText
                         }
                     }
                 }

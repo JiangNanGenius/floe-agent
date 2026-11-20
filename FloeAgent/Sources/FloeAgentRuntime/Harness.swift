@@ -47,6 +47,10 @@ public struct AgentLivenessSnapshot: Sendable, Codable, Hashable {
     public var lastProgressAt: Date
     public var isRecoverable: Bool
 
+    public var isReconnecting: Bool {
+        phase == .retrying || (phase == .waitingForFirstEvent && retryCount > 0)
+    }
+
     public init(
         phase: AgentLivenessPhase,
         message: String,
