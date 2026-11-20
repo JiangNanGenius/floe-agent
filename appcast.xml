@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.3</title>
+      <pubDate>Fri, 20 Nov 2026 18:19:01 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.3</link>
+      <sparkle:version>33</sparkle:version>
+      <sparkle:shortVersionString>1.11.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>在模型供应商中统一管理对话、生图和视频模型。 Manage chat, image and video models in Providers.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.3/Floe-Agent-1.11.3.dmg" length="32718277" type="application/octet-stream" sparkle:edSignature="TY0dO8ocxlYd+m3rxd1/Mjm9tus0EKfguMlUh2v8Jg+1k1+cidOnT5CMQhCcHQgON5W5wu1D5rDISy7aSkO4AA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.2</title>
       <pubDate>Fri, 20 Nov 2026 17:45:30 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.2</link>
