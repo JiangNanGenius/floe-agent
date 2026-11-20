@@ -365,8 +365,8 @@ public struct GameProjectSelectionPicker: View {
             return text("上次选择已因内容变化失效。",
                         "The previous choice no longer matches the project.")
         case .manualSelectionUnverified:
-            return text("这是手动选择，没有识别依据；试玩和构建保持关闭。",
-                        "This manual choice has no recognized evidence; play and build stay closed.")
+            return text("这是手动选择，没有识别依据；运行和构建保持关闭。",
+                        "This manual choice has no recognized evidence; run and build stay closed.")
         }
     }
 

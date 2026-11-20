@@ -21,6 +21,7 @@ import FloeCore
 /// AppRouter's inspectorContent.
 struct FileInspectorView: View {
     @ObservedObject var center: WorkspaceCenter
+    let conversationID: UUID?
     @EnvironmentObject private var router: AppRouter
 
     @StateObject private var treeModel: FileTreeViewModel
@@ -43,7 +44,8 @@ struct FileInspectorView: View {
     /// released before the IDE opened) instead of keeping a stale placeholder.
     @State private var ideDismissGeneration = 0
 
-    init(center: WorkspaceCenter) {
+    init(center: WorkspaceCenter, conversationID: UUID? = nil) {
+        self.conversationID = conversationID
         self.center = center
         _treeModel = StateObject(wrappedValue: FileTreeViewModel(center: center))
     }
@@ -101,7 +103,7 @@ struct FileInspectorView: View {
             ideDismissGeneration += 1
             Task { await treeModel.loadRoot() }
         }) {
-            WorkspaceIDEView(initialRelativePath: previewPath, center: center) {
+            WorkspaceIDEView(initialRelativePath: previewPath, center: center, conversationID: conversationID) {
                 Task { await treeModel.loadRoot() }
             }
         }
@@ -158,6 +160,7 @@ struct FileInspectorView: View {
                 FilePreviewView(
                     relativePath: previewPath,
                     center: center,
+                    conversationID: conversationID,
                     onAddToContext: { addToContext(previewPath) },
                     onDeleted: { if self.previewPath == previewPath { closePreview() } },
                     embeddedInInspector: true

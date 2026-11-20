@@ -79,15 +79,18 @@ struct GameProjectSpaceScreen: View {
                     Button(IDELanguageRunText.t("完成", "Done")) { dismiss() }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if let session, !session.project.project.files.isEmpty {
+                        Button { perform(.play, session: session) } label: {
+                            Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
+                        }
+                        .disabled(pending != nil)
+                        .accessibilityIdentifier("game.overview.play")
+                    }
                     Button(IDELanguageRunText.t("构建／导出", "Build / export"), systemImage: "shippingbox") {
                         showingBuild = true
                     }.disabled(session == nil || pending != nil)
-                    Button(IDELanguageRunText.t("助手", "Assistant"), systemImage: "sparkles") {
-                        showingAssistant = true
-                    }.accessibilityIdentifier("game.assistant.open")
-                        .disabled(session == nil || pending != nil)
-                    if let session {
-                        projectMenu(session)
+                    if session != nil {
+                        projectMenu
                     }
                 }
             }
@@ -171,7 +174,7 @@ struct GameProjectSpaceScreen: View {
                             }
                         }
                             .navigationTitle(requestedSetupAction == .play
-                                ? IDELanguageRunText.t("选择要试玩的游戏", "Choose a game to play")
+                                ? IDELanguageRunText.t("选择要运行的游戏", "Choose a game to run")
                                 : IDELanguageRunText.t("游戏引擎", "Game engine"))
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
@@ -239,10 +242,10 @@ struct GameProjectSpaceScreen: View {
                     }
                 } message: { prompt in
                     Text(prompt.createsStarter
-                        ? IDELanguageRunText.t("会用这个引擎创建真实的起始文件。没有识别依据时，试玩和构建保持关闭，直到工程出现可识别标记。",
-                            "Real starter files will be created with this engine. Without recognized evidence, play and build stay closed until a marker appears.")
-                        : IDELanguageRunText.t("当前文件里没有识别到这个引擎的依据。选择会保存为手动未验证；检查、读取、编辑和历史保持可用，试玩和构建保持关闭。",
-                            "No marker for this engine was recognized in these files. The choice is saved as manual/unverified; inspect, read, edit and history stay available, while play and build stay closed."))
+                        ? IDELanguageRunText.t("会用这个引擎创建真实的起始文件。没有识别依据时，运行和构建保持关闭，直到工程出现可识别标记。",
+                            "Real starter files will be created with this engine. Without recognized evidence, run and build stay closed until a marker appears.")
+                        : IDELanguageRunText.t("当前文件里没有识别到这个引擎的依据。选择会保存为手动未验证；检查、读取、编辑和历史保持可用，运行和构建保持关闭。",
+                            "No marker for this engine was recognized in these files. The choice is saved as manual/unverified; inspect, read, edit and history stay available, while run and build stay closed."))
                 }
             .fileImporter(isPresented: $showingImporter,
                 allowedContentTypes: [.folder, .zip, .archive, .data, .item],
@@ -281,7 +284,7 @@ struct GameProjectSpaceScreen: View {
             }
             engineSummary(session)
             GameProjectOverviewView(content: content(session), pendingAction: pending,
-                status: status(session), showEngineSummary: false,
+                status: status(session), showEngineSummary: false, usesWorkspaceIDE: true,
                 onCreateStarter: { starterEngine = nil; starterError = nil; showingCreateStarter = true }) { action in
                     perform(action, session: session)
                 }
@@ -395,8 +398,8 @@ struct GameProjectSpaceScreen: View {
                         Text(IDELanguageRunText.t("可选运行资源", "Optional runtime resources"))
                             .font(.callout.weight(.medium))
                         Text(installing ? readiness.statusText : readiness.isReady ? readiness.displayName : IDELanguageRunText.t(
-                            "部分工程需要额外资源；已包含运行文件的游戏可以直接试玩。",
-                            "Some projects need extra resources; games with their own runtime can play directly."))
+                            "部分工程需要额外资源；已包含运行文件的游戏可以直接运行。",
+                            "Some projects need extra resources; games with their own runtime can run directly."))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -501,8 +504,8 @@ struct GameProjectSpaceScreen: View {
                                             "No supported engine was recognized. Choose manually or ask the project AI to inspect the evidence.")
             }
             if snapshot.isManualUnverified {
-                return IDELanguageRunText.t("引擎是手动选择，没有识别依据；试玩和构建保持关闭。",
-                                            "The engine was chosen manually without recognized evidence; play and build stay closed.")
+                return IDELanguageRunText.t("引擎是手动选择，没有识别依据；运行和构建保持关闭。",
+                                            "The engine was chosen manually without recognized evidence; run and build stay closed.")
             }
             if let recommendation = snapshot.aiRecommendation {
                 return IDELanguageRunText.t("AI 建议：\(recommendation.engine.rawValue)，可手动采用或覆盖。", "AI suggests \(recommendation.engine.rawValue). You can use or override it.")
@@ -512,14 +515,10 @@ struct GameProjectSpaceScreen: View {
         return nil
     }
 
-    private func projectMenu(_ session: GameWorkspaceSession) -> some View {
+    private var projectMenu: some View {
         Menu {
             Button(IDELanguageRunText.t("游戏引擎", "Game engine"), systemImage: "gamecontroller") {
                 showingProjectSetup = true
-            }
-            if session.project.project.files.isEmpty {
-                Button(IDELanguageRunText.t("导入文件夹或 ZIP", "Import folder or ZIP"),
-                       systemImage: "square.and.arrow.down") { showingImporter = true }
             }
             Button(IDELanguageRunText.t("切换引擎（新副本）", "Change engine (new copy)"),
                    systemImage: "arrow.triangle.branch") {
@@ -533,15 +532,6 @@ struct GameProjectSpaceScreen: View {
                [.rpgMakerXP, .rpgMakerVX, .rpgMakerVXAce, .rpgMakerMV, .rpgMakerMZ].contains(engine) {
                 Button(IDELanguageRunText.t("部署资源", "Deployment assets"), systemImage: "archivebox") {
                     showingDeploymentAssets = true
-                }
-            }
-            if session.project.project.files.isEmpty {
-                Button(IDELanguageRunText.t("创建起始工程", "Create starter"),
-                       systemImage: "wand.and.stars") {
-                    // No default engine: the user must pick one in the sheet.
-                    starterEngine = nil
-                    starterError = nil
-                    showingCreateStarter = true
                 }
             }
         } label: {
@@ -650,7 +640,7 @@ struct GameProjectSpaceScreen: View {
             return
         }
         var stage = ExecutionBreadcrumbs.Operation.gameEnvironment
-        playProgress = IDELanguageRunText.t("正在准备试玩环境…", "Preparing the play environment…")
+        playProgress = IDELanguageRunText.t("正在准备运行环境…", "Preparing the game environment…")
         do {
             trace.record(stage, .began, id: attempt)
             _ = try await environment.gameWorkspaces.ensurePlayableSession(for: session)
@@ -671,13 +661,13 @@ struct GameProjectSpaceScreen: View {
     private func playErrorMessage(_ error: Error) -> String {
         if case GameRunPreparationError.sourceChanged = error {
             return IDELanguageRunText.t(
-                "游戏文件仍在更改。请等保存或同步完成后再试玩。",
-                "Game files are still changing. Wait for saving or syncing to finish, then try Play again.")
+                "游戏文件仍在更改。请等保存或同步完成后再运行。",
+                "Game files are still changing. Wait for saving or syncing to finish, then run again.")
         }
         if let projectError = error as? GameProjectError, projectError == .corruptStorage {
             return IDELanguageRunText.t(
-                "校验游戏文件时发现内容不一致。请在工程文件中检查最近的修改，再重新试玩。",
-                "Some game files did not match the saved project. Check recent changes in Project Files and try Play again.")
+                "校验游戏文件时发现内容不一致。请在工程文件中检查最近的修改，再重新运行。",
+                "Some game files did not match the saved project. Check recent changes in Project Files and run again.")
         }
         return error.localizedDescription
     }
@@ -754,8 +744,8 @@ struct GameProjectSpaceScreen: View {
             try await session.project.selectManual(
                 root: root, engine: engine, acknowledgingUnverified: true)
             notice = IDELanguageRunText.t(
-                "已保存手动选择 \(engine.rawValue)；试玩和构建保持关闭。",
-                "Saved the manual \(engine.rawValue) choice; play and build stay closed.")
+                "已保存手动选择 \(engine.rawValue)；运行和构建保持关闭。",
+                "Saved the manual \(engine.rawValue) choice; run and build stay closed.")
         } catch {
             self.error = error.localizedDescription
         }
@@ -768,8 +758,8 @@ struct GameProjectSpaceScreen: View {
             defer { pending = nil }
             let snapshot = try await session.project.confirmSelectionProposal(proposal)
             if snapshot.isManualUnverified {
-                notice = IDELanguageRunText.t("已保存手动选择；试玩和构建保持关闭。",
-                                              "Saved the manual choice; play and build stay closed.")
+                notice = IDELanguageRunText.t("已保存手动选择；运行和构建保持关闭。",
+                                              "Saved the manual choice; run and build stay closed.")
             } else {
                 let name = snapshot.selectedEngine?.rawValue ?? ""
                 notice = IDELanguageRunText.t("已采用并保存 \(name) 选择。",
@@ -1038,8 +1028,8 @@ struct GameProjectSetupPanel: View {
                 Text(rootLabel(snapshot.selectedRoot))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(snapshot.isManualUnverified
-                     ? IDELanguageRunText.t("手动选择 · 未验证，试玩和构建保持关闭",
-                                            "Manual choice · unverified, play and build stay closed")
+                     ? IDELanguageRunText.t("手动选择 · 未验证，运行和构建保持关闭",
+                                            "Manual choice · unverified, run and build stay closed")
                      : IDELanguageRunText.t("依据已识别标记确认",
                                             "Confirmed by recognized markers"))
                     .font(.caption2)
@@ -1174,8 +1164,8 @@ struct GameProjectSetupPanel: View {
             Text(IDELanguageRunText.t("手动选择", "Manual choice"))
                 .font(.subheadline.weight(.medium))
             Text(IDELanguageRunText.t(
-                "没有可靠依据时仍可人工选择。未识别到手头证据的选项会保存为手动未验证，试玩和构建不会开放。",
-                "You can still choose manually without reliable evidence. A choice without a recognized marker is saved as manual/unverified and does not unlock play or build."))
+                "没有可靠依据时仍可人工选择。未识别到手头证据的选项会保存为手动未验证，运行和构建不会开放。",
+                "You can still choose manually without reliable evidence. A choice without a recognized marker is saved as manual/unverified and does not unlock run or build."))
                 .font(.caption2).foregroundStyle(.secondary)
             if snapshot.choices.count > 1 {
                 Picker(IDELanguageRunText.t("游戏目录", "Game folder"), selection: $manualRootID) {
@@ -1249,7 +1239,7 @@ struct GameProjectSetupPanel: View {
                                           "The project changed, so this proposal cannot be used. Inspect again before proposing."))
                     .font(.caption2).foregroundStyle(.red)
             } else if proposal.isManualUnverified {
-                Text(IDELanguageRunText.t("这个建议没有识别依据；确认后保存为手动未验证，试玩和构建保持关闭。",
+                Text(IDELanguageRunText.t("这个建议没有识别依据；确认后保存为手动未验证，运行和构建保持关闭。",
                                           "This suggestion has no recognized evidence; confirming saves it as manual/unverified and keeps play/build closed."))
                     .font(.caption2).foregroundStyle(.orange)
             }

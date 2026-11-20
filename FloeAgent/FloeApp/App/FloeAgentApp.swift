@@ -2135,13 +2135,7 @@ private struct InspectorColumnView: View {
     var body: some View {
         Group {
             switch route.content {
-            case .changes:
-                if let change = route.fileChange, change.conversationID == route.conversationID {
-                    RunFileChangeDetail(change: change)
-                } else {
-                    workspaceBackedContent
-                }
-            case .workspaceFiles:
+            case .changes, .workspaceFiles:
                 workspaceBackedContent
             case .browser:
                 BrowserView(center: environment.browserCenter, onClose: {
@@ -2184,7 +2178,6 @@ private struct InspectorColumnView: View {
             let conversationID = route.conversationID
             switch route.content {
             case .changes, .workspaceFiles, .terminal:
-                guard route.fileChange == nil else { return }
                 workspaceMountState = .loading
                 terminalOwner = nil
                 displayOwner = nil
@@ -2231,7 +2224,7 @@ private struct InspectorColumnView: View {
             } else if route.content == .changes {
                 TaskChangesInspectorView(conversationID: route.conversationID)
             } else {
-                FileInspectorView(center: environment.workspaceCenter)
+                FileInspectorView(center: environment.workspaceCenter, conversationID: route.conversationID)
                     .background(FloeTheme.readingSurface)
             }
         case .failed(let message):

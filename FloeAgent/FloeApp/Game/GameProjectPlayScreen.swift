@@ -54,7 +54,7 @@ struct GameProjectPlayScreen: View {
                 } else if let guest = play?.rgssPlay {
                     GameRGSSStartingView(guest: guest) { await prepare() }
                 } else {
-                    ProgressView(copy("正在准备试玩", "Preparing play"))
+                    ProgressView(copy("正在准备运行", "Preparing to run"))
                 }
             }
             .navigationTitle(session.record?.title ?? "Game")
@@ -162,9 +162,9 @@ private struct GameRGSSStartingView: View {
         Group {
             if case .failed(let message) = guest.phase {
                 ContentUnavailableView {
-                    Label(IDELanguageRunText.t("无法启动试玩", "Could not start play"), systemImage: "exclamationmark.triangle")
+                    Label(IDELanguageRunText.t("无法启动运行", "Could not run game"), systemImage: "exclamationmark.triangle")
                 } description: { Text(message) }
-            } else { ProgressView(IDELanguageRunText.t("正在准备试玩", "Preparing play")) }
+            } else { ProgressView(IDELanguageRunText.t("正在准备运行", "Preparing to run")) }
         }
         .task(id: guest.phase) {
             if guest.phase == .running || guest.phase == .detached { await onReady() }
@@ -302,7 +302,7 @@ struct GameRGSSSavePanel: View {
                         }
                     }
                 } footer: {
-                    Text(copy("这里管理已收集的存档。停止游戏后更新列表；导入或恢复的存档在下次试玩时使用。",
+                    Text(copy("这里管理已收集的存档。停止游戏后更新列表；导入或恢复的存档在下次运行时使用。",
                               "These are the collected saves. The list updates after stopping. Imported or restored saves are used on the next run."))
                 }
                 if !rawBackups.isEmpty {
@@ -475,7 +475,7 @@ struct GameRGSSSavePanel: View {
             } else {
                 try requireCompletion(try await manager.importFile(from: url, policy: .rejectExisting))
             }
-            pendingImport = nil; status = copy("已导入，下次试玩生效。", "Imported. It will be used on the next run.")
+            pendingImport = nil; status = copy("已导入，下次运行生效。", "Imported. It will be used on the next run.")
             await refresh()
         } catch { self.error = error.localizedDescription }
     }
@@ -514,7 +514,7 @@ struct GameRGSSSavePanel: View {
             try requireStopped()
             let receipt = try await manager().restoreCheckpointTransaction()
             try requireCompletion(receipt)
-            status = copy("已恢复备份，下次试玩生效。", "Backup restored. It will be used on the next run.") + " (\(receipt.changedNames.count))"
+            status = copy("已恢复备份，下次运行生效。", "Backup restored. It will be used on the next run.") + " (\(receipt.changedNames.count))"
             await refresh()
         } catch { self.error = error.localizedDescription }
     }
@@ -527,7 +527,7 @@ struct GameRGSSSavePanel: View {
                                                                expectedSHA256: restoringRawExpectedSHA256)
             try requireCompletion(receipt)
             restoringRawBackup = nil
-            status = copy("已恢复文件备份，下次试玩生效。", "File backup restored. It will be used on the next run.")
+            status = copy("已恢复文件备份，下次运行生效。", "File backup restored. It will be used on the next run.")
             await refresh()
         } catch { self.error = error.localizedDescription }
     }

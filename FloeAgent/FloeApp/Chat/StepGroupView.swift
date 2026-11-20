@@ -37,7 +37,7 @@ struct StepGroupView: View {
     /// match a child whose parent run is the run that rendered the call.
     private let childRunRecords: [ChildRunRecord]
     private let onOpenChild: ((ChildRunRecord?) -> Void)?
-    private let onPlayGame: ((UUID) -> Void)?
+    private let onOpenGameFiles: ((UUID) -> Void)?
     private let conversationID: UUID?
     private let toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)?
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
@@ -59,7 +59,7 @@ struct StepGroupView: View {
         childRunRecords: [ChildRunRecord] = [],
         onOpenChild: ((ChildRunRecord?) -> Void)? = nil,
         conversationID: UUID? = nil,
-        onPlayGame: ((UUID) -> Void)? = nil,
+        onOpenGameFiles: ((UUID) -> Void)? = nil,
         toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)? = nil,
         onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
     ) {
@@ -72,7 +72,7 @@ struct StepGroupView: View {
         self.decisions = decisions
         self.childRunRecords = childRunRecords
         self.onOpenChild = onOpenChild
-        self.onPlayGame = onPlayGame
+        self.onOpenGameFiles = onOpenGameFiles
         self.conversationID = conversationID
         self.toolDetailExpansion = toolDetailExpansion
         self.onResolveApproval = onResolveApproval
@@ -174,14 +174,14 @@ struct StepGroupView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("thread.steps.toggle")
             .accessibilityValue(isExpanded ? FloeL10n.l("chat.step_group_view.expanded") : FloeL10n.l("chat.step_group_view.collapsed"))
-            if let onPlayGame, let projectID = projection.read(events).createdGameID {
+            if let onOpenGameFiles, let projectID = projection.read(events).createdGameID {
                 Button {
-                    onPlayGame(projectID)
+                    onOpenGameFiles(projectID)
                 } label: {
-                    Label(IDELanguageRunText.t("试玩游戏", "Play game"), systemImage: "gamecontroller")
+                    Label(IDELanguageRunText.t("工程文件", "Project files"), systemImage: "folder")
                 }
                 .buttonStyle(.bordered)
-                .accessibilityIdentifier("thread.game.play")
+                .accessibilityIdentifier("thread.game.files")
             }
             if !rows.isEmpty {
                 LazyVStack(alignment: .leading, spacing: 10) {
@@ -326,7 +326,7 @@ private final class StepGroupMetadata: ObservableObject {
         for event in events {
             let payload = (try? JSONDecoder().decode(Header.self, from: Data(event.payloadJSON.utf8)))?.values ?? [:]
             if event.kind == .toolResult, payload["tool"] == "game.create", payload["status"] == "ok",
-               let receipt = ChatGamePlayLink.receipt(from: event.payloadJSON) {
+               let receipt = ChatGameProjectLink.receipt(from: event.payloadJSON) {
                 next.createdGameID = receipt
             }
             next.payloads[event.id] = payload

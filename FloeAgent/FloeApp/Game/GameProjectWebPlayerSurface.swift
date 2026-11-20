@@ -41,7 +41,7 @@ struct GameProjectWebPlayerSurface: View {
                         .accessibilityIdentifier("game.play.controls.error")
                 }
                 if let receipt = presentation.stopReceipt, !receipt.closeAcknowledged {
-                    Text(copy("未能确认试玩已关闭，请查看运行记录。", "The game close was not confirmed. Check its run record."))
+                    Text(copy("未能确认运行已关闭，请查看运行记录。", "The game close was not confirmed. Check its run record."))
                         .font(.callout).foregroundStyle(.red).padding(10)
                 }
             }
@@ -214,7 +214,7 @@ private struct GameWebInputStatus: View {
     var body: some View {
         if service.lastError != nil {
             Text(locale.language.languageCode?.identifier == "zh"
-                 ? "键位连接已中断，请停止后重新试玩。" : "The controls disconnected. Stop and play again.")
+                 ? "键位连接已中断，请停止后重新运行。" : "The controls disconnected. Stop and run again.")
                 .font(.callout).foregroundStyle(.red)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(10)
                 .accessibilityIdentifier("game.play.input.error")

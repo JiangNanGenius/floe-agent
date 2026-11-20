@@ -227,7 +227,7 @@ final class GamePlayCoordinator {
         if let play = session.rgssPlay, let saves = play.saveManager {
             guard play.phase == .stopped else {
                 throw FloeError.validationFailed(IDELanguageRunText.t(
-                    "请先在游戏内保存，再停止试玩收集存档。当前运行不支持通用即时存档。",
+                    "请先在游戏内保存，再停止运行收集存档。当前运行不支持通用即时存档。",
                     "Save inside the game, then stop to collect the files. A universal live snapshot is unavailable for this run."))
             }
             guard try await saves.checkpoint() != nil else { return "unsupported" }

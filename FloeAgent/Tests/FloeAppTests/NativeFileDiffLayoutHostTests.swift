@@ -72,6 +72,32 @@ import XCTest
         evidence.name = "Native compact diff measured content"; evidence.lifetime = .keepAlways; add(evidence)
     }
 
+    func testExpandedFileRowShowsLargeDiffWithoutAnotherTap() async throws {
+        let diff = """
+        --- a/example.txt
+        +++ b/example.txt
+        @@ -1,3 +1,3 @@
+        -first
+        -second
+        -third
+        +one
+        +two
+        +three
+
+        """
+        XCTAssertFalse(try NativeFileDiff(unifiedDiff: diff).showsChangesByDefault)
+        let mounted = try mount(AnyView(NativeFileChangeCard(diffText: diff, disposition: .applied,
+                                                             expandedByParent: true)))
+        defer { mounted.close() }
+        func containsRows(_ view: UIView) -> Bool {
+            if let table = view as? UITableView { return table.numberOfSections > 0 && table.numberOfRows(inSection: 0) >= 6 }
+            return view.subviews.contains { containsRows($0) }
+        }
+        try await wait("Opening the file row should render its diff immediately") {
+            containsRows(mounted.host.view)
+        }
+    }
+
     func testLargeDiffRetainsAConstrainedRealScrollableViewport() async throws {
         let old = (1...80).map { "-old row \($0)" }.joined(separator: "\n")
         let new = (1...80).map { "+new row \($0)" }.joined(separator: "\n")

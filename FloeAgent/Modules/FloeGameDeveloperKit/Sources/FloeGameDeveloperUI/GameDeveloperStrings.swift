@@ -28,7 +28,7 @@ public struct GameDeveloperStrings: Sendable {
     }
 
     public var title: String { text("Developer menu", "开发者菜单") }
-    public var subtitle: String { text("Live controls for this test run", "本次试玩的实时控制") }
+    public var subtitle: String { text("Live controls for this test run", "本次运行的实时控制") }
     public var search: String { text("Search fields and actions", "搜索字段和动作") }
     public var quickControls: String { text("Quick controls", "快捷控制") }
     public var state: String { text("Live state", "实时状态") }
@@ -100,7 +100,7 @@ public struct GameDeveloperStrings: Sendable {
              "检查点仅保存在本次运行的内存中，关闭播放器后消失。")
     }
     public var attachHint: String {
-        text("Open a game run, then connect the menu to its live player.", "请先打开游戏试玩，再把菜单连接到实际播放器。")
+        text("Open a game run, then connect the menu to its live player.", "请先运行游戏，再把菜单连接到实际播放器。")
     }
 
     public func error(_ error: GameDeveloperError?) -> String? {

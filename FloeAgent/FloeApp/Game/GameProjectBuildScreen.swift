@@ -81,7 +81,7 @@ struct GameProjectBuildScreen: View {
                 }
                 Section(IDELanguageRunText.t("构建目标", "Build target")) {
                     Picker(IDELanguageRunText.t("输出", "Output"), selection: $output) {
-                        Text(IDELanguageRunText.t("Web 试玩包", "Web bundle")).tag(GameBuildArguments.Output.web)
+                        Text(IDELanguageRunText.t("Web 游戏包", "Web bundle")).tag(GameBuildArguments.Output.web)
                         Text(IDELanguageRunText.t("源代码包", "Source archive")).tag(GameBuildArguments.Output.source)
                         Text(IDELanguageRunText.t("原生工程", "Native project")).tag(GameBuildArguments.Output.nativeProject)
                         Text(IDELanguageRunText.t("原生安装包", "Native installer")).tag(GameBuildArguments.Output.nativeInstaller)
@@ -374,7 +374,7 @@ struct GameProjectBuildScreen: View {
                                 Text("\(artifact.bytes) B · \(artifact.sha256.prefix(16))")
                                     .font(.caption2).foregroundStyle(.secondary)
                                 if artifact.sealed != nil {
-                                    Text(IDELanguageRunText.t("已封装为可试玩 Web 包", "Sealed as a playable Web package"))
+                                    Text(IDELanguageRunText.t("已封装为可运行 Web 包", "Sealed as a playable Web package"))
                                         .font(.caption2).foregroundStyle(.tint)
                                 }
                             }
@@ -452,7 +452,7 @@ struct GameProjectBuildScreen: View {
         switch engine {
         case .gdevelop:
             return IDELanguageRunText.t(
-                "不会改写 game.json。安装会记录审核过的桥文件；导出或运行时把同样的惰性桥写入私有试玩副本。已导出的可玩游戏无需再次导出。",
+                "不会改写 game.json。安装会记录审核过的桥文件；导出或运行时把同样的惰性桥写入私有运行副本。已导出的可玩游戏无需再次导出。",
                 "game.json is never rewritten. Installation records the reviewed bridge; the exporter or run path stamps the same dormant bridge into a private playable copy. An already-exported game needs no re-export.")
         case .cocosCreator:
             return IDELanguageRunText.t(

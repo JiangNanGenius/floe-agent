@@ -117,7 +117,7 @@ struct ThreadDetailView: View {
     /// view while the transition is in flight.
     @State private var presentedUsageSummary: ThreadUsageSummary?
     @State private var selectedImportantFile: ImportantFileShortcut?
-    @State private var selectedGame: ChatGamePlayLink?
+    @State private var selectedGame: ChatGameProjectLink?
     @State private var selectedAttachment: ChatAttachmentOpenRequest?
     @State private var showsReturnToLatest = false
     @State private var latestFollow = LatestMessageFollowState()
@@ -482,7 +482,7 @@ struct ThreadDetailView: View {
                 .presentationDetents([.medium, .large])
             }
             .fullScreenCover(item: $selectedGame) { link in
-                ChatGamePlayScreen(link: link, environment: environment)
+                ChatGameProjectScreen(link: link, environment: environment)
             }
             .sheet(item: $selectedAttachment) { request in
                 ChatAttachmentOpenSheet(request: request, environment: environment).id(request.id)
@@ -1076,8 +1076,8 @@ struct ThreadDetailView: View {
                 childRunRecords: viewModel.childRunRecords,
                 onOpenChild: { openChild($0) },
                 conversationID: viewModel.conversationID,
-                onPlayGame: documentAssistant || viewModel.isTemporary ? nil : { projectID in
-                    selectedGame = ChatGamePlayLink(conversationID: viewModel.conversationID, projectID: projectID)
+                onOpenGameFiles: documentAssistant || viewModel.isTemporary ? nil : { projectID in
+                    selectedGame = ChatGameProjectLink(conversationID: viewModel.conversationID, projectID: projectID)
                 },
                 toolDetailExpansion: { viewModel.toolDetailExpansion(for: $0) },
                 onResolveApproval: { approval, decision in

@@ -5,7 +5,7 @@ import FloeGameCore
 import FloeGameIDEBridge
 import FloeGameProjectSelectionUI
 
-struct ChatGamePlayLink: Identifiable {
+struct ChatGameProjectLink: Identifiable {
     let conversationID: UUID
     let projectID: UUID
     var id: String { "\(conversationID)/\(projectID)" }
@@ -30,18 +30,18 @@ struct ChatGamePlayLink: Identifiable {
     }
 }
 
-struct ChatGamePlayScreen: View {
-    let link: ChatGamePlayLink
+struct ChatGameProjectScreen: View {
+    let link: ChatGameProjectLink
     let environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
-    @State private var request: GameIDEGameRunRequest?
+    @State private var workspace: WorkspaceCenter?
     @State private var error: String?
     @State private var attempt = 0
 
     var body: some View {
         Group {
-            if let request {
-                GameIDEGameRunScreen(request: request, registry: environment.gameWorkspaces)
+            if let workspace {
+                WorkspaceIDEView(center: workspace, conversationID: link.conversationID)
             } else {
                 NavigationStack {
                     Group {
@@ -64,14 +64,11 @@ struct ChatGamePlayScreen: View {
             do {
                 let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
                 try await center.openTaskWorkspace(conversationID: link.conversationID)
-                guard center.currentWorkspace?.id == link.projectID, let root = center.currentRootURL,
-                      let session = try await environment.gameWorkspaces.restoreChatGame(
-                        conversationID: link.conversationID, workspaceID: link.projectID, leasedRoot: root, openedCenter: center) else {
+                try Task.checkCancellation()
+                guard center.currentWorkspace?.id == link.projectID, center.currentRootURL != nil else {
                     throw GameWorkspaceRegistryError.ownerNotAvailable
                 }
-                try await session.project.refresh()
-                try Task.checkCancellation()
-                request = GameIDEGameRunRequest(session: session, extensionOverride: nil, saveAllSurfaces: { true })
+                workspace = center
             } catch is CancellationError {
                 return
             } catch { self.error = error.localizedDescription }
@@ -122,14 +119,14 @@ struct GameIDEGameRunScreen: View {
                             // Never auto-launch arbitrary files and never
                             // substitute the recorded creation hint.
                             ContentUnavailableView {
-                                Label(copy("还不能试玩", "Not ready to play"),
+                                Label(copy("还不能运行", "Not ready to run"),
                                       systemImage: "gamecontroller")
                             } description: {
                                 Text(snapshot.isManualUnverified
-                                    ? copy("当前引擎是手动选择，没有识别依据。请在工程设置中确认识别到的引擎后再试玩。",
-                                           "The engine is a manual choice without recognized evidence. Confirm a recognized engine in project setup before playing.")
-                                    : copy("还没有确认可运行的游戏目录和引擎。请在工程设置中选择或导入后再试玩。",
-                                           "No runnable game folder and engine are confirmed. Choose or import one in project setup before playing."))
+                                    ? copy("当前引擎是手动选择，没有识别依据。请在工程设置中确认识别到的引擎后再运行。",
+                                           "The engine is a manual choice without recognized evidence. Confirm a recognized engine in project setup before running.")
+                                    : copy("还没有确认可运行的游戏目录和引擎。请在工程设置中选择或导入后再运行。",
+                                           "No runnable game folder and engine are confirmed. Choose or import one in project setup before running."))
                             } actions: {
                                 Button(copy("返回工程设置", "Back to project setup")) {
                                     Task { await close() }
@@ -139,13 +136,13 @@ struct GameIDEGameRunScreen: View {
                             }
                         } else if launchTask != nil {
                             Spacer()
-                            ProgressView(copy("正在准备试玩", "Preparing play"))
+                            ProgressView(copy("正在准备运行", "Preparing to run"))
                             Spacer()
                         } else {
                             ContentUnavailableView {
                                 Label(copy("准备游戏", "Prepare game"), systemImage: "gamecontroller")
                             } description: {
-                                Text(copy("确认工程和运行资源后即可试玩。", "Confirm the project and runtime resources to play."))
+                                Text(copy("确认工程和运行资源后即可运行。", "Confirm the project and runtime resources to run."))
                             } actions: {
                                 Button(copy("重试运行", "Retry run")) { begin() }
                                     .buttonStyle(.borderedProminent)

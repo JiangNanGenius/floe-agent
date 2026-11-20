@@ -14,14 +14,17 @@ struct NativeFileChangeCard: View {
     let diffText: String
     let disposition: NativeFileDiffDisposition
     var fileURL: URL? = nil
+    private let expandedByParent: Bool
     private let document: NativeFileDiff?
     @State private var expanded = false
     @State private var fullDiff = false
     @State private var viewportHeight: Double?
     @State private var measuredRows: (text: String, height: Double)?
 
-    init(diffText: String, disposition: NativeFileDiffDisposition = .reference, fileURL: URL? = nil) {
+    init(diffText: String, disposition: NativeFileDiffDisposition = .reference, fileURL: URL? = nil,
+         expandedByParent: Bool = false) {
         self.diffText = diffText; self.disposition = disposition; self.fileURL = fileURL
+        self.expandedByParent = expandedByParent
         document = try? NativeFileDiff(unifiedDiff: diffText)
     }
     var body: some View {
@@ -33,7 +36,7 @@ struct NativeFileChangeCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             if let document {
-                if document.showsChangesByDefault || expanded {
+                if document.showsChangesByDefault || expandedByParent || expanded {
                     Divider()
                     DiffView(document: document, changesOnly: document.showsChangesByDefault, omitsSingleFileHeader: true,
                         onContentHeightChange: { height in
@@ -100,7 +103,7 @@ struct NativeFileChangeCard: View {
                     Text("−\(document.removed)").foregroundStyle(FloeTheme.destructive)
                         .accessibilityLabel(NativeFileDiffCopy.t("删除\(document.removed)行", "\(document.removed) removed lines"))
                 }.font(.caption.monospacedDigit()).fixedSize()
-                if !document.showsChangesByDefault {
+                if !document.showsChangesByDefault && !expandedByParent {
                     Button { expanded.toggle() } label: {
                         if compact {
                             Image(systemName: expanded ? "chevron.up" : "chevron.down")

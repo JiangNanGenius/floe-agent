@@ -237,7 +237,6 @@ struct RunFileChangesDisclosure: View {
     let conversationID: UUID
     var answerEventID: UUID? = nil
     @EnvironmentObject private var environment: AppEnvironment
-    @EnvironmentObject private var router: AppRouter
     @State private var changes: [RunFileChange] = []
     @State private var expanded = false
 
@@ -246,17 +245,17 @@ struct RunFileChangesDisclosure: View {
             if !changes.isEmpty {
                 DisclosureGroup(isExpanded: $expanded) {
                     ForEach(changes) { change in
-                        Button {
-                            router.showFileChange(change)
+                        DisclosureGroup {
+                            RunFileChangeEvidenceView(change: change)
                         } label: {
                             HStack {
                                 Text(change.path).lineLimit(2)
                                 Spacer()
                                 Text(change.action.title).foregroundStyle(.secondary)
-                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
-                            }.contentShape(Rectangle()).frame(minHeight: 44)
+                            }
+                            .contentShape(Rectangle())
+                            .frame(minHeight: 44)
                         }
-                        .buttonStyle(.plain)
                     }
                 } label: {
                     Label(IDELanguageRunText.t("已更改 \(changes.count) 个文件",
@@ -274,32 +273,28 @@ struct RunFileChangesDisclosure: View {
     }
 }
 
-struct RunFileChangeDetail: View {
+private struct RunFileChangeEvidenceView: View {
     let change: RunFileChange
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                Text(change.path).font(.headline).textSelection(.enabled)
-                Text(change.action.title).font(.subheadline).foregroundStyle(.secondary)
-                ForEach(Array(change.evidence.enumerated()), id: \.offset) { _, evidence in
-                    switch evidence {
-                    case .write(let ref, let tool):
-                        RunFileWritePreview(ref: ref, tool: tool, runID: change.runID)
-                            .id(ref)
-                    case .output(let output, let context):
-                        RunOutputFileView(receipt: output, context: context)
-                    }
-                }
-                if change.evidence.isEmpty {
-                    Text(change.action == .deleted
-                         ? IDELanguageRunText.t("本轮已删除这个文件。", "This file was deleted during this run.")
-                         : IDELanguageRunText.t("本轮已记录操作，未保留内容预览。", "This action was recorded without a saved preview."))
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(change.evidence.enumerated()), id: \.offset) { _, evidence in
+                switch evidence {
+                case .write(let ref, let tool):
+                    RunFileWritePreview(ref: ref, tool: tool, runID: change.runID)
+                        .id(ref)
+                case .output(let output, let context):
+                    RunOutputFileView(receipt: output, context: context)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading).padding()
+            if change.evidence.isEmpty {
+                Text(change.action == .deleted
+                     ? IDELanguageRunText.t("本轮已删除这个文件。", "This file was deleted during this run.")
+                     : IDELanguageRunText.t("本轮已记录操作，未保留内容预览。", "This action was recorded without a saved preview."))
+                    .foregroundStyle(.secondary)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("chat.turnFileChangeDetail")
     }
 }
@@ -316,7 +311,12 @@ private struct RunFileWritePreview: View {
             if let verified {
                 Text(ref.mimeType == "text/x-diff" ? IDELanguageRunText.t("本轮差异", "Changes in this run") :
                      IDELanguageRunText.t("保存时的内容", "Saved contents")).font(.caption)
-                RichArtifactView(artifact: ref, preverified: verified, fileDiffDisposition: .applied)
+                if ref.mimeType == "text/x-diff", let diff = String(data: verified.data, encoding: .utf8) {
+                    NativeFileChangeCard(diffText: diff, disposition: .applied, fileURL: verified.fileURL,
+                                         expandedByParent: true)
+                } else {
+                    RichArtifactView(artifact: ref, preverified: verified, fileDiffDisposition: .applied)
+                }
             } else if unavailable {
                 Text(IDELanguageRunText.t("无法读取这次保存的预览。", "The saved preview is unavailable."))
                     .font(.caption).foregroundStyle(.secondary)

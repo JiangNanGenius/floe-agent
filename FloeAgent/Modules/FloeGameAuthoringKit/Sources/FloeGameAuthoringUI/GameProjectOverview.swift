@@ -27,20 +27,22 @@ public struct GameProjectOverviewContent: Sendable {
 
 /// Content for the existing Space editor container. The outer App retains its
 /// navigation, independent project assistant and presentation ownership.
-/// Follows the selected overview: preview -> four actions -> files/history.
+/// Hosts that run from their own toolbar can use the IDE as their file browser.
 public struct GameProjectOverviewView: View {
     public let content: GameProjectOverviewContent
     public let pendingAction: GameProjectOverviewAction?
     public let status: String?
     public let onCreateStarter: (@MainActor () -> Void)?
+    public let usesWorkspaceIDE: Bool
     public let showEngineSummary: Bool
     public let onAction: @MainActor (GameProjectOverviewAction) -> Void
     @Environment(\.locale) private var locale
 
     public init(content: GameProjectOverviewContent, pendingAction: GameProjectOverviewAction? = nil,
-                status: String? = nil, showEngineSummary: Bool = true,
+                status: String? = nil, showEngineSummary: Bool = true, usesWorkspaceIDE: Bool = false,
                 onCreateStarter: (@MainActor () -> Void)? = nil,
                 onAction: @escaping @MainActor (GameProjectOverviewAction) -> Void) {
+        self.usesWorkspaceIDE = usesWorkspaceIDE
         self.onCreateStarter = onCreateStarter
         self.content = content; self.pendingAction = pendingAction; self.status = status
         self.showEngineSummary = showEngineSummary; self.onAction = onAction
@@ -59,8 +61,10 @@ public struct GameProjectOverviewView: View {
                     LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 12) { ForEach(primary, id: \.self) { actionButton($0) } }
                 }
                 VStack(spacing: 0) {
-                    detailButton(.files)
-                    Divider().padding(.leading, 54)
+                    if !usesWorkspaceIDE {
+                        detailButton(.files)
+                        Divider().padding(.leading, 54)
+                    }
                     detailButton(.history)
                 }.background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 16))
                 if let status {
@@ -80,7 +84,10 @@ public struct GameProjectOverviewView: View {
         }
         }
     }
-    private var primary: [GameProjectOverviewAction] { content.hasFiles ? [.play, .simpleEdit, .ide, .aiModify] : [.ide, .aiModify] }
+    private var primary: [GameProjectOverviewAction] {
+        guard content.hasFiles else { return [.ide, .aiModify] }
+        return usesWorkspaceIDE ? [.simpleEdit, .ide, .aiModify] : [.play, .simpleEdit, .ide, .aiModify]
+    }
     private var header: some View {
         HStack(alignment: .top, spacing: 18) {
             Group {
@@ -116,7 +123,7 @@ public struct GameProjectOverviewView: View {
             } else if let bytes = content.previewPNG, let image = decodedImage(bytes) { image.resizable().scaledToFill().accessibilityLabel(zh ? "游戏预览" : "Game preview") }
             else {
                 Rectangle().fill(.quaternary.opacity(0.5))
-                    .overlay { Label(zh ? "试玩后显示游戏画面" : "Play to capture a preview", systemImage: "photo").foregroundStyle(.secondary) }
+                    .overlay { Label(zh ? "运行后显示游戏画面" : "Run to capture a preview", systemImage: "photo").foregroundStyle(.secondary) }
             }
         }.frame(height: height).clipShape(RoundedRectangle(cornerRadius: 18))
     }
@@ -146,7 +153,7 @@ public struct GameProjectOverviewView: View {
         case .aiModify: zh ? "AI 修改" : "Edit with AI"
         case .simpleEdit: zh ? "简易编辑" : "Quick edit"
         case .ide: zh ? "打开 IDE" : "Open IDE"
-        case .play: zh ? "试玩" : "Play"
+        case .play: zh ? "运行" : "Run"
         case .files: zh ? "工程文件" : "Project files"
         case .history: zh ? "源码管理" : "Source control"
         case .importProject: zh ? "导入文件" : "Import files"

@@ -229,12 +229,7 @@ final class AppRouter: ObservableObject {
     struct InspectorRoute: Identifiable, Hashable, Sendable {
         var content: InspectorContent
         var conversationID: UUID
-        var fileChange: RunFileChange? = nil
-        var id: String {
-            let base = "\(content.rawValue).\(conversationID.uuidString)"
-            guard let fileChange else { return base }
-            return "\(base).\(fileChange.runID).\(fileChange.id)"
-        }
+        var id: String { "\(content.rawValue).\(conversationID.uuidString)" }
     }
 
     /// The inspector is a trailing pane inside the stable iPad detail column,
@@ -263,11 +258,6 @@ final class AppRouter: ObservableObject {
     func showInspector(_ content: InspectorContent) {
         guard let conversationID = selectedConversationID else { return }
         inspectorRoute = InspectorRoute(content: content, conversationID: conversationID)
-    }
-
-    func showFileChange(_ change: RunFileChange) {
-        guard selectedConversationID == change.conversationID else { return }
-        inspectorRoute = InspectorRoute(content: .changes, conversationID: change.conversationID, fileChange: change)
     }
 
     /// Close only the inspector; do not reopen a collapsed sidebar.
