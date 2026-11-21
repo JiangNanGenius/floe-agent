@@ -1332,7 +1332,7 @@ final class GameWorkspaceRegistry {
         switch selection.engine {
         case .rpgMakerXP, .rpgMakerVX, .rpgMakerVXAce:
             try await ensurePlayableSession(for: session)
-        case .phaser, .kaplay, .babylon, .playcanvas, .rpgMakerMV, .tic80, .wasm4, .ink, .twine, .microStudio:
+        case .phaser, .kaplay, .babylon, .playcanvas, .rpgMakerMV, .tic80, .wasm4, .ink, .twine, .microStudio, .tyranoScript:
             break // These adapters serve or assemble the game on device.
         case .rpgMakerMZ, .godot, .unity, .gdevelop, .cocosCreator, .love, .renpy:
             let context = try session.project.context
