@@ -1,9 +1,9 @@
-<!-- docs-updated: 2026-11-21 -->
+<!-- docs-updated: 2026-11-22 -->
 # iOS 发布版本依据
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的 iOS 发布为 1.8.62（383）。** Apple 返回 `VALID`，Floe QA 可安装，GitHub 无签名包是最新版，实时 Feather 源已核对。后续 iOS 常规发布使用同一份冻结设备产物完成这三项，分别读取各渠道的交付结果。旧包补发使用对应标签与原构建，并保留最新版本指向。 [383 交付记录](releases/builds/FLOE_1.8.62_BUILD383_DELIVERY.md)
+**最近已核验的 iOS 发布为 1.8.66（387）。** Apple 返回 `VALID`，Floe QA 可安装，GitHub 无签名包是最新版，实时 Feather 源已核对。各渠道使用同一份冻结设备构建并独立核验。 [387 交付记录](releases/builds/FLOE_1.8.66_BUILD387_DELIVERY.md)
 
 ## 依据与判定
 
@@ -12,6 +12,10 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+1.8.65（386）、1.8.64（385）和 1.8.63（384）为本地通过设备版构建的候选，随后由 387 取代。三版均保留本地源码标签和验收记录。
+
+1.8.62（383）交付 Floe QA、GitHub 和 Feather，留作本地回滚包。 [383 交付记录](releases/builds/FLOE_1.8.62_BUILD383_DELIVERY.md)
 
 1.8.45（366）固定于 `cbfc626a5ccf852fc071dc313121cae24adcb97a` 和 `v1.8.45`，已交付内部 TestFlight、GitHub 和 Feather。现有 publictest1 已送审。本版包含首次启动用户协议、游戏助手确认流程和 RPG Maker MV 运行资源准备。
 
