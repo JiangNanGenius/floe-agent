@@ -250,8 +250,15 @@ final class SetupGuideUITests: XCTestCase {
     /// default, and adding always starts from an empty form.
     @MainActor
     func testAddProviderStartsEmpty() throws {
-        let app = launch()
-        XCTAssertTrue(app.buttons["setup.next"].waitForExistence(timeout: 10))
+        let app = launch(extraArguments: ["--ui-test-skip-onboarding", "-ui-testing-ipad"])
+        let settings = app.buttons["sidebar.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 12))
+        settings.tap()
+        let guide = app.buttons["settings.general.setupGuide"]
+        XCTAssertTrue(guide.waitForExistence(timeout: 12))
+        guide.tap()
+        let chat = anyElement(app, "setup.section.chatModels")
+        if chat.exists && !app.buttons["setup.chat.addProvider"].exists { chat.tap() }
         let add = app.buttons["setup.chat.addProvider"]
         XCTAssertTrue(add.waitForExistence(timeout: 8))
         add.tap()
