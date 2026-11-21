@@ -603,7 +603,7 @@ final class LocationServicesCenter: ObservableObject {
     }
 
     /// Requests the first When-In-Use authorization from an active feature.
-    private func requestInitialAuthorizationIfNeeded() {
+    func requestInitialAuthorizationIfNeeded() {
         guard allowsSystemLocation else { return }
         refreshAuthorizationStatus()
         // Consume the one-shot request only when the system can present it.
