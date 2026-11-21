@@ -601,8 +601,9 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
                     id, scope, workspace_id, conversation_id, content, confidence,
                     stability, importance, sensitivity, origin, evidence_json,
                     conflicts_json, source_attachment_id, source_mime_type, status,
-                    review_reason, expires_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    review_reason, expires_at, created_at, updated_at,
+                    origin_conversation_id, origin_workspace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET status=excluded.status,
                     review_reason=excluded.review_reason, updated_at=excluded.updated_at
                 WHERE memory_candidates.status = 'pending'
@@ -614,7 +615,9 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
                     record.sourceAttachmentID?.uuidString, record.sourceMIMEType,
                     expired ? "rejected" : record.status.rawValue, expired ? "review window expired" : record.reviewReason,
                     record.candidate.expiresAt.map(Self.candidateDate),
-                    Self.candidateDate(record.candidate.createdAt), Self.date(record.updatedAt)])
+                    Self.candidateDate(record.candidate.createdAt), Self.date(record.updatedAt),
+                    record.candidate.originConversationID?.uuidString,
+                    record.candidate.originWorkspaceID?.uuidString])
             try Self.trimPending(db, capacity: capacity)
             return try Row.fetchOne(db, sql: "SELECT * FROM memory_candidates WHERE id = ?", arguments: [record.id.uuidString]).map(Self.candidate)
         }
@@ -674,6 +677,63 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
                 """, arguments: [activate ? "activated" : "rejected", activate ? "approved by user" : "rejected by user",
                                   Self.date(Date()), id.uuidString])
             guard db.changesCount == 1 else { throw FloeError.validationFailed("Pending memory candidate changed") }
+        }
+    }
+
+    /// Replaces a reviewed group with one pending proposal. The original
+    /// rows remain in history, and a concurrent approval makes the merge stale.
+    @discardableResult
+    public func consolidatePending(_ originals: [DurableMemoryCandidate], summary: String) async throws -> Bool {
+        let content = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (2...8).contains(originals.count), Set(originals.map(\.id)).count == originals.count,
+              !content.isEmpty, content.count <= 4096, let first = originals.first,
+              originals.allSatisfy({ $0.status == .pending && $0.sourceAttachmentID == nil && $0.sourceMIMEType == nil
+                  && $0.candidate.sensitivity == .none && $0.candidate.conflictsWithEntryIDs.isEmpty
+                  && $0.candidate.scope == first.candidate.scope && $0.candidate.origin == first.candidate.origin
+                  && $0.candidate.originConversationID == first.candidate.originConversationID
+                  && $0.candidate.originWorkspaceID == first.candidate.originWorkspaceID }) else { return false }
+        var merged = first.candidate
+        merged.id = UUID()
+        merged.content = content
+        merged.confidence = originals.map(\.candidate.confidence).min() ?? 0
+        merged.stability = originals.map(\.candidate.stability).min() ?? 0
+        merged.importance = originals.map(\.candidate.importance).max() ?? 0
+        var evidenceIDs = Set<UUID>()
+        merged.evidence = Array(originals.flatMap(\.candidate.evidence)
+            .filter { evidenceIDs.insert($0.id).inserted }.prefix(12))
+        merged.expiresAt = originals.compactMap(\.candidate.expiresAt).min()
+        merged.createdAt = originals.map(\.candidate.createdAt).min() ?? first.candidate.createdAt
+        if case .reject = BoundedMemoryReviewPolicy().disposition(
+            for: merged, modelDisposition: .pending(reason: "consolidated pending memory")) { return false }
+
+        let proposal = merged
+        try Task.checkCancellation()
+        return try await database.writer { db in
+            let capacity = try Self.preparePending(db)
+            for original in originals {
+                guard let row = try Row.fetchOne(db, sql: "SELECT * FROM memory_candidates WHERE id=? AND status='pending'",
+                    arguments: [original.id.uuidString]), try Self.candidate(row) == original else { return false }
+            }
+            let (scope, workspaceID, conversationID) = Self.scope(proposal.scope)
+            let timestamp = Self.date(Date())
+            try db.execute(sql: """
+                INSERT INTO memory_candidates (
+                    id, scope, workspace_id, conversation_id, content, confidence, stability, importance,
+                    sensitivity, origin, evidence_json, conflicts_json, status, expires_at,
+                    created_at, updated_at, origin_conversation_id, origin_workspace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 'pending', ?, ?, ?, ?, ?)
+                """, arguments: [proposal.id.uuidString, scope, workspaceID?.uuidString, conversationID?.uuidString,
+                    proposal.content, proposal.confidence, proposal.stability, proposal.importance,
+                    proposal.sensitivity.rawValue, proposal.origin.rawValue, Self.json(proposal.evidence),
+                    proposal.expiresAt.map(Self.candidateDate), Self.candidateDate(proposal.createdAt), timestamp,
+                    proposal.originConversationID?.uuidString, proposal.originWorkspaceID?.uuidString])
+            for original in originals {
+                try db.execute(sql: """
+                    UPDATE memory_candidates SET status='rejected', review_reason=?, updated_at=? WHERE id=?
+                    """, arguments: ["consolidated into " + proposal.id.uuidString, timestamp, original.id.uuidString])
+            }
+            try Self.trimPending(db, capacity: capacity)
+            return true
         }
     }
 
@@ -846,6 +906,8 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
             importance: row["importance"], sensitivity: sensitivity, origin: origin,
             evidence: decode([MemoryEvidenceReference].self, row["evidence_json"]),
             conflictsWithEntryIDs: decode([UUID].self, row["conflicts_json"]),
+            originConversationID: (row["origin_conversation_id"] as String?).flatMap(UUID.init(uuidString:)),
+            originWorkspaceID: (row["origin_workspace_id"] as String?).flatMap(UUID.init(uuidString:)),
             expiresAt: (row["expires_at"] as String?).map(parseDate),
             createdAt: parseDate(row["created_at"]))
         return DurableMemoryCandidate(candidate: candidate, status: status,

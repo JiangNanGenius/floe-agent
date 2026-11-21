@@ -142,6 +142,17 @@ public struct GoalBudgets: Sendable, Codable, Hashable {
     }
 }
 
+/// User-requested continuation waiting for the current round to settle.
+public struct GoalQueuedResume: Sendable, Codable, Hashable {
+    public let afterRunID: UUID
+    public let modelID: UUID
+
+    public init(afterRunID: UUID, modelID: UUID) {
+        self.afterRunID = afterRunID
+        self.modelID = modelID
+    }
+}
+
 public struct GoalProgress: Sendable, Codable, Hashable {
     public var cycleCount: Int
     public var modelCallCount: Int
@@ -150,6 +161,7 @@ public struct GoalProgress: Sendable, Codable, Hashable {
     public var lastCheckpointAt: Date?
     public var repeatedBlockerKey: String?
     public var repeatedBlockerCount: Int
+    public var queuedResume: GoalQueuedResume?
 
     public init(
         cycleCount: Int = 0,

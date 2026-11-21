@@ -82,6 +82,7 @@ struct ProviderEditorView: View {
         Form {
             Section("providers.provider_editor_view.service_purpose") {
                 Label(viewModel.serviceRole.title, systemImage: viewModel.serviceRole.icon)
+                    .accessibilityIdentifier("providers.editor.role.\(viewModel.serviceRole.rawValue)")
             }
             presetSection
             serviceOffersSection

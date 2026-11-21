@@ -25,12 +25,21 @@ struct GeneralSettingsView: View {
     @Environment(\.foldableDisplay) private var foldableDisplay
     @ObservedObject private var layoutPreferences = LayoutPreferences.shared
 
-    init(center: SettingsCenter) {
+    private let openSetupGuide: (() -> Void)?
+
+    init(center: SettingsCenter, openSetupGuide: (() -> Void)? = nil) {
         self.center = center
+        self.openSetupGuide = openSetupGuide
     }
 
     var body: some View {
         Form {
+            if let openSetupGuide {
+                Section {
+                    Button("more.setup_guide", systemImage: "wand.and.stars", action: openSetupGuide)
+                        .accessibilityIdentifier("settings.general.setupGuide")
+                }
+            }
             AppearanceSettingsSection(selection: Binding(
                 get: { center.appearance },
                 set: { center.setAppearance($0) }

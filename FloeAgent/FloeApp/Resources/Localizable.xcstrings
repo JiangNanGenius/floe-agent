@@ -203477,6 +203477,124 @@
         }
       }
     },
+    "memory.origin_task_deleted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task deleted"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务已删除"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任務已刪除"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タスクは削除済み"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "삭제된 작업"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tâche supprimée"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aufgabe gelöscht"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tarea eliminada"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tarefa excluída"
+          }
+        }
+      }
+    },
+    "memory.pending_consolidated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New summaries to review: %lld."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已生成 %lld 条待确认的总结。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已產生 %lld 則待確認的摘要。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "確認待ちの要約：%lld 件。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "확인 대기 중인 새 요약: %lld개."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nouveaux résumés à vérifier : %lld."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neue Zusammenfassungen zur Prüfung: %lld."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuevos resúmenes para revisar: %lld."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Novos resumos para revisar: %lld."
+          }
+        }
+      }
+    },
     "memory.add": {
       "extractionState": "manual",
       "localizations": {
@@ -331855,55 +331973,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A provider needs its own key before Floe can search with it."
+            "value": "Add the credentials required by each search service."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "搜索服务需要先填入自己的密钥。"
+            "value": "按搜索服务的要求填写凭据。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "搜尋服務需要先填入自己的金鑰。"
+            "value": "依搜尋服務的要求填寫憑證。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "プロバイダーは、Floe が検索できるようになる前に、独自のキーが必要です。"
+            "value": "検索サービスごとに必要な認証情報を追加します。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "제공자는 Floe가 이를 사용해 검색하기 전에 자체 키가 필요합니다."
+            "value": "검색 서비스마다 필요한 인증 정보를 추가하세요."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Un fournisseur a besoin de sa propre clé avant que Floe puisse effectuer une recherche avec elle."
+            "value": "Ajoutez les identifiants requis par chaque service de recherche."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ein Anbieter benötigt seinen eigenen Schlüssel, bevor Floe damit suchen kann."
+            "value": "Füge die für den jeweiligen Suchdienst erforderlichen Zugangsdaten hinzu."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Un proveedor necesita su propia clave antes de que Floe pueda buscar con ella."
+            "value": "Añade las credenciales que requiera cada servicio de búsqueda."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Um provedor precisa de sua própria chave antes que o Floe possa pesquisar com ele."
+            "value": "Adicione as credenciais exigidas por cada serviço de busca."
           }
         }
       }
@@ -331914,55 +332032,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Needs a key"
+            "value": "Setup needed"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "缺少密钥"
+            "value": "需要配置"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "缺少金鑰"
+            "value": "需設定"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "鍵が必要です"
+            "value": "設定が必要"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "키가 필요합니다"
+            "value": "설정 필요"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "A besoin d'une clé"
+            "value": "Configuration requise"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Braucht einen Schlüssel"
+            "value": "Einrichtung nötig"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Necesita una llave"
+            "value": "Requiere configuración"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Precisa de uma chave"
+            "value": "Requer configuração"
           }
         }
       }

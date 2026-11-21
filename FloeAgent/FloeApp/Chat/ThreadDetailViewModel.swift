@@ -2326,7 +2326,7 @@ final class ThreadDetailViewModel: ObservableObject {
     ) async -> Bool {
         let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanObjective.isEmpty else { return false }
-        guard !isRunning, !isChangingGoal,
+        guard !isChangingGoal,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
             return false
@@ -2354,6 +2354,18 @@ final class ThreadDetailViewModel: ObservableObject {
         if pendingGoalSetupID == nil { pendingGoalSetupModeSelection = modeSelectionAtStart }
         pendingGoalSetupID = goal.id
         do {
+            if let running = runs.first, center.hasLiveOwner(runID: running.id), running.endedAt == nil,
+               try await center.environment.intelligenceStore.goal(id: goal.id) == nil {
+                let blockers = goal.blockingConditions?.joined(separator: "\n") ?? ""
+                let stops = goal.stoppingConditions?.joined(separator: "\n") ?? ""
+                try await center.submitRunningInput(content: "Goal: \(cleanObjective)\nBlocking conditions:\n\(blockers)\nStopping conditions:\n\(stops)",
+                    in: conversationID, expectedRunID: running.id, mode: .queue,
+                    selectedModelID: model.id, workspaceID: selectedProjectID,
+                    executionMode: .goal, attachments: [], goalDefinition: goal)
+                finishPendingGoalSetup(goalID: goal.id)
+                await load()
+                return true
+            }
             if let saved = try await center.environment.intelligenceStore.goal(id: goal.id) {
                 guard saved.conversationID == conversationID, saved.status == .active,
                       saved.objective == goal.objective,
@@ -2399,7 +2411,11 @@ final class ThreadDetailViewModel: ObservableObject {
     var canResumeGoal: Bool {
         guard !isChangingGoal, let goal = activeGoal else { return false }
         if [GoalStatus.paused, .blocked, .interrupted, .waitingUser].contains(goal.status) { return true }
-        return goal.status == .active && !isRunning && !center.hasLiveOwner(runID: selectedRun?.id)
+        guard !isRunning, !center.hasLiveOwner(runID: selectedRun?.id) else { return false }
+        if goal.status == .verifying, !goal.acceptanceCriteria.contains(where: \.requiresUserConfirmation) {
+            return runs.first?.goalID == goal.id && runs.first?.state == "completed"
+        }
+        return goal.status == .active
     }
 
     func goalStatusTitle(_ status: GoalStatus) -> String {

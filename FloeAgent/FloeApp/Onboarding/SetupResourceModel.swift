@@ -359,9 +359,10 @@ struct SetupSummaryEntry: Identifiable, Equatable, Sendable {
         case defaulted
         case preparing
         case later
+        case unset
         case needsAttention
 
-        var titleKey: String { "setup.summary.outcome.\(rawValue)" }
+        var titleKey: String { self == .unset ? "setup.status.unset" : "setup.summary.outcome.\(rawValue)" }
     }
 
     let section: SetupGuideSection
@@ -405,7 +406,7 @@ enum SetupGuideSummaryBuilder {
             case .preparing: outcome = .preparing
             case .deferred: outcome = .later
             case .needsAttention: outcome = .needsAttention
-            case .unset: outcome = .later
+            case .unset: outcome = .unset
             }
             return SetupSummaryEntry(section: section, outcome: outcome, canJump: true)
         }

@@ -92,6 +92,7 @@ struct SettingsRootView: View {
     @State private var compactPath = NavigationPath()
     @State private var detailPath = NavigationPath()
     @State private var helpSettingsTarget: HelpSettingsTarget?
+    @State private var showingSetupGuide = false
 
     init(environment: AppEnvironment, initialHelpTarget: HelpSettingsTarget? = nil) {
         self.environment = environment
@@ -189,6 +190,10 @@ struct SettingsRootView: View {
         }
         }
         .environmentObject(environment)
+        .sheet(isPresented: $showingSetupGuide) {
+            OnboardingView(center: environment.conversationCenter)
+                .presentationSizing(.page)
+        }
         .onChange(of: initialHelpTarget) { _, target in
             if let target { openHelpSetting(target) }
         }
@@ -257,7 +262,7 @@ struct SettingsRootView: View {
         switch section {
         case .general:
             HelpSettingsFocusContainer(target: helpSettingsTarget?.category == "general" ? helpSettingsTarget : nil) {
-                GeneralSettingsView(center: environment.settingsCenter)
+                GeneralSettingsView(center: environment.settingsCenter) { showingSetupGuide = true }
             }
         case .help:
             HelpCenterView(center: environment.contentUpdateCenter.helpCenter,

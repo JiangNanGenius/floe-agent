@@ -221,7 +221,7 @@ struct SetupResourceStageRulesTests {
         let entries = SetupGuideSummaryBuilder.entries(state: state, resources: rows)
         let outcomes = Dictionary(uniqueKeysWithValues: entries.map { ($0.section, $0.outcome) })
         #expect(outcomes[.files] == .preparing)
-        #expect(outcomes[.voice] == .later, "a ready pack is not a user decision")
+        #expect(outcomes[.voice] == .unset, "a ready pack is not a user decision")
         #expect(outcomes[.chatModels] == .saved)
     }
 }

@@ -21,6 +21,7 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
     public var sourceKind: MemoryCandidateOrigin
     public var originConversationID: UUID?
     public var originWorkspaceID: UUID?
+    public var isOriginTaskDeleted: Bool?
     public var factIdentity: MemoryFactIdentity?
     public var expiresAt: Date?
     public var createdAt: Date
@@ -504,7 +505,8 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     /// existing writer transaction. A model response/tool call is not needed
     /// to create it. The input's native UUID is also its Goal identity, so a
     /// queued follow-up can never silently select a different current Goal.
-    public func enqueueGoalInput(_ input: PendingUserInput, expectedRunID: UUID) async throws -> PendingUserInput {
+    public func enqueueGoalInput(_ input: PendingUserInput, expectedRunID: UUID,
+                                 definition: ConversationGoal? = nil) async throws -> PendingUserInput {
         guard input.executionMode == "goal", input.status == .queued,
               input.targetRunID == expectedRunID else { throw TaskGoalError.unauthorized }
         let objective = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -524,7 +526,9 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 """, arguments: [input.conversationID.uuidString]) == 0,
                   try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation_goals WHERE id=?",
                     arguments: [input.id.uuidString]) == 0 else { throw TaskGoalError.activeGoalExists }
-            let goal = ConversationGoal(id: input.id, conversationID: input.conversationID,
+            guard definition.map({ $0.id == input.id && $0.conversationID == input.conversationID
+                && $0.status == .active }) ?? true else { throw TaskGoalError.unauthorized }
+            let goal = definition ?? ConversationGoal(id: input.id, conversationID: input.conversationID,
                 objective: objective,
                 acceptanceCriteria: [GoalCriterion(text: "The objective is satisfied with inspectable evidence")],
                 steps: [GoalStep(title: "Work toward the objective", status: .pending, order: 0)], status: .active)
@@ -578,7 +582,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         try await database.writer { db in
             guard let run = try Row.fetchOne(db, sql: "SELECT goal_id FROM runs WHERE id=? AND conversation_id=?",
                 arguments: [runID.uuidString, conversationID.uuidString]) else { throw TaskGoalError.staleRun }
-            let ids: [String]
+            var ids: [String]
             if let bound = run["goal_id"] as String? {
                 // Consumption may have bound it after the caller's snapshot.
                 ids = [bound]
@@ -592,6 +596,12 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     """, arguments: [conversationID.uuidString, runID.uuidString])
                 guard ids.count <= SQLiteRunningInputStore.maximumPendingPerConversation else { throw TaskGoalError.storageUnavailable }
             }
+            let deferred = try String.fetchAll(db, sql: """
+                SELECT id FROM conversation_goals
+                WHERE conversation_id=? AND status='active'
+                  AND json_extract(progress_json, '$.queuedResume.afterRunID')=?
+                """, arguments: [conversationID.uuidString, runID.uuidString])
+            ids.append(contentsOf: deferred.filter { !ids.contains($0) })
             var paused: [UUID] = []
             for raw in ids {
                 guard let id = UUID(uuidString: raw),
@@ -1147,11 +1157,27 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
+    private static let missingOriginTaskSQL = """
+        COALESCE(m.conversation_id, m.origin_conversation_id) IS NOT NULL
+        AND NOT EXISTS(SELECT 1 FROM conversations c
+            WHERE c.id = COALESCE(m.conversation_id, m.origin_conversation_id))
+        """
+
+    public func memoriesFromDeletedTasks() async throws -> [MemoryEntry] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT m.*, 1 AS origin_task_deleted FROM memory_entries m
+                WHERE scope = 'task' AND conversation_id IS NULL AND (\(Self.missingOriginTaskSQL))
+                ORDER BY updated_at DESC
+                """).map(Self.memory)
+        }
+    }
+
     public func memories(scope: MemoryScope, status: MemoryEntryStatus? = nil) async throws -> [MemoryEntry] {
         let (scopeName, workspaceID, conversationID) = Self.scope(scope)
         return try await database.reader { db in
             var sql = """
-                SELECT * FROM memory_entries
+                SELECT m.*, (\(Self.missingOriginTaskSQL)) AS origin_task_deleted FROM memory_entries m
                 WHERE scope = ?
                   AND (workspace_id IS ? OR origin_workspace_id IS ?)
                   AND (conversation_id IS ? OR origin_conversation_id IS ?)
@@ -2176,12 +2202,16 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         let factIdentity = subjectKey.flatMap { subject in
             attributeKey.map { MemoryFactIdentity(subjectKey: subject, attributeKey: $0) }
         }
-        return MemoryEntry(id: id, scope: scope, status: status, content: row["content"], confidence: row["confidence"],
+        var entry = MemoryEntry(id: id, scope: scope, status: status, content: row["content"], confidence: row["confidence"],
             importance: row["importance"], isPinned: row["is_pinned"], sourceKind: source,
             originConversationID: originConversation.flatMap(UUID.init(uuidString:)),
             originWorkspaceID: originWorkspace.flatMap(UUID.init(uuidString:)),
             factIdentity: factIdentity,
             expiresAt: expires.map(Self.parseDate), createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
+        if row.columnNames.contains("origin_task_deleted"), row["origin_task_deleted"] as Bool {
+            entry.isOriginTaskDeleted = true
+        }
+        return entry
     }
 
     private static func scope(_ scope: MemoryScope) -> (String, UUID?, UUID?) {

@@ -663,12 +663,6 @@ struct RootView: View {
                 // active notifications and settings entry never do.
                 Task { await environment.voiceRecognitionPreload.activate(
                     foreground: true, persistenceReady: true) }
-                // First active rendered launch, after setup readiness: ask for
-                // When-In-Use location access exactly once. Denied/restricted
-                // never re-prompts, and the app never requests Always. The
-                // shared service suppresses this inside an App-hosted unit
-                // test process.
-                LocationServicesCenter.shared.requestInitialAuthorizationIfNeeded()
                 Task {
                     try? await environment.configurationSync.synchronize()
                     await environment.conversationCenter.reload()
@@ -743,9 +737,6 @@ struct RootView: View {
             launchPresentationReady = false
             guard environment.persistenceReady else { return }
             if scenePhase == .active {
-                // Covers a launch where persistence readiness landed after the
-                // scene-phase report (and is an idempotent no-op otherwise).
-                LocationServicesCenter.shared.requestInitialAuthorizationIfNeeded()
                 await environment.voiceRecognitionPreload.activate(
                     foreground: true, persistenceReady: true)
             }

@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "从设置的「通用」打开设置向导，添加一个对话模型服务，退出后重新打开，确认回到原进度。先运行一轮普通任务，再恢复已暂停的长期目标，确认当前轮结束后继续。手动恢复一次中断的目标轮，观察结束后是否继续检查目标。删除一个测试任务后查看其保留的记忆。在记忆页自动整理并检查合并结果仍待确认。",
+  "en-US": "Open Setup Guide in General settings. Add a chat provider, exit the guide, and reopen it at the saved step. Resume a paused Goal while a regular turn is running, and check that it continues after the turn ends. Resume an interrupted Goal round and verify that it returns to goal evaluation at completion. Delete a test task and check its retained memory. Organize pending memories and check that merged summaries still await approval."
+}

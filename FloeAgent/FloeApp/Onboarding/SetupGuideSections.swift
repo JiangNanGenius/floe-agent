@@ -100,7 +100,7 @@ struct SetupChatModelsSection: View {
                 NavigationLink {
                     // Adding always starts empty: no stored configuration and
                     // no secret are loaded into a blank form.
-                    ProviderEditorView(center: center, existing: nil)
+                    ProviderEditorView(center: center, existing: nil, initialRole: .conversation)
                 } label: {
                     Label("setup.chat.add_provider", systemImage: "plus.circle")
                         .frame(minHeight: FloeTheme.minimumTarget)

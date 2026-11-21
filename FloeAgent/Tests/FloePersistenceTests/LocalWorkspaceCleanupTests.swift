@@ -21,7 +21,7 @@ struct LocalWorkspaceCleanupTests {
             try db.execute(sql: "PRAGMA user_version = 64")
         }
         try await database.migrate()
-        #expect(try await database.userVersion() == 65)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
         #expect(try await workspaces.pendingLocalCleanup().isEmpty)
         #expect(try await workspaces.workspace(id: game.id) != nil)
     }

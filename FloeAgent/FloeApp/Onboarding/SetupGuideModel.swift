@@ -180,9 +180,16 @@ final class SetupGuideModel: ObservableObject {
     /// The main model choice. Selecting one never ends the guide: the user
     /// still walks every remaining section.
     func setMainModel(_ id: UUID) async {
-        await center.setDefaultAgentModel(id)
-        apply(.setStatus(.chatModels, .configured))
-        await refreshFacts()
+        var preferences = center.modelPreferences
+        preferences.defaultAgentModelID = id
+        do {
+            try await center.saveModelPreferences(preferences)
+            apply(.setStatus(.chatModels, .configured))
+            await refreshFacts()
+        } catch {
+            saveMessage = SecretRedactor.redact(error.localizedDescription)
+            apply(.setStatus(.chatModels, .needsAttention))
+        }
     }
 
     /// Routes one auxiliary role through the same preference writer the real
@@ -465,8 +472,7 @@ final class SetupGuideModel: ObservableObject {
 
         let search = environment.webSearchSettingsCenter
         let usable = search.instances.filter {
-            $0.configuration.enabled
-                && search.hasCredential(account: $0.configuration.credentialAccount)
+            $0.configuration.enabled && search.isConfigured($0.configuration)
         }
         facts.hasConfiguredSearchProvider = !usable.isEmpty
         facts.searchProviderCount = usable.count

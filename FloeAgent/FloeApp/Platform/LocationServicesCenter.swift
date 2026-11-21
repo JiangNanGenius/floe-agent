@@ -602,15 +602,11 @@ final class LocationServicesCenter: ObservableObject {
         }
     }
 
-    /// The first active rendered launch asks for When-In-Use access after setup
-    /// readiness. Denied/restricted never re-prompts, and this process asks at
-    /// most once. The system itself shows the sheet at most once per install.
-    func requestInitialAuthorizationIfNeeded() {
+    /// Requests the first When-In-Use authorization from an active feature.
+    private func requestInitialAuthorizationIfNeeded() {
         guard allowsSystemLocation else { return }
         refreshAuthorizationStatus()
-        // Location Services off or a truly backgrounded app cannot present a
-        // system request. Leave the one-shot prompt for the next real
-        // foreground launch instead of consuming it here.
+        // Consume the one-shot request only when the system can present it.
         guard canPresentAuthorizationRequest,
               !hasRequestedInitialAuthorization,
               authorizationStatus == .notDetermined else { return }

@@ -73,6 +73,37 @@ struct MemoryForgettingTests {
         #expect(try await store.memory(id: memory.id)?.content == memory.content)
     }
 
+    @Test("Deleted tasks stay visible and pending consolidation preserves its original task and review")
+    func pendingConsolidationKeepsTaskProvenanceAndApproval() async throws {
+        let db = try await database(), owner = try await source(db)
+        let store = SQLiteIntelligenceStore(database: db)
+        let review = SQLitePersonalizationStore(database: db)
+        let task = MemoryEntry(scope: .task(owner), status: .active, content: "Carry the original fixtures.",
+            confidence: 0.8, importance: 0.6, sourceKind: .automaticTurnReview)
+        try await store.saveMemory(task, evidence: [])
+        for text in ["Keep the original test report.", "Retain the original test report."] {
+            _ = try await review.saveCandidate(.init(candidate: .init(scope: .agentGlobal, content: text,
+                confidence: 0.7, stability: 0.7, importance: 0.6,
+                origin: .automaticTurnReview, evidence: [], originConversationID: owner), status: .pending))
+        }
+        let before = try await review.pendingReview().candidates
+        #expect(before.count == 2 && before.allSatisfy { $0.candidate.originConversationID == owner })
+        #expect(try await review.consolidatePending(before, summary: "Keep the original test report.") == true)
+        let pending = try #require(try await review.pendingReview().candidates.first)
+        #expect(try await review.pendingReview().candidates.count == 1)
+        #expect(try await store.memory(id: pending.id) == nil)
+        #expect(try await review.consolidatePending(before, summary: "Stale grouping") == false)
+        try await review.resolvePending(id: pending.id, activate: true)
+        #expect(try await store.memoriesFromDeletedTasks().isEmpty)
+        try await store.preserveMemoriesBeforeConversationDeletion(conversationID: owner, ownerLabel: "Source")
+        #expect(try await store.memoriesFromDeletedTasks().isEmpty)
+        try await SQLiteConversationStore(database: db).deleteConversation(id: owner)
+        let local = try #require(try await store.memoriesFromDeletedTasks().first)
+        #expect(local.id == task.id && local.isOriginTaskDeleted == true)
+        let global = try #require(try await store.memories(scope: .agentGlobal).first)
+        #expect(global.id == pending.id && global.originConversationID == owner && global.isOriginTaskDeleted == true)
+    }
+
     @Test("Older origin-only orphans are repaired without a fresh-use timestamp; unknown sources stay intact")
     func historicalOrphanRepairDoesNotRenewUse() async throws {
         let db = try await database(), store = SQLiteIntelligenceStore(database: db)

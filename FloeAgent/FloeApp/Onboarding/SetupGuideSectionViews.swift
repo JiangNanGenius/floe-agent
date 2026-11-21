@@ -181,8 +181,7 @@ struct SetupWebSearchSection: View {
                         )) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(instance.configuration.displayName)
-                                Text(search.hasCredential(
-                                        account: instance.configuration.credentialAccount)
+                                Text(search.isConfigured(instance.configuration)
                                      ? "setup.search.ready" : "setup.search.incomplete")
                                     .font(FloeTheme.Typography.metadata)
                                     .foregroundStyle(.secondary)
@@ -298,14 +297,6 @@ struct SetupVoiceSection: View {
                 Text("setup.voice.pick.footer")
             }
 
-            // Browsing every available voice, including the ones this device
-            // has not downloaded. Choosing one only remembers the wish; the
-            // voice that already plays keeps playing, and the bytes start on
-            // an explicit Download press.
-            voiceBrowseSection
-
-            voiceRows
-
             Section {
                 HStack {
                     Text("voice.settings.rate")
@@ -356,14 +347,15 @@ struct SetupVoiceSection: View {
             } footer: {
                 Text("setup.voice.online.footer")
             }
+
+            voiceBrowseSection
+            voiceRows
         }
         .listStyle(.insetGrouped)
-        .onChange(of: method) { _, value in
-            // Switching to on-device recognition is a stated intent, not a
-            // silent download: the row above offers the transfer.
-            if value == VoiceRecognitionPreferences.Method.enhanced.rawValue {
-                model.markConfigured(.voice)
-            }
+        .onChange(of: method) { _, _ in model.markConfigured(.voice) }
+        .onChange(of: language) { _, _ in model.markConfigured(.voice) }
+        .onChange(of: speech.snapshot) { _, _ in
+            if speech.hasSavedPlaybackPreferences { model.markConfigured(.voice) }
         }
         .onDisappear {
             // Stop THIS page's preview and forget the intent to preview. The
@@ -1276,6 +1268,7 @@ struct SetupSummarySection: View {
         case .defaulted: "setup.summary.defaulted_hint"
         case .preparing: "setup.summary.preparing_hint"
         case .later: "setup.summary.later_hint"
+        case .unset: LocalizedStringKey(entry.section.detailKey)
         case .needsAttention: "setup.summary.attention_hint"
         }
     }
@@ -1285,7 +1278,7 @@ struct SetupSummarySection: View {
         case .saved: FloeTheme.success
         case .defaulted: FloeTheme.primary
         case .preparing: FloeTheme.pending
-        case .later: Color.secondary
+        case .later, .unset: Color.secondary
         case .needsAttention: FloeTheme.destructive
         }
     }

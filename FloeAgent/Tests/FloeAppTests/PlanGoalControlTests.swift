@@ -45,6 +45,12 @@ struct PlanGoalControlTests {
             stream.finish()
             return true
         }
+        func fail(at index: Int) -> Bool {
+            let stream = lock.withLock { streams.indices.contains(index) ? streams[index] : nil }
+            guard let stream else { return false }
+            stream.finish(throwing: FloeError.internalError("Recorded provider interruption"))
+            return true
+        }
         func emitTool(at index: Int, call: ToolCall) -> Bool {
             let stream = lock.withLock { streams.indices.contains(index) ? streams[index] : nil }
             guard let stream else { return false }
@@ -1353,6 +1359,59 @@ struct PlanGoalControlTests {
         #expect(f.requests.all.count == 1)
     }
 
+
+    @Test("A restored Goal round reaches automatic continuation after completing")
+    func restoredGoalRoundAdvances() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Restored goal cycle")
+        let objective = "Verify the remaining result"
+        let goal = ConversationGoal(conversationID: conversation.id, objective: objective,
+            acceptanceCriteria: [.init(text: objective)], steps: [], status: .active)
+        try await f.environment.intelligenceStore.saveGoal(goal)
+        let original = try await f.center.startRun(goal: objective, in: conversation.id,
+            provider: f.provider, model: f.model, executionMode: .goal,
+            expectedGoal: (goal.id, goal.revision ?? 1), startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        try #require(f.requests.fail(at: 0))
+        _ = await original.result.value
+        let stopped = try #require(try await f.environment.runStore.run(id: original.runID))
+        #expect(stopped.state == "failed" || stopped.state == "checkpointed")
+        let restored = try await f.center.retry(runID: original.runID,
+            startOrigin: .explicitUserAction, conversationID: conversation.id)
+        let request = try await waitForRequest(f, after: 1)
+        #expect(request.diagnosticRunID == original.runID.uuidString)
+        try #require(f.requests.complete(at: 1, text: "There is work remaining."))
+        _ = await restored.result.value
+        let continuation = try await waitForRequest(f, after: 2)
+        let newRound = try #require(try await f.environment.runStore.runs(conversationID: conversation.id).first)
+        #expect(newRound.id != original.runID && newRound.goalID == goal.id)
+        #expect(continuation.diagnosticRunID == newRound.id.uuidString)
+        try await f.center.stopRunFromComposer(newRound)
+    }
+
+    @Test("Resume queues behind an unrelated live round and starts the exact Goal after settlement")
+    func resumeGoalBehindRunningRound() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Resume after unrelated round")
+        let original = try await f.center.startRun(goal: "Finish the already running turn", in: conversation.id,
+            provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        let paused = ConversationGoal(conversationID: conversation.id, objective: "Finish the saved goal",
+            acceptanceCriteria: [.init(text: "Check the result")], steps: [], status: .paused)
+        try await f.environment.intelligenceStore.saveGoal(paused)
+        let accepted = try await f.center.resumeGoal(conversationID: conversation.id,
+            expectedGoalID: paused.id, expectedRevision: paused.revision ?? 1, provider: f.provider, model: f.model)
+        #expect(accepted.startedRun == nil && accepted.goal.progress.queuedResume?.afterRunID == original.runID)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        try #require(f.requests.complete(at: 0))
+        _ = await original.result.value
+        let request = try await waitForRequest(f, after: 1)
+        let running = try #require(try await f.environment.runStore.runs(conversationID: conversation.id).first)
+        #expect(running.id != original.runID && running.goalID == paused.id)
+        #expect(f.requests.all.count == 2 && request.model.id == f.model.id)
+        #expect(try await f.environment.intelligenceStore.goal(id: paused.id)?.progress.queuedResume == nil)
+        try await f.center.stopRunFromComposer(running)
+    }
 
     @Test("Resuming a stopped pending Goal consumes its original input in the native launch transaction exactly once")
     func stoppedPendingGoalResumeIsAtomicAndDoesNotRepeatItsInput() async throws {

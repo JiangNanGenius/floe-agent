@@ -170,15 +170,19 @@ final class SetupGuideUITests: XCTestCase {
             "Exit must dismiss the guide and leave the app usable"
         )
 
-        // Resume is the contract under test. Present the guide again through
-        // the launch path rather than the provider-dependent home launcher,
-        // which is absent once a default model exists; no saved progress is
-        // reset here.
-        let reopened = XCUIApplication()
-        reopened.launchArguments = ["-ui-testing", "--ui-test-force-onboarding"]
-        reopened.launch()
+        let settings = app.buttons["sidebar.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.tap()
+        let guide = app.buttons["settings.general.setupGuide"]
+        if !guide.waitForExistence(timeout: 5) {
+            let general = anyElement(app, "settings.section.general")
+            XCTAssertTrue(general.waitForExistence(timeout: 8))
+            general.tap()
+        }
+        XCTAssertTrue(guide.waitForExistence(timeout: 8))
+        guide.tap()
         XCTAssertTrue(
-            sectionElement(reopened, "setup.content.voice").waitForExistence(timeout: 12),
+            sectionElement(app, "setup.content.voice").waitForExistence(timeout: 12),
             "the guide did not resume where the user left it"
         )
     }
@@ -253,6 +257,8 @@ final class SetupGuideUITests: XCTestCase {
         add.tap()
         XCTAssertTrue(app.buttons["action.save"].waitForExistence(timeout: 10),
                       "Add must open the shared provider editor")
+        XCTAssertTrue(anyElement(app, "providers.editor.role.conversation").waitForExistence(timeout: 8),
+                      "Chat & Models must open the conversation provider editor")
         // A new provider starts from the shipped preset, never from a saved
         // secret: the secure field is empty (XCUITest reports the placeholder
         // as its value on some iOS versions, which is still not a stored key).

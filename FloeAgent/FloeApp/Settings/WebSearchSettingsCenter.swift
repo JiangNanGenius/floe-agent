@@ -566,6 +566,11 @@ final class WebSearchSettingsCenter: ObservableObject {
 
     // MARK: - Credentials
 
+    func isConfigured(_ configuration: WebSearchProviderConfiguration) -> Bool {
+        let credential = credential(for: configuration) ?? WebSearchCredential(values: [:])
+        return WebSearchService.isConfigured(configuration, credential: credential)
+    }
+
     func credential(for configuration: WebSearchProviderConfiguration) -> WebSearchCredential? {
         credential(forAccount: configuration.credentialAccount)
             ?? (configuration.kind == .bochaWeb

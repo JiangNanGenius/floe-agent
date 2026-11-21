@@ -130,7 +130,7 @@ struct SetupGuideReducerTests {
         // The honest summary still says "later" for everything: finishing the
         // guide is not a claim that anything was configured.
         let entries = SetupGuideSummaryBuilder.entries(state: state)
-        #expect(entries.allSatisfy { $0.outcome == .later })
+        #expect(entries.allSatisfy { $0.outcome == .unset })
     }
 
     @Test("Progress survives a save and reload, and stays secret-free")
@@ -209,8 +209,7 @@ struct SetupGuideReducerTests {
         #expect(outcome[.webSearch] == .later)
         #expect(outcome[.permissions] == .needsAttention)
         #expect(outcome[.background] == .defaulted)
-        // Nothing was touched: it reads as postponed, never as configured.
-        #expect(outcome[.syncStorage] == .later)
+        #expect(outcome[.syncStorage] == .unset)
         #expect(entries.count == SetupGuideSection.configurable.count)
         #expect(entries.allSatisfy { $0.canJump })
     }

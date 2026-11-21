@@ -431,7 +431,7 @@ struct ChildRunStoreTests {
         let reopened = try DatabaseManager(path: databaseURL)
         try await reopened.migrate()
         let upgraded = SQLiteChildRunStore(database: reopened)
-        #expect(try await reopened.userVersion() == 65)
+        #expect(try await reopened.userVersion() == DatabaseManager.currentSchemaVersion)
         #expect(try await upgraded.child(id: id)?.delegateCallID == "legacy-call")
         #expect(try await upgraded.child(id: id)?.state == .completed)
         #expect(try await upgraded.entries(childRunID: id, afterSequence: 0, limit: 10).entries.count == 1)
