@@ -1,9 +1,9 @@
-<!-- docs-updated: 2026-11-19 -->
+<!-- docs-updated: 2026-11-21 -->
 # iOS 发布版本依据
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的内部测试为 1.8.45（366）。** Apple 返回 `VALID`，Floe QA 可安装。公开 TestFlight 为 `WAITING_FOR_BETA_REVIEW`，GitHub 最新版和实时 Feather 源已核验。 [366 交付记录](releases/builds/FLOE_1.8.45_BUILD366_DELIVERY.md)
+**最近已核验的 iOS 发布为 1.8.62（383）。** Apple 返回 `VALID`，Floe QA 可安装，GitHub 无签名包是最新版，实时 Feather 源已核对。后续 iOS 常规发布使用同一份冻结设备产物完成这三项，分别读取各渠道的交付结果。旧包补发使用对应标签与原构建，并保留最新版本指向。 [383 交付记录](releases/builds/FLOE_1.8.62_BUILD383_DELIVERY.md)
 
 ## 依据与判定
 
