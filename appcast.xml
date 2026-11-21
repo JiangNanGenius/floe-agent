@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.7</title>
+      <pubDate>Sat, 21 Nov 2026 19:25:16 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.7</link>
+      <sparkle:version>37</sparkle:version>
+      <sparkle:shortVersionString>1.11.7</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>与 iPad 共用模型菜单、草稿确认规则与工作区文本策略。 Shared iPad model menu, draft commit rules, and workspace text policy.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.7/Floe-Agent-1.11.7.dmg" length="36096941" type="application/octet-stream" sparkle:edSignature="YD1TNA5DqkTtDSiRyQ5myIfYiU+dlECK7omiveZuUupaWx+BgvlORGtxkfwqKk7ZueneROJD0jHj7/4ihA81BQ==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.6</title>
       <pubDate>Sat, 21 Nov 2026 18:50:12 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.6</link>
