@@ -13,6 +13,7 @@ public struct ManufacturingWorkbenchView: View {
     @State private var preferredCompactColumn:NavigationSplitViewColumn = .sidebar
     @State private var columnVisibility:NavigationSplitViewVisibility = .automatic
     @State private var visibilityBeforeResearch:NavigationSplitViewVisibility?
+    @State private var visibilityBeforeExpansion: NavigationSplitViewVisibility?
     @State private var exportItem: ExportItem?
     @State private var playing = false
     @State private var viewportRevision = UUID()
@@ -114,18 +115,40 @@ public struct ManufacturingWorkbenchView: View {
                     }.padding(12).background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)).padding(16)
                 }.frame(minHeight:240)
                 HStack {
-                    Toggle(L("刀路","Toolpaths"),isOn:$model.showPaths).toggleStyle(.button)
-                    Toggle(L("夹具","Fixtures"),isOn:$model.showFixtures).toggleStyle(.button)
+                    if visibilityBeforeExpansion == nil {
+                        Toggle(L("刀路","Toolpaths"),isOn:$model.showPaths).toggleStyle(.button)
+                        Toggle(L("夹具","Fixtures"),isOn:$model.showFixtures).toggleStyle(.button)
+                    }
                     Spacer()
                     Button(L("加工仿真","Simulate machining"),systemImage:"play.rectangle") { openSimulation() }.disabled(model.artifact == nil || model.isBusy).accessibilityIdentifier("study.simulate")
                 }.frame(minHeight:44).padding(.horizontal,16).background(.bar)
-                Divider()
-                results.frame(maxHeight:260)
+                if visibilityBeforeExpansion == nil {
+                    Divider()
+                    results.frame(maxHeight:260)
+                } else if model.artifact != nil {
+                    Divider()
+                    replayBar
+                }
             }
             .navigationTitle(L("加工预览","Machining preview"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if editor?.isResearch != true {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        if let previous = visibilityBeforeExpansion {
+                            columnVisibility = previous
+                            visibilityBeforeExpansion = nil
+                        } else {
+                            visibilityBeforeExpansion = columnVisibility
+                            columnVisibility = .detailOnly
+                        }
+                    } label: {
+                        Label(visibilityBeforeExpansion == nil ? L("全屏预览", "Expand preview") : L("退出全屏", "Exit full screen"),
+                              systemImage: visibilityBeforeExpansion == nil ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                    }
+                    .accessibilityIdentifier("study.preview.fullscreen")
+                }
                 if let onAssistant {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(L("作品助手", "Work assistant"), systemImage: "sparkles") {

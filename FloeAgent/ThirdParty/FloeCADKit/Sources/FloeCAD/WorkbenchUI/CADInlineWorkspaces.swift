@@ -2,7 +2,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 
-enum CADWorkbenchDestination { case building, mesh }
+enum CADWorkbenchDestination { case building, mesh, manufacturing }
 
 private struct CADBuildingWorkspaceActiveKey: EnvironmentKey {
     static let defaultValue = false
@@ -11,11 +11,11 @@ private struct CADHostOwnsProjectSaveKey: EnvironmentKey {
     static let defaultValue = false
 }
 extension EnvironmentValues {
-    var cadHostOwnsProjectSave: Bool {
+    public var cadHostOwnsProjectSave: Bool {
         get { self[CADHostOwnsProjectSaveKey.self] }
         set { self[CADHostOwnsProjectSaveKey.self] = newValue }
     }
-    var cadBuildingWorkspaceActive: Bool {
+    public var cadBuildingWorkspaceActive: Bool {
         get { self[CADBuildingWorkspaceActiveKey.self] }
         set { self[CADBuildingWorkspaceActiveKey.self] = newValue }
     }

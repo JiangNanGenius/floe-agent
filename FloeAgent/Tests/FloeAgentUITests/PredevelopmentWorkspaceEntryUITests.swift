@@ -172,6 +172,14 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         let applied = NSPredicate(format: "label CONTAINS %@", "白色乳胶漆")
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: applied, object: left)], timeout: 10), .completed)
         XCTAssertFalse(app.buttons["building.walls.finish.right"].label.contains("白色乳胶漆"))
+        let model = app.segmentedControls["building.model.mode"]
+        model.buttons["三维模型"].tap()
+        let viewport = app.descendants(matching: .any).matching(identifier: "building.model.3d").firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["building.close"].exists)
+        model.buttons["二维平面"].tap()
+        openWallPlan()
+        expectWalls(2)
         let image = XCTAttachment(screenshot: app.screenshot())
         image.name = "建筑墙体与单侧饰面"
         image.lifetime = .keepAlways

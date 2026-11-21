@@ -12,18 +12,24 @@ struct BuildingNativeRoomOption:Identifiable,Equatable {
 }
 
 struct BuildingNativeModelPanel:View {
-    private enum Mode:String,CaseIterable {case walls,native}
+    private enum Mode: String { case plan, model, tools }
     @Bindable var project:BuildingEditorProjectSession
     @Environment(\.locale) private var locale
     @State private var choosingRooms=false
-    @State private var mode=Mode.walls
+    @SceneStorage private var mode: Mode
+
+    init(project: BuildingEditorProjectSession) {
+        self.project = project
+        _mode = SceneStorage(wrappedValue: .plan, "building.viewport.mode.\(project.projectID)")
+    }
     private func copy(_ zh:String,_ en:String)->String {locale.language.languageCode?.identifier=="zh" ? zh:en}
     var body:some View {
         VStack(spacing:0) {
             HStack(spacing:10) {
                 Picker(copy("模型工作台","Model workspace"),selection:$mode) {
-                    Text(copy("墙体平面","Wall plan")).tag(Mode.walls)
-                    Text(copy("原生建筑","Native building")).tag(Mode.native)
+                    Text(copy("二维平面", "2D Plan")).tag(Mode.plan)
+                    Text(copy("三维模型", "3D Model")).tag(Mode.model)
+                    Text(copy("建筑工具", "Building Tools")).tag(Mode.tools)
                 }.pickerStyle(.segmented).frame(maxWidth:360)
                 .accessibilityIdentifier("building.model.mode")
                 Spacer()
@@ -31,13 +37,20 @@ struct BuildingNativeModelPanel:View {
                     .accessibilityIdentifier("building.rooms.link")
             }.padding(.horizontal,12).padding(.vertical,8)
             Divider()
-            if mode == .walls {
-                BuildingWallPlanEditor(project:project)
-                    .disabled(project.busy)
-            } else {
-                FloeBuildingWorkbenchView(document:project.nativeDocument,hostOwnsProjectSave:true)
-                    .disabled(project.busy)
+            Group {
+                switch mode {
+                case .plan:
+                    BuildingWallPlanEditor(project: project)
+                case .model:
+                    FloeCADWorkbenchView(document: project.nativeDocument)
+                        .environment(\.cadBuildingWorkspaceActive, true)
+                        .environment(\.cadHostOwnsProjectSave, true)
+                        .accessibilityIdentifier("building.model.3d")
+                case .tools:
+                    FloeBuildingWorkbenchView(document: project.nativeDocument, hostOwnsProjectSave: true, offersModelView: false)
+                }
             }
+            .disabled(project.busy)
         }
         .sheet(isPresented:$choosingRooms){BuildingRoomLinkSheet(project:project)}
     }

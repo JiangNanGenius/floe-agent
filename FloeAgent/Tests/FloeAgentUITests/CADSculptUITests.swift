@@ -21,7 +21,7 @@ import XCTest
             if overflow.waitForExistence(timeout:5) { overflow.tap() }
         }
         if tools.isHittable { tools.tap() } else { app.buttons["CAD Tools"].firstMatch.tap() }
-        let mesh=app.segmentedControls.buttons["Mesh"].firstMatch
+        let mesh=app.buttons["CADMeshInspectorOpen"].firstMatch
         XCTAssertTrue(mesh.waitForExistence(timeout:10));mesh.tap()
         let start=app.buttons["CADSculptStart"].firstMatch
         XCTAssertTrue(start.waitForExistence(timeout:10))

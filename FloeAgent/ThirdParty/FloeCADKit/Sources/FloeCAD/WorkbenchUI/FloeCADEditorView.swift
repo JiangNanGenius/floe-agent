@@ -50,6 +50,28 @@ public extension EnvironmentValues {
     }
 }
 
+/// Host action presented after the CAD tools sheet is dismissed.
+nonisolated public struct CADManufacturingMenuAction: Sendable {
+    public let isEnabled: Bool
+    public let perform: @MainActor @Sendable () -> Void
+
+    public init(isEnabled: Bool, perform: @escaping @MainActor @Sendable () -> Void) {
+        self.isEnabled = isEnabled
+        self.perform = perform
+    }
+}
+
+private nonisolated struct CADManufacturingMenuKey: EnvironmentKey {
+    static let defaultValue: CADManufacturingMenuAction? = nil
+}
+
+public extension EnvironmentValues {
+    nonisolated var cadManufacturingMenuAction: CADManufacturingMenuAction? {
+        get { self[CADManufacturingMenuKey.self] }
+        set { self[CADManufacturingMenuKey.self] = newValue }
+    }
+}
+
 /// Minimal FileDocument wrapper so `.fileExporter` can save any export
 /// payload (STL/OBJ/3MF/GLB/DXF/STEP/IGES/USDZ/PNG); the concrete type
 /// travels with the data.
@@ -572,6 +594,7 @@ struct FloeCADEditorView: View {
     @State private var showMeshInspector = false
     @Environment(\.cadBuildingWorkspaceActive) private var buildingWorkspaceActive
     @Environment(\.cadHostOwnsProjectSave) private var hostOwnsProjectSave
+    @Environment(\.cadManufacturingMenuAction) private var manufacturingMenuAction
     /// User-named design versions (E34) sheet.
     @State private var showVersions = false
     /// E31-R3: the units prompt's prepared probe plus the manual import
@@ -734,13 +757,14 @@ struct FloeCADEditorView: View {
             // keeps the semantic MODEL identity exact, and the cancel route
             // verifies that identity plus the session's own committed
             // revision before treating the model as untouched.
-            guard !document.isClosed, !hostOwnsProjectSave, !transientlyCovered, !showBuildingWorkspace else { return }
+            guard !document.isClosed, !hostOwnsProjectSave, !transientlyCovered,
+                  !showBuildingWorkspace, document.hasUnsavedChanges else { return }
             viewModel?.saveThumbnail()
             Task { _ = await document.save() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
-                guard !document.isClosed, !hostOwnsProjectSave else { return }
+                guard !document.isClosed, !hostOwnsProjectSave, document.hasUnsavedChanges else { return }
                 viewModel?.saveThumbnail()
                 Task { _ = await document.save() }
             }
@@ -2593,7 +2617,9 @@ struct FloeCADEditorView: View {
                                        canvasActions: canvasActions,
                                        buildingWorkspaceActive: buildingWorkspaceActive,
                                        onOpenBuilding: { requestWorkbenchDestination(.building) },
-                                       onOpenMesh: { requestWorkbenchDestination(.mesh) })
+                                       onOpenMesh: { requestWorkbenchDestination(.mesh) },
+                                       manufacturingEnabled: manufacturingMenuAction?.isEnabled,
+                                       onOpenManufacturing: { requestWorkbenchDestination(.manufacturing) })
                     .presentationDetents([.large])
                     .presentationBackgroundInteraction(.disabled)
             }
@@ -2642,6 +2668,8 @@ struct FloeCADEditorView: View {
             showMeshInspector = false
             showBuildingWorkspace = true
         case .mesh: showMeshInspector = true
+        case .manufacturing:
+            if let action = manufacturingMenuAction, action.isEnabled { action.perform() }
         }
     }
 

@@ -21,15 +21,29 @@ struct SketchPointStateOverlay: View {
     private static let constrained = Color(red: 0.20, green: 0.70, blue: 0.35) // green
     private static let locked = Color(red: 0.20, green: 0.48, blue: 0.95)   // blue
 
+    private struct Projection: Identifiable {
+        let marker: EditorViewModel.SketchPointMarker
+        let point: CGPoint
+        var id: String { marker.id }
+    }
+
     var body: some View {
         // Reproject whenever the camera moves.
         let _ = viewModel.cameraEpoch
         if viewModel.mode.isSketching {
+            let circleCenters = viewModel.sketchCircleCenterMarkers
+            let replaced = Set(circleCenters.map { $0.id.replacingOccurrences(of: ":circleCenter", with: ":center") })
+            // Resolve the camera-dependent inputs before SwiftUI looks up the
+            // ForEach children by their stable, model-space marker IDs.
+            let points = viewModel.sketchPointMarkers.compactMap { marker in
+                replaced.contains(marker.id) ? nil : project(marker)
+            }
+            let centers = (viewModel.sketchRectangleCenterMarkers + circleCenters).compactMap(project)
             ZStack(alignment: .topLeading) {
-                ForEach(viewModel.sketchPointMarkers) { marker in
-                    if !viewModel.sketchCircleCenterMarkers.contains(where: { $0.id.replacingOccurrences(of: ":circleCenter", with: ":center") == marker.id }) {
-                        markerView(marker)
-                    }
+                ForEach(points) { item in
+                    glyph(for: item.marker.state, rectangleCorner: item.marker.isRectangleCorner)
+                        .position(item.point)
+                        .accessibilityIdentifier("SketchPointMarker")
                 }
                 if let marker = viewModel.selectedMigratedRectangleCornerMarker,
                    let pt = viewModel.cameraControl?.worldToScreenPoint(SIMD3<Double>(marker.world)) {
@@ -40,21 +54,18 @@ struct SketchPointStateOverlay: View {
                         .position(x: pt.x, y: pt.y)
                         .accessibilityIdentifier("SelectedRectangleCorner")
                 }
-                ForEach(viewModel.sketchRectangleCenterMarkers + viewModel.sketchCircleCenterMarkers) { marker in
-                    if let pt = viewModel.cameraControl?.worldToScreenPoint(SIMD3<Double>(marker.world)) {
-                        Circle().fill(marker.isSelected ? Color.orange : (marker.state == .free ? Self.free : Self.constrained))
-                            .frame(width: 5, height: 5)
-                            .background {
-                                // Native distinguishes the selected movable center
-                                // from a selected locked point even away from hover.
-                                if marker.isSelected && marker.state == .free {
-                                    Circle().fill(Color.orange.opacity(0.25))
-                                        .frame(width: 16, height: 16)
-                                }
+                ForEach(centers) { item in
+                    let marker = item.marker
+                    Circle().fill(marker.isSelected ? Color.orange : (marker.state == .free ? Self.free : Self.constrained))
+                        .frame(width: 5, height: 5)
+                        .background {
+                            if marker.isSelected && marker.state == .free {
+                                Circle().fill(Color.orange.opacity(0.25))
+                                    .frame(width: 16, height: 16)
                             }
-                            .position(x: pt.x, y: pt.y)
-                            .accessibilityIdentifier(marker.id.hasSuffix(":circleCenter") ? "CircleCenterControl" : "RectangleCenterControl")
-                    }
+                        }
+                        .position(item.point)
+                        .accessibilityIdentifier(marker.id.hasSuffix(":circleCenter") ? "CircleCenterControl" : "RectangleCenterControl")
                 }
             }
             // Informational only — must never steal taps from the canvas/gizmo.
@@ -72,14 +83,9 @@ struct SketchPointStateOverlay: View {
         }
     }
 
-    @ViewBuilder
-    private func markerView(_ marker: EditorViewModel.SketchPointMarker) -> some View {
-        // Contract D exposes `world` as SIMD3<Float>; the projector is Double.
-        if let pt = viewModel.cameraControl?.worldToScreenPoint(SIMD3<Double>(marker.world)) {
-            glyph(for: marker.state, rectangleCorner: marker.isRectangleCorner)
-                .position(x: pt.x, y: pt.y)
-                .accessibilityIdentifier("SketchPointMarker")
-        }
+    private func project(_ marker: EditorViewModel.SketchPointMarker) -> Projection? {
+        guard let point = viewModel.cameraControl?.worldToScreenPoint(SIMD3<Double>(marker.world)) else { return nil }
+        return Projection(marker: marker, point: point)
     }
 
     @ViewBuilder

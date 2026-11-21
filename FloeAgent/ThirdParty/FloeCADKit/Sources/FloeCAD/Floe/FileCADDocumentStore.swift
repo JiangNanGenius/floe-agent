@@ -367,6 +367,16 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     // MARK: Read
 
     func read() throws -> Project {
+        // Wait for in-process promotion before resolving the manifest and its
+        // files. Identity checks remain separate for callers holding the gate.
+        CADPackageGate.acquire(packageURL)
+        defer { CADPackageGate.release(packageURL) }
+        return try readWhileHoldingPackageGate()
+    }
+
+    /// The asynchronous facade already owns the package gate before it
+    /// schedules this read on the worker.
+    func readWhileHoldingPackageGate() throws -> Project {
         try read(recoverInterruptedCommit: true)
     }
 
@@ -1283,7 +1293,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
                 let previous = previousURL
                 try fileManager.createDirectory(at: previous, withIntermediateDirectories: true)
-                for name in ["manifest.json", "document.json", "blobs"] {
+                for name in ["blobs", "document.json", "manifest.json"] {
                     let source = rotating.appendingPathComponent(name)
                     guard fileManager.fileExists(atPath: source.path) else { continue }
                     let destination = previous.appendingPathComponent(name)
@@ -1311,7 +1321,9 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
             }
             try CADDocumentFaultInjection.beforeStagedPromotion?()
-            for name in ["manifest.json", "document.json", "blobs"] {
+            // Publish the manifest last. Until then an interrupted promotion
+            // can still be reopened through the verified previous commit.
+            for name in ["blobs", "document.json", "manifest.json"] {
                 let source = staging.appendingPathComponent(name)
                 guard fileManager.fileExists(atPath: source.path) else { continue }
                 let destination = packageURL.appendingPathComponent(name)
@@ -1335,18 +1347,15 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             var recoveryComplete = true
             if fileManager.fileExists(atPath: rotating.path) {
                 let previous = previousURL
-                let previousManifest = previous.appendingPathComponent("manifest.json")
-                if fileManager.fileExists(atPath: previousManifest.path) {
-                    for name in ["manifest.json", "document.json", "blobs"] {
-                        let source = previous.appendingPathComponent(name)
-                        guard fileManager.fileExists(atPath: source.path) else { continue }
-                        let destination = rotating.appendingPathComponent(name)
-                        if fileManager.fileExists(atPath: destination.path) {
-                            try? fileManager.removeItem(at: destination)
-                        }
-                        do { try fileManager.moveItem(at: source, to: destination) }
-                        catch { recoveryComplete = false }
+                for name in ["blobs", "document.json", "manifest.json"] {
+                    let source = previous.appendingPathComponent(name)
+                    guard fileManager.fileExists(atPath: source.path) else { continue }
+                    let destination = rotating.appendingPathComponent(name)
+                    if fileManager.fileExists(atPath: destination.path) {
+                        try? fileManager.removeItem(at: destination)
                     }
+                    do { try fileManager.moveItem(at: source, to: destination) }
+                    catch { recoveryComplete = false }
                 }
                 let newVersions = packageURL.appendingPathComponent("versions", isDirectory: true)
                 let oldVersions = rotating.appendingPathComponent("versions", isDirectory: true)
@@ -1413,13 +1422,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     }
 
     private func restorePrevious() throws {
-        // Only ordinary open calls this method. Identity inspection must not
-        // acquire this gate: cancellation already owns it while it verifies.
-        CADPackageGate.acquire(packageURL)
-        defer { CADPackageGate.release(packageURL) }
-        // A supported writer may have completed between the missing-manifest
-        // observation and acquiring its gate. Read that current commit instead.
-        guard !fileManager.fileExists(atPath: manifestURL.path) else { return }
+        // The ordinary open holds the package gate through recovery and read.
         _ = try verifiedPackage(at: previousURL)
         let parent = packageURL.deletingLastPathComponent()
         let restoring = parent.appendingPathComponent(".\(packageURL.lastPathComponent).recover-\(UUID().uuidString)")

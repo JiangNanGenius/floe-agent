@@ -8,6 +8,7 @@ public struct CAMSimulationWorkbenchView:View {
     @State private var model:CAMPreviewModel
     @State private var columns:NavigationSplitViewVisibility = .all
     @State private var inspector = false
+    @State private var columnsBeforeExpansion: NavigationSplitViewVisibility?
     @State private var displayOptions = false
     @State private var operationInspector = false
     private let autoplay:Bool
@@ -29,6 +30,21 @@ public struct CAMSimulationWorkbenchView:View {
                         Button { model.stop();operationInspector.toggle() } label: { Image(systemName:"slider.horizontal.3").frame(width:44,height:44) }
                             .accessibilityLabel(L("工序与刀具","Operation and tool")).accessibilityIdentifier("cam.preview.operation-details")
                             .disabled(model.operationInspection == nil)
+                        Button {
+                            if let previous = columnsBeforeExpansion {
+                                columns = previous
+                                columnsBeforeExpansion = nil
+                            } else {
+                                columnsBeforeExpansion = columns
+                                operationInspector = false
+                                columns = .detailOnly
+                            }
+                        } label: {
+                            Image(systemName: columnsBeforeExpansion == nil ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                                .frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel(columnsBeforeExpansion == nil ? L("全屏仿真", "Expand simulation") : L("退出全屏", "Exit full screen"))
+                        .accessibilityIdentifier("cam.preview.fullscreen")
                         displayMenu
                         Menu {
                             Button(L("保存仿真","Save simulation"),systemImage:"square.and.arrow.down") { model.save() }.disabled(model.program == nil || model.fileBusy).accessibilityIdentifier("cam.preview.save")

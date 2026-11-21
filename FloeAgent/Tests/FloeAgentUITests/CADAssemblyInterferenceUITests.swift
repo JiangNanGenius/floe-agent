@@ -46,15 +46,9 @@ final class CADAssemblyInterferenceUITests: XCTestCase {
                       "the native CAD tools sheet must open", timeout: 20) else { return }
         expandSheet(named: "CAD Tools")
 
-        // The tools sheet's default mode is the real Assembly panel. Select it
-        // explicitly, then wait for its report to contain the three fixture
-        // occurrences before opening the inspector: the sheet snapshots the
-        // report at presentation.
-        let toolsPanel = app.otherElements["CADWorkbenchToolsPanel"]
-        let assemblySegment = toolsPanel.segmentedControls.firstMatch.buttons["Assembly"].firstMatch
-        if assemblySegment.exists && assemblySegment.isHittable {
-            assemblySegment.tap()
-        }
+        let assembly = app.buttons["CADToolsAssembly"]
+        XCTAssertTrue(assembly.waitForExistence(timeout: 10))
+        assembly.tap()
         let instanceRows = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "CADAssemblyInstanceSelect-"))
         guard waitForCount(instanceRows, 3,

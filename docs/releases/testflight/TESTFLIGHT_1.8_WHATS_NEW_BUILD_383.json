@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在 CAD 草图中平移和缩放，确认跟踪点随图形移动。只查看 3D 模型后退出并重新打开。通过「CAD 工具 → 加工」打开加工入口。把 G-code 或带刀路的 3MF 切换到全屏，切换一层后返回。展开加工预览或仿真并继续查看刀路。在建筑工程内切换二维平面和三维模型。",
+  "en-US": "Pan and zoom a CAD sketch and check that points stay with the geometry. View, close and reopen a 3D CAD model. Open Manufacture from CAD Tools. Expand the G-code or sliced 3MF preview, select another layer, and return. Expand the machining preview or simulation and continue inspecting the toolpath. Switch between the 2D plan and 3D model in a building project."
+}

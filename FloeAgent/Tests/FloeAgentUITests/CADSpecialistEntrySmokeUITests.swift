@@ -150,7 +150,7 @@ import XCTest
         toolbar("HistoryButton","History");XCTAssertTrue(any("HistoryPanel").waitForExistence(timeout:15))
         XCTAssertFalse(any("HistoryRow-Spur gear").exists,"First launch seeds only the existing plate fixture")
         toolbar("HistoryButton","History");gone(any("HistoryPanel"))
-        openTools();let parts=app.segmentedControls.buttons["Parts"].firstMatch;reveal(parts,in:"CADWorkbenchToolsPanel").tap()
+        openTools();let parts=app.buttons["CADToolsParts"].firstMatch;reveal(parts,in:"CADWorkbenchToolsPanel").tap()
         let type=app.segmentedControls.buttons["Spur gear"].firstMatch;reveal(type,in:"CADWorkbenchToolsPanel").tap()
         let create=app.buttons["Create part"].firstMatch;reveal(create,in:"CADWorkbenchToolsPanel");enabled(create);create.tap()
         let select=app.buttons["Select gear"].firstMatch
@@ -163,7 +163,7 @@ import XCTest
         capture("M29 real gear edited through Parts",container:"CADWorkbenchToolsPanel",controls:["CADMechanicalField.module","CADMechanicalStatus"])
         closeTools();gearRows();save();app.terminate()
         launch(["--ui-test-cad-uninstanced","--ui-test-cad-reopen"])
-        gearRows();openTools();reveal(app.segmentedControls.buttons["Parts"].firstMatch,in:"CADWorkbenchToolsPanel").tap()
+        gearRows();openTools();reveal(app.buttons["CADToolsParts"].firstMatch,in:"CADWorkbenchToolsPanel").tap()
         menu("Part",choose:"Spur gear",in:"CADWorkbenchToolsPanel")
         XCTAssertEqual(reveal(app.textFields["CADMechanicalField.module"],in:"CADWorkbenchToolsPanel").value as? String,"2.5")
         XCTAssertTrue(reveal(app.buttons["Select gear"].firstMatch,in:"CADWorkbenchToolsPanel").isEnabled)

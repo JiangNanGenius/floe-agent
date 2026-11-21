@@ -63,9 +63,6 @@ struct BuildingProjectWorkspaceView: View {
                                     },
                                     publishCopy: { receipt, url in
                                         _ = try await PersonalContentService.shared.publishBuildingCopy(receipt, at: url)
-                                    },
-                                    registerIndependentCAD: { handoff in
-                                        _ = try await Self.addToSpace(handoff)
                                     }),
                                   importingNativeDocument: importingNativeDocument,
                                   spaceRecordID: spaceRecordID)
@@ -110,16 +107,5 @@ struct BuildingProjectWorkspaceView: View {
         } catch { assistantError = error.localizedDescription }
     }
 
-    @discardableResult
-    static func addToSpace(_ handoff: BuildingIndependentCADHandoff,
-                           service: PersonalContentService = .shared) async throws -> PersonalContentRecord {
-        let library = try await service.library()
-        let id = AppDesignResultPublicationPort.deterministicUUID("floe.building.delivery|" + handoff.idempotencyKey)
-        let kind: PersonalContentKind = handoff.kind == .twoD ? .cad2D : .cad3D
-        let title = BuildingProjectLocation.sanitized(handoff.title)
-        return try await library.create(kind: kind, title: title, id: id) { directory, _ in
-            try await handoff.copyPackage(to: directory.appendingPathComponent("Document.floecad", isDirectory: true))
-        }
-    }
 }
 #endif

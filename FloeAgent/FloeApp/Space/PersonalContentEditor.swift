@@ -23,6 +23,9 @@ struct PersonalContentEditor: View {
     @State private var fileUsage: PersonalLibraryUsageLease?
     @State private var content: LoadedContent?
     @State private var error: String?
+    @State private var cadRecoveryPreview: CADRecoveryPreview?
+    @State private var presentedCADRecovery: CADRecoveryPreview?
+    @State private var recoveredCADRecord: PersonalContentRecord?
     @State private var showingAssistant = false
     @State private var openedInitialAssistant = false
     @State private var childWork: PersonalContentRecord?
@@ -182,6 +185,7 @@ struct PersonalContentEditor: View {
             openedInitialAssistant = false
             printPreparation = nil; chemistryNotesRequest = nil; chemistryEpoch = UUID()
             cadImportRequest = nil; importedCADRecord = nil
+            cadRecoveryPreview = nil; presentedCADRecovery = nil; recoveredCADRecord = nil
         }
         .sheet(item: $chemistryNotesRequest, onDismiss: { refreshEditor() }) { request in
             NotesChemistryReturnSheet(recordID: request.recordID, projectID: request.projectID, objectID: request.objectID)
@@ -208,6 +212,21 @@ struct PersonalContentEditor: View {
             PersonalCADImportSheet(request: request) { value in
                 importedCADRecord = value; cadImportRequest = nil
             }
+        }
+        .sheet(item: $presentedCADRecovery, onDismiss: {
+            if let recoveredCADRecord { childWork = recoveredCADRecord; self.recoveredCADRecord = nil }
+        }) { preview in
+            CADRecoveryPreviewSheet(preview: preview, mode: .decide, restore: {
+                let generation = presentationGeneration
+                let (restored, result) = try await PersonalCADSessions.restoreCopy(of: record, preview: preview)
+                guard isPresented, generation == presentationGeneration else { throw CancellationError() }
+                recoveredCADRecord = restored
+                return result
+            }, onRestored: { _ in presentedCADRecovery = nil },
+            onClose: { presentedCADRecovery = nil }, onRefresh: {
+                presentedCADRecovery = nil
+                Task { await load() }
+            })
         }
         .sheet(item: $sourceNote, onDismiss: { refreshEditor() }) { value in
             NavigationStack {
@@ -337,6 +356,11 @@ struct PersonalContentEditor: View {
                     ContentUnavailableView {
                         Label(IDELanguageRunText.t("无法打开", "Unable to open"), systemImage: "exclamationmark.triangle")
                     } description: { Text(error) } actions: {
+                        if let cadRecoveryPreview {
+                            Button(IDELanguageRunText.t("查看可恢复的版本", "Review recoverable version")) {
+                                presentedCADRecovery = cadRecoveryPreview
+                            }
+                        }
                         Button(IDELanguageRunText.t("重试", "Retry")) { Task { await load() } }
                     }
                 } else {
@@ -410,6 +434,7 @@ struct PersonalContentEditor: View {
         defer { loading = false }
         let generation = presentationGeneration
         error = nil
+        cadRecoveryPreview = nil
         do {
             let library = try await PersonalContentService.shared.library()
             let value = try await library.resolve(record.id)
@@ -462,7 +487,20 @@ struct PersonalContentEditor: View {
                 try await PersonalMediaFactory.verify(kind: record.kind, id: record.id, directory: value.url)
                 content = .media(value.url)
             case .cad2D, .cad3D:
-                content = .cad(try await PersonalCADSessions.open(id: record.id, directory: value.url))
+                do {
+                    content = .cad(try await PersonalCADSessions.open(id: record.id, directory: value.url))
+                } catch {
+                    let package = value.url.appendingPathComponent("Document.floecad")
+                    if case .damaged(_, let previous) = await FloeCADDocument.recoveryInspection(at: package),
+                       isPresented, presentationGeneration == generation, !Task.isCancelled {
+                        cadRecoveryPreview = previous
+                        self.error = previous == nil
+                            ? IDELanguageRunText.t("CAD 工程文件不完整，找不到可恢复的版本。", "The CAD project is incomplete and has no recoverable version.")
+                            : IDELanguageRunText.t("CAD 工程文件不完整，可以查看上次保存的版本。", "The CAD project is incomplete. You can review the last saved version.")
+                        return
+                    }
+                    throw error
+                }
             case .building:
                 try await PersonalContentService.shared.verify(record)
                 content = .building(value.url)
@@ -592,8 +630,10 @@ struct PersonalContentEditor: View {
         case .cad(let document):
             do { try await CADSimulationSessions.close(document:document) }
             catch { self.error = error.localizedDescription; return }
-            let saved = await document.save()
-            guard saved.succeeded else { error = saved.error; return }
+            if document.hasUnsavedChanges {
+                let saved = await document.save()
+                guard saved.succeeded else { error = saved.error; return }
+            }
             document.close()
         default: break
         }

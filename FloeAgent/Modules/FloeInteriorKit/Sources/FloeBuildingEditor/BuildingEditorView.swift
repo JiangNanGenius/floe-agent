@@ -22,7 +22,6 @@ public struct BuildingEditorHostActions {
     public var encodeDWG: (@MainActor (Data) async throws -> Data)?
     public var encodeIFC: (@MainActor (Data) async throws -> Data)?
     public var publishCopy: (@MainActor (BuildingProjectCopyReceipt, URL) async throws -> Void)?
-    public var registerIndependentCAD: (@MainActor (BuildingIndependentCADHandoff) async throws -> Void)?
 
     public init(requestAssistant:((BuildingEditorToolContext)->Void)?=nil,
                 projectDidMount:((BuildingEditorToolContext)->Void)?=nil,
@@ -31,14 +30,12 @@ public struct BuildingEditorHostActions {
                 previewFile:((URL)->Void)?=nil,
                 encodeDWG: (@MainActor (Data) async throws -> Data)?=nil,
                 encodeIFC: (@MainActor (Data) async throws -> Data)?=nil,
-                publishCopy:(@MainActor (BuildingProjectCopyReceipt, URL) async throws -> Void)?=nil,
-                registerIndependentCAD:(@MainActor (BuildingIndependentCADHandoff) async throws->Void)?=nil) {
+                publishCopy:(@MainActor (BuildingProjectCopyReceipt, URL) async throws -> Void)?=nil) {
         self.requestAssistant=requestAssistant;self.projectDidMount=projectDidMount
         self.beforeDeparture=beforeDeparture
         self.departureEnded=departureEnded;self.didClose=didClose;self.previewFile=previewFile
         self.encodeDWG=encodeDWG;self.encodeIFC=encodeIFC
         self.publishCopy=publishCopy
-        self.registerIndependentCAD=registerIndependentCAD
     }
 }
 
@@ -72,8 +69,7 @@ public struct BuildingEditorView: View {
                 } furniture: {
                     if let furniture=project.furniture {BuildingFurniturePanel(workspace:furniture)}
                 } delivery: {
-                    BuildingDeliveryPanel(project:project,previewFile:host.previewFile,
-                                          registerIndependentCAD:host.registerIndependentCAD)
+                    BuildingDeliveryPanel(project: project, previewFile: host.previewFile)
                 }
                 .id(project.mountID)
             }

@@ -326,10 +326,17 @@ import XCTest
         XCTAssertNotNil(commit); commit?.tap()
         XCTAssertTrue(end.waitForNonExistence(timeout: 20))
         }
-        app.buttons["cad.manufacturing.open"].tap()
+        openCADManufacturingMenu()
         app.buttons["cad.manufacturing.cutting"].tap()
         let next = app.buttons["cad.manufacturing.continue"].firstMatch
         XCTAssertTrue(next.waitForExistence(timeout: 30)); XCTAssertTrue(next.isEnabled); next.tap()
+        let expand = app.buttons["study.preview.fullscreen"].firstMatch
+        XCTAssertTrue(expand.waitForExistence(timeout: 15))
+        expand.tap()
+        XCTAssertEqual(expand.label, "退出全屏")
+        XCTAssertTrue(app.descendants(matching: .any)["manufacturing.viewport"].firstMatch.isHittable)
+        expand.tap()
+        XCTAssertEqual(expand.label, "全屏预览")
         let tools = app.buttons["机床与工程工具"].firstMatch
         revealOwnedCADControl(tools); tools.tap()
         let engineering = app.buttons["research.engineering"].firstMatch
@@ -962,7 +969,7 @@ import XCTest
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout:15));XCTAssertEqual(rows.count,1)
         guard rows.count == 1 else { return };rows.firstMatch.tap()
         XCTAssertTrue(app.navigationBars[ownedTitle].waitForExistence(timeout:20))
-        app.buttons["cad.manufacturing.open"].tap();app.buttons["cad.manufacturing.cutting"].tap()
+        openCADManufacturingMenu();app.buttons["cad.manufacturing.cutting"].tap()
         let next = app.buttons["cad.manufacturing.continue"].firstMatch
         XCTAssertTrue(next.waitForExistence(timeout:30));XCTAssertTrue(next.isEnabled);next.tap()
         let tools = app.buttons["机床与工程工具"].firstMatch
@@ -1031,7 +1038,7 @@ import XCTest
             + "\nNo CAD creation, Apply, calculation, mesh conversion, sculpt or model edit is requested.")
         receipt.name = "Owned CAD menu continuation fixture";receipt.lifetime = .keepAlways;add(receipt)
         FileHandle.standardOutput.write(Data(("FLOE_QA_OWNED_CAD_CONTINUATION|" + ownedTitle + "\n").utf8))
-        app.buttons["cad.manufacturing.open"].tap();app.buttons["cad.manufacturing.cutting"].tap()
+        openCADManufacturingMenu();app.buttons["cad.manufacturing.cutting"].tap()
         let next = app.buttons["cad.manufacturing.continue"].firstMatch
         XCTAssertTrue(next.waitForExistence(timeout: 30));XCTAssertTrue(next.isEnabled);next.tap()
         let stockOpen = app.buttons["study.stock"].firstMatch
@@ -1193,7 +1200,7 @@ import XCTest
         let tools = app.buttons["CADWorkbenchToolsButton"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             title.exists && viewport.exists && viewport.isHittable && viewport.frame.width > 200
-                && tools.exists && tools.isHittable && self.app.buttons["cad.manufacturing.open"].isHittable
+                && tools.exists && tools.isHittable
         }, object: viewport)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed,
             "Require the exact current native CAD and operable viewport, not a covered editor")
@@ -1214,8 +1221,9 @@ import XCTest
         XCTAssertTrue(cadTitle.waitForExistence(timeout: 10));XCTAssertTrue(cadViewport.isHittable)
         let beforeMesh = cadViewport.frame
         app.buttons["CADWorkbenchToolsButton"].tap()
-        let meshTab = app.segmentedControls.containing(.button, identifier: "网格").firstMatch.buttons["网格"]
-        XCTAssertTrue(meshTab.waitForExistence(timeout: 10));meshTab.tap()
+        let mesh = app.buttons["CADMeshInspectorOpen"].firstMatch
+        revealOwnedCADControl(mesh, scrollIdentifier: "CADWorkbenchToolsScroll")
+        mesh.tap()
         let meshCloseButtons = app.buttons.matching(identifier: "CADMeshInspectorClose")
         let meshClose = meshCloseButtons.firstMatch
         XCTAssertTrue(meshClose.waitForExistence(timeout: 15));XCTAssertTrue(meshClose.isHittable)
@@ -1224,7 +1232,7 @@ import XCTest
         // UI20's native recording shows two columns, while the Metal viewport
         // AX node keeps its fullbleed frame. It cannot measure visible width.
         XCTAssertTrue(app.windows.firstMatch.frame.contains(meshClose.frame), "The actual inspector close must be inside the visible app window")
-        XCTAssertTrue(cadTitle.exists);XCTAssertTrue(app.buttons["cad.manufacturing.open"].isHittable)
+        XCTAssertTrue(cadTitle.exists);XCTAssertTrue(app.buttons["CADWorkbenchToolsButton"].isHittable)
         capture("Owned CAD Mesh inspector beside original viewport without conversion or sculpt")
         meshClose.tap();XCTAssertTrue(meshClose.waitForNonExistence(timeout: 10))
         XCTAssertTrue(cadViewport.isHittable);XCTAssertGreaterThanOrEqual(cadViewport.frame.width, beforeMesh.width - 4)
@@ -1238,6 +1246,16 @@ import XCTest
         XCTAssertTrue(viewport.isHittable);XCTAssertGreaterThan(viewport.frame.width, 200);XCTAssertGreaterThan(inspector.frame.width, 280)
         XCTAssertLessThanOrEqual(viewport.frame.maxX, inspector.frame.minX + 4)
     }
+    private func openCADManufacturingMenu() {
+        let tools = app.buttons["CADWorkbenchToolsButton"].firstMatch
+        XCTAssertTrue(tools.waitForExistence(timeout: 10))
+        tools.tap()
+        let entry = app.buttons["cad.manufacturing.open"].firstMatch
+        revealOwnedCADControl(entry, scrollIdentifier: "CADWorkbenchToolsScroll")
+        entry.tap()
+        XCTAssertTrue(app.buttons["cad.manufacturing.printing"].waitForExistence(timeout: 15))
+    }
+
     private func revealOwnedCADControl(_ element: XCUIElement, scrollIdentifier: String? = nil) {
         for _ in 0..<8 {
             if element.exists && element.isHittable { break }
@@ -1697,7 +1715,7 @@ import XCTest
         capture("Native diagram editor tools")
         closeEditor()
         openWorkbench("三维 CAD")
-        app.buttons["cad.manufacturing.open"].tap()
+        openCADManufacturingMenu()
         XCTAssertTrue(app.buttons["cad.manufacturing.printing"].waitForExistence(timeout: 15))
         app.buttons["cad.manufacturing.cutting"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["cad.manufacturing.machine"].firstMatch.waitForExistence(timeout: 15))
@@ -1714,7 +1732,7 @@ import XCTest
         capture("CAD Tools opens native Building on the same document")
         let buildingBack = app.navigationBars["建筑"].buttons.firstMatch
         XCTAssertTrue(buildingBack.exists); buildingBack.tap()
-        app.buttons["CADToolsSheetCloseButton"].tap()
+        XCTAssertFalse(app.buttons["CADToolsSheetCloseButton"].exists)
         closeEditor()
         app.segmentedControls["space.sections"].buttons["工具箱"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["toolbox.home"].firstMatch.waitForExistence(timeout: 20))

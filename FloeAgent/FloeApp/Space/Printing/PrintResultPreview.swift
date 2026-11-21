@@ -24,67 +24,22 @@ struct PrintResultPreview: View {
     @State private var showLower = true
     @State private var playing = false
     @State private var failed = false
+    @State private var showingFullScreen = false
+    @State private var camera = PrintPreviewCamera()
     private var count: Int { gcode?.layers.count ?? resin?.header.layerCount ?? 1 }
     private var index: Int { min(max(0, Int(layer) - 1), max(0, count - 1)) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Group {
-                if let gcode, !gcode.layers.isEmpty {
-                    PrintLayerScene(layers: showLower ? Array(gcode.layers.prefix(index + 1)) : [gcode.layers[index]],
-                        summary: gcode.summary, identity: sceneIdentity, machine: machine)
-                        .accessibilityIdentifier("printing.slicedPreview")
-                } else if let raster {
-                    ZStack { Color.black; Image(decorative: raster, scale: 1).resizable().interpolation(.none).scaledToFit().padding(20) }
-                } else if failed {
-                    ContentUnavailableView(IDELanguageRunText.t("未能读取切片预览", "Unable to read sliced preview"), systemImage: "square.stack.3d.up")
-                } else { ProgressView() }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            VStack(spacing: 8) {
-                HStack {
-                    Button { playing.toggle() } label: { Image(systemName: playing ? "pause.fill" : "play.fill").frame(width: 44, height: 44) }
-                        .accessibilityLabel(playing ? IDELanguageRunText.t("暂停逐层播放", "Pause layer playback") : IDELanguageRunText.t("播放逐层预览", "Play layers"))
-                    Button { if layer < Double(count) { layer += 1 } } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
-                        .accessibilityLabel(IDELanguageRunText.t("下一层", "Next layer"))
-                        .accessibilityIdentifier("printing.layer.next")
-                        .disabled(layer >= Double(count))
-                    Text(IDELanguageRunText.t("层", "Layer") + " \(index + 1) / \(count)").monospacedDigit()
-                        .accessibilityIdentifier("printing.layer.current")
-                    if plates.count > 1 {
-                        Menu {
-                            ForEach(plates, id: \.plateID) { entry in
-                                Button(entry.plateID == selectedPlate
-                                    ? "✓ \(IDELanguageRunText.t("盘", "Plate")) \(entry.plateID)"
-                                    : "\(IDELanguageRunText.t("盘", "Plate")) \(entry.plateID)") { selectedPlate = entry.plateID }
-                            }
-                        } label: {
-                            Label(IDELanguageRunText.t("盘", "Plate") + " \(selectedPlate)/\(plates.count)", systemImage: "rectangle.3.group")
-                                .frame(minHeight: 44)
-                        }
-                        .accessibilityIdentifier("printing.platePicker")
-                    }
-                    Spacer()
-                    if let gcode { Text(String(format: "Z %.2f mm", gcode.layers[index].z)).monospacedDigit() }
-                    if gcode != nil { Toggle(IDELanguageRunText.t("显示下层", "Show lower layers"), isOn: $showLower).fixedSize() }
-                }
-                Slider(value: $layer, in: 1...Double(max(2, count)), step: 1)
-                    .accessibilityLabel(IDELanguageRunText.t("当前切片层", "Current sliced layer"))
-                    .accessibilityIdentifier("printing.layerSlider")
-                if let gcode {
-                    HStack {
-                        Label(IDELanguageRunText.t("外壁", "Walls"), systemImage: "circle.fill").foregroundStyle(.blue)
-                        Label(IDELanguageRunText.t("填充", "Infill"), systemImage: "circle.fill").foregroundStyle(.teal)
-                        Label(IDELanguageRunText.t("支撑", "Support"), systemImage: "circle.fill").foregroundStyle(.purple)
-                        Spacer()
-                        Text(IDELanguageRunText.t("耗材", "Filament") + String(format: " %.2f m", gcode.summary.filamentMM / 1_000))
-                    }.font(.caption)
-                    let visibleCount = (showLower ? Array(gcode.layers.prefix(index + 1)) : [gcode.layers[index]]).reduce(0) { $0 + $1.segments.count }
-                    if gcode.truncated || visibleCount > 50_000 {
-                        Text(IDELanguageRunText.t("当前视图省略了部分路径；导出文件保留完整结果。", "Some paths are omitted from this view; the export retains the complete result.")).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }.padding(.horizontal).padding(.bottom, 8).background(.bar)
+        Group {
+            if showingFullScreen {
+                Color(uiColor: .systemBackground).accessibilityHidden(true)
+            } else {
+                preview(expanded: false)
+            }
+        }
+        .fullScreenCover(isPresented: $showingFullScreen) {
+            preview(expanded: true)
+                .background(Color(uiColor: .systemBackground))
         }
         .id(url.absoluteString)
         .task(id: "load-\(url.absoluteString)-\(selectedPlate)") {
@@ -157,6 +112,89 @@ struct PrintResultPreview: View {
         }
     }
 
+    private func preview(expanded: Bool) -> some View {
+        let pathLayers = gcode.map { preview in
+            showLower ? Array(preview.layers.prefix(index + 1)) : Array(preview.layers.dropFirst(index).prefix(1))
+        } ?? []
+        return VStack(spacing: 0) {
+            Group {
+                if let gcode, !pathLayers.isEmpty {
+                    PrintLayerScene(layers: pathLayers,
+                        summary: gcode.summary, identity: sceneIdentity, machine: machine, camera: camera, expanded: expanded)
+                        .accessibilityIdentifier("printing.slicedPreview")
+                } else if let raster {
+                    ZStack { Color.black; Image(decorative: raster, scale: 1).resizable().interpolation(.none).scaledToFit().padding(20) }
+                } else if failed {
+                    ContentUnavailableView(IDELanguageRunText.t("未能读取切片预览", "Unable to read sliced preview"), systemImage: "square.stack.3d.up")
+                } else { ProgressView() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if expanded || gcode != nil || raster != nil {
+                    Button {
+                        camera.capture(identity: sceneIdentity, expanded: expanded)
+                        showingFullScreen = !expanded
+                    } label: {
+                        Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                            .frame(width: 44, height: 44)
+                            .background(.regularMaterial, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(expanded ? IDELanguageRunText.t("退出全屏", "Exit full screen") : IDELanguageRunText.t("全屏预览", "Full-screen preview"))
+                    .accessibilityIdentifier(expanded ? "printing.preview.collapse" : "printing.preview.expand")
+                    .padding(12)
+                }
+            }
+            Divider()
+            VStack(spacing: 8) {
+                HStack {
+                    Button { playing.toggle() } label: { Image(systemName: playing ? "pause.fill" : "play.fill").frame(width: 44, height: 44) }
+                        .accessibilityLabel(playing ? IDELanguageRunText.t("暂停逐层播放", "Pause layer playback") : IDELanguageRunText.t("播放逐层预览", "Play layers"))
+                    Button { if layer < Double(count) { layer += 1 } } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
+                        .accessibilityLabel(IDELanguageRunText.t("下一层", "Next layer"))
+                        .accessibilityIdentifier("printing.layer.next")
+                        .disabled(layer >= Double(count))
+                    Text(IDELanguageRunText.t("层", "Layer") + " \(index + 1) / \(count)").monospacedDigit()
+                        .accessibilityIdentifier("printing.layer.current")
+                    if plates.count > 1 {
+                        Menu {
+                            ForEach(plates, id: \.plateID) { entry in
+                                Button(entry.plateID == selectedPlate
+                                    ? "✓ \(IDELanguageRunText.t("盘", "Plate")) \(entry.plateID)"
+                                    : "\(IDELanguageRunText.t("盘", "Plate")) \(entry.plateID)") { selectedPlate = entry.plateID }
+                            }
+                        } label: {
+                            Label(IDELanguageRunText.t("盘", "Plate") + " \(selectedPlate)/\(plates.count)", systemImage: "rectangle.3.group")
+                                .frame(minHeight: 44)
+                        }
+                        .accessibilityIdentifier("printing.platePicker")
+                    }
+                    Spacer()
+                    if let layer = pathLayers.last { Text(String(format: "Z %.2f mm", layer.z)).monospacedDigit() }
+                }
+                Slider(value: $layer, in: 1...Double(max(2, count)), step: 1)
+                    .accessibilityLabel(IDELanguageRunText.t("当前切片层", "Current sliced layer"))
+                    .accessibilityIdentifier("printing.layerSlider")
+                if let gcode {
+                    Toggle(IDELanguageRunText.t("显示下层", "Show lower layers"), isOn: $showLower)
+                        .font(.subheadline)
+                    ScrollView(.horizontal) {
+                        HStack {
+                            Label(IDELanguageRunText.t("外壁", "Walls"), systemImage: "circle.fill").foregroundStyle(.blue)
+                            Label(IDELanguageRunText.t("填充", "Infill"), systemImage: "circle.fill").foregroundStyle(.teal)
+                            Label(IDELanguageRunText.t("支撑", "Support"), systemImage: "circle.fill").foregroundStyle(.purple)
+                            Text(IDELanguageRunText.t("耗材", "Filament") + String(format: " %.2f m", gcode.summary.filamentMM / 1_000))
+                        }.font(.caption)
+                    }.scrollIndicators(.hidden)
+                    let visibleCount = pathLayers.reduce(0) { $0 + $1.segments.count }
+                    if gcode.truncated || visibleCount > 50_000 {
+                        Text(IDELanguageRunText.t("当前视图省略了部分路径；导出文件保留完整结果。", "Some paths are omitted from this view; the export retains the complete result.")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }.padding(.horizontal).padding(.bottom, 8).background(.bar)
+        }
+    }
+
     /// Cache identity for the scene: full source URL and plate. Sliding the
     /// layer control never resets the cached layer nodes.
     private var sceneIdentity: String { "\(url.absoluteString)#\(selectedPlate)" }
@@ -171,11 +209,38 @@ private enum LoadResult {
     case noPlates
 }
 
+/// Holds only the active viewport and the camera at a presentation change.
+private final class PrintPreviewCamera {
+    private weak var viewport: SCNView?
+    private var activeIdentity: String?
+    private var activeExpanded = false
+    private var saved: (identity: String, transform: SCNMatrix4, target: SCNVector3)?
+
+    func attach(_ view: SCNView, identity: String, expanded: Bool) {
+        viewport = view
+        activeIdentity = identity
+        activeExpanded = expanded
+        if let saved, saved.identity == identity {
+            view.pointOfView?.transform = saved.transform
+            view.defaultCameraController.target = saved.target
+        }
+        saved = nil
+    }
+
+    func capture(identity: String, expanded: Bool) {
+        guard activeIdentity == identity, activeExpanded == expanded,
+              let viewport, let pointOfView = viewport.pointOfView else { return }
+        saved = (identity, pointOfView.transform, viewport.defaultCameraController.target)
+    }
+}
+
 private struct PrintLayerScene: UIViewRepresentable {
     let layers: [PrintPathLayer]
     let summary: GCodeSummary
     let identity: String
     let machine: PrintMachineConfiguration?
+    let camera: PrintPreviewCamera
+    let expanded: Bool
     static let maximumRenderedSegments = 50_000
 
     final class Coordinator {
@@ -215,6 +280,7 @@ private struct PrintLayerScene: UIViewRepresentable {
             view.scene = scene
             view.pointOfView = camera
             view.defaultCameraController.target = target
+            self.camera.attach(view, identity: identity, expanded: expanded)
         }
         guard let scene = view.scene else { return }
         let visibleIds = layers.map(\.id)

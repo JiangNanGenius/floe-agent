@@ -149,12 +149,19 @@ public final class FloeCADDocument {
     /// Package reading (JSON decode + blob file I/O) runs off the main actor.
     public static func open(at url: URL) async throws -> FloeCADDocument {
         let store = FileCADDocumentStore(packageURL: url)
+        await CADPackageGate.acquireAsync(url)
+        defer { CADPackageGate.release(url) }
+        try Task.checkCancellation()
         let project = try await Task.detached(priority: .userInitiated) {
-            try store.read()
+            try Self.readForOpen(store)
         }.value
         let context = CADModelContext(project: project, store: store)
         let session = DocumentSession(project: project, modelContext: context)
         return FloeCADDocument(url: url, project: project, store: store, session: session)
+    }
+
+    private nonisolated static func readForOpen(_ store: FileCADDocumentStore) throws -> Project {
+        try store.readWhileHoldingPackageGate()
     }
 
     /// Verified committed identity of a package on disk WITHOUT opening a

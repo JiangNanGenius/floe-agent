@@ -6,7 +6,6 @@ import FloeBuildingCAD
 struct BuildingDeliveryPanel:View {
     @Bindable var project:BuildingEditorProjectSession
     let previewFile:((URL)->Void)?
-    let registerIndependentCAD:(@MainActor (BuildingIndependentCADHandoff) async throws->Void)?
     @Environment(\.locale) private var locale
     private func copy(_ zh:String,_ en:String)->String {locale.language.languageCode?.identifier=="zh" ? zh:en}
     var body:some View {
@@ -32,7 +31,7 @@ struct BuildingDeliveryPanel:View {
                 }
             }.disabled(delivery.busy || project.busy)
             Section(copy("整工程与选定图纸","Whole project and selected drawing")) {
-                Button(copy("导出整工程三维项目","Export whole 3D project")){delivery.exportWholeProject(includeSelectedPage:false)}
+                Button(copy("导出三维模型","Export 3D model")){delivery.exportWholeProject(includeSelectedPage:false)}
                     .accessibilityIdentifier("building.delivery.project3d")
                 if delivery.projectPages.isEmpty {
                     Text(copy("在模型的图纸工作台创建图纸后，可导出对应的二维项目。","Create a page in the model drawing workbench to export its 2D project."))
@@ -42,7 +41,7 @@ struct BuildingDeliveryPanel:View {
                         Text(copy("请选择","Choose a drawing")).tag(Optional<UUID>.none)
                         ForEach(delivery.projectPages){Text($0.title).tag(Optional($0.id))}
                     }
-                    Button(copy("导出所选图纸的二维项目及三维副本","Export selected drawing as 2D and copy the 3D project")){delivery.exportWholeProject(includeSelectedPage:true)}
+                    Button(copy("导出所选二维图纸和三维模型","Export selected 2D drawing and 3D model")){delivery.exportWholeProject(includeSelectedPage:true)}
                         .disabled(delivery.selectedProjectPageID==nil).accessibilityIdentifier("building.delivery.project2d")
                     Text(copy("二维项目使用图纸坐标和纸面毫米；模型关联与格式损失记在成果范围中。","The 2D project uses drawing coordinates and paper millimetres. Output scope records model links and format losses."))
                         .font(.caption).foregroundStyle(.secondary)
@@ -71,17 +70,6 @@ struct BuildingDeliveryPanel:View {
                                     Button {previewFile(url)} label:{Label(file.relativePath,systemImage:"doc.richtext")}
                                 } else {Text(file.relativePath)}
                                 Spacer()
-                                if let registerIndependentCAD,BuildingIndependentCADHandoff.kind(for:file) != nil {
-                                    Button {
-                                        delivery.registerIndependentProject(record:record,file:file,
-                                            projectID:project.projectID,using:registerIndependentCAD)
-                                    } label: {
-                                        Label(delivery.isRegistered(record:record,file:file)
-                                            ? copy("已添加","Added"):copy("添加到空间","Add to Space"),
-                                              systemImage:delivery.isRegistered(record:record,file:file) ? "checkmark.circle":"square.on.square")
-                                    }.disabled(delivery.busy || project.busy || delivery.isRegistered(record:record,file:file))
-                                        .accessibilityIdentifier("building.delivery.addToSpace."+file.role)
-                                }
                                 ShareLink(item:url){Image(systemName:"square.and.arrow.up")}
                                     .accessibilityLabel(copy("分享 ","Share ")+file.relativePath)
                             }

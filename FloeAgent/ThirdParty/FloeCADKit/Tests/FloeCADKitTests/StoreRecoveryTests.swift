@@ -14,6 +14,23 @@ import XCTest
 import UIKit
 @testable import FloeCAD
 
+private final class MeshPromotionFileManager: FileManager, @unchecked Sendable {
+    let arrived = XCTestExpectation(description: "the staged mesh directory is ready to move")
+    let resume = DispatchSemaphore(value: 0)
+
+    override func moveItem(at source: URL, to destination: URL) throws {
+        if source.lastPathComponent == "blobs",
+           source.deletingLastPathComponent().lastPathComponent.contains(".staging-"),
+           destination.deletingLastPathComponent().pathExtension == "floecad" {
+            arrived.fulfill()
+            guard resume.wait(timeout: .now() + 10) == .success else {
+                throw NSError(domain: "FloeCADTests", code: 1)
+            }
+        }
+        try super.moveItem(at: source, to: destination)
+    }
+}
+
 @MainActor
 final class StoreRecoveryTests: XCTestCase {
 
@@ -432,6 +449,43 @@ final class StoreRecoveryTests: XCTestCase {
     /// The in-process package gate serializes every supported writer with the
     /// cancellation route's verify→delete critical section: a commit started
     /// while the gate is held cannot land until it is released.
+    func testOpenWaitsForMeshAndManifestFromSameCommit() async throws {
+        let url = workDir.appendingPathComponent("ReopenDuringSave.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Reopen during save")
+        addBox(document, size: 4)
+        let previous = await document.save()
+        XCTAssertTrue(previous.succeeded)
+        document.close()
+
+        let files = MeshPromotionFileManager()
+        let store = FileCADDocumentStore(packageURL: url, fileManager: files)
+        let project = try store.readWithoutRecovery()
+        project.name = "After promotion"
+        let context = CADModelContext(project: project, store: store)
+        let session = DocumentSession(project: project, modelContext: context)
+        let writer = FloeCADDocument.make(url: url, project: project, store: store, session: session)
+        let openCompleted = DispatchSemaphore(value: 0)
+        let saving = Task { await writer.save() }
+        await fulfillment(of: [files.arrived], timeout: 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.appendingPathComponent("manifest.json").path),
+                       "the root must not publish a new manifest before its mesh directory")
+        let opening = Task {
+            defer { openCompleted.signal() }
+            return try await FloeCADDocument.open(at: url)
+        }
+        // Give the independent reader a chance to enter during real promotion.
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(openCompleted.wait(timeout: .now()), .timedOut)
+        files.resume.signal()
+        let committed = await saving.value
+        XCTAssertTrue(committed.succeeded, committed.error ?? "")
+        let reopened = try await opening.value
+        XCTAssertEqual(reopened.revision, committed.revision)
+        XCTAssertEqual(reopened.contentSHA256, committed.contentSHA256)
+        reopened.close()
+        writer.close()
+    }
+
     func testPackageGateSerializesSupportedWriters() async throws {
         let url = workDir.appendingPathComponent("Gate.floecad")
         let document = try await FloeCADDocument.create(at: url, name: "Gate")

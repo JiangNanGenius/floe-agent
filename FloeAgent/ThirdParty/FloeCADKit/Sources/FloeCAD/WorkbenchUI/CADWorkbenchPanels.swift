@@ -351,89 +351,127 @@ struct PanelSection<Content: View>: View {
 struct CADWorkbenchToolsPanel: View {
     let document: FloeCADDocument
     @Bindable var viewModel: EditorViewModel
-    /// Host-injected Canvas actions; nil in standalone/qualification hosts.
     var canvasActions: CADCanvasActions? = nil
     var buildingWorkspaceActive = false
     let onOpenBuilding: () -> Void
     let onOpenMesh: () -> Void
+    let manufacturingEnabled: Bool?
+    let onOpenManufacturing: () -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var mode = 0
+    @Environment(\.locale) private var locale
     @State private var isCanvasActionRunning = false
     @State private var canvasMessage: String?
 
     var body: some View {
-        // NavigationStack gives the sheet an explicit Close control.
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    NavigationLink {
-                        ScrollView { CADSceneObjectsPanel(document: document, viewModel: viewModel).padding(16) }
-                            .navigationTitle(FloeCADStrings.text("cad.scene.objects", "Objects"))
-                    } label: {
-                        Label(FloeCADStrings.text("cad.scene.objects", "Objects"), systemImage: "list.bullet.indent")
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    }
-                    .accessibilityIdentifier("CADSceneObjectsOpen")
-                    NavigationLink {
-                        ScrollView { CADSpherePhysicsPanel(document: document).padding(16) }
-                            .navigationTitle(FloeCADStrings.text("cad.physics.title", "Sphere physics"))
-                    } label: {
-                        Label(FloeCADStrings.text("cad.physics.title", "Sphere physics"), systemImage: "circle.hexagongrid")
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    }
-                    .accessibilityIdentifier("CADSpherePhysicsOpen")
-                    NavigationLink {
-                        ScrollView { CADRiggingPanel(document:document).padding(16) }
-                            .navigationTitle(FloeCADStrings.text("cad.rig.title","Rig and shape keys"))
-                    } label: { Label(FloeCADStrings.text("cad.rig.title","Rig and shape keys"),systemImage:"figure.stand").frame(maxWidth:.infinity,minHeight:44,alignment:.leading) }
-                    .accessibilityIdentifier("CADRigOpen")
-                    if !buildingWorkspaceActive {
-                        Button(action: onOpenBuilding) {
-                            Label(FloeCADStrings.text("cad.building.defaultName", "Building"), systemImage: "building.2")
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                VStack(alignment: .leading, spacing: 20) {
+                    toolSection(title("设计", "Design")) {
+                        if !buildingWorkspaceActive {
+                            Button(action: onOpenBuilding) {
+                                toolRow(FloeCADStrings.text("cad.building.defaultName", "Building"), icon: "building.2", opensPanel: true)
+                            }.accessibilityIdentifier("CADBuildingOpen")
                         }
-                        .accessibilityIdentifier("CADBuildingOpen")
+                        NavigationLink {
+                            toolPage(FloeCADStrings.text("cad.workbench.panel.assembly", "Assembly")) {
+                                CADAssemblyPanelView(document: document, viewModel: viewModel)
+                            }
+                        } label: { toolRow(FloeCADStrings.text("cad.workbench.panel.assembly", "Assembly"), icon: "square.stack.3d.up", opensPanel: true) }
+                            .accessibilityIdentifier("CADToolsAssembly")
+                        NavigationLink {
+                            toolPage(FloeCADStrings.text("cad.workbench.panel.drawing", "Drawings")) {
+                                CADDrawingPanelView(document: document, viewModel: viewModel)
+                            }
+                        } label: { toolRow(FloeCADStrings.text("cad.workbench.panel.drawing", "Drawings"), icon: "doc.text", opensPanel: true) }
+                            .accessibilityIdentifier("CADToolsDrawings")
+                        NavigationLink {
+                            toolPage(FloeCADStrings.text("cad.mechanical.tab", "Parts")) {
+                                CADMechanicalPanel(document: document, viewModel: viewModel)
+                            }
+                        } label: { toolRow(FloeCADStrings.text("cad.mechanical.tab", "Parts"), icon: "gearshape", opensPanel: true) }
+                            .accessibilityIdentifier("CADToolsParts")
+                        if let manufacturingEnabled {
+                            Button(action: onOpenManufacturing) {
+                                toolRow(title("加工", "Manufacture"), icon: "gearshape.2", opensPanel: true)
+                            }
+                            .disabled(!manufacturingEnabled)
+                            .accessibilityIdentifier("cad.manufacturing.open")
+                        }
                     }
-                    Picker("", selection: $mode) {
-                        Text(FloeCADStrings.label("cad.workbench.panel.assembly", "Assembly")).tag(0)
-                        Text(FloeCADStrings.label("cad.workbench.panel.drawing", "Drawings")).tag(1)
-                        Text(FloeCADStrings.label("cad.workbench.panel.script", "ShapeScript")).tag(2)
-                        Text(FloeCADStrings.label("cad.workbench.panel.mesh", "Mesh")).tag(3)
-                        Text(FloeCADStrings.label("cad.mechanical.tab", "Parts")).tag(4)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: .infinity)
-                    .onChange(of: mode) { _, value in if value == 3 { onOpenMesh() } }
-                    if canvasActions != nil {
-                        canvasSection
-                    }
-                    switch mode {
-                    case 0: CADAssemblyPanelView(document: document, viewModel: viewModel)
-                    case 1: CADDrawingPanelView(document: document, viewModel: viewModel)
-                    case 2: CADScriptPanelView(document: document)
-                    case 3:
+                    toolSection(title("模型与场景", "Model and scene")) {
                         Button(action: onOpenMesh) {
-                            Label(FloeCADStrings.text("cad.workbench.panel.mesh", "Mesh"), systemImage: "sidebar.right")
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            toolRow(FloeCADStrings.text("cad.workbench.panel.mesh", "Mesh"), icon: "point.3.connected.trianglepath.dotted", opensPanel: true)
                         }.accessibilityIdentifier("CADMeshInspectorOpen")
-                    default: CADMechanicalPanel(document: document, viewModel: viewModel)
+                        NavigationLink {
+                            toolPage(FloeCADStrings.text("cad.scene.objects", "Objects")) {
+                                CADSceneObjectsPanel(document: document, viewModel: viewModel)
+                            }
+                        } label: { toolRow(FloeCADStrings.text("cad.scene.objects", "Objects"), icon: "list.bullet.indent", opensPanel: true) }
+                            .accessibilityIdentifier("CADSceneObjectsOpen")
+                        NavigationLink {
+                            toolPage(FloeCADStrings.text("cad.physics.title", "Sphere physics")) {
+                                CADSpherePhysicsPanel(document: document)
+                            }
+                        } label: { toolRow(FloeCADStrings.text("cad.physics.title", "Sphere physics"), icon: "circle.hexagongrid", opensPanel: true) }
+                            .accessibilityIdentifier("CADSpherePhysicsOpen")
+                        NavigationLink {
+                            toolPage(FloeCADStrings.text("cad.rig.title", "Rig and shape keys")) {
+                                CADRiggingPanel(document: document)
+                            }
+                        } label: { toolRow(FloeCADStrings.text("cad.rig.title", "Rig and shape keys"), icon: "figure.stand", opensPanel: true) }
+                            .accessibilityIdentifier("CADRigOpen")
+                        NavigationLink {
+                            toolPage(FloeCADStrings.text("cad.workbench.panel.script", "ShapeScript")) {
+                                CADScriptPanelView(document: document)
+                            }
+                        } label: { toolRow(FloeCADStrings.text("cad.workbench.panel.script", "ShapeScript"), icon: "chevron.left.forwardslash.chevron.right", opensPanel: true) }
+                            .accessibilityIdentifier("CADToolsScript")
                     }
+                    if canvasActions != nil { canvasSection }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(16)
             }
             .accessibilityIdentifier("CADWorkbenchToolsScroll")
             .navigationTitle(FloeCADStrings.text("cad.workbench.tools", "CAD Tools"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(FloeCADStrings.label("cad.ui.common.done", "Done")) { dismiss() }
+                    Button(FloeCADStrings.text("cad.ui.common.done", "Done")) { dismiss() }
                         .accessibilityIdentifier("CADToolsSheetCloseButton")
                 }
             }
         }
         .accessibilityIdentifier("CADWorkbenchToolsPanel")
+    }
+
+    private func title(_ zh: String, _ en: String) -> String {
+        locale.language.languageCode?.identifier == "zh" ? zh : en
+    }
+
+    private func toolSection<Rows: View>(_ title: String, @ViewBuilder rows: () -> Rows) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            VStack(spacing: 2, content: rows)
+                .buttonStyle(.plain)
+                .padding(.vertical, 4)
+                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+
+    private func toolRow(_ title: String, icon: String, opensPanel: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).foregroundStyle(Color.accentColor).frame(width: 24)
+            Text(title)
+            Spacer()
+            if opensPanel { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .contentShape(.rect)
+    }
+
+    private func toolPage<Page: View>(_ title: String, @ViewBuilder page: () -> Page) -> some View {
+        ScrollView { page().padding(16) }.navigationTitle(title)
     }
 
     /// The Canvas entry path, visible in the same panel the other CAD tools

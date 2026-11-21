@@ -24,12 +24,11 @@ struct CADManufacturingEntry: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.cadWorkbenchTransientlyCovered, alreadyCovered || presented)
-            .toolbar {
-                if offered { Button(IDELanguageRunText.t("加工", "Manufacture"), systemImage: "gearshape.2") { presented = true }
-                    .disabled(!available || document.isClosed || document.isReadOnly)
-                    .accessibilityIdentifier("cad.manufacturing.open") }
-            }
-            .sheet(isPresented: $presented, onDismiss: {
+            .environment(\.cadManufacturingMenuAction, offered ? CADManufacturingMenuAction(
+                isEnabled: available && !document.isClosed && !document.isReadOnly,
+                perform: { presented = true }
+            ) : nil)
+            .fullScreenCover(isPresented: $presented, onDismiss: {
                 let action = afterClose; afterClose = nil
                 if action == .printing { onPreparePrint() }
                 else if action == .assistant { onAssistant?() }

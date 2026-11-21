@@ -113,8 +113,19 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
         layer.adjust(toNormalizedSliderPosition: 0.5)
         let middle = NSPredicate(format: "label MATCHES %@", ".* (5[0-9]|6[0-5]) / 114")
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: middle, object: current)], timeout: 10), .completed)
+        let selectedLayer = current.label
+        app.buttons["printing.preview.expand"].tap()
+        let collapse = app.buttons["printing.preview.collapse"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 10))
+        XCTAssertEqual(current.label, selectedLayer)
+        app.buttons["printing.layer.next"].tap()
+        let nextLayer = current.label
+        XCTAssertNotEqual(nextLayer, selectedLayer)
+        collapse.tap()
+        XCTAssertTrue(app.buttons["printing.preview.expand"].waitForExistence(timeout: 10))
+        XCTAssertEqual(current.label, nextLayer)
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        screenshot.name = "Workspace · Bambu plate, middle layer"
+        screenshot.name = "Workspace · Bambu plate, returned from full screen"
         screenshot.lifetime = .keepAlways
         add(screenshot)
     }

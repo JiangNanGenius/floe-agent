@@ -335,6 +335,17 @@ public nonisolated struct CADRecoveryRestoreResult: Sendable, Equatable {
     /// The same proof-based report the user reviewed. The source fingerprint
     /// matched, so this description still applies to the restored copy.
     public var report: CADRecoveryReport
+
+    public init(packageURL: URL, revision: Int, contentSHA256: String, modelSHA256: String?,
+                sourceURL: URL, sourceFingerprint: String, report: CADRecoveryReport) {
+        self.packageURL = packageURL
+        self.revision = revision
+        self.contentSHA256 = contentSHA256
+        self.modelSHA256 = modelSHA256
+        self.sourceURL = sourceURL
+        self.sourceFingerprint = sourceFingerprint
+        self.report = report
+    }
 }
 
 // MARK: - Errors

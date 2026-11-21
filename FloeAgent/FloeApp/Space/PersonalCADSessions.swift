@@ -25,6 +25,26 @@ import FloeCAD
         CADDrawingModelBridge.configure(value)
         documents[id] = value; return value
     }
+    static func restoreCopy(of record: PersonalContentRecord, preview: CADRecoveryPreview) async throws
+        -> (PersonalContentRecord, CADRecoveryRestoreResult) {
+        let library = try await PersonalContentService.shared.library()
+        let source = try await library.resolve(record.id)
+        let use = try PersonalLibraryFileActions.acquireUse(id: record.id, directory: source.url)
+        defer { use.release() }
+        guard source.url.appendingPathComponent("Document.floecad").standardizedFileURL
+                == preview.sourceURL.standardizedFileURL else { throw PersonalContentError.changedDocument }
+        let title = String(record.title.prefix(64)) + " " + IDELanguageRunText.t("恢复副本", "Recovered copy")
+        let restored = try await library.create(kind: record.kind, title: title, in: source.record.folders) { directory, _ in
+            _ = try await FloeCADDocument.restorePreviousCopy(preview, to: directory.appendingPathComponent("Document.floecad"))
+        }
+        let package = try await library.resolve(restored.id).url.appendingPathComponent("Document.floecad")
+        guard let identity = await FloeCADDocument.storedIdentity(at: package) else { throw PersonalContentError.changedDocument }
+        let result = CADRecoveryRestoreResult(packageURL: package, revision: identity.revision,
+            contentSHA256: identity.contentSHA256, modelSHA256: identity.modelSHA256,
+            sourceURL: preview.sourceURL, sourceFingerprint: preview.sourceFingerprint, report: preview.report)
+        return (restored, result)
+    }
+
     /// Read-only import snapshots must not ignore unsaved work or change a
     /// source editor's ownership. No open/close/save is performed here.
     static func requireSavedSketchSource(id: UUID, directory: URL,

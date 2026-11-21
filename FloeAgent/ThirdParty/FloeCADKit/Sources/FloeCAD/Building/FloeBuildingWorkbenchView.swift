@@ -28,6 +28,7 @@ public struct FloeBuildingWorkbenchView: View {
     let document: FloeCADDocument
     let incomingPlan: CADSketchTransferEnvelope?
     let hostOwnsProjectSave: Bool
+    let offersModelView: Bool
     let onProfessionalRequest: ((CADBuildingProfessionalAction) -> Void)?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.cadBuildingProfessionalPresenter) private var professionalPresenter
@@ -49,10 +50,11 @@ public struct FloeBuildingWorkbenchView: View {
     @State private var fileImportGeneration=UUID()
 
     public init(document: FloeCADDocument, incomingPlan: CADSketchTransferEnvelope? = nil,
-                hostOwnsProjectSave: Bool = false,
+                hostOwnsProjectSave: Bool = false, offersModelView: Bool = true,
                 onProfessionalRequest: ((CADBuildingProfessionalAction) -> Void)? = nil) {
         self.document=document; self.incomingPlan=incomingPlan; self.onProfessionalRequest=onProfessionalRequest
         self.hostOwnsProjectSave=hostOwnsProjectSave
+        self.offersModelView=offersModelView
     }
     private var floor: CADBuildingStorey { model.storeys.first { $0.id == floorID } ?? model.storeys[0] }
     private var elements: [CADBuildingElement] { model.elements.filter { $0.storeyID == floor.id } }
@@ -240,7 +242,7 @@ public struct FloeBuildingWorkbenchView: View {
         Picker(text("workspace", "Workspace"), selection: modeSelection) {
             Text(text("plan", "Plan")).tag(Mode.plan)
             Text(CAD2DDraftingText.text("二维 CAD", "2D CAD")).tag(Mode.drafting)
-            Text(text("model", "Model")).tag(Mode.model)
+            if offersModelView { Text(text("model", "Model")).tag(Mode.model) }
             Text(text("drawings", "Drawings")).tag(Mode.drawings)
         }.pickerStyle(.segmented).accessibilityIdentifier("building.mode")
     }
