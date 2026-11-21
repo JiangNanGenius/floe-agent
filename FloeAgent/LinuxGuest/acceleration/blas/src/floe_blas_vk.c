@@ -3,9 +3,8 @@
  * Headless Vulkan compute backend for the Floe guest BLAS provider.
  *
  * The backend intentionally has no surface, swapchain or display dependency.
- * It opens the standard loader, accepts only a non-CPU device whose reported
- * name contains "Venus" (the verified virtio-gpu -> virglrenderer -> MoltenVK
- * path), caches the instance/device/pipelines, and uses host-visible storage
+ * It opens the standard loader, checks the Venus driver ID and hardware
+ * device type, caches the instance/device/pipelines, and uses host-visible storage
  * buffers with explicit flush/invalidate for non-coherent memory.
  */
 #ifndef _GNU_SOURCE
@@ -97,7 +96,7 @@ typedef struct floe_vk_context {
 #define FLOE_VK_FUNCS(X) \
     X(vkDestroyInstance) \
     X(vkEnumeratePhysicalDevices) \
-    X(vkGetPhysicalDeviceProperties) \
+    X(vkGetPhysicalDeviceProperties2) \
     X(vkGetPhysicalDeviceMemoryProperties) \
     X(vkGetPhysicalDeviceQueueFamilyProperties) \
     X(vkCreateDevice) \
@@ -168,27 +167,6 @@ __attribute__((constructor)) static void record_process(void)
 static int current_process(void)
 {
     return getpid() == g_vk_process;
-}
-
-static int contains_venus(const char *name)
-{
-    static const char needle[] = "venus";
-    size_t needle_length = sizeof needle - 1;
-    size_t index;
-
-    if (name == NULL) return 0;
-    for (index = 0; name[index] != '\0'; index++) {
-        size_t offset;
-        for (offset = 0; offset < needle_length; offset++) {
-            char character = name[index + offset];
-            if (character == '\0') break;
-            if (character >= 'A' && character <= 'Z')
-                character = (char)(character - 'A' + 'a');
-            if (character != needle[offset]) break;
-        }
-        if (offset == needle_length) return 1;
-    }
-    return 0;
 }
 
 static int load_instance_functions(VkInstance instance,
@@ -396,10 +374,19 @@ static int initialize_context_locked(void)
         return -1;
     }
     for (index = 0; index < device_count; index++) {
-        VkPhysicalDeviceProperties properties;
-        vkGetPhysicalDeviceProperties(devices[index], &properties);
-        if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) continue;
-        if (!contains_venus(properties.deviceName)) continue;
+        VkPhysicalDeviceDriverProperties driver = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+        };
+        VkPhysicalDeviceProperties2 identity = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            .pNext = &driver,
+        };
+        vkGetPhysicalDeviceProperties2(devices[index], &identity);
+        VkPhysicalDeviceProperties properties = identity.properties;
+        if (driver.driverID != VK_DRIVER_ID_MESA_VENUS) continue;
+        if (properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
+            properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+            properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) continue;
         if (properties.apiVersion < VK_API_VERSION_1_1) continue;
         if (properties.limits.maxStorageBufferRange < 4) continue;
         if (properties.limits.maxComputeWorkGroupCount[0] == 0) continue;

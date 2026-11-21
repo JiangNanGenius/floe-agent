@@ -1,0 +1,4 @@
+{
+  "en-US": "Check Linux responsiveness when CPU work and large file transfers run together. With the current Linux image, check the Apple GPU model in Vulkan and try graphics or BLAS acceleration. Also check floor-plan wall drawing, snapping, pan and zoom.",
+  "zh-Hans": "请检查 Linux 同时运行运算和读写大文件时的响应。使用当前 Linux 镜像时，可在 Vulkan 中查看 Apple GPU 型号，并试用图形或 BLAS 加速。也请检查户型图的拖画墙线、端点吸附、平移和缩放。"
+}

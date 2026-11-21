@@ -51,7 +51,7 @@ static void fill(float *buffer, size_t count, int seed)
 static void reference_gemm(int order, int transa, int transb, int m, int n,
                            int k, float alpha, const float *a, int lda,
                            const float *b, int ldb, float beta, const float *c,
-                           float *reference, int ldc, int c_row_stride,
+                           float *reference, int c_row_stride,
                            int c_column_stride)
 {
     int row;
@@ -61,7 +61,6 @@ static void reference_gemm(int order, int transa, int transb, int m, int n,
     int a_column_stride;
     int b_row_stride;
     int b_column_stride;
-    (void)order;
     if (transa) {
         a_row_stride = 1;
         a_column_stride = lda;
@@ -131,24 +130,22 @@ static void test_gemm_case(int order, int transa, int transb, int m, int n,
     int row;
     int column;
     char label[160];
+    const int transpose_a = transa != FLOE_CBLAS_NO_TRANS;
+    const int transpose_b = transb != FLOE_CBLAS_NO_TRANS;
 
     if (order == FLOE_CBLAS_ROW_MAJOR) {
-        lda = (transa ? m : k) + 2;
-        ldb = (transb ? k : n) + 2;
+        lda = (transpose_a ? m : k) + 2;
+        ldb = (transpose_b ? k : n) + 2;
         ldc = n + 2;
-        a_stored_rows = transa ? k : m;
-        a_stored_columns = transa ? m : k;
-        b_stored_rows = transb ? n : k;
-        b_stored_columns = transb ? k : n;
     } else {
-        lda = (transa ? k : m) + 2;
-        ldb = (transb ? n : k) + 2;
+        lda = (transpose_a ? k : m) + 2;
+        ldb = (transpose_b ? n : k) + 2;
         ldc = m + 2;
-        a_stored_rows = transa ? k : m;
-        a_stored_columns = transa ? m : k;
-        b_stored_rows = transb ? n : k;
-        b_stored_columns = transb ? k : n;
     }
+    a_stored_rows = transpose_a ? k : m;
+    a_stored_columns = transpose_a ? m : k;
+    b_stored_rows = transpose_b ? n : k;
+    b_stored_columns = transpose_b ? k : n;
     a_count = order == FLOE_CBLAS_ROW_MAJOR
         ? (size_t)a_stored_rows * lda
         : (size_t)a_stored_columns * lda;
@@ -183,8 +180,8 @@ static void test_gemm_case(int order, int transa, int transb, int m, int n,
             c_before[(size_t)m + (size_t)column * ldc] = 1234.5f;
         }
     }
-    reference_gemm(order, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta,
-                   c_before, reference, ldc,
+    reference_gemm(order, transpose_a, transpose_b, m, n, k, alpha, a, lda, b, ldb,
+                   beta, c_before, reference,
                    order == FLOE_CBLAS_ROW_MAJOR ? ldc : 1,
                    order == FLOE_CBLAS_ROW_MAJOR ? 1 : ldc);
     cblas_sgemm(order, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c,
@@ -422,7 +419,6 @@ static void *gemm_thread(void *argument)
     float reference[64];
     int row;
     int column;
-    int inner;
     int iteration;
     (void)argument;
     for (iteration = 0; iteration < 12; iteration++) {
@@ -430,7 +426,7 @@ static void *gemm_thread(void *argument)
         fill(b, 64, iteration + 2);
         memset(c, 0, sizeof c);
         reference_gemm(FLOE_CBLAS_ROW_MAJOR, 0, 0, n, n, n, 1.0f, a, n, b, n,
-                       0.0f, c, n, n, 1);
+                       0.0f, c, reference, n, 1);
         cblas_sgemm(FLOE_CBLAS_ROW_MAJOR, FLOE_CBLAS_NO_TRANS,
                     FLOE_CBLAS_NO_TRANS, n, n, n, 1.0f, a, n, b, n, 0.0f, c,
                     n);
@@ -533,7 +529,7 @@ static int test_gpu_counter(void)
 int main(void)
 {
     int gpu = 0;
-    printf("floe-blas provider ABI tests (source-only build; runtime not yet run)\n");
+    puts("Floe BLAS provider ABI tests");
     test_gemm_case(FLOE_CBLAS_ROW_MAJOR, FLOE_CBLAS_NO_TRANS,
                    FLOE_CBLAS_NO_TRANS, 3, 4, 5, 0.75f, -0.5f);
     test_gemm_case(FLOE_CBLAS_ROW_MAJOR, FLOE_CBLAS_TRANS,

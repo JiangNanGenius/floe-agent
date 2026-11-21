@@ -36,7 +36,6 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 GRAPHICS = REPO / "LinuxGuest" / "image" / "graphics"
 SELECTION = GRAPHICS / "SOURCE-SELECTION.json"
-GUEST_PATCH = GRAPHICS / "patches" / "guest-mesa-25.0.7" / "0001-floe-x11-cpu-present-complete.patch"
 HOST_SERIES = GRAPHICS / "patches" / "host-mesa-30da3918" / "SERIES.json"
 
 
@@ -65,15 +64,15 @@ def expected_archive(selection: dict, series: str) -> dict:
     return selection["streams"]["nextHostKosmicKrisp"]["sourceArchives"][0]
 
 
-def series_patches(series: str) -> list[dict]:
+def series_patches(selection: dict, series: str) -> list[dict]:
     if series == "guest":
         return [{
-            "order": 1,
-            "file": GUEST_PATCH.name,
-            "path": GUEST_PATCH,
-            "sha256": sha256(GUEST_PATCH),
+            "order": order,
+            "file": Path(entry["file"]).name,
+            "path": GRAPHICS / entry["file"],
+            "sha256": entry["sha256"],
             "applyCwd": "",
-        }]
+        } for order, entry in enumerate(selection["streams"]["installedGuestMesa"]["patches"], 1)]
     data = json.loads(HOST_SERIES.read_text())
     patches = []
     for entry in data["patches"]:
@@ -165,7 +164,7 @@ def main() -> int:
     if archive.stat().st_size != archive_spec["bytes"]:
         fail(f"archive size mismatch: expected {archive_spec['bytes']}, actual {archive.stat().st_size}")
 
-    patches = series_patches(args.series)
+    patches = series_patches(selection, args.series)
     records = verify_patches(patches)
     print(f"verified archive {archive.name} sha256={actual} bytes={archive.stat().st_size}")
     print(f"verified {len(records)} patch digests for series={args.series}")

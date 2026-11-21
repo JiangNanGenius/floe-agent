@@ -560,10 +560,11 @@ def _verify(label: str, actual: bytes, expected: bytes) -> dict:
 def compute_probe_limitation(platform_name: str, device: dict) -> str | None:
     # This exact Rusticl/Zink combination can terminate the Venus host when
     # binding its compute pipeline. Enumeration remains available.
+    name = device.get("name", "")
     if (platform_name.lower() == "rusticl" and device.get("type") == "gpu"
             and device.get("driverVersion") == "25.0.7-2+deb13u1"
-            and "Virtio-GPU Venus (Apple M5 Pro)" in device.get("name", "")
-            and device.get("name", "").startswith("zink ")):
+            and "Apple M5 Pro" in name
+            and name.startswith("zink ")):
         return ("This Rusticl driver cannot run the OpenCL compute check on this GPU. "
                 "Select another OpenCL device or use the Vulkan matrix check.")
     return None

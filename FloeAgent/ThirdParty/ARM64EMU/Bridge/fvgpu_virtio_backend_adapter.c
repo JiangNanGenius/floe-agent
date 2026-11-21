@@ -46,7 +46,7 @@ static uint32_t
 fvgpu_ad_caps_flags(void *opaque)
 {
     (void)opaque;
-    return FLOE_GPU_CAP_VIRGL | FLOE_GPU_CAP_RESOURCE_BLOB |
+    return FLOE_GPU_CAP_VIRGL | FLOE_GPU_CAP_EDID | FLOE_GPU_CAP_RESOURCE_BLOB |
            FLOE_GPU_CAP_CONTEXT_INIT;
 }
 

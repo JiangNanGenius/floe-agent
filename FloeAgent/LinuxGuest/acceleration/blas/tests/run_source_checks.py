@@ -220,9 +220,11 @@ def check_sources() -> None:
     submitted = vk.find("gpu_submitted", submit if submit >= 0 else 0)
     check(submit >= 0 and submitted > submit,
           "gpu_submitted is not recorded after VkQueueSubmit")
-    check("VK_PHYSICAL_DEVICE_TYPE_CPU" in vk and "continue;" in vk,
-          "CPU Vulkan devices are not explicitly rejected")
-    check("contains_venus" in vk and '"venus"' in vk,
+    check(re.search(r"if \(properties\.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&\s*"
+                    r"properties\.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&\s*"
+                    r"properties\.deviceType != VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU\) continue;", vk) is not None,
+          "Vulkan device selection must reject CPU and unknown devices")
+    check("vkGetPhysicalDeviceProperties2" in vk and "VK_DRIVER_ID_MESA_VENUS" in vk,
           "the Venus device identity check is missing")
     check("lavapipe" not in vk.lower() and "swiftshader" not in vk.lower() and
           "llvmpipe" not in vk.lower(),

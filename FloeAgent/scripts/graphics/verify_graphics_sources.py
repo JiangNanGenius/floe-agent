@@ -31,7 +31,6 @@ GRAPHICS = REPO / "LinuxGuest" / "image" / "graphics"
 SELECTION = GRAPHICS / "SOURCE-SELECTION.json"
 POLICY = GRAPHICS / "CAPABILITY-POLICY.json"
 SERIES = GRAPHICS / "patches" / "host-mesa-30da3918" / "SERIES.json"
-GUEST_PATCH = GRAPHICS / "patches" / "guest-mesa-25.0.7" / "0001-floe-x11-cpu-present-complete.patch"
 FVGPU = REPO / "ThirdParty" / "FloeVirtualGPU"
 PRIVATE_PATH = re.compile(rb"/(?:Volumes/TECLAST|Users/jiangnangenius|home/[A-Za-z0-9_.-]+)/")
 KNOWN_GATES = {"venusVulkan", "openGL", "shaderCache", "openCL"}
@@ -162,18 +161,20 @@ def verify_licenses(c: Checker) -> None:
         c.check((GRAPHICS / relative).is_file(), f"missing license {relative}")
 
 
-def verify_guest_patch(tree: Path | None, c: Checker) -> None:
+def verify_guest_patches(tree: Path | None, selection: dict, c: Checker) -> None:
     if tree is None:
         return
     c.check((tree / "src" / "vulkan" / "wsi" / "wsi_common_x11.c").is_file(),
             f"{tree} does not look like a Mesa source tree")
     if not (tree / "src" / "vulkan" / "wsi" / "wsi_common_x11.c").is_file():
         return
-    result = subprocess.run(
-        ["/usr/bin/patch", "-p1", "-F", "0", "--batch", "--forward", "--dry-run", "-i", str(GUEST_PATCH)],
-        cwd=tree, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-    )
-    c.check(result.returncode == 0, f"guest Mesa patch does not apply to {tree}:\n{result.stdout}")
+    for entry in selection.get("streams", {}).get("installedGuestMesa", {}).get("patches", []):
+        patch = GRAPHICS / entry["file"]
+        result = subprocess.run(
+            ["/usr/bin/patch", "-p1", "-F", "0", "--batch", "--forward", "--dry-run", "-i", str(patch)],
+            cwd=tree, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        c.check(result.returncode == 0, f"guest Mesa patch {patch.name} does not apply:\n{result.stdout}")
 
 
 def main() -> int:
@@ -188,7 +189,7 @@ def main() -> int:
     verify_fvgpu(c)
     policy = verify_policy(c)
     verify_licenses(c)
-    verify_guest_patch(args.tree.expanduser().resolve() if args.tree else None, c)
+    verify_guest_patches(args.tree.expanduser().resolve() if args.tree else None, selection, c)
     summary = {
         "schema": "floe.linux-graphics.source-verification.v1",
         "selection": str(SELECTION.relative_to(REPO)),

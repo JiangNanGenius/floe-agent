@@ -28,6 +28,12 @@
           "sha256": "0877816a0aa5291a38ffb830a36abee5673bea34babb24d8a1ad050332fb0704",
           "bytes": 59708,
           "purpose": "Complete X11 CPU-present path for present-aware Vulkan WSI, with FIFO pacing, resize, error rollback and init/destroy cleanup. Supersedes the original combined/worker/primary intermediate patches."
+        },
+        {
+          "file": "patches/guest-mesa-25.0.7/0002-floe-apple-hardware-identity.patch",
+          "sha256": "351189ecd2029a0e8ff720cec6f57f33427cb405b99a4e93890c5ebafe9130bb",
+          "bytes": 1684,
+          "purpose": "Forward the physical Apple GPU name and Vulkan device type from the renderer, while retaining the Venus driver identity."
         }
       ],
       "verifiedAgainst": "Debian mesa_25.0.7.orig.tar.xz extracted at its archive root (the same public archive pinned above); read-only WSI V2 patch apply check passed 2026-11-15. No private host path is part of this record.",

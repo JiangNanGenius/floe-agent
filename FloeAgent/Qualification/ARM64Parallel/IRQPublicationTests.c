@@ -69,8 +69,25 @@ int main(int argc,char **argv) {
     progress=p->progress;gic_update(m->gic);
     assert(p->progress==progress&&!pipe_ready(s));
     for(unsigned i=0;i<4;i++)assert(!atomic_load(&p->hart[i].poll_pending));
+
+    /* Completing a ticket while the coordinator is processing work needs
+     * the progress publication, but does not have to write to the pipe.
+     * When armed, four completions need a single unread byte. */
+    pthread_mutex_lock(&p->mutex);
+    progress=p->progress;
+    worker_completed(p);
+    assert(p->progress==progress+1&&!pipe_ready(s));
+    p->poll_needs_wake=true;
+    for(unsigned i=0;i<4;i++)worker_completed(p);
+    assert(p->progress==progress+5&&pipe_ready(s));
+    unsigned char bytes[8];
+    assert(read(s->wake_pipe[0],bytes,sizeof(bytes))==1&&!pipe_ready(s));
+    p->poll_needs_wake=true;
+    worker_completed(p);
+    assert(read(s->wake_pipe[0],bytes,sizeof(bytes))==1&&!pipe_ready(s));
+    pthread_mutex_unlock(&p->mutex);
     m->parallel_ops=NULL;m->parallel_owner=NULL;
     assert(!floe_ae_destroy(handle)&&!unlink(firmware));
-    puts("ARM64_IRQ_PUBLICATION_OK duplicate_low=10000 rising=1 repeated_high=1 falling=1 pending_preserved=1 event_preserved=1 gic_four_harts=1");
+    puts("ARM64_IRQ_PUBLICATION_OK duplicate_low=10000 rising=1 repeated_high=1 falling=1 pending_preserved=1 event_preserved=1 gic_four_harts=1 worker_wakes_coalesced=1");
     return 0;
 }

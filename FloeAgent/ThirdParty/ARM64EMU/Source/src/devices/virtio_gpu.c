@@ -60,6 +60,7 @@
 #define GPU_MAX_ORPHANS      256u
 #define GPU_CTRL_HDR_LEN     24u
 #define GPU_EDID_LEN         128u
+#define GPU_EDID_WIRE_LEN   1024u
 #define GPU_CAPSET_MAX_BYTES (GPU_RESP_MAX - GPU_CTRL_HDR_LEN)
 
 /* split-virtqueue descriptor flags */
@@ -1244,12 +1245,12 @@ static void h_get_edid(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
     wr32(c->resp + c->resp_len, GPU_EDID_LEN);
     wr32(c->resp + c->resp_len + 4, 0);
     c->resp_len += 8;
-    u32 room = GPU_RESP_MAX - c->resp_len;
-    if (c->w_total > c->resp_len && (u64)(c->w_total - c->resp_len) < room)
-        room = (u32)(c->w_total - c->resp_len);
-    u32 n = room < GPU_EDID_LEN ? room : GPU_EDID_LEN;
-    memcpy(c->resp + c->resp_len, v->edid, n);
-    c->resp_len += n;
+    /* The virtio response always carries a 1024-byte array. The size field
+     * says how many bytes of it are real EDID data. gpu_publish handles the
+     * guest destination's capacity. */
+    memcpy(c->resp + c->resp_len, v->edid, GPU_EDID_LEN);
+    memset(c->resp + c->resp_len + GPU_EDID_LEN, 0, GPU_EDID_WIRE_LEN - GPU_EDID_LEN);
+    c->resp_len += GPU_EDID_WIRE_LEN;
     c->resp_ready = true;
 }
 
@@ -1831,6 +1832,7 @@ bool virtio_gpu_has_work(struct VirtIOGPU *v) {
         if (v->q[i].notify_pending && gpu_cmd_alloc(v)) return true;
     if (atomic_load_explicit(&v->ring.head, memory_order_acquire) !=
         atomic_load_explicit(&v->ring.tail, memory_order_acquire)) return true;
+    if (!v->inflight_count) return false;
     for (u32 i = 0; i < GPU_MAX_INFLIGHT; i++) {
         const VGCmd *c = &v->inflight[i];
         if (!c->active || !c->resp_ready) continue;

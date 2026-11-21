@@ -16,7 +16,7 @@ from build_floe_repo import ar_member, tar_bytes
 
 PACKAGE = "floe-acceleration-tools"
 CONTROL = f"""Package: {PACKAGE}
-Version: 1.0-2
+Version: 1.0-3
 Architecture: arm64
 Section: utils
 Priority: optional

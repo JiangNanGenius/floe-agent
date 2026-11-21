@@ -24,6 +24,11 @@ adds the generic X11 CPU-present path for present-aware Vulkan WSI: queued
 error rollback and init/destroy cleanup. It supersedes every intermediate WSI
 patch that preceded it.
 
+Apply `0002-floe-apple-hardware-identity.patch` from the same guest series.
+Vulkan's device name and integrated or discrete device type come from the
+Apple renderer. The guest driver identifies itself with `VK_DRIVER_ID_MESA_VENUS`.
+Floe BLAS uses the driver ID and reported device type to select its backend.
+
 The frontend build uses `-Dglx=dri -Dglvnd-vendor-name=floe
 -Dgallium-drivers=softpipe,zink -Dshader-cache=enabled
 -Dshader-cache-max-size=64M` and installs under a private prefix

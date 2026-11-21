@@ -38,7 +38,7 @@ typedef struct AEParallel {
     AESession *session;
     pthread_mutex_t mutex;
     pthread_cond_t changed;
-    bool mutex_ready,condition_ready,active,closing,shutdown;
+    bool mutex_ready,condition_ready,active,closing,shutdown,poll_needs_wake;
     atomic_bool abort_run;
     _Atomic u64 tlbi_epoch;
     u64 deadline,remaining,executed,progress;
@@ -74,15 +74,23 @@ static u64 thread_cpu_ns(void){
     struct timespec t;if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t))return 0;
     return (u64)t.tv_sec*1000000000ULL+(u64)t.tv_nsec;
 }
+static void wake_coordinator(AEParallel *p){
+    AESession *s=p->session;
+    if(!s->wake_pipe_ready)return;
+    unsigned char byte=0;ssize_t written;
+    do { written=write(s->wake_pipe[1],&byte,1); } while(written<0&&errno==EINTR);
+    if(written==1||(written<0&&errno==EAGAIN))p->poll_needs_wake=false;
+}
 static void changed(AEParallel *p){
     p->progress++;pthread_cond_broadcast(&p->changed);
-    /* The coordinator now parks in poll(2), not only p->changed. Publish
-     * every worker/RPC transition to that same wait set. The pipe lifetime
-     * covers all workers, writes are nonblocking and need no session lock
-     * (taking it under p->mutex would invert the control-side lock order).
-     * EAGAIN already means an unread wake is pending. */
-    AESession *s=p->session;
-    if(s->wake_pipe_ready){unsigned char byte=0;(void)write(s->wake_pipe[1],&byte,1);}
+    wake_coordinator(p);
+}
+static void worker_completed(AEParallel *p){
+    p->progress++;pthread_cond_broadcast(&p->changed);
+    /* The mutex pairs the poll arm with this publication. If the coordinator
+     * is processing work, its next pass sees the completed ticket directly.
+     * If it is polling, one pending byte suffices for all completing harts. */
+    if(p->poll_needs_wake)wake_coordinator(p);
 }
 static void enter_pd(AEHart *h){
     AEParallel *p=h->parallel;unsigned n=atomic_fetch_add_explicit(&p->in_pd,1,memory_order_relaxed)+1;
@@ -344,7 +352,7 @@ static void *hart_main(void *argument){
          * instruction returns. Preserve the new pending boot across that end. */
         if(!h->reset_pending)atomic_store_explicit(&h->power,c->power,memory_order_release);
         h->busy=false;h->await_yield=false;atomic_store_explicit(&h->ack_epoch,atomic_load(&p->tlbi_epoch),memory_order_release);
-        changed(p);pthread_mutex_unlock(&p->mutex);ae_parallel_test_boundary(c,5);pthread_mutex_lock(&p->mutex);
+        worker_completed(p);pthread_mutex_unlock(&p->mutex);ae_parallel_test_boundary(c,5);pthread_mutex_lock(&p->mutex);
     }
     pthread_mutex_unlock(&p->mutex);ae_parallel_test_boundary(c,6);cpu_debug_release();ae_fp_unbind();ae_current=NULL;worker=NULL;return NULL;
 }
@@ -554,6 +562,7 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
             result.reason=FLOE_AE_PARKED;close_run(p);continue;
         }
         u64 observed_progress=p->progress,deadline_snapshot=p->deadline;
+        p->poll_needs_wake=true;
         pthread_mutex_unlock(&p->mutex);u64 timer=timer_next_event_ns(m),now=ae_now_ns();
         ae_parallel_test_boundary(NULL,4);
         /* Hart-busy readiness wait: at least one hart executes, so sleep
@@ -583,6 +592,7 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
          * is inside the backend concurrently. */
         bool pipe_ready=ae_net_wait_park(ps,un,wait_ns);
         pthread_mutex_lock(&p->mutex);
+        p->poll_needs_wake=false;
         if(pipe_ready)ae_wake_drain(ps);
         /* A worker/RPC/control change between observation and wait cannot be
          * consumed by the old condition signal. Re-enter the full predicates. */

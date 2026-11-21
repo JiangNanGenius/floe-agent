@@ -14,6 +14,9 @@ pipe and pending publications while all workers are quiet. It verifies:
 - Rising, falling and repeated asserted levels preserve delivery and wakeup.
 - Coalescing retains an unconsumed falling edge, event or TLB/control flag.
 - A GIC rescan of four inactive interrupt lines does not manufacture work.
+- Four worker completions in one wait need a single pipe byte. The next wait
+  still wakes, and completions while the coordinator is working publish
+  progress without writing to the readiness pipe.
 
 Success prints `ARM64_IRQ_PUBLICATION_OK`. The original implementation fails
 the first no-op publication assertion. This is a notification-path regression,

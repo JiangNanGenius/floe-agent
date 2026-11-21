@@ -102,7 +102,7 @@
     },
     {
       "path": "Bridge/fvgpu_virtio_backend_adapter.c",
-      "sha256": "26006ed90ea0862c7776d6562aa81e26cc3f15979f8fc61d43ffe753f0076f43"
+      "sha256": "2494eba9d1601d96a96d096a98afd20ba1c422b2e7101c890162ffa1538ed5ab"
     },
     {
       "path": "Bridge/host_hooks.h",
@@ -122,7 +122,7 @@
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "9ad87eedc65f852ee800e5be5ba0fb85a97b009ecca97e25b917656d02c78d3e"
+      "sha256": "6b0a40a3317cabf6933916888b216d32ba4e524b6bf8ccafd7bfed969c13bd0a"
     },
     {
       "path": "Bridge/parallel_runtime.h",
@@ -226,7 +226,7 @@
     },
     {
       "path": "Source/src/devices/virtio_gpu.c",
-      "sha256": "095421fb105e55cc902d47e011f081fe8950669f4ea28ad393397a8ac7d6151a"
+      "sha256": "082c016b585cf7c428573e3dfe56f06d1288a5bee9c514d9d9c95ec28fc3e132"
     },
     {
       "path": "Source/src/devices/virtio_gpu.h",
@@ -792,7 +792,7 @@
     "adapterOwner": "FloeARM64Engine",
     "adapterPath": "Bridge/fvgpu_virtio_backend_adapter.c",
     "wrapperPath": "Sources/33_gpu_backend_adapter.c",
-    "adapterSHA256": "26006ed90ea0862c7776d6562aa81e26cc3f15979f8fc61d43ffe753f0076f43",
+    "adapterSHA256": "2494eba9d1601d96a96d096a98afd20ba1c422b2e7101c890162ffa1538ed5ab",
     "sessionAPIOwner": "FloeVirtualGPU",
     "adapterLicense": "Apache-2.0",
     "existingComponentQualification": "The 33-unit/ABI3 component qualification remains historical evidence; ABI4 source, host link and guest module execution are separate future gates.",

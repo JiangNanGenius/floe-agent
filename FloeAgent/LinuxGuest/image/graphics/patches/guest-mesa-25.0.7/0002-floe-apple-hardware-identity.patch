@@ -1,0 +1,33 @@
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -419,14 +419,22 @@
+
+    physical_dev->wa_min_fb_align = strstr(props->deviceName, "JSL") ? 128 : 1;
+
+-   char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+-   int device_name_len = snprintf(device_name, sizeof(device_name),
+-                                  "Virtio-GPU Venus (%s)", props->deviceName);
+-   if (device_name_len >= VK_MAX_PHYSICAL_DEVICE_NAME_SIZE) {
+-      memcpy(device_name + VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 5, "...)", 4);
+-      device_name_len = VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 1;
+-   }
+-   memcpy(props->deviceName, device_name, device_name_len + 1);
++   /* Preserve the actual hardware name and type returned by the Metal
++    * renderer. The Vulkan driver ID below still identifies Venus. */
++   const bool apple_gpu =
++      props->vendorID == 0x106b &&
++      (props->deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
++       props->deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
++   if (!apple_gpu) {
++      char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
++      int device_name_len = snprintf(device_name, sizeof(device_name),
++                                     "Virtio-GPU Venus (%s)", props->deviceName);
++      if (device_name_len >= VK_MAX_PHYSICAL_DEVICE_NAME_SIZE) {
++         memcpy(device_name + VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 5, "...)", 4);
++         device_name_len = VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 1;
++      }
++      memcpy(props->deviceName, device_name, device_name_len + 1);
++   }
+
+    /* store renderer VkDriverId for implementation specific workarounds */
+    physical_dev->renderer_driver_id = props->driverID;

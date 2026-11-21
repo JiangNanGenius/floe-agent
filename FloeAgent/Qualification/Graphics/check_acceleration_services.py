@@ -138,6 +138,8 @@ def run_probe_logic_checks(failures: Failures) -> None:
            "driverVersion": "25.0.7-2+deb13u1"}
     limitation = opencl.compute_probe_limitation("rusticl", gpu)
     failures.add(bool(limitation) and opencl.compute_probe_limitation("CLVK", gpu) is None
+                 and opencl.compute_probe_limitation("rusticl", dict(
+                     gpu, name="zink Vulkan 1.2(Apple M5 Pro (MESA_VENUS))")) == limitation
                  and opencl.compute_probe_limitation("rusticl", dict(gpu, driverVersion="26.0")) is None,
                  "Rusticl compatibility check must stay specific to the observed driver and device")
     gpu["computeProbeLimitation"] = limitation
