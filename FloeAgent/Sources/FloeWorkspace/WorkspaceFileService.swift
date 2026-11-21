@@ -930,16 +930,7 @@ public struct WorkspaceFileService: Sendable {
     /// Generates a standard unified diff between two texts (context 3).
     /// Pure function; no file access.
     public func diff(original: String, modified: String, label: String = "file") -> String {
-        let oldLines = original.components(separatedBy: "\n")
-        let newLines = modified.components(separatedBy: "\n")
-        let hunks = Self.diffHunks(old: oldLines, new: newLines, context: 3)
-        guard !hunks.isEmpty else { return "" }
-        var out = "--- a/\(label)\n+++ b/\(label)\n"
-        for hunk in hunks {
-            out += "@@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@\n"
-            for line in hunk.body { out += line + "\n" }
-        }
-        return out
+        WorkspaceFileChangeEvidence.diff(original: original, modified: modified, label: label) ?? ""
     }
 
     // MARK: - Private helpers
@@ -1055,14 +1046,14 @@ public struct WorkspaceFileService: Sendable {
         var newNoNewline = false
     }
 
-    private struct PatchLine {
+    struct PatchLine {
         var text: String
         var ending: String
     }
 
     /// Split at LF bytes so CRLF is handled independently of Swift's
     /// grapheme segmentation. The final separator never creates a fake row.
-    private static func patchLines(_ text: String) -> [PatchLine] {
+    static func patchLines(_ text: String) -> [PatchLine] {
         guard !text.isEmpty else { return [] }
         let pieces = text.utf8.split(separator: 10, omittingEmptySubsequences: false)
         let trailingLF = text.utf8.last == 10
@@ -1291,7 +1282,7 @@ public struct WorkspaceFileService: Sendable {
         var table = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
         for i in stride(from: n - 1, through: 0, by: -1) {
             for j in stride(from: m - 1, through: 0, by: -1) {
-                if old[i] == new[j] {
+                if old[i].utf8.elementsEqual(new[j].utf8) {
                     table[i][j] = table[i + 1][j + 1] + 1
                 } else {
                     table[i][j] = max(table[i + 1][j], table[i][j + 1])
@@ -1302,7 +1293,7 @@ public struct WorkspaceFileService: Sendable {
         var i = 0
         var j = 0
         while i < n, j < m {
-            if old[i] == new[j] {
+            if old[i].utf8.elementsEqual(new[j].utf8) {
                 edits.append(.keep(i))
                 i += 1
                 j += 1

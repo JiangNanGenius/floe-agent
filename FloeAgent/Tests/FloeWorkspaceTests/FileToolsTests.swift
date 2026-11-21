@@ -116,22 +116,25 @@ struct FileToolsTests {
     }
 
     @Test("Model-facing text contracts describe general plain text, not Markdown-only files")
-    func generalTextContracts() {
-        let create = ToolCatalog.descriptor(named: "workspace.createFile")
+    func generalTextContracts() throws {
+        let fixture = try makeFixture()
+        let registry = ToolRunnerRegistry()
+        registerWorkspaceTools(rootProvider: { fixture.root }, registry: registry)
+        let create = registry.descriptor(named: "workspace.createFile")
         #expect(create?.toolDescription.contains("Prefer the .md extension") == false)
         for phrase in ["plain-text", "source code", "scripts", "LaTeX", "extensionless"] {
             #expect(create?.toolDescription.localizedCaseInsensitiveContains(phrase) == true,
                     "createFile contract is missing \(phrase)")
         }
-        let read = ToolCatalog.descriptor(named: "workspace.readFile")
+        let read = registry.descriptor(named: "workspace.readFile")
         #expect(read?.toolDescription.localizedCaseInsensitiveContains("extensionless") == true)
-        let write = ToolCatalog.descriptor(named: "workspace.writeFile")
+        let write = registry.descriptor(named: "workspace.writeFile")
         #expect(write?.toolDescription.localizedCaseInsensitiveContains("source code") == true)
-        let append = ToolCatalog.descriptor(named: "workspace.appendFile")
+        let append = registry.descriptor(named: "workspace.appendFile")
         #expect(append?.toolDescription.localizedCaseInsensitiveContains("unknown-extension") == true)
-        let replace = ToolCatalog.descriptor(named: "workspace.replaceText")
+        let replace = registry.descriptor(named: "workspace.replaceText")
         #expect(replace?.toolDescription.localizedCaseInsensitiveContains("unknown-extension") == true)
-        let patch = ToolCatalog.descriptor(named: "workspace.applyPatch")
+        let patch = registry.descriptor(named: "workspace.applyPatch")
         #expect(patch?.toolDescription.localizedCaseInsensitiveContains("plain-text") == true)
     }
 
@@ -771,7 +774,7 @@ struct FileToolsTests {
         let result = try await tool.execute(.init(path: "sample.txt", patch: patch,
             expectedSHA256: WorkspaceFileService.sha256Hex(of: Data(original.utf8))), context: fixture.context)
         #expect(result.summary.contains("change=modified saved=true"))
-        #expect(try Data(fixture.read("sample.txt").utf8) == Data("\u{FEFF}new header\r\none\r\nTWO\r\nthree\r\n".utf8))
+        #expect(try fixture.readData("sample.txt") == Data("\u{FEFF}new header\r\none\r\nTWO\r\nthree\r\n".utf8))
     }
 
     @Test("Unified patch inserts into an empty file and honors a missing final newline")

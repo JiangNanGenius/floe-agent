@@ -68,19 +68,12 @@ enum WorkspaceFileChangeEvidence {
         return ([route.mount.virtualRoot] + components.map(String.init)).joined(separator: "/")
     }
 
-    /// Preserve the legacy patch engine. Presentation uses its same real
-    /// hunk grouping, with actual line units (empty files have zero lines,
-    /// and newline-at-EOF changes do not become phantom blank lines).
+    /// Use the same byte-based line boundaries for generated diffs and
+    /// applied patches, including CRLF and a missing newline at EOF.
     static func diff(original: String, modified: String, label: String) -> String? {
         guard !original.utf8.elementsEqual(modified.utf8) else { return "" }
         func units(_ text: String) -> [String] {
-            guard !text.isEmpty else { return [] }
-            var parts = text.components(separatedBy: "\n")
-            let terminated = text.hasSuffix("\n")
-            if terminated { parts.removeLast() }
-            return parts.enumerated().map { index, content in
-                content + (index < parts.count - 1 || terminated ? "\n" : "")
-            }
+            WorkspaceFileService.patchLines(text).map { $0.text + $0.ending }
         }
         let old = units(original), new = units(modified)
         // The incumbent LCS is quadratic. An optional comparison must not
@@ -88,16 +81,13 @@ enum WorkspaceFileChangeEvidence {
         guard old.count <= 20_000, new.count <= 20_000,
               old.count * new.count <= 2_000_000 else { return nil }
         let hunks = WorkspaceFileService.diffHunks(old: old, new: new, context: 3)
-        // The legacy line engine uses Swift's Unicode-equivalent comparison.
-        // Byte-different spellings can therefore have no representable hunk.
-        guard !hunks.isEmpty else { return nil }
         let name = label.replacingOccurrences(of: "\r", with: "\\r")
             .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\t", with: "\\t")
         var out = "--- a/\(name)\n+++ b/\(name)\n"
         for hunk in hunks {
             out += "@@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@\n"
             for body in hunk.body {
-                if body.hasSuffix("\n") { out += body }
+                if body.utf8.last == 10 { out += body }
                 else { out += body + "\n\\ No newline at end of file\n" }
             }
         }
