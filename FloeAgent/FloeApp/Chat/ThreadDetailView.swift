@@ -720,22 +720,27 @@ struct ThreadDetailView: View {
                 Group {
                     if viewModel.isChangingGoal {
                         ProgressView().controlSize(.small).accessibilityLabel("goal.updating")
-                    } else if viewModel.canPauseGoal {
-                        Button("goal.pause", systemImage: "pause.fill") {
-                            Task { await viewModel.pauseActiveGoal() }
-                        }
-                        .accessibilityIdentifier("thread.goal.pause")
                     } else if viewModel.canResumeGoal {
                         Button("goal.resume", systemImage: "play.fill") {
                             Task { await viewModel.resumeActiveGoal() }
                         }
                         .accessibilityIdentifier("thread.goal.resume")
+                    } else if viewModel.canPauseGoal {
+                        Button("goal.pause", systemImage: "pause.fill") {
+                            Task { await viewModel.pauseActiveGoal() }
+                        }
+                        .accessibilityIdentifier("thread.goal.pause")
                     }
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .frame(minWidth: 44, minHeight: 44)
                 Menu {
+                    if viewModel.canResumeGoal && viewModel.canPauseGoal {
+                        Button("goal.pause", systemImage: "pause.fill") {
+                            Task { await viewModel.pauseActiveGoal() }
+                        }
+                    }
                     Button(IDELanguageRunText.t("编辑目标", "Edit goal"), systemImage: "pencil") {
                         openGoalBuilder(goal)
                     }.accessibilityIdentifier("thread.goal.edit")
