@@ -30,6 +30,7 @@ targets:
       - path: ../FloeAgent/Sources/FloeWorkspace/WorkspaceTextPolicy.swift
       - path: ../FloeAgent/FloeApp/Settings/UsageStatisticsView.swift
       - path: ../FloeAgent/FloeApp/Providers/ProviderCatalogAddView.swift
+      - path: ../FloeAgent/FloeApp/Browser/BrowserDownloadService.swift
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift

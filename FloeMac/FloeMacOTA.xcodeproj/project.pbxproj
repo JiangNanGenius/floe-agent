@@ -26,10 +26,12 @@
 		1291244649F5BB8366A065FE /* BridgeWorkspaceTransferPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD24B6E2B20C6C8879CF2C4E /* BridgeWorkspaceTransferPolicy.swift */; };
 		12B5E17E0C95F1FCD3BC6F33 /* BridgeHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 208EF31199397B1993286E07 /* BridgeHTTPServer.swift */; };
 		12FE62E6D843D2E78A1F23B0 /* MacNativeCommandPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07649B19058ED43D09CFA4A /* MacNativeCommandPolicy.swift */; };
+		132EEA92B3246B6914ED847B /* MacBrowserDownloadController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 986DF187E7D4DA30059B063F /* MacBrowserDownloadController.swift */; };
 		1441ED6BDCA1923C35B98602 /* FloeMacToolbox in Frameworks */ = {isa = PBXBuildFile; productRef = 38B92699B9D9E56596E9ABAB /* FloeMacToolbox */; };
 		14B826EF831B5505E2135EF0 /* MacVideoDownload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 398300F9C374B24A2521D1CA /* MacVideoDownload.swift */; };
 		15F2D3C8CB3A5B1C89BB37E2 /* FixtureRootLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFFAB599890B25676A93A805 /* FixtureRootLocation.swift */; };
 		1904605154711515658C9DF8 /* MacSearchSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC00F9DF08467008A21C5665 /* MacSearchSettings.swift */; };
+		1ADC46A63C0944D23362F563 /* BrowserDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 834E30AAA562F5149FD32E3B /* BrowserDownloadService.swift */; };
 		1B1889A0DABFFCDAD5DD6B1C /* SearchProviderCatalog.json in Resources */ = {isa = PBXBuildFile; fileRef = EFF679EE6FDA507191821685 /* SearchProviderCatalog.json */; };
 		1B319DF0CB5DE21FCC120D40 /* FloeBridge.icns in Resources */ = {isa = PBXBuildFile; fileRef = EC300510324B510B0FF47B3D /* FloeBridge.icns */; };
 		1B38A091CA700FC02D22B5C6 /* MacTaskImageToolSmoke.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12547CC49342665EB3EA1D4B /* MacTaskImageToolSmoke.swift */; };
@@ -318,6 +320,7 @@
 		7EA9A65AAAFCF45C4A269D44 /* MacProviderOptionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacProviderOptionsView.swift; sourceTree = "<group>"; };
 		80BABD3A785DA08BD4D1834C /* pty.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = pty.c; sourceTree = "<group>"; };
 		81D579218795FD503D35FABC /* RunStateLocalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStateLocalizer.swift; sourceTree = "<group>"; };
+		834E30AAA562F5149FD32E3B /* BrowserDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserDownloadService.swift; sourceTree = "<group>"; };
 		84B4C73D91FB534A0EA9C9CF /* WorkspaceTextPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTextPolicy.swift; sourceTree = "<group>"; };
 		851A2E35C2422E9A980BE1C0 /* MacWorkspaceRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWorkspaceRootView.swift; sourceTree = "<group>"; };
 		85235AD0B6B29F3A6C6D1B8C /* HTTPCookieContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPCookieContext.swift; sourceTree = "<group>"; };
@@ -330,6 +333,7 @@
 		914B31926ADE781E130AE4F1 /* UserMessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageBubble.swift; sourceTree = "<group>"; };
 		92EB0CE2A06FF0D2C8B14ABF /* BridgeJobs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeJobs.swift; sourceTree = "<group>"; };
 		96A142442E35162E39EFC2A0 /* AssistantMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageView.swift; sourceTree = "<group>"; };
+		986DF187E7D4DA30059B063F /* MacBrowserDownloadController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacBrowserDownloadController.swift; sourceTree = "<group>"; };
 		9E6BA1CBF02B99C929E1F225 /* FloeMacBridgeServiceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FloeMacBridgeServiceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9F45C373FAB399D08EBEBFF3 /* BridgeAbsoluteFileRead.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeAbsoluteFileRead.swift; sourceTree = "<group>"; };
 		A08C85A7AAF388FF354E243F /* MacVideoWorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacVideoWorkbenchView.swift; sourceTree = "<group>"; };
@@ -636,6 +640,14 @@
 			path = Design;
 			sourceTree = "<group>";
 		};
+		7672C41AEF0612AABD7A6248 /* Browser */ = {
+			isa = PBXGroup;
+			children = (
+				834E30AAA562F5149FD32E3B /* BrowserDownloadService.swift */,
+			);
+			path = Browser;
+			sourceTree = "<group>";
+		};
 		78126EC6C4DAC2CACB498EA9 /* FloeWorkspace */ = {
 			isa = PBXGroup;
 			children = (
@@ -689,6 +701,7 @@
 			children = (
 				71ED0F3A41EB9A170FE0BBE0 /* MacAgentWorkspaceTools.swift */,
 				8EE1275EF672559ABA635853 /* MacAuxiliaryModelsView.swift */,
+				986DF187E7D4DA30059B063F /* MacBrowserDownloadController.swift */,
 				6419113B0B354E8DCEB07B30 /* MacChatLinkText.swift */,
 				CD013019A5A552E500F69A00 /* MacChildTasksView.swift */,
 				0B3CC77B2731DED3B0840D88 /* MacConversationSheets.swift */,
@@ -863,6 +876,7 @@
 			isa = PBXGroup;
 			children = (
 				CD16ABFA4FD5F5D45957E378 /* App */,
+				7672C41AEF0612AABD7A6248 /* Browser */,
 				09B1A4091E63A4BEA6773E58 /* Chat */,
 				6CD25FD04BABE5A250BFA56F /* Design */,
 				8E359B5A5149345F7226FCE8 /* Providers */,
@@ -1122,6 +1136,7 @@
 				3143F24C06E3562DCFFB1247 /* BridgeStoreLock.swift in Sources */,
 				89DAD5B00A08113E7E91DC5E /* BridgeUpdateActivity.swift in Sources */,
 				C331A8F65EF5AC82BA71590D /* BridgeUpdater.swift in Sources */,
+				1ADC46A63C0944D23362F563 /* BrowserDownloadService.swift in Sources */,
 				3361C2C9E1B9302F4F8F4343 /* CanvasBackupPackage.swift in Sources */,
 				05517621F1301E36CF4E1CB6 /* CodeBlockView.swift in Sources */,
 				AC48E16FE34BBD64E11D0793 /* ComposerDraftTextRevisions.swift in Sources */,
@@ -1140,6 +1155,7 @@
 				200E12AF77A46D4EC4C0C3C8 /* HostProviderAccount.swift in Sources */,
 				DE6E7D1A724A70D4D25C06A8 /* MacAgentWorkspaceTools.swift in Sources */,
 				43AE2EC324C1BEBCAB078089 /* MacAuxiliaryModelsView.swift in Sources */,
+				132EEA92B3246B6914ED847B /* MacBrowserDownloadController.swift in Sources */,
 				21433AFDC434DECB8B780D2B /* MacChatLinkText.swift in Sources */,
 				1DBE00B4AB8BB23AA4CB8781 /* MacChildTasksView.swift in Sources */,
 				C60ED466164390CBDF5B54BE /* MacConversationSheets.swift in Sources */,

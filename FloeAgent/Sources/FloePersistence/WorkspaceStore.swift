@@ -198,6 +198,23 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         }
     }
 
+    /// Changes only the display name of an existing user project. Its folder,
+    /// conversation ownership, grants and other settings stay on the same row.
+    public func renameProject(id: UUID, name: String) async throws -> WorkspaceRecord? {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.utf8.count <= 200, !name.utf8.contains(0) else { return nil }
+        return try await database.writer { db in
+            let kind = WorkspaceKind.project.rawValue
+            try db.execute(
+                sql: "UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ? AND kind = ? AND name <> ?",
+                arguments: [name, PersistenceCodec.encode(Date()), id.uuidString, kind, name]
+            )
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM workspaces WHERE id = ? AND kind = ?",
+                                             arguments: [id.uuidString, kind]) else { return nil }
+            return try Self.workspace(from: row)
+        }
+    }
+
     public func deleteWorkspace(id: UUID) async throws {
         try await database.writer { db in
             // A task must never become ownerless. Removing a project moves

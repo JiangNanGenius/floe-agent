@@ -17,6 +17,7 @@ import SwiftUI
 /// archived scope keeps the restore workflow instead of opening.
 struct MacWorkspaceTaskCenter: View {
     @ObservedObject var workspace: HostAgentWorkspace
+    let projectID: UUID?
     let onOpen: (UUID) -> Void
     let onNew: () -> Void
     let onArchive: (UUID, Bool) -> Void
@@ -53,13 +54,15 @@ struct MacWorkspaceTaskCenter: View {
     static var smokeApplySelectionFrame: CGRect?
     #endif
 
-    init(workspace: HostAgentWorkspace, findRequest: UUID? = nil, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
+    init(workspace: HostAgentWorkspace, projectID: UUID? = nil, findRequest: UUID? = nil,
+         onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
          onArchive: @escaping (UUID, Bool) -> Void, onMove: @escaping (ConversationRecord) -> Void,
          onDelete: @escaping (ConversationRecord) -> Void, didDeleteArchived: @escaping (UUID) -> Void,
          onOpenMatch: ((UUID, UUID) -> Void)? = nil, didArchiveTask: @escaping (UUID) -> Void) {
         self.didDeleteArchived = didDeleteArchived
         self.findRequest = findRequest
         self.workspace = workspace
+        self.projectID = projectID
         self.onOpen = onOpen
         self.onNew = onNew
         self.onArchive = onArchive
@@ -90,6 +93,16 @@ struct MacWorkspaceTaskCenter: View {
                         .accessibilityIdentifier("workspace.task.retry.ready")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if projectID != nil, workspace.projectTasksUnavailable {
+                ContentUnavailableView {
+                    Label("mac.workspace.projectTasksUnavailable", systemImage: "exclamationmark.triangle")
+                } actions: {
+                    Button(t("重试", "Retry")) { Task { await workspace.retryProjectTasks() } }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if projectID != nil, workspace.projectTaskMembership == nil {
+                ProgressView(t("正在打开任务…", "Opening tasks…"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 content
             }
@@ -102,28 +115,23 @@ struct MacWorkspaceTaskCenter: View {
         // durable store; the latest query owns every publish.
         .task(id: workspace.isReady) {
             await workspace.loadTaskRuns()
-            workspace.scheduleTaskContentSearch(
-                query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
+            refreshContentSearch()
         }
         .onChange(of: workspace.conversations) { _, _ in
             Task { await workspace.loadTaskRuns() }
-            workspace.scheduleTaskContentSearch(
-                query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
+            refreshContentSearch()
         }
-        .onChange(of: workspace.taskCenterQuery) { _, value in
-            workspace.scheduleTaskContentSearch(
-                query: value, archived: workspace.taskCenterShowsArchived)
-        }
-        .onChange(of: workspace.taskCenterShowsArchived) { _, value in
+        .onChange(of: workspace.taskCenterQuery) { _, _ in refreshContentSearch() }
+        .onChange(of: projectMembers) { _, _ in refreshContentSearch() }
+        .onChange(of: workspace.taskCenterShowsArchived) { _, _ in
             selectingTasks = false
             selection.removeAll()
-            workspace.scheduleTaskContentSearch(
-                query: workspace.taskCenterQuery, archived: value)
+            refreshContentSearch()
         }
         .onChange(of: workspace.activeRunCount) { previous, count in
             if count < previous {
                 Task { await workspace.loadTaskRuns() }
-                workspace.scheduleTaskContentSearch(query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
+                refreshContentSearch()
             }
         }
         .onChange(of: selectableTaskIDs) { _, ids in
@@ -156,7 +164,7 @@ struct MacWorkspaceTaskCenter: View {
                         .background(MacWorkbenchButtonFrameReader { Self.smokeSelectionFrame = $0 })
                         #endif
                 }
-                if workspace.taskCenterShowsArchived && !tasks.isEmpty && !selectingTasks {
+                if projectID == nil && workspace.taskCenterShowsArchived && !tasks.isEmpty && !selectingTasks {
                     Spacer(minLength: 8)
                     Button(t("清空归档…", "Clear Archive…")) {
                         archiveDeletionIDs = tasks.map(\.id)
@@ -189,10 +197,7 @@ struct MacWorkspaceTaskCenter: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
-                    Button(t("重试", "Retry")) {
-                        workspace.scheduleTaskContentSearch(
-                            query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
-                    }
+                    Button(t("重试", "Retry"), action: refreshContentSearch)
                     .accessibilityIdentifier("workspace.task.retry.contentSearch")
                 }
                 .accessibilityIdentifier("workspace.task.contentSearchError")
@@ -303,10 +308,22 @@ struct MacWorkspaceTaskCenter: View {
     }
 
     private var tasks: [ConversationRecord] {
-        if !workspace.taskCenterShowsArchived { return workspace.conversations.filter(\.isVisibleInOrdinaryList) }
-        return workspace.conversations.filter {
-            $0.purpose == .ordinary && $0.visibility == .normal && $0.editorOwnership == nil && $0.archivedAt != nil
+        let records = workspace.conversations.filter { record in
+            if !workspace.taskCenterShowsArchived { return record.isVisibleInOrdinaryList }
+            return record.purpose == .ordinary && record.visibility == .normal
+                && record.editorOwnership == nil && record.archivedAt != nil
         }
+        guard let projectMembers else { return records }
+        return records.filter { projectMembers.contains($0.id) }
+    }
+
+    private var projectMembers: Set<UUID>? {
+        projectID.map { workspace.projectTaskMembership?[$0] ?? [] }
+    }
+
+    private func refreshContentSearch() {
+        workspace.scheduleTaskContentSearch(query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived,
+                                            projectID: projectID)
     }
 
     /// A conversation stays listed when its title, its latest run goal, or a

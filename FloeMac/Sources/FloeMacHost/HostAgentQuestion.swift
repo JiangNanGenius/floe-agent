@@ -48,6 +48,8 @@ struct HostAgentQuestion: Equatable {
 #if FLOE_UNIFIED_MAC
 struct HostAgentQuestionCardView: View {
     let question: HostAgentQuestion
+    /// Recovery copy for a restored card (no live run); nil for live cards.
+    let note: String?
     let submit: (UserQuestionAnswerTarget, UserQuestionAnswer) async -> Bool
     let cancel: (String) async -> Void
     let draftChanged: ((UserQuestionAnswerTarget, UserQuestionAnswer) -> Void)?
@@ -56,11 +58,13 @@ struct HostAgentQuestionCardView: View {
 
     init(
         question: HostAgentQuestion,
+        note: String? = nil,
         submit: @escaping (UserQuestionAnswerTarget, UserQuestionAnswer) async -> Bool,
         cancel: @escaping (String) async -> Void,
         draftChanged: ((UserQuestionAnswerTarget, UserQuestionAnswer) -> Void)? = nil
     ) {
         self.question = question
+        self.note = note
         self.submit = submit
         self.cancel = cancel
         self.draftChanged = draftChanged
@@ -93,6 +97,13 @@ struct HostAgentQuestionCardView: View {
             )
             .onAppear {
                 if let draftChanged { model.onDraftChanged = draftChanged }
+            }
+            if let note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("user_question.restored.note")
             }
         }
     }

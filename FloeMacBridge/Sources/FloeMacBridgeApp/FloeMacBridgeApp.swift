@@ -60,33 +60,45 @@ private struct MacWorkbenchCommands: Commands {
     @ObservedObject var workspace: UnifiedMacWorkspace
 
     var body: some Commands {
-        CommandMenu("Tasks") {
-            Button("workbench.new_task") { workspace.performMenuAction(.newTask) }
-                .keyboardShortcut("n")
-                .disabled(!workspace.menuAvailability.newTask)
-            Button("mac.workspace.find") { workspace.performMenuAction(.findTask) }
-                .keyboardShortcut("f")
-                .disabled(!workspace.menuAvailability.find)
-            Button("mac.workspace.findTask") { workspace.performMenuAction(.findTaskTitles) }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(!workspace.menuAvailability.find)
-            Divider()
-            Button("host.chat.stop") { workspace.performMenuAction(.stopTask) }
-                .keyboardShortcut(".")
-                .disabled(!workspace.menuAvailability.stop)
-        }
-        CommandMenu("space.title") {
-            Button("mac.workspace.spaceFiles") { workspace.performMenuAction(.openSpace(.files)) }
-                .disabled(!workspace.menuAvailability.openSpace)
-            Button("mac.workspace.toolbox") { workspace.performMenuAction(.openSpace(.toolbox)) }
-                .disabled(!workspace.menuAvailability.openSpace)
-            Button(MacToolboxText.browser(.current)) { workspace.openBrowserFromMenu() }
-                .disabled(!workspace.menuAvailability.openSpace)
-            Divider()
-            Button("mac.workspace.toggleFiles") { workspace.performMenuAction(.toggleFiles) }
-                .keyboardShortcut("0", modifiers: [.command, .option])
-                .disabled(!workspace.menuAvailability.toggleFiles)
-        }
+        Self.menu("Tasks", items: taskItems)
+        Self.menu("space.title", items: spaceItems)
+    }
+
+    // CommandMenu's content initializer is nonisolated. Evaluate workspace
+    // state on the main actor before passing the view value to its builder.
+    nonisolated private static func menu<Items: View>(_ title: LocalizedStringKey, items: Items) -> CommandMenu<Items> {
+        CommandMenu(title) { items }
+    }
+
+    @ViewBuilder private var taskItems: some View {
+        let availability = workspace.menuAvailability
+        Button("workbench.new_task") { workspace.performMenuAction(.newTask) }
+            .keyboardShortcut("n")
+            .disabled(!availability.newTask)
+        Button("mac.workspace.find") { workspace.performMenuAction(.findTask) }
+            .keyboardShortcut("f")
+            .disabled(!availability.find)
+        Button("mac.workspace.findTask") { workspace.performMenuAction(.findTaskTitles) }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(!availability.find)
+        Divider()
+        Button("host.chat.stop") { workspace.performMenuAction(.stopTask) }
+            .keyboardShortcut(".")
+            .disabled(!availability.stop)
+    }
+
+    @ViewBuilder private var spaceItems: some View {
+        let availability = workspace.menuAvailability
+        Button("mac.workspace.spaceFiles") { workspace.performMenuAction(.openSpace(.files)) }
+            .disabled(!availability.openSpace)
+        Button("mac.workspace.toolbox") { workspace.performMenuAction(.openSpace(.toolbox)) }
+            .disabled(!availability.openSpace)
+        Button(MacToolboxText.browser(.current)) { workspace.openBrowserFromMenu() }
+            .disabled(!availability.openSpace)
+        Divider()
+        Button("mac.workspace.toggleFiles") { workspace.performMenuAction(.toggleFiles) }
+            .keyboardShortcut("0", modifiers: [.command, .option])
+            .disabled(!availability.toggleFiles)
     }
 }
 #endif
@@ -494,6 +506,9 @@ final class BridgeAppModel: ObservableObject {
     }
     func stopListenerForTermination() {
         server?.stop()
+        #if FLOE_UNIFIED_MAC
+        macWorkspace?.browser?.flushPageHistory()
+        #endif
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         smoke?.cleanup()
         #endif

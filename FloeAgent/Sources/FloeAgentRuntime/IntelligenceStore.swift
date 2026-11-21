@@ -1586,7 +1586,8 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     public func conversationSearchMatches(
         _ rawQuery: String,
         limit: Int = 40,
-        scope: ConversationSearchScope = .all
+        scope: ConversationSearchScope = .all,
+        projectID: UUID? = nil
     ) async throws -> [ConversationSearchMatch] {
         let query = ConversationSearchQuery(raw: rawQuery)
         guard !query.isEmpty else { return [] }
@@ -1594,9 +1595,15 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         // The scope predicate is part of the SQL WHERE (before LIMIT) so a
         // different archive/ownership scope can never consume result slots.
         let scopeFilter = scope.sqlFilter
+        let projectFilter = projectID == nil ? "" : """
+             AND EXISTS (SELECT 1 FROM conversation_workspace_ownership ow
+                    JOIN workspaces w ON w.id = ow.workspace_id
+                    WHERE ow.conversation_id = c.id AND w.id = ? AND w.kind = 'project')
+            """
         return try await database.reader { db in
             try Task.checkCancellation()
             db.add(function: ConversationSearchQuery.visibleMatchFunction)
+            let arguments: StatementArguments = projectID.map { [$0.uuidString, rawQuery, bounded] } ?? [rawQuery, bounded]
             var matches: [ConversationSearchMatch] = []
             var seenConversations: Set<UUID> = []
             var seenMessages: Set<UUID> = []
@@ -1608,12 +1615,12 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                        m.created_at, c.title
                 FROM conversations c
                 CROSS JOIN messages m ON m.conversation_id = c.id
-                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'\(scopeFilter)
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'\(scopeFilter)\(projectFilter)
                   AND m.role IN ('user', 'assistant')
                   AND floe_conversation_search_match(m.role, m.content, ?) = 1
                 ORDER BY m.created_at DESC, m.id DESC
                 LIMIT ?
-                """, arguments: [rawQuery, bounded])
+                """, arguments: arguments)
             for row in rows {
                 guard matches.count < bounded,
                       let messageID = UUID(uuidString: row["message_id"]),
@@ -1643,11 +1650,11 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             let titleRows = try Row.fetchAll(db, sql: """
                 SELECT c.id AS conversation_id, c.title, c.updated_at
                 FROM conversations c
-                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'\(scopeFilter)
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'\(scopeFilter)\(projectFilter)
                   AND floe_conversation_search_match('title', c.title, ?) = 1
                 ORDER BY c.updated_at DESC
                 LIMIT ?
-                """, arguments: [rawQuery, bounded])
+                """, arguments: arguments)
             for row in titleRows {
                 guard matches.count < bounded,
                       let conversationID = UUID(uuidString: row["conversation_id"]),

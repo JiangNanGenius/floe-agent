@@ -1674,6 +1674,20 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    public func renameProject(id: UUID, name: String) async throws -> WorkspaceRecord? {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let operation = UUID()
+        activeAdmissions.insert(operation)
+        defer { activeAdmissions.remove(operation) }
+        do {
+            return try await stores.workspaces.renameProject(id: id, name: name)
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
     public func projectConversationIDs() async throws -> [UUID: Set<UUID>] {
         let stores = try requireStores()
         return try await stores.workspaces.projectConversationIDs()
@@ -2397,12 +2411,13 @@ public actor FloeMacSelfRuntime {
     public func taskContentMatches(
         _ query: String,
         archived: Bool = false,
-        limit: Int = 40
+        limit: Int = 40,
+        projectID: UUID? = nil
     ) async throws -> [ConversationSearchMatch] {
         let stores = try requireStores()
         do {
             return try await stores.intelligence.conversationSearchMatches(
-                query, limit: limit, scope: archived ? .archived : .visible)
+                query, limit: limit, scope: archived ? .archived : .visible, projectID: projectID)
         } catch {
             throw Self.surface(error)
         }

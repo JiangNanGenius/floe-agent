@@ -13,7 +13,7 @@ enum MacSpacePage: Hashable {
 
 private enum MacWorkspaceDestination: Hashable {
     case temporary, newTask(UUID?)
-    case taskCenter, space(MacSpacePage), creative, images, browser, conversation(UUID)
+    case taskCenter, projectTasks(UUID), space(MacSpacePage), creative, images, browser, conversation(UUID)
 }
 
 struct MacWorkspaceRootView: View {
@@ -21,6 +21,7 @@ struct MacWorkspaceRootView: View {
     static var smokeTaskCenterFrame: CGRect?
     static var smokeNewTaskFrame: CGRect?
     static var smokeTemporaryFrame: CGRect?
+    static var smokeSpaceProjectPickerFrame: CGRect?
     static var smokeSidebarFrames: [String: CGRect] = [:]
     static let smokeRevealProjectRow = Notification.Name("FloeWorkbenchSmokeRevealProjectRow")
     #endif
@@ -82,10 +83,14 @@ struct MacWorkspaceRootView: View {
     @State private var spaceFilesRoot: MacSpaceFilesRoot = .conversations
     @State private var addingProject = false
     @State private var showProjectError = false
+    @State private var projectToRename: WorkspaceRecord?
+    @State private var projectName = ""
+    @State private var showProjectRename = false
+    @State private var showProjectFolderError = false
     @State private var displayedFileRoot: WorkspaceRecord?
     @State private var expandedWorkspaceIDs: Set<UUID> = []
 
-    var body: some View {
+    private var boundLayout: some View {
         NavigationSplitView(columnVisibility: $sidebarVisibility) {
             sidebar
                 .safeAreaInset(edge: .top, spacing: 0) {
@@ -186,6 +191,10 @@ struct MacWorkspaceRootView: View {
         .onChange(of: preferredFileRoot, initial: true) { _, root in
             if !workspace.hasPendingWorkspaceFileChanges { displayedFileRoot = root }
         }
+    }
+
+    var body: some View {
+        boundLayout
         .alert("mac.workspace.rename", isPresented: $showRename) {
             TextField("mac.workspace.taskName", text: $taskTitle)
             Button("host.chat.cancel", role: .cancel) {}
@@ -205,6 +214,18 @@ struct MacWorkspaceRootView: View {
             Button("OK", role: .cancel) {}
         }
         .alert("host.chat.workspaceSaveFailed", isPresented: $showProjectError) {
+            Button("OK", role: .cancel) {}
+        }
+        .alert("mac.workspace.renameProject", isPresented: $showProjectRename, presenting: projectToRename) { project in
+            TextField("mac.workspace.projectName", text: $projectName)
+            Button("host.chat.cancel", role: .cancel) {}
+            Button("host.chat.save") {
+                let name = projectName
+                Task { if !(await workspace.renameProject(project.id, name: name)) { showProjectError = true } }
+            }
+            .disabled(projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || projectName.utf8.count > 200)
+        }
+        .alert("mac.workspace.projectFolderUnavailable", isPresented: $showProjectFolderError) {
             Button("OK", role: .cancel) {}
         }
         .confirmationDialog("mac.workspace.moveTask", isPresented: $showMove, presenting: taskToMove) { task in
@@ -538,12 +559,25 @@ struct MacWorkspaceRootView: View {
         #endif
     }
 
-    @ViewBuilder private func projectActions(_ project: WorkspaceRecord) -> some View {
-        Button("mac.workspace.browseFiles", systemImage: "folder") {
-            selectSpaceRoot(.project(project.id))
+    @ViewBuilder private func projectActions(_ project: WorkspaceRecord, includeBrowse: Bool = true) -> some View {
+        Button("mac.workspace.projectTasks", systemImage: "checklist") { destination = .projectTasks(project.id) }
+            .disabled(workspace.hasPendingWorkspaceFileChanges)
+        if includeBrowse {
+            Button("mac.workspace.browseFiles", systemImage: "folder") {
+                selectSpaceRoot(.project(project.id))
+            }
+            .disabled(!canSwitchSpaceRoot(to: .project(project.id)))
         }
-        .disabled(workspace.hasPendingWorkspaceFileChanges && displayedFileRoot?.id != project.id)
+        Button("mac.workspace.revealProjectFolder", systemImage: "arrow.up.forward.app") { revealProjectFolder(project) }
         Button("workbench.new_task", systemImage: "square.and.pencil") { startNewTask(in: project.id) }
+            .disabled(!canSelectTask)
+        Divider()
+        Button("mac.workspace.renameProject", systemImage: "pencil") {
+            projectToRename = project
+            projectName = project.name
+            showProjectRename = true
+        }
+        .disabled(!workspace.isReady || workspace.isTerminating)
     }
 
     @ViewBuilder
@@ -686,6 +720,11 @@ struct MacWorkspaceRootView: View {
 
     private var projects: [WorkspaceRecord] { workspace.workspaces.filter { $0.kind == .project } }
 
+    private var taskCenterProjectID: UUID? {
+        if case .projectTasks(let id) = destination { return id }
+        return nil
+    }
+
     private var spaceProject: WorkspaceRecord? {
         if case .project(let id) = spaceFilesRoot { return projects.first { $0.id == id } }
         return nil
@@ -810,6 +849,7 @@ struct MacWorkspaceRootView: View {
         case .newTask: String(localized: "mac.workspace.newTask")
         case .conversation(let id): workspace.conversations.first { $0.id == id }?.workbenchDisplayTitle
             ?? String(localized: "mac.workspace.untitledTask")
+        case .projectTasks(let id): projects.first { $0.id == id }?.name ?? String(localized: "mac.workspace.taskCenter")
         case .space: String(localized: "space.title")
         case .creative: String(localized: "mac.creative.title")
         case .images: String(localized: "mac.settings.images")
@@ -899,12 +939,15 @@ struct MacWorkspaceRootView: View {
             root: spaceFilesRoot,
             defaultAvailable: workspace.defaultConversationsDirectory != nil,
             canAddProject: canChooseProject,
-            canStartTask: canSelectTask,
             canSwitch: canSwitchSpaceRoot,
             select: selectSpaceRoot,
-            addProject: chooseProjectFolder,
-            newTask: { startNewTask(in: $0) }
-        )
+            addProject: chooseProjectFolder
+        ) { project in
+            projectActions(project, includeBrowse: false)
+        }
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { Self.smokeSpaceProjectPickerFrame = $0 })
+        #endif
     }
 
     /// Pending workspace-file edits may only move to the root that is
@@ -1135,7 +1178,8 @@ struct MacWorkspaceRootView: View {
         case .images:
             imageWorkbench
         default:
-            MacWorkspaceTaskCenter(workspace: workspace, findRequest: taskCenterFindRequest, onOpen: openTask, onNew: startNewTask,
+            MacWorkspaceTaskCenter(workspace: workspace, projectID: taskCenterProjectID, findRequest: taskCenterFindRequest,
+                                   onOpen: openTask, onNew: { startNewTask(in: taskCenterProjectID) },
                                    onArchive: { updateTask(id: $0, change: .archive($1)) },
                                    onMove: chooseTaskWorkspace, onDelete: confirmDelete,
                                    didDeleteArchived: { draftStore.clear(for: $0) },
@@ -1144,6 +1188,7 @@ struct MacWorkspaceRootView: View {
                                        searchResultTarget = (conversation, message)
                                        openTask(conversation)
                                    }, didArchiveTask: { id in Task { await taskDidLeaveHistory(id) } })
+                .id(taskCenterProjectID)
         }
     }
 
@@ -1163,8 +1208,8 @@ struct MacWorkspaceRootView: View {
         // The page representable returns the session's existing WKWebView, so
         // the owner identity forces a remount when the binding changes; this
         // is what keeps a task's page from lingering under another owner.
-        return MacBrowserWorkbenchView(
-            session: browserWorkbench.session(for: browserOwner),
+        return browserWorkbench.makeWorkbenchView(
+            owner: browserOwner,
             onReturn: onReturn,
             onOpenExternal: { NSWorkspace.shared.open($0) }
         )
@@ -1192,6 +1237,23 @@ struct MacWorkspaceRootView: View {
         spaceFilesRoot = root
         if remembersFileRoot { spaceFilesRootRaw = root.persistedToken }
         destination = .space(.files)
+    }
+
+    private func revealProjectFolder(_ project: WorkspaceRecord) {
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: project.rootBookmark,
+                                 options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                                 relativeTo: nil, bookmarkDataIsStale: &stale), !stale else {
+            showProjectFolderError = true
+            return
+        }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
+            showProjectFolderError = true
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     private func chooseProjectForTask() {
@@ -1262,8 +1324,8 @@ struct MacWorkspaceRootView: View {
     /// because the chat openURL action discards them first.
     private func openInWorkbenchBrowser(_ url: URL) {
         guard MacBrowserAddress.allows(url) else { return }
-        let owner = rememberBrowserReturnDestination()
-        browserWorkbench.session(for: owner).open(url)
+        let owner = destination == .browser ? browserOwner : rememberBrowserReturnDestination()
+        browserWorkbench.session(for: owner, restorePage: false).open(url)
         destination = .browser
     }
 
@@ -1350,7 +1412,7 @@ struct MacWorkspaceRootView: View {
     private func findInActiveView() {
         if filesTakeDetail {
             fileFindRequest = UUID()
-        } else if destination == .taskCenter {
+        } else if destination == .taskCenter || taskCenterProjectID != nil {
             taskCenterFindRequest = UUID()
         } else if activeSpacePage == .toolbox {
             toolboxFindRequest = UUID()

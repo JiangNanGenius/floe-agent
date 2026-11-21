@@ -256,7 +256,7 @@ struct HostAgentWorkspaceView: View {
                 }
                 conversation
                 if let question = workspace.pendingQuestion {
-                    HostAgentQuestionCardView(question: question, submit: { target, answer in
+                    HostAgentQuestionCardView(question: question, note: workspace.pendingQuestionRecoveryNote, submit: { target, answer in
                         await workspace.answerQuestion(target: target, answer: answer)
                     }, cancel: { requestID in
                         await workspace.declineQuestion(requestID: requestID)

@@ -319,6 +319,14 @@
 "mac.workspace.inspector.running" = "Running";
 "mac.workspace.inspector.updated" = "Last updated";
 "mac.workspace.browseFiles" = "Browse Files";
+"mac.workspace.projectTasks" = "Show Project Tasks";
+"mac.workspace.renameProject" = "Rename Project";
+"mac.workspace.projectName" = "Project Name";
+"mac.workspace.revealProjectFolder" = "Show in Finder";
+"mac.workspace.projectFolderUnavailable" = "Floe couldn’t find the project folder.";
+"mac.browser.download.unsupported" = "This page doesn’t provide a supported PDF or image.";
+"mac.browser.download.tooLarge" = "This file exceeds the 64 MB download limit.";
+"mac.browser.download.failed" = "Floe couldn’t save the download. Check the page and try again.";
 "mac.workspace.attachFiles" = "Attach Files…";
 "mac.workspace.attachFailed" = "Couldn’t Attach These Files";
 "mac.workspace.selectVisionModel" = "Choose a vision-capable task model or configure a vision model in Settings → Models.";
@@ -583,6 +591,10 @@
 "mac.question.provenance.default" = "Default answer";
 "mac.question.credentials.settings" = "Configure credentials in Settings. You can cancel these questions or choose an existing option.";
 "mac.question.credentials.retry" = "Your answer was not saved. Configure credentials in Settings.";
+"mac.question.restored.note.required" = "Floe will save this answer to the task. You can continue the task when you’re ready.";
+"mac.question.restored.note.optional" = "Your answer will be saved with this task’s queued messages.";
+"mac.question.restored.note.required" = "Your answer is saved to this task and is not sent to the model automatically. Continue the task from History when you are ready.";
+"mac.question.restored.note.optional" = "Your answer is saved to this task and is delivered once, at the task's next safe step.";
 
 "mac.permissions.authenticate" = "Allow Full Access for Floe Agent tasks.";
 

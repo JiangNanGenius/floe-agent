@@ -90,19 +90,18 @@ enum MacSpaceFilesRoot: Hashable {
 /// conversations directory, explicit projects, the remembered ad-hoc folder,
 /// plus project management. All gating and side effects stay at the call
 /// site through the closures; this view only renders the choice.
-struct MacSpaceFilesRootPicker: View {
+struct MacSpaceFilesRootPicker<ProjectActions: View>: View {
     let projects: [WorkspaceRecord]
     let root: MacSpaceFilesRoot
     /// The host's default conversations directory is available (the backend
     /// may legitimately refuse it, e.g. before storage is ready).
     let defaultAvailable: Bool
     let canAddProject: Bool
-    let canStartTask: Bool
     /// Pending workspace-file edits may block leaving the displayed root.
     let canSwitch: (MacSpaceFilesRoot) -> Bool
     let select: (MacSpaceFilesRoot) -> Void
     let addProject: () -> Void
-    let newTask: (UUID) -> Void
+    @ViewBuilder let projectActions: (WorkspaceRecord) -> ProjectActions
 
     var body: some View {
         Menu {
@@ -170,10 +169,9 @@ struct MacSpaceFilesRootPicker: View {
         .disabled(!canSwitch(.custom))
         Button("mac.workspace.addProject", action: addProject)
             .disabled(!canAddProject)
-        if case .project(let id) = root, projects.contains(where: { $0.id == id }) {
+        if case .project(let id) = root, let project = projects.first(where: { $0.id == id }) {
             Divider()
-            Button("workbench.new_task", systemImage: "square.and.pencil") { newTask(id) }
-                .disabled(!canStartTask)
+            projectActions(project)
         }
     }
 }

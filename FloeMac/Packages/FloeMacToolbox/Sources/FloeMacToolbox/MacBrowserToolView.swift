@@ -54,6 +54,12 @@ public final class MacBrowserSession: NSObject, ObservableObject, WKNavigationDe
     @Published public private(set) var currentURL: URL?
     public let page: WKWebView
 
+    /// Set by the owning workbench; called on the main actor when a
+    /// navigation commits or finishes so the owner can persist the safe,
+    /// URL-only page restore record. Never carries cookies, forms or
+    /// request bodies.
+    public var onPageCommit: ((URL?) -> Void)?
+
     public override init() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
@@ -115,9 +121,14 @@ public final class MacBrowserSession: NSObject, ObservableObject, WKNavigationDe
         update(from: webView)
     }
 
+    public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        onPageCommit?(webView.url)
+    }
+
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let url = webView.url { address = url.absoluteString }
         update(from: webView)
+        onPageCommit?(webView.url)
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -205,21 +216,68 @@ struct MacBrowserToolView: View {
     }
 }
 
+/// Download state the owning app supplies for the workbench banner. The
+/// toolbox stays free of app-module types; the app maps its own download
+/// snapshot onto this value type.
+public struct MacBrowserDownloadSnapshot: Equatable {
+    public let id: UUID
+    public let displayName: String
+    public let progress: Double
+    public let isFinishing: Bool
+
+    public init(id: UUID, displayName: String, progress: Double, isFinishing: Bool) {
+        self.id = id
+        self.displayName = displayName
+        self.progress = progress
+        self.isFinishing = isFinishing
+    }
+}
+
+/// Visible result of a completed download the user explicitly started.
+public struct MacBrowserSavedDownload: Equatable {
+    public let displayName: String
+    public let fileURL: URL
+
+    public init(displayName: String, fileURL: URL) {
+        self.displayName = displayName
+        self.fileURL = fileURL
+    }
+}
+
 /// The workbench browser surface shown inside the Agent window. It reuses the
 /// isolated session and adds the workbench affordances the toolbox window
-/// does not need: an explicit return to the calling task and an escape hatch
-/// to the system browser, mirroring the iPad browser chrome.
+/// does not need: an explicit return to the calling task, an escape hatch
+/// to the system browser and an explicit user-invoked download of the
+/// current page, mirroring the iPad browser chrome.
 public struct MacBrowserWorkbenchView: View {
     @ObservedObject public var session: MacBrowserSession
     public var onReturn: (() -> Void)?
     public var onOpenExternal: ((URL) -> Void)?
+    public var download: MacBrowserDownloadSnapshot?
+    public var savedDownload: MacBrowserSavedDownload?
+    public var downloadError: String?
+    public var onDownload: (() -> Void)?
+    public var onCancelDownload: ((UUID) -> Void)?
+    public var onRevealDownload: ((URL) -> Void)?
     @Environment(\.locale) private var locale
 
     public init(session: MacBrowserSession, onReturn: (() -> Void)? = nil,
-                onOpenExternal: ((URL) -> Void)? = nil) {
+                onOpenExternal: ((URL) -> Void)? = nil,
+                download: MacBrowserDownloadSnapshot? = nil,
+                savedDownload: MacBrowserSavedDownload? = nil,
+                downloadError: String? = nil,
+                onDownload: (() -> Void)? = nil,
+                onCancelDownload: ((UUID) -> Void)? = nil,
+                onRevealDownload: ((URL) -> Void)? = nil) {
         self.session = session
         self.onReturn = onReturn
         self.onOpenExternal = onOpenExternal
+        self.download = download
+        self.savedDownload = savedDownload
+        self.downloadError = downloadError
+        self.onDownload = onDownload
+        self.onCancelDownload = onCancelDownload
+        self.onRevealDownload = onRevealDownload
     }
 
     public var body: some View {
@@ -232,10 +290,24 @@ public struct MacBrowserWorkbenchView: View {
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("workspace.browser.backToTask")
                     #if DEBUG
-                    .background(BrowserReturnButtonAnchor())
+                    .background(BrowserChromeDebugAnchor(identifier: "workspace.browser.returnAnchor"))
                     #endif
                 }
                 MacBrowserControlRow(session: session)
+                if onDownload != nil {
+                    Button {
+                        onDownload?()
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(download != nil || session.currentURL == nil)
+                    .help(MacToolboxText.t("下载当前页面", "Download current page", locale))
+                    .accessibilityIdentifier("workspace.browser.download")
+                    #if DEBUG
+                    .background(BrowserChromeDebugAnchor(identifier: "workspace.browser.downloadAnchor"))
+                    #endif
+                }
                 if onOpenExternal != nil {
                     Button {
                         if let url = session.currentURL { onOpenExternal?(url) }
@@ -250,9 +322,109 @@ public struct MacBrowserWorkbenchView: View {
             }
             .padding(12)
             if session.failed { MacBrowserLoadError() }
+            if let download {
+                MacBrowserDownloadBanner(
+                    download: download,
+                    cancel: onCancelDownload,
+                    locale: locale
+                )
+            } else if let savedDownload, onRevealDownload != nil {
+                MacBrowserSavedRow(
+                    saved: savedDownload,
+                    reveal: onRevealDownload,
+                    locale: locale
+                )
+            } else if let downloadError {
+                MacBrowserDownloadErrorRow(message: downloadError)
+            }
             Divider()
             MacBrowserPageView(page: session.page)
         }
+    }
+}
+
+/// Failure line for the last user-invoked download; cancel stays silent.
+struct MacBrowserDownloadErrorRow: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.callout)
+                .lineLimit(2)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("workspace.browser.downloadError")
+    }
+}
+
+/// Progress/cancel line for an active user-invoked download; mirrors the
+/// iPad browser download banner.
+struct MacBrowserDownloadBanner: View {
+    let download: MacBrowserDownloadSnapshot
+    let cancel: ((UUID) -> Void)?
+    let locale: Locale
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView(value: download.progress)
+                .frame(width: 120)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(download.displayName).font(.callout).lineLimit(1)
+                Text(download.isFinishing
+                    ? MacToolboxText.t("正在保存", "Saving", locale)
+                    : MacToolboxText.t("正在下载", "Downloading", locale))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let cancel {
+                Button(MacToolboxText.t("取消", "Cancel", locale)) { cancel(download.id) }
+                    .font(.callout)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(8)
+        .accessibilityIdentifier("workspace.browser.downloadBanner")
+    }
+}
+
+/// Visible result of a finished download; the file already sits at the
+/// user-chosen path, so this only names it and offers a Finder reveal.
+struct MacBrowserSavedRow: View {
+    let saved: MacBrowserSavedDownload
+    let reveal: ((URL) -> Void)?
+    let locale: Locale
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(.secondary)
+            Text(MacToolboxText.t("已下载", "Downloaded", locale))
+                .font(.callout)
+            Text(saved.displayName)
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if let reveal {
+                Button(MacToolboxText.t("在访达中显示", "Show in Finder", locale)) {
+                    reveal(saved.fileURL)
+                }
+                .font(.callout)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("workspace.browser.savedRow")
     }
 }
 
@@ -265,16 +437,25 @@ struct MacBrowserPageView: NSViewRepresentable {
 
 
 #if DEBUG
-private struct BrowserReturnButtonAnchor: NSViewRepresentable {
+/// Hit-transparent debug anchor placed behind a chrome button so native
+/// smoke can fall back to a real click at the button's on-screen location
+/// when the accessibility press misses. One shared representable; the
+/// identifier names the affordance (`workspace.browser.returnAnchor`,
+/// `workspace.browser.downloadAnchor`).
+private struct BrowserChromeDebugAnchor: NSViewRepresentable {
+    let identifier: String
+
     final class Anchor: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
+
     func makeNSView(context: Context) -> NSView {
         let anchor = Anchor()
-        anchor.identifier = .init("workspace.browser.returnAnchor")
+        anchor.identifier = .init(identifier)
         anchor.setAccessibilityElement(false)
         return anchor
     }
+
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 #endif

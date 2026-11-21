@@ -320,6 +320,14 @@
 "mac.workspace.inspector.running" = "运行中";
 "mac.workspace.inspector.updated" = "最近更新";
 "mac.workspace.browseFiles" = "浏览文件";
+"mac.workspace.projectTasks" = "查看项目任务";
+"mac.workspace.renameProject" = "重命名项目";
+"mac.workspace.projectName" = "项目名称";
+"mac.workspace.revealProjectFolder" = "在访达中显示";
+"mac.workspace.projectFolderUnavailable" = "Floe 无法找到这个项目文件夹。";
+"mac.browser.download.unsupported" = "此页面没有可保存的 PDF 或图片。";
+"mac.browser.download.tooLarge" = "此文件超过 64 MB 下载上限。";
+"mac.browser.download.failed" = "下载未能保存。请检查网页后重试。";
 "mac.workspace.attachFiles" = "添加附件…";
 "mac.workspace.attachFailed" = "无法添加这些文件";
 "mac.workspace.selectVisionModel" = "请选择支持图片输入的任务模型，或前往“设置 → 模型”配置图片理解模型。";
@@ -584,6 +592,10 @@
 "mac.question.provenance.default" = "默认回答";
 "mac.question.credentials.settings" = "请在设置中配置凭据。可以取消这组提问，或选择已有选项。";
 "mac.question.credentials.retry" = "回答未保存。请在设置中配置凭据。";
+"mac.question.restored.note.required" = "回答会保存在此任务中。准备好后可继续任务。";
+"mac.question.restored.note.optional" = "回答会保存在此任务的待发送消息中。";
+"mac.question.restored.note.required" = "回答已保存到此任务，不会自动发送给模型；准备好后请从历史继续该任务。";
+"mac.question.restored.note.optional" = "回答已保存到此任务，会在该任务下一个安全步骤一次性送达。";
 
 "mac.permissions.authenticate" = "允许 Floe Agent 任务使用完全访问。";
 

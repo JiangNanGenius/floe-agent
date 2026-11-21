@@ -7,7 +7,10 @@
 // the existing atomic committer. Progress is visible/cancellable from the
 // browser chrome, and the tool's own cancellation token cancels the transfer.
 
-#if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit)
+// FloeMac compiles this service directly into the unified Mac app target
+// (FloeTools is available there, unlike the toolbox package); keep the guard
+// platform-neutral so both the iPad app and the Mac app build it unchanged.
+#if canImport(SwiftUI) && canImport(WebKit)
 import Combine
 import Foundation
 import SwiftUI
@@ -156,9 +159,7 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
                         try? await Task.sleep(for: .milliseconds(100))
                     }
                 }
-                Task { @MainActor [weak self] in
-                    await self?.begin(job, webView: webView, request: request)
-                }
+                begin(job, webView: webView, request: request)
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.cancel(id) }
@@ -176,22 +177,26 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
         for id in Array(jobs.keys) { cancel(id) }
     }
 
-    private func begin(_ job: Job, webView: WKWebView, request: URLRequest) async {
+    private func begin(_ job: Job, webView: WKWebView, request: URLRequest) {
         guard !job.finished else { return }
-        let download: WKDownload = await withCheckedContinuation { continuation in
-            webView.startDownload(using: request) { download in
-                continuation.resume(returning: download)
+        webView.startDownload(using: request) { [weak self] download in
+            guard let self, !job.finished else {
+                download.cancel { _ in }
+                return
             }
+            // Install the delegate before returning to WebKit, which can
+            // already have a cached response and be ready for its destination.
+            self.bind(download, to: job)
         }
-        guard !job.finished else {
-            download.cancel { _ in }
-            return
-        }
+    }
+
+    private func bind(_ download: WKDownload, to job: Job) {
         job.download = download
-        download.delegate = self
         byDownload[ObjectIdentifier(download)] = job.id
         startingJobID = nil
         job.state = .downloading
+        download.delegate = self
+        guard !job.finished else { return }
         job.observation = download.progress.observe(\.fractionCompleted, options: [.initial, .new]) { [weak self] progress, _ in
             let fraction = progress.fractionCompleted
             let completed = progress.completedUnitCount

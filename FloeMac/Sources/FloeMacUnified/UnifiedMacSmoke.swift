@@ -31,6 +31,7 @@ final class UnifiedMacSmoke {
     private var settingsDiagnostics: [String] = []
     private var browserOpenedFromMessageLink = false
     private var browserReturnButtonPressed = false
+    private static let recoveryPathKey = "floe.mac.smoke.workbenchRecoveryPath"
 
     static func configured() -> UnifiedMacSmoke? {
         let args = CommandLine.arguments
@@ -52,7 +53,22 @@ final class UnifiedMacSmoke {
             throw BridgeFailure.unsafePath
         }
         defer { free(physicalTemp) }
-        let prefix = String(cString: physicalTemp) + "/floe-unified-smoke.XXXXXX"
+        let temporary = URL(fileURLWithPath: String(cString: physicalTemp), isDirectory: true)
+        if CommandLine.arguments.contains("--workbench-reopen") {
+            guard let path = preferences.string(forKey: Self.recoveryPathKey), let resolved = realpath(path, nil) else {
+                throw BridgeFailure.unsafePath
+            }
+            defer { free(resolved) }
+            let saved = URL(fileURLWithPath: path, isDirectory: true)
+            guard saved.deletingLastPathComponent().path == temporary.path,
+                  saved.lastPathComponent.hasPrefix("floe-unified-smoke."), String(cString: resolved) == saved.path,
+                  (try? saved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
+                throw BridgeFailure.unsafePath
+            }
+            self.root = saved
+            return
+        }
+        let prefix = temporary.appendingPathComponent("floe-unified-smoke.XXXXXX").path
         var name = Array(prefix.utf8CString)
         guard let root = name.withUnsafeMutableBufferPointer({ bytes in
             mkdtemp(bytes.baseAddress).map { URL(fileURLWithPath: String(cString: $0), isDirectory: true) }
@@ -104,6 +120,10 @@ final class UnifiedMacSmoke {
         }
         if CommandLine.arguments.contains("--project-workbench-only"), let endpoint = projectTaskFixtureEndpoint {
             await exerciseProjectWorkbench(model, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--question-recovery-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseQuestionRecovery(model, endpoint: endpoint)
             return
         }
         let firstLaunch = CommandLine.arguments.contains("--verify-first-launch")
@@ -291,12 +311,28 @@ final class UnifiedMacSmoke {
             while (!agent.isReady || HostAgentWorkspaceView.smokeExpandFrame == nil) && ContinuousClock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(60))
             }
+            if CommandLine.arguments.contains("--workbench-reopen") {
+                await verifyBrowserRelaunch(workspace, agent: agent, endpoint: endpoint)
+                return
+            }
             let link = endpoint.appendingPathComponent("workbench-page")
             guard await agent.verifyChatSmoke(reply: "Project check completed. [Preview website](\(link.absoluteString))") else {
                 finish(["chat": false]); return
             }
-            let ok = await verifyTaskBrowser(workspace, agent: agent, endpoint: endpoint)
-            finish(["browser": ok, "link": browserOpenedFromMessageLink, "return": browserReturnButtonPressed, "details": settingsDiagnostics])
+            let testsDownload = CommandLine.arguments.contains("--browser-download-and-restore")
+            let ok = await verifyTaskBrowser(workspace, agent: agent, endpoint: endpoint, leavesBrowserOpen: testsDownload)
+            var result: [String: Any] = ["browser": ok, "link": browserOpenedFromMessageLink]
+            if ok, let taskID = agent.selectedID, testsDownload {
+                result["taskID"] = taskID.uuidString
+                if let digest = await verifyBrowserDownload(workspace, owner: taskID, endpoint: endpoint) {
+                    result["downloadSHA256"] = digest
+                    preferences.set(root.path, forKey: Self.recoveryPathKey)
+                    preferences.synchronize()
+                }
+            }
+            result["return"] = browserReturnButtonPressed
+            result["details"] = settingsDiagnostics
+            finish(result)
             return
         }
         if CommandLine.arguments.contains("--conversation-sheets-only") {
@@ -719,8 +755,13 @@ final class UnifiedMacSmoke {
             finish(["opened": false, "diagnostics": settingsDiagnostics]); return
         }
         let passed = await verifyProjectWorkflow(agent, project: project, folder: folder, attachment: document, endpoint: endpoint)
+        var organization = false
+        if passed, let taskID = agent.selectedID {
+            organization = await verifyProjectOrganization(agent, project: project, taskID: taskID)
+        }
         let fileEditorFailures = MacWorkspaceFileEditingSmoke.runSyntheticChecks()
-        finish(["projectTaskWorkflowVerified": passed, "sharedFileEditor": fileEditorFailures.isEmpty,
+        finish(["projectTaskWorkflowVerified": passed, "projectOrganizationVerified": organization,
+                "sharedFileEditor": fileEditorFailures.isEmpty,
                 "diagnostics": agent.smokeRunDiagnostics + settingsDiagnostics + fileEditorFailures])
     }
 
@@ -752,6 +793,122 @@ final class UnifiedMacSmoke {
                 try? await Task.sleep(for: .milliseconds(160))
                 return clickApproval(in: agent, allow: true, screenshot: "project-subtask-approval.png")
             })
+    }
+
+    private func verifyProjectOrganization(_ agent: HostAgentWorkspace, project: WorkspaceRecord, taskID: UUID) async -> Bool {
+        let name = "Renamed Fixture Project"
+        let persisted = agent.workspaces.first { $0.id == project.id }
+        guard await agent.renameProject(project.id, name: "  \(name)  "),
+              let renamed = agent.workspaces.first(where: { $0.id == project.id }), renamed.name == name,
+              renamed.rootBookmark == project.rootBookmark, renamed.createdAt == persisted?.createdAt,
+              agent.selectedConversationWorkspace?.name == name,
+              await openNewTaskFromSidebar(workspace: agent),
+              await agent.verifyChatSmoke(reply: "Acceptance report saved. Personal fixture."),
+              let personalID = agent.selectedID, personalID != taskID,
+              agent.selectedConversationWorkspace?.kind == .privateTask,
+              let scoped = try? await agent.taskContentMatches("Acceptance report saved", archived: false, projectID: project.id),
+              scoped.contains(where: { $0.conversationID == taskID && $0.messageID != nil }),
+              !scoped.contains(where: { $0.conversationID == personalID }),
+              clickWorkbenchButton(ids: ["workspace.space"], frame: agent.smokeSpaceFrame, screenshot: nil),
+              await selectMenuChoice(frame: MacWorkspaceRootView.smokeSpaceProjectPickerFrame, titles: [name], target: name) else {
+            settingsDiagnostics.append("Project rename or folder ownership could not be verified.")
+            return false
+        }
+        MacWorkspaceTaskCenter.smokeResultFrames.removeAll()
+        let showTasks = String(localized: "mac.workspace.projectTasks")
+        guard await selectMenuChoice(frame: MacWorkspaceRootView.smokeSpaceProjectPickerFrame, titles: [showTasks], target: showTasks),
+              let window = visibleWorkbench, let content = window.contentView else { return false }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while MacWorkspaceTaskCenter.smokeResultFrames[taskID] == nil && ContinuousClock.now < deadline {
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard MacWorkspaceTaskCenter.smokeResultFrames[personalID] == nil,
+              let frame = MacWorkspaceTaskCenter.smokeResultFrames[taskID], !frame.isEmpty else {
+            settingsDiagnostics.append("The project task list did not filter by stored ownership.")
+            return false
+        }
+        capture(content, extension: "project-tasks.png")
+        guard clickWorkbenchButton(ids: ["workspace.task.open.\(taskID.uuidString)"], frame: frame, screenshot: nil) else { return false }
+        let reopenDeadline = ContinuousClock.now + .seconds(3)
+        while (agent.selectedID != taskID || agent.selectedConversationWorkspace?.id != project.id)
+                && ContinuousClock.now < reopenDeadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        return agent.selectedID == taskID && agent.selectedConversationWorkspace?.id == project.id
+            && agent.selectedConversationWorkspace?.name == name
+            && agent.selectedConversationWorkspace?.rootBookmark == project.rootBookmark
+    }
+
+    private func exerciseQuestionRecovery(_ model: BridgeAppModel, endpoint: URL) async {
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+        await agent.prepare()
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
+        guard agent.isReady else { finish(["ready": false]); return }
+        if !CommandLine.arguments.contains("--workbench-reopen") {
+            guard agent.startNamedAgentFixture("Prepare the project deliverable.", modelID: "recovery-fixture", endpoint: endpoint,
+                                               projectID: nil) else { finish(["started": false]); return }
+            let pendingDeadline = ContinuousClock.now + .seconds(8)
+            while agent.pendingQuestion == nil && ContinuousClock.now < pendingDeadline {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard let card = agent.pendingQuestion, let question = card.currentQuestion, agent.isSending else {
+                finish(["pending": false, "notice": agent.notice ?? ""]); return
+            }
+            await agent.saveQuestionDraft(target: card.snapshot.target(for: question), answer: .init(selectedOptionIDs: ["report"]))
+            preferences.set(root.path, forKey: Self.recoveryPathKey)
+            preferences.synchronize()
+            let ready: [String: Any] = ["pending": true, "pid": getpid(), "taskID": card.conversationID.uuidString,
+                                        "runID": card.runID.uuidString, "requestID": card.requestID]
+            if let bytes = try? JSONSerialization.data(withJSONObject: ready, options: [.prettyPrinted]) {
+                try? bytes.write(to: report, options: .atomic)
+            }
+            // The fixture driver terminates the actual process while it is waiting.
+            return
+        }
+        guard let taskID = agent.conversations.first?.id,
+              await openTaskFromCenter(taskID, agent: agent) else { finish(["reopenedTask": false]); return }
+        let cardDeadline = ContinuousClock.now + .seconds(7)
+        while (agent.pendingQuestion == nil || UserQuestionCardView.smokeModel?.currentTarget == nil)
+                && ContinuousClock.now < cardDeadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard let card = agent.pendingQuestion, let question = card.currentQuestion else {
+            finish(["restoredCard": false, "diagnostics": settingsDiagnostics]); return
+        }
+        let noResumption = agent.activeRunCount == 0 && !agent.isSending
+        let restoredDraft = UserQuestionCardView.smokeModel?.isSelected("report") == true
+        let usedVisibleCard = await answerProjectQuestion(in: agent)
+        let duplicate = await agent.answerQuestion(target: card.snapshot.target(for: question),
+                                                    answer: .init(selectedOptionIDs: ["notes"]))
+        await agent.select(nil)
+        await agent.select(taskID)
+        let receipts = agent.settledQuestions[card.runID]?.filter { $0.requestID == card.requestID } ?? []
+        let answer = receipts.first?.questions.first?.answerRecord()
+        finish(["restoredCard": true, "taskID": taskID.uuidString, "runID": card.runID.uuidString,
+                "requestID": card.requestID, "restoredDraft": restoredDraft, "usedVisibleCard": usedVisibleCard,
+                "answeredOnce": !duplicate && receipts.count == 1 && answer?.source == .human
+                    && answer?.selectedOptionIDs == ["report"], "reopenedWithoutRunning": noResumption,
+                "diagnostics": settingsDiagnostics])
+    }
+
+    private func openTaskFromCenter(_ taskID: UUID, agent: HostAgentWorkspace) async -> Bool {
+        MacWorkspaceTaskCenter.smokeResultFrames.removeAll()
+        guard clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame,
+                                   screenshot: nil) else { return false }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while MacWorkspaceTaskCenter.smokeResultFrames[taskID] == nil && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard clickWorkbenchButton(ids: ["workspace.task.open.\(taskID.uuidString)"],
+                                   frame: MacWorkspaceTaskCenter.smokeResultFrames[taskID], screenshot: nil) else { return false }
+        while agent.selectedID != taskID && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        return agent.selectedID == taskID
     }
 
     private func exerciseTranscriptParity(_ model: BridgeAppModel) async {
@@ -1225,6 +1382,9 @@ final class UnifiedMacSmoke {
     }
 
     func cleanup() {
+        if CommandLine.arguments.contains("--browser-download-and-restore"),
+           !CommandLine.arguments.contains("--workbench-reopen"),
+           preferences.string(forKey: Self.recoveryPathKey) == root.path { return }
         if !CommandLine.arguments.contains("--keep-launch-preference-for-relaunch") {
             preferences.removePersistentDomain(forName: preferenceSuite)
         }
@@ -2424,7 +2584,8 @@ final class UnifiedMacSmoke {
         return false
     }
 
-    private func verifyTaskBrowser(_ workspace: UnifiedMacWorkspace, agent: HostAgentWorkspace, endpoint: URL) async -> Bool {
+    private func verifyTaskBrowser(_ workspace: UnifiedMacWorkspace, agent: HostAgentWorkspace, endpoint: URL,
+                                   leavesBrowserOpen: Bool = false) async -> Bool {
         guard let window = visibleWorkbench, let content = window.contentView, let owner = agent.selectedID,
               let browser = workspace.browser else { return false }
         let url = endpoint.appendingPathComponent("workbench-page")
@@ -2502,11 +2663,18 @@ final class UnifiedMacSmoke {
             return failed("page did not load in the owning task window")
         }
         capture(content, extension: "browser-task.png")
-        // Click WebKit content with a window event so target=_blank follows the same route as a user's link.
-        let location = try? await session.page.evaluateJavaScript("(()=>{const r=document.getElementById('next').getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()") as? [Double]
-        guard let location, location.count == 2 else { return failed("fixture link missing") }
-        let y = session.page.isFlipped ? location[1] : session.page.bounds.height - location[1]
-        _ = clickWindowLocation(session.page.convert(NSPoint(x: location[0], y: y), to: nil), in: window)
+        if leavesBrowserOpen {
+            let other = browser.session(for: UUID())
+            return other !== session && other.currentURL == nil
+                && other.page.configuration.websiteDataStore !== session.page.configuration.websiteDataStore
+        }
+        // The synthetic page puts Next at the top left. Use AppKit events
+        // directly so this test exercises link activation without relying on
+        // the asynchronous JavaScript evaluation API.
+        let nextLinkPoint = NSPoint(x: 24, y: session.page.isFlipped ? 16 : session.page.bounds.height - 16)
+        guard session.page.bounds.contains(nextLinkPoint), click(session.page, at: nextLinkPoint, in: window) else {
+            return failed("fixture link could not be clicked")
+        }
         guard await waitUntil({ session.page.title == "Floe second page" }), session.page.canGoBack else { return failed("user link did not navigate in place") }
         session.page.goBack()
         guard await waitUntil({ session.page.title == "Floe browser fixture" }) else { return failed("back history missing") }
@@ -2518,7 +2686,7 @@ final class UnifiedMacSmoke {
             }
             if let anchor = findAnchor(content) {
                 let center = NSPoint(x: anchor.bounds.midX, y: anchor.bounds.midY)
-                browserReturnButtonPressed = clickWindowLocation(anchor.convert(center, to: nil), in: window)
+                browserReturnButtonPressed = click(anchor, at: center, in: window)
             }
         }
         guard browserReturnButtonPressed else { return failed("could not press the return button") }
@@ -2529,6 +2697,94 @@ final class UnifiedMacSmoke {
         guard await closeFixtureSheet(reopenedSheet, id: "thread.composer.expanded.done"), keptDraft else { return failed("draft was lost") }
         let other = browser.session(for: UUID())
         return other !== session && other.currentURL == nil && other.page.configuration.websiteDataStore !== session.page.configuration.websiteDataStore
+    }
+
+    private func verifyBrowserDownload(_ workspace: UnifiedMacWorkspace, owner: UUID, endpoint: URL) async -> String? {
+        guard let browser = workspace.browser, let window = visibleWorkbench, let content = window.contentView else { return nil }
+        let output = root.appendingPathComponent("fixture-browser.pdf")
+        browser.downloads.smokeDestination = output
+        defer { browser.downloads.smokeDestination = nil }
+        FileHandle.standardError.write(Data("Browser fixture loaded the task page\n".utf8))
+        let url = endpoint.appendingPathComponent("document.pdf")
+        browser.present(url: url)
+        let documentDeadline = ContinuousClock.now + .seconds(5)
+        while (!browser.isPresented || browser.existingTaskSession(for: owner)?.currentURL != url)
+                && ContinuousClock.now < documentDeadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard let session = browser.existingTaskSession(for: owner), session.currentURL == url else {
+            settingsDiagnostics.append("The task did not open its authenticated document."); return nil
+        }
+        FileHandle.standardError.write(Data("Browser fixture navigated to the PDF\n".utf8))
+        func downloadAnchor(in view: NSView) -> NSView? {
+            if view.identifier?.rawValue == "workspace.browser.downloadAnchor" { return view }
+            return view.subviews.lazy.compactMap(downloadAnchor).first
+        }
+        let panelDeadline = ContinuousClock.now + .seconds(5)
+        var clicked = false
+        var panel: NSSavePanel?
+        while ContinuousClock.now < panelDeadline {
+            if let sheet = window.attachedSheet as? NSSavePanel { panel = sheet; break }
+            if !clicked {
+                clicked = pressAccessibilityButton(content, id: "workspace.browser.download")
+                if !clicked, let anchor = downloadAnchor(in: content), !anchor.bounds.isEmpty {
+                    clicked = click(anchor, at: NSPoint(x: anchor.bounds.midX, y: anchor.bounds.midY), in: window)
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard let panel else { settingsDiagnostics.append("No native download destination panel was shown."); return nil }
+        FileHandle.standardError.write(Data("Browser fixture opened the destination sheet\n".utf8))
+        try? await Task.sleep(for: .milliseconds(300))
+        guard let panelDirectory = panel.directoryURL, panelDirectory.resolvingSymlinksInPath() == root.resolvingSymlinksInPath() else {
+            settingsDiagnostics.append("The destination sheet did not enter the isolated fixture directory."); return nil
+        }
+        let transferDeadline = ContinuousClock.now + .seconds(55)
+        var bytes: Data?
+        while bytes == nil && ContinuousClock.now < transferDeadline {
+            bytes = try? Data(contentsOf: output)
+            if bytes == nil { try? await Task.sleep(for: .milliseconds(60)) }
+        }
+        guard let bytes, bytes.starts(with: Data("%PDF-".utf8)) else {
+            let sheetStillOpen = window.attachedSheet != nil
+            let transferError = browser.downloads.error(for: owner) ?? "none"
+            settingsDiagnostics.append("The PDF wasn’t saved. Sheet open: \(sheetStillOpen); transfer error: \(transferError).")
+            browser.downloads.cancelAll()
+            return nil
+        }
+        let pageURL = endpoint.appendingPathComponent("workbench-next")
+        var routed = URLComponents(url: pageURL, resolvingAgainstBaseURL: false)
+        routed?.queryItems = [URLQueryItem(name: "code", value: "synthetic-oauth-value")]
+        routed?.fragment = "private-example"
+        guard let visitedURL = routed?.url else { return nil }
+        session.open(visitedURL)
+        let pageDeadline = ContinuousClock.now + .seconds(4)
+        while (session.page.title != "Floe second page" || session.currentURL != visitedURL) && ContinuousClock.now < pageDeadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard session.currentURL == visitedURL, session.page.title == "Floe second page" else { return nil }
+        capture(content, extension: "browser-saved.png")
+        browser.returnToTask()
+        let returnDeadline = ContinuousClock.now + .seconds(3)
+        while browser.isPresented && ContinuousClock.now < returnDeadline { try? await Task.sleep(for: .milliseconds(40)) }
+        browserReturnButtonPressed = !browser.isPresented && workspace.agent?.selectedID == owner
+        return browserReturnButtonPressed ? FloeDigest.sha256Hex(bytes) : nil
+    }
+
+    private func verifyBrowserRelaunch(_ workspace: UnifiedMacWorkspace, agent: HostAgentWorkspace, endpoint: URL) async {
+        guard let browser = workspace.browser, let taskID = agent.conversations.first?.id,
+              await openTaskFromCenter(taskID, agent: agent), browser.existingTaskSession(for: taskID) == nil else {
+            finish(["reopenedTask": false, "diagnostics": settingsDiagnostics]); return
+        }
+        browser.present()
+        let url = endpoint.appendingPathComponent("workbench-next")
+        let deadline = ContinuousClock.now + .seconds(6)
+        while browser.existingTaskSession(for: taskID)?.page.title != "Floe second page" && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        let restored = browser.existingTaskSession(for: taskID)?.currentURL == url
+            && browser.existingTaskSession(for: taskID)?.page.title == "Floe second page" && browser.isPresented
+        finish(["reopenedTask": true, "restoredPageOnOpen": restored, "taskID": taskID.uuidString])
     }
 
     private func verifyExpandedComposer(_ agent: HostAgentWorkspace) async -> Bool {

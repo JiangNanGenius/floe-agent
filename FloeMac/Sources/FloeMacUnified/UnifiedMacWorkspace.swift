@@ -110,7 +110,22 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
             drafts.adoptLegacyHomeDraft(for: workspace.uncommittedDraftID)
             workspace.loadAttachmentDraft = { [weak drafts] in drafts?.attachments(for: $0) ?? [] }
             workspace.saveAttachmentDraft = { [weak drafts] id, attachments in drafts?.setAttachments(attachments, for: id) }
-            let browser = MacBrowserWorkbenchController()
+            // Page-restore records persist per surviving task; the snapshot
+            // closure is consulted lazily (never at browser-controller init,
+            // before the workspace task list is prepared).
+            let browser = MacBrowserWorkbenchController(
+                storeDirectory: directory?.appendingPathComponent("Browser", isDirectory: true),
+                survivingOwnerIDs: { [weak workspace, weak drafts] in
+                    guard let workspace, workspace.isReady else { return Set() }
+                    var ids = Set(workspace.conversations.map(\.id))
+                    ids.insert(workspace.uncommittedDraftID)
+                    if let drafts {
+                        ids.formUnion(drafts.uncommittedDrafts(excluding: ids).map(\.id))
+                    }
+                    return ids
+                },
+                admitWork: admitWork
+            )
             self.browser = browser
             let temporary = MacTemporaryChatModel()
             temporaryChat = temporary

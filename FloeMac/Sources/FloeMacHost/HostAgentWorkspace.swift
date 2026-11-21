@@ -291,8 +291,12 @@ final class HostAgentWorkspace: ObservableObject {
     var isStopping: Bool { visibleRun?.stopping == true }
     var activeRunCount: Int { liveRuns.count }
     var pendingApproval: HostAgentApproval? { visibleRun?.approval }
-    /// The question card for the visible run, if the model is waiting.
-    var pendingQuestion: HostAgentQuestion? { visibleRun?.question }
+    /// The question card for the visible task: the live run projection while a
+    /// run is parked, otherwise the durable card restored for a reopened task.
+    var pendingQuestion: HostAgentQuestion? {
+        if let visibleRun { return visibleRun.question }
+        return selectedID.flatMap { restoredQuestions[$0] }
+    }
     var isResolvingApproval: Bool { visibleRun?.resolvingApproval == true }
     var runPhase: FloeMacSelfSessionPhase? { visibleRun?.phase }
     var liveReasoning: String { visibleRun?.reasoningText ?? "" }
@@ -622,12 +626,19 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private var historyContinuation: RunRecord?
     var continuableRun: RunRecord? {
         guard isReady, !isSending, !isLoadingHistory, !historyLoadFailed, !isTerminating, !isAcceptingPlan,
-              pendingAcceptedPlan == nil, plan?.awaitsConfirmation != true,
+              pendingAcceptedPlan == nil, plan?.awaitsConfirmation != true, pendingQuestion == nil,
               let run = historyContinuation, run.conversationID == selectedID else { return nil }
         return run
     }
     @Published private var changingGoals = Set<UUID>()
     @Published private(set) var settledQuestions: [UUID: [UserQuestionWaitingSnapshot]] = [:]
+    /// Durable question card re-presented for a reopened task that has no
+    /// live run (relaunch/reconnect). The durable store and coordinator remain
+    /// the only writers; this is a read projection of their exact
+    /// conversation/run/request/question state. It is set only for the
+    /// selected task with a stable load generation, and it steps aside the
+    /// moment a live run exists for the same task again.
+    @Published private(set) var restoredQuestions: [UUID: HostAgentQuestion] = [:]
     @Published private(set) var runToolActivity: [UUID: [HostAgentToolActivity]] = [:]
     @Published private(set) var showsModelSettingsForFailure = false
     var officialCatalogs: FloeMacOfficialCatalogs?
@@ -1507,6 +1518,22 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    func renameProject(_ id: UUID, name: String) async -> Bool {
+        guard let runtime, isReady, !isTerminating, let release = admit() else { return false }
+        defer { release() }
+        do {
+            guard let record = try await runtime.renameProject(id: id, name: name) else { return false }
+            if let index = workspaces.firstIndex(where: { $0.id == id }) {
+                workspaces[index] = record
+                workspaces.sort { ($0.name.lowercased(), $0.id.uuidString) < ($1.name.lowercased(), $1.id.uuidString) }
+            }
+            if selectedConversationWorkspace?.id == id { selectedConversationWorkspace = record }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Stages picked files for the next send. Only regular files that open
     /// for reading, produce a read-only security-scoped bookmark, and pass
     /// the bounded size/type rules are staged; duplicates of an already
@@ -1870,10 +1897,10 @@ final class HostAgentWorkspace: ObservableObject {
     /// contract (visible-text matcher, projected snippets). `archived: false`
     /// addresses the current visible list; `archived: true` addresses the
     /// archived scope. Local SQLite only; results are bounded by the store.
-    func taskContentMatches(_ query: String, archived: Bool) async throws -> [ConversationSearchMatch] {
+    func taskContentMatches(_ query: String, archived: Bool, projectID: UUID? = nil) async throws -> [ConversationSearchMatch] {
         guard let runtime, isReady, !isTerminating, let release = admit() else { throw CancellationError() }
         defer { release() }
-        return try await runtime.taskContentMatches(query, archived: archived)
+        return try await runtime.taskContentMatches(query, archived: archived, projectID: projectID)
     }
 
     /// Debounced, latest-query-wins search scheduling. A newer query cancels
@@ -1881,7 +1908,7 @@ final class HostAgentWorkspace: ObservableObject {
     /// or cancelled search never touches the published matches (and the UI
     /// selection is never yanked by an old query). An empty query clears
     /// results immediately without a store round trip.
-    func scheduleTaskContentSearch(query: String, archived: Bool) {
+    func scheduleTaskContentSearch(query: String, archived: Bool, projectID: UUID? = nil) {
         taskContentSearchTask?.cancel()
         taskContentLookup = UUID()
         let lookup = taskContentLookup
@@ -1894,7 +1921,7 @@ final class HostAgentWorkspace: ObservableObject {
             try? await Task.sleep(for: Self.taskContentSearchDebounce)
             guard !Task.isCancelled, lookup == self.taskContentLookup, self.isReady else { return }
             do {
-                let results = try await self.taskContentMatches(trimmed, archived: archived)
+                let results = try await self.taskContentMatches(trimmed, archived: archived, projectID: projectID)
                 guard !Task.isCancelled, lookup == self.taskContentLookup else { return }
                 var byID: [UUID: ConversationSearchMatch] = [:]
                 for match in results where byID[match.conversationID] == nil {
@@ -2010,6 +2037,10 @@ final class HostAgentWorkspace: ObservableObject {
         if currentID == nil { newDraftRunID = taskID }
         #endif
         liveRuns[taskID] = LiveRun(prompt: acceptedPlan == nil ? text : nil, mode: mode, modelID: provider.model.id)
+        // A live run for this task becomes the sole authority for its question
+        // card, even before its handle lands; any durable restored card for an
+        // earlier run steps aside.
+        restoredQuestions.removeValue(forKey: taskID)
         if selectedID == currentID {
             notice = nil
             rejectedPrompt = nil
@@ -4782,15 +4813,34 @@ extension HostAgentWorkspace {
     }
 
     private func projectQuestionSnapshot(_ snapshot: UserQuestionWaitingSnapshot) {
-        guard let run = liveRuns[snapshot.conversationID], run.handle?.identity.runID == snapshot.runID else { return }
-        if snapshot.currentQuestion == nil, run.question?.requestID != snapshot.requestID { return }
-        let card = snapshot.currentQuestion == nil ? nil : HostAgentQuestion(
-            conversationID: snapshot.conversationID,
-            runID: snapshot.runID,
-            snapshot: snapshot
-        )
-        if liveRuns[snapshot.conversationID]?.question != card {
-            liveRuns[snapshot.conversationID]?.question = card
+        if let run = liveRuns[snapshot.conversationID], run.handle?.identity.runID == snapshot.runID {
+            // The live parked run stays authoritative for its own card.
+            restoredQuestions[snapshot.conversationID] = nil
+            if snapshot.currentQuestion == nil, run.question?.requestID != snapshot.requestID { return }
+            let card = snapshot.currentQuestion == nil ? nil : HostAgentQuestion(
+                conversationID: snapshot.conversationID,
+                runID: snapshot.runID,
+                snapshot: snapshot
+            )
+            if liveRuns[snapshot.conversationID]?.question != card {
+                liveRuns[snapshot.conversationID]?.question = card
+            }
+            return
+        }
+        guard liveRuns[snapshot.conversationID] == nil, selectedID == snapshot.conversationID, !snapshot.isEphemeral else { return }
+        // No live run: project or close the durable restored card. A settled
+        // snapshot (answer, cancel, expiry or terminal fence) closes it; a
+        // pending one re-presents the exact stored question.
+        if snapshot.currentQuestion == nil {
+            if restoredQuestions[snapshot.conversationID]?.requestID == snapshot.requestID {
+                restoredQuestions[snapshot.conversationID] = nil
+            }
+        } else {
+            restoredQuestions[snapshot.conversationID] = HostAgentQuestion(
+                conversationID: snapshot.conversationID,
+                runID: snapshot.runID,
+                snapshot: snapshot
+            )
         }
     }
 
@@ -4810,9 +4860,14 @@ extension HostAgentWorkspace {
     #endif
 
     /// Passive restored transcript: re-presenting the durable pending
-    /// question for a re-opened conversation without resuming any run.
+    /// question for a re-opened conversation without resuming any run. This
+    /// restores only for the selected task and a stable load generation, and
+    /// only the durable exact question still pending for this conversation in
+    /// the store (never an ephemeral row); a live parked run, when present,
+    /// keeps sole ownership of the card and is left untouched here.
     func restoreQuestion(for conversationID: UUID) async {
         guard let runtime, let center = try? await runtime.userQuestionCenter() else { return }
+        let selection = historySelection
         await center.restore(conversationID: conversationID)
         try? await runtime.deliverOptionalQuestionAnswers(conversationID: conversationID)
         #if FLOE_UNIFIED_MAC
@@ -4821,12 +4876,27 @@ extension HostAgentWorkspace {
             recordSettledQuestions(rows)
         }
         #endif
+        guard selectedID == conversationID, historySelection == selection,
+              liveRuns[conversationID] == nil else { return }
+        let snapshot = try? await center.pendingSnapshot(conversationID: conversationID)
+        guard selectedID == conversationID, historySelection == selection, liveRuns[conversationID] == nil else { return }
+        guard let snapshot, !snapshot.isEphemeral, snapshot.conversationID == conversationID,
+              snapshot.currentQuestion != nil else {
+            restoredQuestions[conversationID] = nil
+            return
+        }
+        restoredQuestions[conversationID] = HostAgentQuestion(
+            conversationID: snapshot.conversationID,
+            runID: snapshot.runID,
+            snapshot: snapshot
+        )
     }
 
     private func refreshQuestionCard(for conversationID: UUID) async {
         guard let runtime, let center = try? await runtime.userQuestionCenter() else { return }
         guard let snapshot = try? await center.pendingSnapshot(conversationID: conversationID) else {
             if liveRuns[conversationID]?.question != nil { liveRuns[conversationID]?.question = nil }
+            restoredQuestions[conversationID] = nil
             return
         }
         projectQuestionSnapshot(snapshot)
@@ -4835,45 +4905,109 @@ extension HostAgentWorkspace {
     /// Submits one complete card answer. True means this exact answer settled
     /// the question in the durable store; anything else refreshes the card
     /// from durable truth and returns false so the card shows the retry copy.
+    /// A live parked run keeps its session-fenced path; a restored card (no
+    /// live run) settles through the same durable coordinator CAS, which
+    /// re-validates exact conversation/run/request/question ownership, the
+    /// expected revision, normalization and the no-secret rule.
     @discardableResult
     func answerQuestion(target: UserQuestionAnswerTarget, answer: UserQuestionAnswer) async -> Bool {
-        guard let handle = liveRuns[target.conversationID]?.handle, handle.identity.runID == target.runID else { return false }
-        let command = FloeMacSelfQuestionAnswerCommand(
-            conversationID: target.conversationID,
-            runID: target.runID,
-            requestID: target.requestID,
-            questionID: target.questionID,
-            expectedRevision: target.expectedRevision,
-            answer: answer
-        )
-        let result = await handle.resolveQuestion(command)
-        switch result {
-        case .accepted:
-            return true
-        case .notPending(let receipt):
-            await refreshQuestionCard(for: target.conversationID)
-            return receipt?.accepted == true
-        case .rejected(let rejection):
-            if rejection == .staleQuestion || rejection == .sessionEnded
-                || rejection == .conversationMismatch || rejection == .runMismatch {
+        if let handle = liveRuns[target.conversationID]?.handle, handle.identity.runID == target.runID {
+            let command = FloeMacSelfQuestionAnswerCommand(
+                conversationID: target.conversationID,
+                runID: target.runID,
+                requestID: target.requestID,
+                questionID: target.questionID,
+                expectedRevision: target.expectedRevision,
+                answer: answer
+            )
+            let result = await handle.resolveQuestion(command)
+            switch result {
+            case .accepted:
+                return true
+            case .notPending(let receipt):
                 await refreshQuestionCard(for: target.conversationID)
+                return receipt?.accepted == true
+            case .rejected(let rejection):
+                if rejection == .staleQuestion || rejection == .sessionEnded
+                    || rejection == .conversationMismatch || rejection == .runMismatch {
+                    await refreshQuestionCard(for: target.conversationID)
+                }
+                return false
             }
+        }
+        return await answerRestoredQuestion(target: target, answer: answer)
+    }
+
+    /// Settles a restored card's answer directly through the durable CAS. The
+    /// projected card must still own the exact request/run; the store then
+    /// re-applies the same binding plus the CAS revision inside its
+    /// transaction, so a task change or an already settled question fails
+    /// closed without touching durable state.
+    private func answerRestoredQuestion(target: UserQuestionAnswerTarget, answer: UserQuestionAnswer) async -> Bool {
+        guard let restored = pendingQuestion, selectedID == target.conversationID, visibleRun == nil,
+              restored.runID == target.runID, restored.requestID == target.requestID,
+              let runtime, !isTerminating, let release = admit() else { return false }
+        defer { release() }
+        let selection = historySelection
+        guard let center = try? await runtime.userQuestionCenter(), historySelection == selection,
+              visibleRun == nil, pendingQuestion == restored else { return false }
+        do {
+            let receipt = try await center.submitHumanAnswer(target: target, answer: answer)
+            await refreshQuestionCard(for: target.conversationID)
+            return receipt.accepted
+        } catch {
+            await refreshQuestionCard(for: target.conversationID)
             return false
         }
     }
 
     func saveQuestionDraft(target: UserQuestionAnswerTarget, answer: UserQuestionAnswer) async {
         guard let runtime, let center = try? await runtime.userQuestionCenter() else { return }
-        guard liveRuns[target.conversationID]?.handle?.identity.runID == target.runID else { return }
+        let live = liveRuns[target.conversationID]?.handle?.identity.runID == target.runID
+        let restored = restoredQuestions[target.conversationID]?.runID == target.runID
+            && restoredQuestions[target.conversationID]?.requestID == target.requestID
+        guard live || restored else { return }
         _ = try? await center.saveDraft(target: target, draft: answer)
     }
 
-    /// Decline cancels the whole question request for this exact run; the
-    /// parked wait (if any) receives the cancelled tool receipt.
+    /// Decline cancels the whole question request for this exact run; a parked
+    /// run receives the cancelled tool receipt. A restored card (no live run)
+    /// cancels through the same durable coordinator; its settled event closes
+    /// the card without fabricating an answer.
     func declineQuestion(requestID: String) async {
         guard let id = visibleTaskID, let question = pendingQuestion,
               question.conversationID == id, question.requestID == requestID else { return }
-        guard let handle = liveRuns[id]?.handle, handle.identity.runID == question.runID else { return }
-        _ = await handle.cancelQuestion(requestID: requestID)
+        if let handle = liveRuns[id]?.handle, handle.identity.runID == question.runID {
+            _ = await handle.cancelQuestion(requestID: requestID)
+            return
+        }
+        guard restoredQuestions[id]?.runID == question.runID,
+              restoredQuestions[id]?.requestID == requestID,
+              let runtime, !isTerminating, let release = admit() else { return }
+        defer { release() }
+        let selection = historySelection
+        guard let center = try? await runtime.userQuestionCenter(), historySelection == selection,
+              visibleRun == nil, pendingQuestion == question else { return }
+        try? await center.cancelRequest(requestID: requestID)
+        await refreshQuestionCard(for: id)
+    }
+
+    // MARK: - Restored question recovery semantics
+
+    /// True while the visible question card is a durable restore with no live
+    /// run behind it (relaunch/reconnect), so the UI can state its recovery
+    /// semantics honestly instead of implying a parked run.
+    var pendingQuestionIsRestored: Bool {
+        visibleRun == nil && pendingQuestion != nil
+    }
+
+    /// Concise recovery copy for a restored card: the answer is saved durably
+    /// to this task; a required answer reaches the model only through the
+    /// task's own continuation, an optional answer joins the task queue once.
+    var pendingQuestionRecoveryNote: String? {
+        guard pendingQuestionIsRestored, let question = pendingQuestion else { return nil }
+        return question.snapshot.currentQuestion?.waitPolicy == .optionalContinue
+            ? String(localized: "mac.question.restored.note.optional")
+            : String(localized: "mac.question.restored.note.required")
     }
 }
