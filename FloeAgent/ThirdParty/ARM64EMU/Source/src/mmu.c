@@ -284,6 +284,13 @@ static void dtlb_fill(CPU *c, u64 va, u64 pa) {
     de->pte = (u64)(uintptr_t)host_page | r | w;
 }
 
+bool mem_prime_write_dtlb(CPU *c, u64 va) {
+    u64 pa;
+    if (!mmu_translate(c, va, ACC_WRITE, &pa)) return false;
+    dtlb_fill(c, va, pa);
+    return true;
+}
+
 bool mem_read(CPU *c, u64 va, unsigned size, u64 *out) {
     if(!mmu_cache_ready(c))return false;
     u64 off = va & 0xfffULL;

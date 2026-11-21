@@ -42,6 +42,9 @@ bool mmu_translate(CPU *c, u64 va, AccType acc, u64 *pa_out);
 bool mem_read(CPU *c, u64 va, unsigned size, u64 *out);
 bool mem_write(CPU *c, u64 va, unsigned size, u64 val);
 
+/* Validate a write and cache an eligible RAM page without modifying data. */
+bool mem_prime_write_dtlb(CPU *c, u64 va);
+
 /* Non-faulting translate+read for diagnostics (false if VA doesn't translate). */
 bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out);
 

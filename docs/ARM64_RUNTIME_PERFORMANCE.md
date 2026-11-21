@@ -223,3 +223,40 @@ AES 和 PMULL 指令。客体可见指令、软件回退和解释器的无 JIT �
 另测了小文件句柄记录复用。四个客机启动共 144 项内容校验通过，挂载的
 四进程读由 1.359 秒增至 1.563 秒，同步写由 1.342 秒增至 1.558 秒。
 候选保留原有的小文件句柄路径。
+
+## 2026-11-22 批量拷贝地址转换 / Bulk copy address translation
+
+基线为 390 的 `2a2b3824b`。M5 Pro 上用 Xcode 27.2（27B52）编译
+ARM64 引擎，同一份四 vCPU Debian 镜像按基线、候选、候选、基线启动。
+每次启动依次重复三组，表中每格为六次中位耗时。
+
+| 工作负载 / Workload | 基线 / Baseline (ms) | 候选 / Candidate (ms) |
+| --- | ---: | ---: |
+| 512 KiB MOPS 拷贝，缓冲区相隔 16 MiB / colliding buffers | 70.122 | 0.947 |
+| 512 KiB MOPS 拷贝，非冲突对照 / control | 0.959 | 1.177 |
+| Python 整数循环 / Integer loop | 2910.566 | 2930.974 |
+| Python 字典统计 / Dictionary aggregation | 2255.136 | 2244.159 |
+| zlib 解压 / Inflate | 523.796 | 521.612 |
+| 四线程解压 / Four-thread inflate | 1433.016 | 1316.954 |
+| 挂载目录读取 144 个小文件 / Mounted small-file reads | 960.198 | 893.046 |
+
+源页和目标页共用 D-TLB 槽位时，先保留已读源页，再单独校核目标页的
+写权限。两个不同的普通内存页复用同一受保护的页内拷贝。重叠倒序
+拷贝、只读目标页异常、相邻字节和所有工作负载输出均通过回读。iPhoneOS
+和 iOS Simulator 各完成 35 个 ARM64 对象编译。普通负载计时随轮次波动，
+iPad 真机耗时待测。
+
+When source and destination use the same data-TLB slot, the emulator
+keeps the resolved source page and checks destination write permission
+before copying between distinct RAM pages under the existing guard.
+The guest checks cover backward overlap, a read-only destination,
+boundary bytes, and matching workload outputs. All 35 engine units
+compiled for iPhoneOS and iOS Simulator ARM64. Timings are from the Mac
+qualification host.
+
+另做非冲突拷贝专项。按候选、基线、基线、候选启动四次，每次
+60 个样本。512 KiB 拷贝的中位耗时为 0.972 → 0.956 毫秒，每次均
+核对内容与相邻字节。 / A separate non-colliding copy run used 60
+samples per boot in candidate, baseline, baseline, candidate order.
+The 512 KiB copy medians were 0.972 → 0.956 ms, with matching bytes
+and intact boundaries in all samples.

@@ -174,7 +174,7 @@
     },
     {
       "path": "Source/src/decode.c",
-      "sha256": "da4fbb989d60604d81ac1bea72773752ef17fdce3f6d9755b3e349a8dc77f303"
+      "sha256": "1c63ce1d0048e0b94276bc59a0014495dbc3961f4d2bc4db6a4a400f915d97ae"
     },
     {
       "path": "Source/src/devices.h",
@@ -334,11 +334,11 @@
     },
     {
       "path": "Source/src/mmu.c",
-      "sha256": "f249c6d70424f2fd06a12d9147ca219313417faca31c35f04ff13b19da183134"
+      "sha256": "d6d578d0a843de9c6adf936e56cc8d299b8ca05aa3e78e5b38c60c88ac93e922"
     },
     {
       "path": "Source/src/mmu.h",
-      "sha256": "0686d48ae7ce59e71f23506ba421769d61807b35677ae9d6326f2756b9c35ecc"
+      "sha256": "1384da8a60ca92015a9cf92399f54a672cc8564180c92dab6546b5ea86b69910"
     },
     {
       "path": "Source/src/net/usernet.h",

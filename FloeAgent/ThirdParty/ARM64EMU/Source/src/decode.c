@@ -770,6 +770,22 @@ static u64 mops_set_step(CPU *c, u64 toaddr, u64 setsize, u8 data, bool unpriv) 
     return ok ? 1 : 0;
 }
 
+static u64 mops_copy_ram(CPU *c, u8 *destination, const u8 *source, u64 n) {
+    u64 destination_pa, source_pa;
+    if (!memory_host_span(c->m, destination, n, &destination_pa) ||
+        !memory_host_span(c->m, source, n, &source_pa)) {
+        memory_sync_fail(c->m, -3);
+        return 0;
+    }
+    MemoryRange ranges[] = {{source_pa, n, false}, {destination_pa, n, true}};
+    MemoryGuard guard;
+    if (!memory_guard_begin(&guard, c->m, ranges, 2)) return 0;
+    machine_store_notify(c->m, destination_pa, n);
+    memmove(destination, source, (size_t)n);
+    memory_guard_end(&guard);
+    return n;
+}
+
 /* One bounded copy step. rev=true means toaddr/fromaddr point at the *last*
  * byte and the step works downwards. memmove makes any same-chunk overlap
  * safe; the read and write sides carry independent unprivileged views (the
@@ -787,27 +803,42 @@ static u64 mops_copy_step(CPU *c, u64 toaddr, u64 fromaddr, u64 copysize,
     c->ldst_unpriv = runpriv;
     DTlbEnt *re = dtlb_ent(c,fromaddr);
     bool rhit = re->tag == dtlb_tag(c, fromaddr) && (re->pte & DTLB_R);
+    u64 backward_offset = rev ? n - 1 : 0;
     if (whit && rhit) {
         u8 *w = (u8 *)(we->pte & ~0xfffULL) + (toaddr & 0xfff);
         const u8 *r = (const u8 *)(re->pte & ~0xfffULL) + (fromaddr & 0xfff);
         c->ldst_unpriv = 0;
-        u8 *destination=rev?w-(n-1):w;
-        const u8 *source=rev?r-(n-1):r;
-        u64 destination_pa,source_pa;
-        if(!memory_host_span(c->m,destination,n,&destination_pa)||!memory_host_span(c->m,source,n,&source_pa)){
-            memory_sync_fail(c->m,-3);return 0;
-        }
-        MemoryRange ranges[]={{source_pa,n,false},{destination_pa,n,true}};MemoryGuard guard;
-        if(!memory_guard_begin(&guard,c->m,ranges,2))return 0;
-        mem_store_host_notify(c,destination,(unsigned)n);
-        memmove(destination,source,(size_t)n);
-        memory_guard_end(&guard);
-        return n;
+        return mops_copy_ram(c, w - backward_offset, r - backward_offset, n);
     }
     u64 byte;
-    c->ldst_unpriv = runpriv;
-    bool ok = mem_read(c, fromaddr, 1, &byte);
-    if (ok) { c->ldst_unpriv = wunpriv; ok = mem_write(c, toaddr, 1, byte); }
+    if (!mem_read(c, fromaddr, 1, &byte)) {
+        c->ldst_unpriv = 0;
+        return 0;
+    }
+    /* Keep the successfully read page before the destination translation
+     * replaces a shared D-TLB entry. MMIO and watchpoint accesses won't
+     * populate the RAM cache and retain the byte-at-a-time path. */
+    if (we == re && n > 1 && re->tag == dtlb_tag(c, fromaddr) && (re->pte & DTLB_R)) {
+        const u8 *source_page = (const u8 *)(re->pte & ~0xfffULL);
+        c->ldst_unpriv = wunpriv;
+        if (!mem_prime_write_dtlb(c, toaddr)) {
+            c->ldst_unpriv = 0;
+            return 0;
+        }
+        if (we->tag == dtlb_tag(c, toaddr) && (we->pte & DTLB_W)) {
+            u8 *destination_page = (u8 *)(we->pte & ~0xfffULL);
+            /* Distinct VAs may alias the same physical page. Retain the
+             * original access order for that overlapping case. */
+            if (destination_page != source_page) {
+                c->ldst_unpriv = 0;
+                return mops_copy_ram(c,
+                    destination_page + (toaddr & 0xfff) - backward_offset,
+                    source_page + (fromaddr & 0xfff) - backward_offset, n);
+            }
+        }
+    }
+    c->ldst_unpriv = wunpriv;
+    bool ok = mem_write(c, toaddr, 1, byte);
     c->ldst_unpriv = 0;
     return ok ? 1 : 0;
 }
