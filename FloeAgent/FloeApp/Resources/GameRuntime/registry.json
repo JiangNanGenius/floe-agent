@@ -1991,7 +1991,63 @@
       "displayName": "Ren'Py 8.5.3 Web runtime",
       "distributionProfileID": "portable-renpy",
       "engines": [],
-      "files": [],
+      "files": [
+        {
+          "bytes": 64,
+          "path": "hash.txt",
+          "sha256": "926eb647fd517a926ea9a7d9fa85eafb4ac14e96d6e848e351dfbef6e3fbe0de"
+        },
+        {
+          "bytes": 6080,
+          "path": "index.html",
+          "sha256": "b123414e9dcf348ec51fe358a892bad463ef8ac542e991d234b4fea522835706"
+        },
+        {
+          "bytes": 1636914,
+          "path": "index.html.symbols",
+          "sha256": "ed178ef7cca4a445d7660ba2a965c3b705d92940797ab58bb05429083f740aab"
+        },
+        {
+          "bytes": 2640,
+          "path": "manifest.json",
+          "sha256": "8e4cf63649a573b07454aaf99bc74e3fc1be9da64f1023cc2d3e3bc2ea3efe44"
+        },
+        {
+          "bytes": 29575,
+          "path": "renpy-pre.js",
+          "sha256": "aef6c9d0aee065bc33e19c5e0cbea4d3e1fd0d1abc08fecc30c1a2a1212c3820"
+        },
+        {
+          "bytes": 15057379,
+          "path": "renpy.data",
+          "sha256": "808c0c14b9dabd1d4b36558c9d775de5e8390ea7db167523ff0a72a82227fc8c"
+        },
+        {
+          "bytes": 396152,
+          "path": "renpy.js",
+          "sha256": "d19f196abda8e5faa38ba5a6708c13844050e02dbe37ed1808e2eca0b3b6571a"
+        },
+        {
+          "bytes": 21586559,
+          "path": "renpy.wasm",
+          "sha256": "8469117271d5143b4a9959dfade7d6896912921fe3f399b8826e290d24da4fef"
+        },
+        {
+          "bytes": 2573,
+          "path": "service-worker.js",
+          "sha256": "229e0b17e218ff4093efd05054c96051432cf08ed7dc740366b0195777f792f8"
+        },
+        {
+          "bytes": 51505,
+          "path": "web-icon.png",
+          "sha256": "4040b0d067a9bf1e4cf368a0d7fb231a14097ad2c0133e106fa252e7eff361cc"
+        },
+        {
+          "bytes": 1144617,
+          "path": "web-presplash.jpg",
+          "sha256": "b6b7f0ff892cb02791a351c9805e0dfc8e3c1b359a8d30269dd68e3435c9a75d"
+        }
+      ],
       "id": "renpy-8.5.3-web",
       "kind": "remoteArchive",
       "license": "Ren'Py license; LGPL-derived components retained",

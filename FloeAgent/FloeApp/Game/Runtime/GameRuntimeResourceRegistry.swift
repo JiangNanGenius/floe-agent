@@ -255,6 +255,9 @@ enum GameRuntimeResourceError: Error, LocalizedError, Equatable {
 /// file is size- and SHA-256-verified before readiness becomes `.ready`.
 @MainActor @Observable
 final class GameRuntimeResourceRegistry {
+    private static let renpySDKID = "renpy-8.5.3-sdk"
+    private static let renpyWebSupportID = "renpy-8.5.3-web"
+
     private let manifest: GameRuntimeResourceManifest?
     private let bundledRoot: URL?
     private let installationRoot: URL
@@ -329,6 +332,9 @@ final class GameRuntimeResourceRegistry {
         // retry can start clean; a verified installation is never touched.
         if case .failed? = states[pack.id] {
             switch pack.kind {
+            case .remoteArchive where pack.id == Self.renpySDKID:
+                // A failed companion download must not discard a valid SDK.
+                break
             case .reviewedPackArchive, .remoteArchive, .remoteFiles:
                 try? FileManager.default.removeItem(
                     at: installationRoot.appendingPathComponent(pack.id, isDirectory: true))
@@ -545,7 +551,7 @@ final class GameRuntimeResourceRegistry {
     }
 
     var narrativeRoot: URL? { verifiedRoots["narrative-runtime"] }
-    var renpySDKRoot: URL? { verifiedRoots["renpy-8.5.3-sdk"] }
+    var renpySDKRoot: URL? { verifiedRoots[Self.renpySDKID] }
 
     /// Tool IDs that are genuinely present from reviewed resources. CI-provided
     /// tools are added by `GameBuildToolReadiness` only when a real repository
@@ -633,6 +639,18 @@ final class GameRuntimeResourceRegistry {
             do {
                 try await verify(pack: pack, root: root, requireFiles: pack.kind == .remoteFiles)
                 try await ensureAttribution(pack, contentRoot: root, copy: false)
+                if pack.id == Self.renpySDKID {
+                    let web = try renpyWebSupportPack()
+                    guard resolvedArchiveURL(web) != nil, hasPinnedArchiveSHA(web) else {
+                        return .userAction(web.requirement ?? web.displayName)
+                    }
+                    let webRoot = root.appendingPathComponent("web", isDirectory: true)
+                    guard FileManager.default.fileExists(atPath: webRoot.path) else {
+                        return .downloadable(bytes: nil)
+                    }
+                    try await verify(pack: web, root: webRoot, requireFiles: true)
+                    try await ensureAttribution(web, contentRoot: webRoot, copy: false)
+                }
                 verifiedRoots[pack.id] = root
                 return .ready(version: pack.version, root: root)
             } catch {
@@ -681,13 +699,26 @@ final class GameRuntimeResourceRegistry {
                     pack.requirement ?? "This runtime resource has no published archive URL or pinned SHA-256.")
             }
             let destination = installationRoot.appendingPathComponent(pack.id, isDirectory: true)
-            let root = try await installer.installArchive(pack, archiveURL: url,
-                expectedSHA256: sha, destination: destination,
-                contentSubdirectory: nil) { [weak self, id = pack.id] value in
-                Task { @MainActor in self?.progress[id] = value }
+            let isRenPy = pack.id == Self.renpySDKID
+            let root: URL
+            if isRenPy, FileManager.default.fileExists(atPath: destination.path),
+               (try? await verify(pack: pack, root: destination, requireFiles: false)) != nil {
+                root = destination
+            } else {
+                if isRenPy, FileManager.default.fileExists(atPath: destination.path) {
+                    try Task.checkCancellation()
+                    try FileManager.default.removeItem(at: destination)
+                }
+                root = try await installer.installArchive(pack, archiveURL: url,
+                    expectedSHA256: sha, destination: destination,
+                    contentSubdirectory: nil) { [weak self, id = pack.id] value in
+                    Task { @MainActor in self?.progress[id] = isRenPy ? value * 0.70 : value }
+                }
             }
             try await verify(pack: pack, root: root, requireFiles: false)
             try await ensureAttribution(pack, contentRoot: root, copy: true)
+            if isRenPy { try await prepareRenPyWebSupport(in: root) }
+            try Task.checkCancellation()
             verifiedRoots[pack.id] = root
             packRoots[pack.id] = destination
             states[pack.id] = .ready(version: pack.version, root: root)
@@ -719,6 +750,57 @@ final class GameRuntimeResourceRegistry {
         case .userProvided, .ciProvided:
             throw GameRuntimeResourceError.configurationRequired(pack.requirement ?? pack.displayName)
         }
+    }
+
+    private func renpyWebSupportPack() throws -> GameRuntimePackManifest {
+        guard let pack = manifest?.packs.first(where: {
+            $0.id == Self.renpyWebSupportID && $0.role == "supplementary" && $0.kind == .remoteArchive
+        }) else { throw GameRuntimeResourceError.manifestUnavailable }
+        return pack
+    }
+
+    /// The official launcher expects the matching Web support under SDK/web.
+    /// Keep the SDK when an upgrade only needs to fetch that companion.
+    private func prepareRenPyWebSupport(in sdk: URL) async throws {
+        let pack = try renpyWebSupportPack()
+        guard let url = resolvedArchiveURL(pack), let sha = pack.archive?.sha256,
+              hasPinnedArchiveSHA(pack) else {
+            throw GameRuntimeResourceError.configurationRequired(pack.requirement ?? pack.displayName)
+        }
+        let files = FileManager.default
+        let destination = sdk.appendingPathComponent("web", isDirectory: true)
+        if files.fileExists(atPath: destination.path) {
+            do {
+                try await verify(pack: pack, root: destination, requireFiles: true)
+                try await ensureAttribution(pack, contentRoot: destination, copy: false)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Preserve the installed tree until its replacement is verified.
+            }
+        }
+        let staged = installationRoot.appendingPathComponent(".renpy-web-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? files.removeItem(at: staged)
+            if attributionRoots[pack.id] == staged.appendingPathComponent("FloeAttribution", isDirectory: true) {
+                attributionRoots.removeValue(forKey: pack.id)
+            }
+        }
+        let prepared = try await installer.installArchive(pack, archiveURL: url, expectedSHA256: sha,
+            destination: staged, contentSubdirectory: nil) { [weak self] value in
+            Task { @MainActor in self?.progress[Self.renpySDKID] = 0.70 + value * 0.30 }
+        }
+        try await verify(pack: pack, root: prepared, requireFiles: true)
+        try await ensureAttribution(pack, contentRoot: prepared, copy: true)
+        try Task.checkCancellation()
+        if files.fileExists(atPath: destination.path) {
+            _ = try files.replaceItemAt(destination, withItemAt: prepared,
+                                        backupItemName: nil, options: .usingNewMetadataOnly)
+        } else {
+            try files.moveItem(at: prepared, to: destination)
+        }
+        attributionRoots[pack.id] = destination.appendingPathComponent("FloeAttribution", isDirectory: true)
     }
 
     private func bundledContentRoot(for pack: GameRuntimePackManifest) -> URL? {
