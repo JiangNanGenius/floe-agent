@@ -206,7 +206,7 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "c807c6895c8387c6dcc07efec69723bae1f5b9f6cb1d796f52334836a9a7aa8c"
+      "sha256": "7565a51ed9b4597f992297bba23ad3396e39ef1d41514bccb33b8ff55138c527"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
@@ -218,7 +218,7 @@
     },
     {
       "path": "Source/src/devices/virtio_blk.c",
-      "sha256": "df80b37aa9a9a5231eb9df24cb36ae025412921ded35b9d16c9b4198e49165f4"
+      "sha256": "71a84ee966c39491e1dadf56624f802db186fbdb62bfe501a9882062a9e4145f"
     },
     {
       "path": "Source/src/devices/virtio_console.c",
@@ -334,11 +334,11 @@
     },
     {
       "path": "Source/src/mmu.c",
-      "sha256": "5b7b72678385e14203435289c217113f493e782a6839cc9c78a7fd178bbb16e5"
+      "sha256": "f249c6d70424f2fd06a12d9147ca219313417faca31c35f04ff13b19da183134"
     },
     {
       "path": "Source/src/mmu.h",
-      "sha256": "89dce0175d04c9e72e431a571ee1ac4815f62a5234d795b0362ade44b6738d0c"
+      "sha256": "0686d48ae7ce59e71f23506ba421769d61807b35677ae9d6326f2756b9c35ecc"
     },
     {
       "path": "Source/src/net/usernet.h",

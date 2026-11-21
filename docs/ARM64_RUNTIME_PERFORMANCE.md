@@ -74,3 +74,41 @@ protocol component checks pass. Full network App integration remains pending;
 the independent SDK privacy resource has been read back from the main App. See the [network plan and current
 measurements](FLOE_VIRTUAL_NETWORK_ENHANCEMENT_PLAN_20261110.zh-CN.md).
 Physical M1 page timing and its reported one-minute delay remain unverified.
+
+## 2026-11-22 稳定性复查 / Stability pass
+
+基线为 `5911ee356`。Xcode 27.2（27B52）在同一台 M5 Pro Mac 上编译
+ARM64 解释引擎，两边启动同一份 Debian 资格镜像。虚拟盘保留原有的同步
+和完成语义，把分散的客体 RAM 数据合成最多 64 KiB 的宿主 I/O。一次 128
+KiB、32 个离散页的真实 virtio 请求中，`pread` 和 `pwrite` 均从 32 次降为
+2 次。写入完成、`fsync`、客体直接回读和字节比对均通过。
+
+9P 描述符改为一次读取 16 字节，并校核队列游标、描述符方向和消息容量。
+取指快路径直接核对当前缓存槽的物理页、写入版本和清除代数。写入 D-TLB
+命中时，内存锁和写入通知复用同一个物理地址。原有的中断、快照失效和
+指令权限检查仍在同一路径。CPU/IRQ 组件测试与带 ASan/UBSan 的 9P 协议
+测试通过。此次修改沿用现有的无 JIT 解释器和 ABI。
+
+| 双 vCPU Debian 负载 | 首轮基线 → 候选 | 交换顺序后基线 → 候选 |
+| --- | ---: | ---: |
+| 虚拟盘直接读 64 MiB | 3.117 → 0.155 s | 0.209 → 0.203 s |
+| 9P 共享读 64 MiB | 6.153 → 5.135 s | 5.795 → 5.885 s |
+| Python 整数循环 | 5.343 → 5.361 s | 5.370 → 5.321 s |
+| zlib 解压工作负载 | 4.542 → 4.413 s | 4.521 → 4.534 s |
+
+每格为三次中位数。直接读的单次结果随运行轮次明显变化。只替换 9P 实现的
+单 vCPU 对照中，800 个小文件的中位数为 3.385 → 3.342 秒（五次），
+共享读 64 MiB 为 3.404 → 3.364 秒（三次）。小文件合并摘要一致。
+关闭联网，用同一份
+14,010,719 字节的 NumPy 2.2.6 ARM64 wheel 安装到客体临时目录，一次对照为
+32.887 → 31.154 秒，两侧均成功导入并计算出 `49995000`。安装计时覆盖本地
+wheel 与客体安装阶段。下载、索引查询、首次环境准备和真实 iPad 底层盘的结果
+需各自测量。
+
+单次从 9P 读入再写盘同步的对照为 0.558 → 0.828 秒。将相同的 8 MiB
+输入先放进客体内存，再隔离做五次直接写入和 `fsync`，中位数为
+0.144 → 0.138 秒。全部回读摘要一致。
+
+iPhoneOS 的四个受影响编译单元通过对象编译。完整 App 在已有 iPad 模拟器
+编译并通过 CAD 跟踪点缩放和户型画墙平移两项回归。上传元数据、原生运行时
+排除检查、依赖固定和双语目录通过源码校核。

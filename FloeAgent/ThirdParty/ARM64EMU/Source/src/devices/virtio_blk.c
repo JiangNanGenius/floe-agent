@@ -4,11 +4,9 @@
 /* virtio-blk over a modern (version 2) virtio-mmio transport, slot 0 of QEMU's
  * 'virt' map (0x0a000000, INTID 48 / SPI 16, edge-triggered per the DTB).
  *
- * The device is backed by a host image file opened O_RDWR; guest writes go
- * through to the file via pwrite. Requests are completed synchronously inside
- * the QueueNotify write and the IRQ is raised inline — which fits this
- * single-threaded deterministic interpreter: the guest isn't running while we
- * service the queue, and the kernel's ISR drains the whole used ring per IRQ. */
+ * The coordinator services QueueNotify work in bounded batches. Guest reads
+ * and writes use the image file; DMA and the used-ring update stay on the
+ * coordinator, with the architectural memory guards applied to each span. */
 #include "../devices.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -21,6 +19,8 @@
 #define SECTOR_SIZE   512
 #define QUEUE_NUM_MAX 256        /* QueueNumMax for the single requestq */
 #define VIRTQ_MAX     256        /* descriptor-chain walk bound (== QueueNumMax) */
+#define BLK_BATCH_BYTES (64 * 1024)
+#define BLK_BATCH_SPANS 32
 
 /* Feature bits we advertise: VIRTIO_F_VERSION_1 (bit 32), mandatory for a modern
  * device, plus VIRTIO_BLK_F_RO (bit 5) for read-only disks. VIRTIO_BLK_F_RO is
@@ -63,6 +63,7 @@ typedef struct VirtIOBlk {
         u64 addr[VIRTQ_MAX],off,gpa,status_addr;
         u32 length[VIRTQ_MAX],remaining;u16 flags[VIRTQ_MAX];
     } request;
+    u8 transfer[BLK_BATCH_BYTES];      /* coordinator-owned; no disk I/O under a RAM guard */
     u16 last_avail;                    /* our cursor into the available ring */
 } VirtIOBlk;
 
@@ -99,9 +100,9 @@ static bool blk_push_used(VirtIOBlk *v,u32 id,u32 len) {
 /* Service one request: walk its descriptor chain, do the I/O, write the status
  * byte, and retire it on the used ring. The first descriptor is the 16-byte
  * header (readable), the last is the 1-byte status (writable), the rest is data. */
-/* QueueNotify records work. The sole Machine owner advances one 4KiB data
- * chunk at a time before executing the next CPU instruction; DMA completion and
- * used-ring publication occur only after the original work is complete. */
+/* QueueNotify records work. The sole Machine owner advances one bounded data
+ * batch at a time; DMA completion and used-ring publication occur only after
+ * the original work is complete. */
 static void request_finish(VirtIOBlk *v) {
     if(!queue_spans(v)||!ram_ptr(v->m,v->request.status_addr,1)){blk_fail(v);return;}
     phys_write(v->m,v->request.status_addr,1,v->request.status);
@@ -141,11 +142,77 @@ static bool request_begin(VirtIOBlk *v,u32 head) {
     u64 sector=descriptor_le(header+8,8),total=0;
     for(u32 i=1;i+1<n;i++)total+=v->request.length[i];
     v->request.off=sector*SECTOR_SIZE;
-    if((v->request.type==VIRTIO_BLK_T_OUT&&v->ro)||sector>v->capacity||total>(v->capacity-sector)*SECTOR_SIZE)
+    if((v->request.type==VIRTIO_BLK_T_OUT&&v->ro)||sector>v->capacity||
+       total>(v->capacity-sector)*SECTOR_SIZE||
+       (v->request.type==VIRTIO_BLK_T_IN&&total>UINT32_MAX-1))
         v->request.status=VIRTIO_BLK_S_IOERR;
     return true;
 }
 bool virtio_blk_has_work(struct VirtIOBlk *v) { return v&&v->work_pending; }
+
+static void transfer_batch(VirtIOBlk *v, bool reading) {
+    struct { u64 addr; u32 size; } spans[BLK_BATCH_SPANS];
+    u32 count = 0, span_count = 0;
+    while (count < BLK_BATCH_BYTES && span_count < BLK_BATCH_SPANS) {
+        while (!v->request.remaining && v->request.index + 1 < v->request.n) {
+            u32 i = v->request.index++;
+            v->request.gpa = v->request.addr[i];
+            v->request.remaining = v->request.length[i];
+        }
+        if (!v->request.remaining) break;
+        u64 addr = v->request.gpa;
+        u32 size = v->request.remaining;
+        if (size > BLK_BATCH_BYTES - count) size = BLK_BATCH_BYTES - count;
+        if (!ram_ptr(v->m, addr, size)) {
+            /* A hotplug segment may end inside a descriptor. Keep DMA within
+             * real RAM and let a following span establish its own backing. */
+            u32 page_left = 4096 - (u32)(addr & 4095);
+            if (size > page_left) size = page_left;
+            if (!ram_ptr(v->m, addr, size)) goto io_error;
+        }
+        spans[span_count].addr = addr;
+        spans[span_count++].size = size;
+        if (!reading) {
+            phys_read_blk(v->m, addr, v->transfer + count, size);
+            if (machine_bus_status(v->m) != BUS_OK) goto io_error;
+        }
+        count += size;
+        v->request.gpa += size;
+        v->request.remaining -= size;
+    }
+    if (!count) {
+        request_finish(v);
+        return;
+    }
+    u32 completed = 0;
+    for (unsigned attempt = 0; completed < count && attempt < 64; ++attempt) {
+        off_t offset = (off_t)(v->request.off + completed);
+        ssize_t n = reading ? pread(v->fd, v->transfer + completed, count - completed, offset)
+                            : pwrite(v->fd, v->transfer + completed, count - completed, offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) goto io_error;
+        completed += (u32)n;
+    }
+    if (completed != count) goto io_error;
+    if (reading) {
+        u32 offset = 0;
+        for (u32 i = 0; i < span_count; ++i) {
+            phys_write_blk(v->m, spans[i].addr, v->transfer + offset, spans[i].size);
+            if (machine_bus_status(v->m) != BUS_OK) goto io_error;
+            offset += spans[i].size;
+            v->request.used += spans[i].size;
+        }
+    }
+    v->request.off += count;
+    if (!v->request.remaining && v->request.index + 1 == v->request.n)
+        request_finish(v);
+    return;
+
+io_error:
+    v->request.status = VIRTIO_BLK_S_IOERR;
+    request_finish(v);
+}
+
 void virtio_blk_service(struct VirtIOBlk *v) {
     if(!v||!v->work_pending)return;
     if(!v->q_ready||!v->q_num){v->work_pending=false;return;}
@@ -162,25 +229,7 @@ void virtio_blk_service(struct VirtIOBlk *v) {
     if(v->request.status){request_finish(v);return;}
     u32 type=v->request.type;
     if(type==VIRTIO_BLK_T_IN||type==VIRTIO_BLK_T_OUT) {
-        while(!v->request.remaining&&v->request.index+1<v->request.n) {
-            u32 i=v->request.index++;v->request.gpa=v->request.addr[i];v->request.remaining=v->request.length[i];
-        }
-        if(!v->request.remaining){request_finish(v);return;}
-        u8 buffer[4096];u32 count=v->request.remaining<sizeof(buffer)?v->request.remaining:(u32)sizeof(buffer);
-        if(type==VIRTIO_BLK_T_OUT){phys_read_blk(v->m,v->request.gpa,buffer,count);
-            if(machine_bus_status(v->m)!=BUS_OK){v->request.status=VIRTIO_BLK_S_IOERR;request_finish(v);return;}}
-        size_t completed=0;unsigned attempts=0;
-        while(completed<count&&attempts++<64) {
-            ssize_t n=type==VIRTIO_BLK_T_IN?
-                pread(v->fd,buffer+completed,count-completed,(off_t)(v->request.off+completed)):
-                pwrite(v->fd,buffer+completed,count-completed,(off_t)(v->request.off+completed));
-            if(n<0&&errno==EINTR)continue;
-            if(n<=0){v->request.status=VIRTIO_BLK_S_IOERR;break;}completed+=(size_t)n;
-        }
-        if(completed!=count)v->request.status=VIRTIO_BLK_S_IOERR;
-        else if(type==VIRTIO_BLK_T_IN){phys_write_blk(v->m,v->request.gpa,buffer,count);if(machine_bus_status(v->m)!=BUS_OK)v->request.status=VIRTIO_BLK_S_IOERR;else v->request.used+=count;}
-        v->request.off+=count;v->request.gpa+=count;v->request.remaining-=count;
-        if(v->request.status)request_finish(v);
+        transfer_batch(v, type == VIRTIO_BLK_T_IN);
     } else {
         if(type==VIRTIO_BLK_T_FLUSH){if(fsync(v->fd))v->request.status=VIRTIO_BLK_S_IOERR;}
         else if(type==VIRTIO_BLK_T_GET_ID) {

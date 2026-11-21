@@ -31,6 +31,11 @@ ordinary integer alignment; existing `calloc` and embedded Machine callers do
 not acquire an unsupported over-alignment requirement. It also checks destroy
 and stale-handle behavior. Success prints `ARM64_CPU_STATE_ISOLATION_OK`.
 
+The same fixture verifies that instruction fetch observes a writable data-TLB
+hit, DMA writes, a fetch-bank eviction by another exception-level translation,
+and a TLB flush. Each assertion reads the real guest word from the production
+MMU.
+
 CPU and Machine are internal layouts, so rebuild all engine translation units
 and source-including qualification hosts together after changing this header.
 Retain concurrent worker, memory, cache, stop, hotplug and sanitizer checks;

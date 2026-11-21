@@ -1219,38 +1219,45 @@ static void p9_handle(VirtIO9P *v, u32 head) {
     u64 raddr[VIRTQ_MAX]; u32 rlen[VIRTQ_MAX]; u32 n_r = 0;
     u64 waddr[VIRTQ_MAX]; u32 wlen[VIRTQ_MAX]; u32 n_w = 0;
 
-    u32 idx = head, n = 0;
-    for (;;) {
-        if (n >= v->q_num || n >= VIRTQ_MAX) break;
-        u64 d  = v->q_desc + (u64)idx * 16;
-        u64 a  = phys_read(m, d + 0, 8);
-        u32 l  = (u32)phys_read(m, d + 8, 4);
-        u16 fl = (u16)phys_read(m, d + 12, 2);
-        u16 nx = (u16)phys_read(m, d + 14, 2);
-        if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
-        if (fl & VIRTQ_DESC_F_WRITE) { if (n_w < VIRTQ_MAX) { waddr[n_w] = a; wlen[n_w] = l; n_w++; } }
-        else                        { if (n_r < VIRTQ_MAX) { raddr[n_r] = a; rlen[n_r] = l; n_r++; } }
-        n++;
-        if (!(fl & VIRTQ_DESC_F_NEXT)) break;
+    u32 idx = head, wcap = 0;
+    bool terminated = false;
+    for (u32 n = 0; n < v->q_num && idx < v->q_num; ++n) {
+        u8 descriptor[16];
+        phys_read_blk(m, v->q_desc + (u64)idx * sizeof(descriptor), descriptor, sizeof(descriptor));
+        if (machine_bus_status(m) != BUS_OK) break;
+        u64 a; u32 l; u16 fl, nx;
+        /* ARM64 hosts and the split-ring descriptor are both little-endian. */
+        memcpy(&a, descriptor, 8);
+        memcpy(&l, descriptor + 8, 4);
+        memcpy(&fl, descriptor + 12, 2);
+        memcpy(&nx, descriptor + 14, 2);
+        if (fl & ~(VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT)) break;
+        if (fl & VIRTQ_DESC_F_WRITE) {
+            waddr[n_w] = a; wlen[n_w++] = l;
+            wcap += l < P9_MSIZE_MAX - wcap ? l : P9_MSIZE_MAX - wcap;
+        } else {
+            if (n_w) break;
+            raddr[n_r] = a; rlen[n_r++] = l;
+        }
+        if (!(fl & VIRTQ_DESC_F_NEXT)) { terminated = true; break; }
         idx = nx;
     }
+    if (!terminated || !n_r || !n_w) { v->status |= 64; return; }
 
     u32 reqlen = 0;
     for (u32 i = 0; i < n_r && reqlen < P9_MSIZE_MAX; i++) {
         u32 take = rlen[i];
-        if (reqlen + take > P9_MSIZE_MAX) take = P9_MSIZE_MAX - reqlen;
+        if (take > P9_MSIZE_MAX - reqlen) take = P9_MSIZE_MAX - reqlen;
         phys_read_blk(m, raddr[i], v->req + reqlen, take);
         if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
         reqlen += take;
     }
-    u32 wcap = 0; for (u32 i = 0; i < n_w; i++) wcap += wlen[i];
-
     u32 resplen = p9_dispatch(v, reqlen, wcap);
 
     u32 off = 0;
     for (u32 i = 0; i < n_w && off < resplen; i++) {
         u32 chunk = wlen[i];
-        if (off + chunk > resplen) chunk = resplen - off;
+        if (chunk > resplen - off) chunk = resplen - off;
         phys_write_blk(m, waddr[i], v->resp + off, chunk);
         if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
         off += chunk;
@@ -1260,15 +1267,18 @@ static void p9_handle(VirtIO9P *v, u32 head) {
 
 static void virtio_9p_process(VirtIO9P *v) {
     Machine *m = v->m;
-    if (!v->q_ready || v->q_num == 0) return;
+    if (!v->q_ready || v->q_num == 0 || (v->status & 64)) return;
     if (!fs_queue_spans(v)) { v->status |= 64; return; }
     u16 avail_idx = (u16)phys_read(m, v->q_avail + 2, 2);
-    if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
+    if (machine_bus_status(m) != BUS_OK || (u16)(avail_idx - v->last_avail) > v->q_num) {
+        v->status |= 64; return;
+    }
     bool did = false;
     while (v->last_avail != avail_idx) {
         u16 hd = (u16)phys_read(m, v->q_avail + 4 + (u64)(v->last_avail % v->q_num) * 2, 2);
         if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
         p9_handle(v, hd);
+        if (v->status & 64) break;
         v->last_avail++;
         did = true;
     }

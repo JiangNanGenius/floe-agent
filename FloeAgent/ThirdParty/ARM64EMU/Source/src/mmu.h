@@ -67,7 +67,6 @@ typedef struct {
     u8  *host;   /* host pointer to that guest page (RAM/flash); NULL = invalid */
     u8   mmu;    /* SCTLR_EL1.M of the cached translation */
     MemoryCodeEpoch *epoch; /* immutable Machine-owned physical page metadata */
-    u64 snapshot_version,snapshot_pa; /* version 0 is invalid, MAX is never cached */
     u16 active_slot; /* hint only: slot PA/epoch/version/generation revalidated */
 } FetchCache;
 
@@ -188,23 +187,24 @@ static inline bool mem_read_pd(CPU *c, u64 va, unsigned size, u64 *out) {
 /* Only called after the original VA/EL/MMU/ACC_EXEC translation predicate.
  * Permission is never inferred from a physical working-set hit. */
 bool mem_ifetch_bank_lookup(CPU *c,FetchCache *f,u64 va,u64 version,u32 *insn_out);
+static inline bool mem_ifetch_active(CPU *c, FetchCache *f, u64 va, u64 version, u32 *out) {
+    if (!version || f->active_slot >= IFETCH_BANK_PAGES) return false;
+    MMUCache *m = c->exec.mmu;
+    IFetchBytePage *slot = &m->ifetch_bank[f->active_slot];
+    /* The other EL can evict this way. Check the bank entry itself against
+     * the authorized translation and the live physical-page version. */
+    if (slot->generation != m->ifetch_generation || slot->version != version ||
+        slot->pa_page != f->pa_page || slot->epoch != f->epoch) return false;
+    __builtin_memcpy(out, slot->bytes + (va & 0xfffULL), 4);
+    return true;
+}
+
 static inline bool mem_ifetch_page(CPU *c,FetchCache *f,u64 va,u32 *insn_out) {
     /* Nested transactions never reuse or install snapshots. */
     if(f->epoch&&!memory_guard_held) {
         u64 version=atomic_load_explicit(&f->epoch->version,memory_order_acquire);
         if(version!=UINT64_MAX) {
-            MMUCache *m=c->exec.mmu;
-            if(version&&f->snapshot_version==version&&f->snapshot_pa==f->pa_page&&
-               f->active_slot<IFETCH_BANK_PAGES) {
-                IFetchBytePage *slot=&m->ifetch_bank[f->active_slot];
-                /* Another EL can replace this slot with an equal version on a
-                 * different PA. The active index/mirrors alone are never valid. */
-                if(slot->generation==m->ifetch_generation&&slot->version==version&&
-                   slot->pa_page==f->pa_page&&slot->epoch==f->epoch) {
-                    __builtin_memcpy(insn_out,slot->bytes+(va&0xfffULL),4);
-                    return true;
-                }
-            }
+            if (mem_ifetch_active(c, f, va, version, insn_out)) return true;
             if(version)return mem_ifetch_bank_lookup(c,f,va,version,insn_out);
             return mem_ifetch_refill(c,f,va,insn_out); /* inactive 0 cannot hit */
         }
@@ -263,15 +263,7 @@ static inline bool mem_ifetch_page_slot(CPU *c,FetchCache *f,u64 va,u32 *out,
     if(f->epoch&&!*view->slot) {
         u64 version=atomic_load_explicit(&f->epoch->version,memory_order_acquire);
         if(version!=UINT64_MAX) {
-            MMUCache *m=c->exec.mmu;
-            if(version&&f->snapshot_version==version&&f->snapshot_pa==f->pa_page&&
-               f->active_slot<IFETCH_BANK_PAGES) {
-                IFetchBytePage *slot=&m->ifetch_bank[f->active_slot];
-                if(slot->generation==m->ifetch_generation&&slot->version==version&&
-                   slot->pa_page==f->pa_page&&slot->epoch==f->epoch) {
-                    __builtin_memcpy(out,slot->bytes+(va&0xfffULL),4);return true;
-                }
-            }
+            if (mem_ifetch_active(c, f, va, version, out)) return true;
             if(version)return mem_ifetch_bank_lookup_unheld(c,f,va,version,out);
             return mem_ifetch_refill_unheld(c,f,va,out);
         }

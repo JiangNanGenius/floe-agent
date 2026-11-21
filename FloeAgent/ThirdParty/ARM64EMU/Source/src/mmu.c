@@ -48,7 +48,7 @@ static void ifetch_invalidate(MMUCache *m) {
         }
         m->ifetch_generation=1;
     }
-    m->fcache[0].snapshot_version=m->fcache[1].snapshot_version=0;
+    m->fcache[0].active_slot=m->fcache[1].active_slot=IFETCH_BANK_PAGES;
 }
 void tlb_flush_all(CPU *c) {
     if(!c->exec.mmu)return;
@@ -339,10 +339,19 @@ bool mem_write(CPU *c, u64 va, unsigned size, u64 val) {
     }
     DTlbEnt *de = dtlb_ent(c,va);   /* no-cross guard: see mem_read */
     if (off + size <= 0x1000 && de->tag == dtlb_tag(c, va) && (de->pte & DTLB_W)) {
+        u8 *host = (u8 *)(uintptr_t)(de->pte & ~0xfffULL) + off;
+        u64 pa;
+        if (!memory_host_span(c->m, host, size, &pa)) {
+            memory_sync_fail(c->m, -3);
+            return false;
+        }
+        /* Reuse the same physical span for the guard and code/exclusive
+         * monitor notifications; neither operation changes the mapping. */
+        MemoryRange range = {pa, size, true};
         MemoryGuard guard;
-        if(!memory_guard_host(&guard,c->m,(u8 *)(uintptr_t)(de->pte&~0xfffULL)+off,size,true))return false;
-        mem_store_host_notify(c,(u8 *)(uintptr_t)(de->pte & ~0xfffULL)+off,size);
-        __builtin_memcpy((u8 *)(uintptr_t)(de->pte & ~0xfffULL) + off, &val, size);
+        if (!memory_guard_begin(&guard, c->m, &range, 1)) return false;
+        machine_store_notify(c->m, pa, size);
+        __builtin_memcpy(host, &val, size);
         memory_guard_end(&guard);
         return true;
     }
@@ -438,7 +447,7 @@ bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
     u8 *hp = host_page_ptr(c->m, pa & ~0xfffULL);
     if (hp) {
         /* Execute permission belongs to this VA/EL/MMU translation. Retagging
-         * drops its active mirror; a physical bank page can be reused only
+         * drops its active hint; a physical bank page can be reused only
          * after this translation has passed ACC_EXEC again. */
         FetchCache *f = &c->exec.mmu->fcache[c->el == 0];
         f->host = hp;
@@ -446,7 +455,7 @@ bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
         f->pa_page = pa & ~0xfffULL;
         f->mmu  = (u8)(c->sctlr[1] & 1);
         f->epoch=memory_code_page_epoch(c->m,f->pa_page);
-        f->snapshot_version=0;
+        f->active_slot=IFETCH_BANK_PAGES;
         return mem_ifetch_page(c,f,va,insn_out);
     }
     /* Executing from MMIO/unmapped space: read through the bus, do not cache. */
@@ -458,7 +467,7 @@ bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
 
 static unsigned ifetch_set(u64 pa) { return (unsigned)((pa>>12)&(IFETCH_BANK_SETS-1)); }
 static void ifetch_use(FetchCache *f,IFetchBytePage *slot,unsigned index,u64 va,u32 *out) {
-    f->snapshot_pa=slot->pa_page;f->snapshot_version=slot->version;f->active_slot=(u16)index;
+    f->active_slot=(u16)index;
     __builtin_memcpy(out,slot->bytes+(va&0xfffULL),4);
 }
 static bool ifetch_bank_hit(CPU *c,FetchCache *f,u64 va,u64 version,u32 *insn_out) {
@@ -527,7 +536,7 @@ bool mem_ifetch_refill_unheld(CPU *c,FetchCache *f,u64 va,u32 *insn_out) {
         m->ifetch_next[ifetch_set(f->pa_page)]=(u8)((index+1)&(IFETCH_BANK_WAYS-1));
         ifetch_use(f,slot,index,va,insn_out);
     }else {
-        f->snapshot_version=0;
+        f->active_slot=IFETCH_BANK_PAGES;
         __builtin_memcpy(insn_out,f->host+(va&0xfffULL),4);
     }
     memory_guard_end(&guard);
