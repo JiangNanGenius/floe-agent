@@ -209,7 +209,9 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [replaced], timeout: 25), .completed)
         openWallPlan()
         expectWalls(2)
-        tapProjectCommand("building.saveAs", title: "另存为…")
+        let saveAs = app.buttons["building.saveAs"].firstMatch
+        XCTAssertTrue(saveAs.waitForExistence(timeout: 10))
+        saveAs.tap()
         let saveCopy = app.buttons["building.copy.confirm"]
         XCTAssertTrue(saveCopy.waitForExistence(timeout: 8))
         saveCopy.tap()
@@ -232,6 +234,50 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         let space = XCTNSPredicateExpectation(predicate: available, object: app.buttons["space.new"])
         XCTAssertEqual(XCTWaiter.wait(for: [gone, space], timeout: 25), .completed)
         XCTAssertTrue(app.segmentedControls["space.sections"].buttons["文件"].isSelected)
+    }
+
+    func testBuildingDrawsWallByDraggingAndPansWithoutMovingIt() {
+        continueAfterFailure = false
+        let app = application()
+        app.launchArguments += ["-floe.settings.language", "zh-Hans"]
+        app.launch()
+        openNewFileMenu(app)
+        app.buttons["space.create.building"].tap()
+        let name = app.textFields["space.creation.title"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.tap()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("QA-Plan-" + String(UUID().uuidString.prefix(8)))
+        app.buttons["space.creation.create"].tap()
+        let plan = app.descendants(matching: .any)["building.walls.plan"].firstMatch
+        if !plan.waitForExistence(timeout: 8) {
+            app.descendants(matching: .any)["building.section.model"].firstMatch.tap()
+        }
+        XCTAssertTrue(plan.waitForExistence(timeout: 20))
+        app.buttons["building.walls.draw"].tap()
+        let left = plan.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.5))
+        let right = plan.coordinate(withNormalizedOffset: CGVector(dx: 0.68, dy: 0.5))
+        left.press(forDuration: 0.08, thenDragTo: right)
+        let hasWall = NSPredicate(format: "value CONTAINS %@", "1 面墙")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: hasWall, object: plan)], timeout: 12), .completed)
+        app.buttons["building.walls.finish"].tap()
+        plan.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let endpoint = app.descendants(matching: .any)["building.walls.handle.start"].firstMatch
+        XCTAssertTrue(endpoint.waitForExistence(timeout: 12))
+        let from = endpoint.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let originalX = endpoint.frame.midX
+        from.press(forDuration: 0.08, thenDragTo: from.withOffset(CGVector(dx: -40, dy: 0)))
+        let moved = NSPredicate { _, _ in endpoint.exists && endpoint.frame.midX < originalX - 25 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: moved, object: endpoint)], timeout: 12), .completed)
+        let editedX = endpoint.frame.midX
+        let pan = app.descendants(matching: .any)["building.walls.pan"].firstMatch
+        pan.tap()
+        let blank = plan.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.34))
+        blank.press(forDuration: 0.08, thenDragTo: blank.withOffset(CGVector(dx: 70, dy: 0)))
+        pan.tap()
+        XCTAssertTrue(endpoint.waitForExistence(timeout: 10))
+        XCTAssertEqual(endpoint.frame.midX, editedX + 70, accuracy: 8)
+        XCTAssertTrue(hasWall.evaluate(with: plan))
     }
 
     func testSpaceBuildingFixedExitReturnsToFiles() {

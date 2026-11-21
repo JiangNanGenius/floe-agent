@@ -21,6 +21,9 @@ struct BuildingWallPlanEditor: View {
     @State private var selectedWallID: UUID?
     @State private var activeSide: InteriorWallSide?
     @State private var drawing = false
+    @State private var panning = false
+    @GestureState private var canvasDrag: DragGesture.Value?
+    @GestureState private var pinch: MagnifyGesture.Value?
     @State private var pendingStart: [Double]?
     @State private var snapEnabled = true
     @State private var lengthText = "3000"
@@ -62,19 +65,22 @@ struct BuildingWallPlanEditor: View {
             Divider()
             if snapshot != nil {
                 GeometryReader { geometry in
-                    let current = WallPlanProjection(
-                        size: geometry.size,
-                        centre: (viewport ?? .fit(size: geometry.size, walls: floorWalls)).centre,
-                        mmPerPoint: (viewport ?? .fit(size: geometry.size, walls: floorWalls)).mmPerPoint
-                    )
+                    let base = viewport ?? .fit(size: geometry.size, walls: floorWalls)
+                    let visible = visibleViewport(base: base, size: geometry.size)
+                    let current = WallPlanProjection(size: geometry.size, centre: visible.centre,
+                                                     mmPerPoint: visible.mmPerPoint)
                     ZStack(alignment: .topLeading) {
                         planCanvas(projection: current)
                             .contentShape(Rectangle())
                             .gesture(SpatialTapGesture().onEnded { value in
+                                guard !panning, pinch == nil else { return }
                                 tap(current.plan(value.location), projection: current)
                             })
-                        handleOverlay(projection: current)
+                            .simultaneousGesture(canvasGesture(base: base, projection: current))
+                        if !panning { handleOverlay(projection: current) }
                     }
+                    .coordinateSpace(name: "building.wall.viewport")
+                    .clipped()
                     .onAppear {
                         planSize = geometry.size
                         if viewport == nil { viewport = .fit(size: geometry.size, walls: floorWalls) }
@@ -83,11 +89,11 @@ struct BuildingWallPlanEditor: View {
                         planSize = size
                         if viewport == nil { viewport = .fit(size: size, walls: floorWalls) }
                     }
-                    .simultaneousGesture(MagnifyGesture().onEnded { value in
-                        guard value.magnification.isFinite, value.magnification > 0 else { return }
-                        let base = viewport ?? .fit(size: geometry.size, walls: floorWalls)
-                        viewport = base.zoomed(by: value.magnification)
-                    })
+                    .simultaneousGesture(MagnifyGesture()
+                        .updating($pinch) { value, state, _ in state = value }
+                        .onEnded { value in
+                            viewport = base.zoomed(by: value.magnification, size: geometry.size, anchor: value.startAnchor)
+                        })
                 }
                 .frame(minHeight: sizeClass == .regular ? 380 : 300)
                 .accessibilityElement(children: .contain)
@@ -152,6 +158,7 @@ struct BuildingWallPlanEditor: View {
                     selectedWallID = nil
                     activeSide = nil
                     viewport = nil
+                    panning = false
                 }
             )) {
                 ForEach(snapshot?.storeys ?? []) { storey in
@@ -159,6 +166,7 @@ struct BuildingWallPlanEditor: View {
                 }
             }
             .pickerStyle(.menu)
+            .disabled(operation != nil)
             .accessibilityIdentifier("building.walls.floor")
 
             if drawing {
@@ -170,6 +178,7 @@ struct BuildingWallPlanEditor: View {
             } else {
                 Button {
                     drawing = true
+                    panning = false
                     pendingStart = nil
                     selectedWallID = nil
                     activeSide = nil
@@ -179,6 +188,11 @@ struct BuildingWallPlanEditor: View {
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("building.walls.draw")
             }
+
+            Toggle(isOn: $panning) { Image(systemName: "hand.draw") }
+                .toggleStyle(.button)
+                .accessibilityLabel(copy("平移视图", "Pan view"))
+                .accessibilityIdentifier("building.walls.pan")
 
             Toggle(isOn: $snapEnabled) {
                 Image(systemName: "dot.squareshape.split.2x2")
@@ -233,13 +247,15 @@ struct BuildingWallPlanEditor: View {
 
     private func planCanvas(projection: WallPlanProjection) -> some View {
         Canvas { context, size in
+            drawGrid(projection: projection, context: &context)
             for wall in floorWalls {
                 let a = projection.screen(wall.a), b = projection.screen(wall.b)
                 var path = Path()
                 path.move(to: a)
                 path.addLine(to: b)
                 let lineWidth = max(3, min(28, wall.thicknessMM / projection.mmPerPoint))
-                context.stroke(path, with: .color(.primary.opacity(wall.id == selectedWallID ? 1 : 0.82)),
+                let opacity = drag?.wallID == wall.id ? 0.28 : (wall.id == selectedWallID ? 1.0 : 0.82)
+                context.stroke(path, with: .color(.primary.opacity(opacity)),
                                style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
                 drawFinish(wall, side: .left, projection: projection, context: &context)
                 drawFinish(wall, side: .right, projection: projection, context: &context)
@@ -257,30 +273,34 @@ struct BuildingWallPlanEditor: View {
                 context.stroke(path, with: .color(.accentColor),
                                style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
             }
-            if let pendingStart {
-                let start = projection.screen(pendingStart)
+            let previewStart = pendingStart ?? canvasDrag.map {
+                snapped(projection.plan($0.startLocation), scale: projection.mmPerPoint)
+            }
+            if drawing, !panning, let previewStart {
+                let start = projection.screen(previewStart)
                 context.fill(Path(ellipseIn: CGRect(x: start.x - 7, y: start.y - 7, width: 14, height: 14)),
                              with: .color(.accentColor))
-                if let preview = exactPreview() {
+                let liveEnd = canvasDrag.map {
+                    snapped(projection.plan($0.location), scale: projection.mmPerPoint, from: previewStart)
+                }
+                if let preview = liveEnd ?? exactPreview() {
                     var path = Path()
                     path.move(to: start)
                     path.addLine(to: projection.screen(preview))
                     context.stroke(path, with: .color(.accentColor.opacity(0.6)),
                                    style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
-                    drawText(String(format: "%.0f mm", hypot(preview[0] - pendingStart[0], preview[1] - pendingStart[1])),
+                    drawText(String(format: "%.0f mm", hypot(preview[0] - previewStart[0], preview[1] - previewStart[1])),
                              at: CGPoint(x: (start.x + projection.screen(preview).x) / 2,
                                          y: (start.y + projection.screen(preview).y) / 2 - 14),
                              context: &context)
                 }
             }
-            drawText(String(format: "%.0f mm / 1 pt", projection.mmPerPoint),
-                     at: CGPoint(x: size.width / 2, y: size.height - 16), context: &context)
+            drawScaleRuler(size: size, projection: projection, context: &context)
         }
         .background(Color(uiColor: .systemBackground))
         .overlay {
-            if floorWalls.isEmpty {
-                Text(copy("点“画墙”，在平面上连续点取墙的起点和终点。",
-                          "Choose Draw walls, then tap the wall start and end points."))
+            if floorWalls.isEmpty && !drawing {
+                Text(copy("点「画墙」开始。", "Choose Draw walls to start."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(20)
@@ -301,22 +321,22 @@ struct BuildingWallPlanEditor: View {
 
     private func handle(at point: CGPoint, end: InteriorWallEndpoint, wall: BuildingWallSnapshot.Wall,
                         projection: WallPlanProjection) -> some View {
-        Circle()
+        let origin = end == .start ? wall.a : wall.b
+        return Circle()
             .fill(Color(uiColor: .systemBackground))
             .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
-            .frame(width: 30, height: 30)
-            .contentShape(Circle())
+            .frame(width: 19, height: 19)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
             .position(point)
-            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local).onChanged { value in
-                let point = snapped(projection.plan(value.location))
+            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("building.wall.viewport")).onChanged { value in
+                let point = draggedEndpoint(origin, translation: value.translation, excluding: wall.id, projection: projection)
                 drag = WallHandleDrag(wallID: wall.id, end: end, point: point)
             }.onEnded { value in
-                guard let drag, drag.wallID == wall.id else {
-                    self.drag = nil
-                    return
-                }
-                let point = snapped(projection.plan(value.location))
+                guard drag?.wallID == wall.id, drag?.end == end else { return }
                 self.drag = nil
+                let point = draggedEndpoint(origin, translation: value.translation, excluding: wall.id, projection: projection)
+                guard point != origin else { return }
                 run {
                     let state = try currentWallState()
                     try await project.applyWallCommand(
@@ -550,8 +570,8 @@ struct BuildingWallPlanEditor: View {
 
     private func tap(_ point: [Double], projection: WallPlanProjection) {
         guard !project.busy, operation == nil else { return }
-        let snappedPoint = snapped(point)
         if drawing {
+            let snappedPoint = snapped(point, scale: projection.mmPerPoint, from: pendingStart)
             guard let start = pendingStart else {
                 pendingStart = snappedPoint
                 return
@@ -560,7 +580,7 @@ struct BuildingWallPlanEditor: View {
             addWall(from: start, to: snappedPoint)
             return
         }
-        if let wall = hitWall(point) {
+        if let wall = hitWall(point, scale: projection.mmPerPoint) {
             selectedWallID = wall.id
             activeSide = side(of: point, wall: wall)
             thicknessText = String(format: "%.0f", wall.thicknessMM)
@@ -581,20 +601,104 @@ struct BuildingWallPlanEditor: View {
         return cross > 0 ? .left : .right
     }
 
-    private func hitWall(_ point: [Double]) -> BuildingWallSnapshot.Wall? {
+    private func hitWall(_ point: [Double], scale: Double) -> BuildingWallSnapshot.Wall? {
         let segments = floorWalls.map {
             InteriorWallPlanSegment(a: $0.a, b: $0.b, thicknessMM: $0.thicknessMM)
         }
-        guard let index = InteriorWallPlanGeometry.hitTest(point, segments: segments) else { return nil }
+        guard let index = InteriorWallPlanGeometry.hitTest(point, segments: segments,
+                                                           minimumToleranceMM: 12 * scale) else { return nil }
         return floorWalls[index]
     }
 
-    private func snapped(_ point: [Double]) -> [Double] {
+    private func snapped(_ point: [Double], scale: Double, from start: [Double]? = nil,
+                         excluding wallID: UUID? = nil) -> [Double] {
         guard snapEnabled else { return InteriorWallPlanGeometry.chainPoint(point) }
-        let segments = floorWalls.map {
+        let segments = floorWalls.filter { $0.id != wallID }.map {
             InteriorWallPlanSegment(a: $0.a, b: $0.b, thicknessMM: $0.thicknessMM)
         }
-        return InteriorWallPlanGeometry.snapped(point, segments: segments, gridMM: 50)
+        // Existing corners and walls win over grid and orthogonal guides.
+        let target = InteriorWallPlanGeometry.snapped(point, segments: segments, gridMM: 0,
+            endpointToleranceMM: min(450, 14 * scale), axisToleranceMM: min(300, 9 * scale))
+        if target != point { return target }
+        var grid = InteriorWallPlanGeometry.snapped(point, segments: [], gridMM: 50)
+        if let start {
+            let dx = abs(point[0] - start[0]), dy = abs(point[1] - start[1])
+            let tolerance = min(250, 9 * scale)
+            if dy <= tolerance, dx > tolerance { grid[1] = start[1] }
+            if dx <= tolerance, dy > tolerance { grid[0] = start[0] }
+        }
+        return grid
+    }
+
+    private func draggedEndpoint(_ origin: [Double], translation: CGSize, excluding wallID: UUID,
+                                 projection: WallPlanProjection) -> [Double] {
+        let point = [origin[0] + translation.width * projection.mmPerPoint,
+                     origin[1] - translation.height * projection.mmPerPoint]
+        return snapped(point, scale: projection.mmPerPoint, excluding: wallID)
+    }
+
+    private func visibleViewport(base: WallViewport, size: CGSize) -> WallViewport {
+        if let pinch { return base.zoomed(by: pinch.magnification, size: size, anchor: pinch.startAnchor) }
+        if panning, let canvasDrag { return base.panned(by: canvasDrag.translation) }
+        return base
+    }
+
+    private func canvasGesture(base: WallViewport, projection: WallPlanProjection) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .named("building.wall.viewport"))
+            .updating($canvasDrag) { value, state, _ in
+                if panning || drawing { state = value }
+            }
+            .onEnded { value in
+                guard pinch == nil else { return }
+                if panning {
+                    viewport = base.panned(by: value.translation)
+                } else if drawing, operation == nil, !project.busy {
+                    let start = pendingStart ?? snapped(projection.plan(value.startLocation), scale: projection.mmPerPoint)
+                    let end = snapped(projection.plan(value.location), scale: projection.mmPerPoint, from: start)
+                    guard hypot(end[0] - start[0], end[1] - start[1]) >= 1 else { return }
+                    addWall(from: start, to: end)
+                }
+            }
+    }
+
+    private func gridInterval(at scale: Double) -> Double {
+        let target = scale * 36
+        let magnitude = pow(10, floor(log10(target)))
+        return [magnitude, 2 * magnitude, 5 * magnitude, 10 * magnitude].first { $0 >= target } ?? target
+    }
+
+    private func drawScaleRuler(size: CGSize, projection: WallPlanProjection, context: inout GraphicsContext) {
+        let distance = gridInterval(at: projection.mmPerPoint)
+        let width = distance / projection.mmPerPoint
+        let right = size.width - 18
+        let left = right - width
+        let y = size.height - 16
+        var ruler = Path()
+        ruler.move(to: CGPoint(x: left, y: y - 3))
+        ruler.addLine(to: CGPoint(x: left, y: y))
+        ruler.addLine(to: CGPoint(x: right, y: y))
+        ruler.addLine(to: CGPoint(x: right, y: y - 3))
+        context.stroke(ruler, with: .color(.secondary), lineWidth: 1)
+        let title = distance >= 1_000 ? String(format: "%g m", distance / 1_000) : String(format: "%g mm", distance)
+        drawText(title, at: CGPoint(x: (left + right) / 2, y: y - 10), context: &context)
+    }
+
+    private func drawGrid(projection: WallPlanProjection, context: inout GraphicsContext) {
+        let interval = gridInterval(at: projection.mmPerPoint)
+        let topLeft = projection.plan(.zero)
+        let bottomRight = projection.plan(CGPoint(x: projection.size.width, y: projection.size.height))
+        var grid = Path()
+        for x in stride(from: ceil(topLeft[0] / interval) * interval, through: bottomRight[0], by: interval) {
+            let x = projection.screen([x, 0]).x
+            grid.move(to: CGPoint(x: x, y: 0))
+            grid.addLine(to: CGPoint(x: x, y: projection.size.height))
+        }
+        for y in stride(from: ceil(bottomRight[1] / interval) * interval, through: topLeft[1], by: interval) {
+            let y = projection.screen([0, y]).y
+            grid.move(to: CGPoint(x: 0, y: y))
+            grid.addLine(to: CGPoint(x: projection.size.width, y: y))
+        }
+        context.stroke(grid, with: .color(.secondary.opacity(0.17)), lineWidth: 0.5)
     }
 
     private func exactPreview() -> [Double]? {
@@ -616,7 +720,7 @@ struct BuildingWallPlanEditor: View {
                 expectedChangeCount: state.changeCount,
                 expectedWallRevision: state.wallRevision
             )
-            pendingStart = end
+            if drawing, storeyID == floor?.id { pendingStart = end }
             reload()
         }
     }
@@ -648,6 +752,7 @@ struct BuildingWallPlanEditor: View {
 
     private func finishDrawing() {
         drawing = false
+        panning = false
         pendingStart = nil
         drag = nil
     }
@@ -715,9 +820,16 @@ struct WallViewport: Equatable {
         return WallViewport(centre: [(minX + maxX) / 2, (minY + maxY) / 2], mmPerPoint: scale)
     }
 
-    func zoomed(by factor: Double) -> WallViewport {
-        let next = mmPerPoint / max(0.2, min(5, factor.isFinite ? factor : 1))
-        return WallViewport(centre: centre, mmPerPoint: max(1, min(2000, next)))
+    func panned(by translation: CGSize) -> WallViewport {
+        WallViewport(centre: [centre[0] - translation.width * mmPerPoint,
+                              centre[1] + translation.height * mmPerPoint], mmPerPoint: mmPerPoint)
+    }
+
+    func zoomed(by factor: Double, size: CGSize = .zero, anchor: UnitPoint = .center) -> WallViewport {
+        let next = max(1, min(2000, mmPerPoint / max(0.2, min(5, factor.isFinite ? factor : 1))))
+        let delta = mmPerPoint - next
+        return WallViewport(centre: [centre[0] + (anchor.x - 0.5) * size.width * delta,
+                                     centre[1] - (anchor.y - 0.5) * size.height * delta], mmPerPoint: next)
     }
 }
 

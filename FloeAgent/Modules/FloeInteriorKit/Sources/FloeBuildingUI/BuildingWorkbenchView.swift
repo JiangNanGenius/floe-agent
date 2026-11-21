@@ -82,6 +82,7 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
             }
             projectNavigation
         }
+        .sheet(isPresented: $presentingSaveAs) { saveAsForm }
     }
 
     private var projectNavigation: some View {
@@ -150,18 +151,18 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
                         }
                     }label:{Label(buildingText("导入","Import"),systemImage:"tray.and.arrow.down")}
                     .accessibilityIdentifier("building.import").disabled(session.operationBusy || session.snapshot==nil)
-                    Menu{
-                        if saveAsForm != nil || session.projectActions?.requestSaveAs != nil {
-                            Button(buildingText("另存为…","Save As…"), systemImage: "square.on.square") {
-                                if saveAsForm != nil {
-                                    presentingSaveAs = true
-                                } else {
-                                    session.projectActions?.requestSaveAs?()
-                                }
+                    if saveAsForm != nil || session.projectActions?.requestSaveAs != nil {
+                        Button(buildingText("另存为…", "Save As…"), systemImage: "square.on.square") {
+                            if saveAsForm != nil {
+                                presentingSaveAs = true
+                            } else {
+                                session.projectActions?.requestSaveAs?()
                             }
-                            .menuActionDismissBehavior(.enabled)
-                            .accessibilityIdentifier("building.saveAs")
                         }
+                        .accessibilityIdentifier("building.saveAs")
+                        .disabled(session.operationBusy)
+                    }
+                    Menu{
                         if session.activeKind != nil,session.editorsReady {
                             Button{session.exportCurrent()}label:{Label(buildingText("导出参数 JSON","Export parameters as JSON"),systemImage:"square.and.arrow.up")}
                         }
@@ -176,9 +177,6 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
                 }
             }
             .safeAreaInset(edge:.bottom){feedback}
-            // This detail view owns both the toolbar menu and its copy form.
-            // A reopened project creates a fresh workbench with a fresh presentation.
-            .sheet(isPresented: $presentingSaveAs) { saveAsForm }
         }
         .task{session.locale=buildingLocale;session.reload()}
         .onChange(of:buildingLocale){_,locale in session.locale=locale}
