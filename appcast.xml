@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.6</title>
+      <pubDate>Sat, 21 Nov 2026 18:50:12 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.6</link>
+      <sparkle:version>36</sparkle:version>
+      <sparkle:shortVersionString>1.11.6</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>与 iPad 共用消息时间线、历史翻页及会话搜索。 Shared iPad transcript, history paging and conversation search.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.6/Floe-Agent-1.11.6.dmg" length="36051339" type="application/octet-stream" sparkle:edSignature="EYXPyRZYEElXNNWT/6KyFMCnOqVAUPUc2ZGREIMyF+BGEP6HqC+foaDrWARh6MG3JhdNIr1WMIVjrY7DqM+UAw==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.5</title>
       <pubDate>Sat, 21 Nov 2026 17:25:26 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.5</link>
