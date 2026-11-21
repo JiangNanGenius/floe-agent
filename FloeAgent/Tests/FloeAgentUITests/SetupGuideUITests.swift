@@ -263,6 +263,7 @@ final class SetupGuideUITests: XCTestCase {
         // secret: the secure field is empty (XCUITest reports the placeholder
         // as its value on some iOS versions, which is still not a stored key).
         let keyField = app.secureTextFields["providers.api_key"]
+        scrollTo(keyField, in: app)
         XCTAssertTrue(keyField.waitForExistence(timeout: 8))
         let keyValue = (keyField.value as? String) ?? ""
         let keyPlaceholder = keyField.placeholderValue ?? ""
