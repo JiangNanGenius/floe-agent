@@ -418,6 +418,27 @@ final class CADFaceRotationParameterUITests: XCTestCase {
 // SPDX-License-Identifier: MPL-2.0
 @MainActor
 final class CADExactCurveEditingUITests: XCTestCase {
+    func testSketchPointMarksFollowCameraZoom() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = try launch()
+        defer { app.terminate() }
+        let viewport = any(app, "CADEditorViewport")
+        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        let markers = app.descendants(matching: .any).matching(identifier: "SketchPointMarker")
+        XCTAssertTrue(markers.firstMatch.waitForExistence(timeout: 10))
+        func horizontalSpan() -> CGFloat {
+            let centers = markers.allElementsBoundByIndex.map { $0.frame.midX }
+            return (centers.max() ?? 0) - (centers.min() ?? 0)
+        }
+        let initialSpan = horizontalSpan()
+        XCTAssertGreaterThan(initialSpan, 40, "The seeded lines begin at distinct x coordinates")
+        viewport.pinch(withScale: 1.35, velocity: 1)
+        let updated = NSPredicate { _, _ in horizontalSpan() > initialSpan + 5 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: updated, object: viewport)],
+                                      timeout: 10), .completed)
+    }
+
     private func launch(reopen: Bool = false) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",

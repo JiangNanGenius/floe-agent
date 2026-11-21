@@ -236,6 +236,38 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         XCTAssertTrue(app.segmentedControls["space.sections"].buttons["文件"].isSelected)
     }
 
+    func testCADToolsOpensMachiningFullScreen() {
+        let app = application()
+        app.launchArguments += ["-floe.settings.language", "zh-Hans"]
+        app.launch()
+        openNewFileMenu(app)
+        app.buttons["space.new.cad"].tap()
+        app.buttons["三维 CAD"].firstMatch.tap()
+        let name = app.textFields["space.creation.title"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.tap()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("QA-Machining-" + String(UUID().uuidString.prefix(8)))
+        app.buttons["space.creation.create"].tap()
+        let tools = app.buttons["CADWorkbenchToolsButton"].firstMatch
+        XCTAssertTrue(tools.waitForExistence(timeout: 25))
+        XCTAssertFalse(app.buttons["cad.manufacturing.open"].exists)
+        tools.tap()
+        let manufacturing = app.buttons["cad.manufacturing.open"].firstMatch
+        XCTAssertTrue(manufacturing.waitForExistence(timeout: 10))
+        manufacturing.tap()
+        XCTAssertTrue(app.buttons["cad.manufacturing.printing"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["CADToolsSheetCloseButton"].exists)
+        app.buttons["cad.manufacturing.cutting"].tap()
+        let machine = app.descendants(matching: .any)["cad.manufacturing.machine"].firstMatch
+        XCTAssertTrue(machine.waitForExistence(timeout: 15))
+        let cutting = app.navigationBars["切削加工"]
+        XCTAssertTrue(cutting.exists)
+        let window = app.windows.firstMatch.frame
+        XCTAssertGreaterThan(cutting.frame.width, window.width * 0.9)
+        XCTAssertLessThan(cutting.frame.minY, window.height * 0.2)
+    }
+
     func testBuildingDrawsWallByDraggingAndPansWithoutMovingIt() {
         continueAfterFailure = false
         let app = application()
