@@ -13,7 +13,7 @@ final class SelectionCatalogTests: XCTestCase {
         try await withSelectionWorkspace { workspace in
             let capabilities = try workspace.coordinator.creationCapabilities()
             XCTAssertEqual(capabilities.count, 20)
-            XCTAssertEqual(Set(capabilities.map(\.engine)), Set(GameEngineID.allCases))
+            XCTAssertEqual(Set(capabilities.map(\.engine)), Set(GameEngineID.authoringEngines))
             for capability in capabilities {
                 let descriptor = try workspace.catalog.descriptor(for: capability.engine)
                 XCTAssertEqual(capability.displayName, descriptor.displayName)
@@ -35,7 +35,7 @@ final class SelectionCatalogTests: XCTestCase {
     }
 
     func testEveryImportedEngineMarkerIsRecognizedWithoutSeeding() async throws {
-        for engine in GameEngineID.allCases {
+        for engine in GameEngineID.authoringEngines {
             try await withSelectionWorkspace { workspace in
                 let files: [String: Data] = [
                     "floe-game.json": Data(

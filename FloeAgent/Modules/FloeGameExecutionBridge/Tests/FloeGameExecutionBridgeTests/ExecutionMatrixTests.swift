@@ -12,7 +12,7 @@ struct ExecutionMatrixTests {
         let document = try GameEngineExecutionMatrix.load()
         #expect(document.engineCount == 20)
         #expect(document.entries.count == 20)
-        #expect(Set(document.entries.map(\.engine)) == Set(GameEngineID.allCases))
+        #expect(Set(document.entries.map(\.engine)) == Set(GameEngineID.authoringEngines))
         let catalog = try GameBuildCapabilityRegistry.catalog()
         for entry in document.entries {
             let catalogEntry = try #require(catalog.engines.first { $0.engine == entry.engine })

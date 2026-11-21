@@ -1064,6 +1064,7 @@ private struct GameSaveStrings: Sendable {
         case .playcanvas: return "PlayCanvas"
         case .love: return "LÖVE"
         case .renpy: return "Ren'Py"
+        case .tyranoScript: return "TyranoScript"
         case .tic80: return "TIC-80"
         case .ink: return "ink"
         case .twine: return "Twine"

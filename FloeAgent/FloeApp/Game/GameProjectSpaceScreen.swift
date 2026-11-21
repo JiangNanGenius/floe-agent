@@ -88,7 +88,7 @@ struct GameProjectSpaceScreen: View {
                     }
                     Button(IDELanguageRunText.t("构建／导出", "Build / export"), systemImage: "shippingbox") {
                         showingBuild = true
-                    }.disabled(session == nil || pending != nil)
+                    }.disabled(session == nil || pending != nil || snapshot?.selectedEngine?.isImportOnly == true)
                     if session != nil {
                         projectMenu
                     }
@@ -848,7 +848,7 @@ struct GameStarterCreationSheet: View {
                     }
                 }
                 Section(IDELanguageRunText.t("引擎", "Engine")) {
-                    ForEach(environment.gameWorkspaces.library?.entries ?? []) { entry in
+                    ForEach(environment.gameWorkspaces.library?.creationChoices() ?? []) { entry in
                         Button {
                             selected = entry.engine
                         } label: {
@@ -1183,7 +1183,7 @@ struct GameProjectSetupPanel: View {
 
     private var starterMenu: some View {
         Menu {
-            ForEach(library?.entries ?? []) { entry in
+            ForEach(library?.creationChoices() ?? []) { entry in
                 Button(entry.displayName) { onStarter(entry.engine) }
             }
         } label: {
@@ -1298,6 +1298,7 @@ struct GameProjectSetupPanel: View {
         case .sourceWithBuildTool: return IDELanguageRunText.t("源码 + 构建工具", "Source + build tool")
         case .sourceWithEditor: return IDELanguageRunText.t("源码 + 编辑器", "Source + editor")
         case .runtimePackRequired: return IDELanguageRunText.t("需要运行时包", "Runtime pack required")
+        case .importOnly: return IDELanguageRunText.t("导入现有作品", "Import an existing game")
         }
     }
 

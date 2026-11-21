@@ -83,23 +83,24 @@ public actor GamePortableBuildBridge: GamePortableBuildPort {
                 guard let executable = step.executable, !executable.isEmpty else {
                     throw GameExecutionError.invalidConfiguration("portable command has no executable")
                 }
-                var arguments = try step.arguments.map {
+                let arguments = try step.arguments.map {
                     try Self.expand($0, project: guestSource, output: guestOutput,
                                     resources: guestResources, sdk: guestSDK,
                                     title: request.title, memory: request.memoryBytes)
                 }
                 var resolvedExecutable = executable
+                var workingDirectory = relativeSource
                 if executable == "renpy.sh" {
-                    guard let guestSDK else {
+                    guard let guestSDK, let sdkStage else {
                         throw GameExecutionError.prerequisite("Ren'Py SDK path is required")
                     }
                     resolvedExecutable = guestSDK + "/renpy.sh"
-                } else if executable.contains("/") {
-                    resolvedExecutable = executable
+                    // Ren'Py resolves the "launcher" project against the cwd.
+                    // The imported project is the explicit web_build argument.
+                    workingDirectory = try relativePath(sdkStage, context: shellContext)
                 }
-                _ = guestSDK
                 let result = try await configuration.shell.run(
-                    .init(executable: resolvedExecutable, arguments: arguments, cwd: relativeSource),
+                    .init(executable: resolvedExecutable, arguments: arguments, cwd: workingDirectory),
                     context: shellContext)
                 guard result.exitCode == 0 else {
                     throw GameExecutionError.commandFailed(

@@ -31,6 +31,8 @@ public enum GameDeveloperEngineSupport: String, Codable, Sendable, CaseIterable 
     case guestRuntimeBridge
     /// A guest/native runtime is required and only a written plan exists.
     case guestRuntimePlan
+    /// The imported game plays with its own controls and save system.
+    case playbackOnly
 }
 
 public struct GameDeveloperInstrumentationFile: Codable, Equatable, Sendable, Identifiable {

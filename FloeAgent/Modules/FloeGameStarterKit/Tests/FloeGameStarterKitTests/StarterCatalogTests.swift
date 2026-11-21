@@ -12,7 +12,7 @@ final class StarterCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.schemaVersion, 1)
         XCTAssertEqual(catalog.catalogVersion, "1.0.0")
         XCTAssertEqual(catalog.engines.count, 20)
-        XCTAssertEqual(Set(catalog.engines.map(\.engine)), Set(GameEngineID.allCases))
+        XCTAssertEqual(Set(catalog.engines.map(\.engine)), Set(GameEngineID.authoringEngines))
         for descriptor in catalog.engines {
             XCTAssertEqual(descriptor.defaultInput.engine, descriptor.engine)
             XCTAssertFalse(descriptor.displayName.isEmpty)

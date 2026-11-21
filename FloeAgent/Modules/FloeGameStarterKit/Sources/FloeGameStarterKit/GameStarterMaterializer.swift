@@ -68,6 +68,8 @@ struct GameStarterMaterializer: Sendable {
             try installRuntimePack(descriptor: descriptor, title: title, stage: stage)
         case .delegated:
             try installDelegated(descriptor: descriptor, title: title, stage: stage)
+        case .importOnly:
+            throw GameStarterError.unsupportedEngine(descriptor.engine)
         }
         guard FileManager.default.fileExists(atPath: stage.path) else {
             throw GameStarterError.invalidTemplate("provider did not create the project")

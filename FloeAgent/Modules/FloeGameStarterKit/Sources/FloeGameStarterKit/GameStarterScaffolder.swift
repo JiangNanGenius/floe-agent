@@ -42,7 +42,10 @@ public actor GameStarterScaffolder {
     public func createBlankProject(projectID: UUID, owner: GameProjectOwner,
                                    title: String, engine: GameEngineID? = nil) async throws -> GameStoredProject {
         try GameStarterTitle.validate(title)
-        if let engine { _ = try catalog.descriptor(for: engine) }
+        if let engine {
+            guard !engine.isImportOnly else { throw GameStarterError.unsupportedEngine(engine) }
+            _ = try catalog.descriptor(for: engine)
+        }
         return try await repository.createProject(projectID: projectID, owner: owner,
                                                   title: title, engine: engine)
     }

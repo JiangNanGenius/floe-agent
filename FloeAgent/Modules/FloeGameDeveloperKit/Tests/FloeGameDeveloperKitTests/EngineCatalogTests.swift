@@ -6,8 +6,8 @@ import FloeGameCore
 
 @Test func catalogContainsEveryEngineExactlyOnce() throws {
     let descriptors = try GameDeveloperEngineCatalog.validated()
-    #expect(descriptors.count == GameEngineID.allCases.count)
-    #expect(Set(descriptors.map(\.engine)) == Set(GameEngineID.allCases))
+    #expect(descriptors.count == GameEngineID.authoringEngines.count)
+    #expect(Set(descriptors.map(\.engine)) == Set(GameEngineID.authoringEngines))
     for descriptor in descriptors {
         #expect(descriptor.hookID == descriptor.engine.rawValue)
         #expect(!descriptor.instrumentation.summary.isEmpty)

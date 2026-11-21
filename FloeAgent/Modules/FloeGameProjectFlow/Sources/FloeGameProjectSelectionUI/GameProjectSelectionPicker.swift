@@ -327,6 +327,7 @@ public struct GameProjectSelectionPicker: View {
         case .sourceWithBuildTool: return text("源码 + 构建工具", "Source + build tool")
         case .sourceWithEditor: return text("源码 + 编辑器", "Source + editor")
         case .runtimePackRequired: return text("需要运行时包", "Runtime pack required")
+        case .importOnly: return text("导入现有作品", "Import an existing game")
         }
     }
 

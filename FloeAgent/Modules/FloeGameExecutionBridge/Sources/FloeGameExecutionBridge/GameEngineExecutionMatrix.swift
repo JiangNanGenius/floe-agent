@@ -67,7 +67,7 @@ public enum GameEngineExecutionMatrix {
         guard document.schemaVersion == 1,
               document.engineCount == 20,
               document.entries.count == 20,
-              Set(document.entries.map(\.engine)) == Set(GameEngineID.allCases),
+              Set(document.entries.map(\.engine)) == Set(GameEngineID.authoringEngines),
               Set(document.entries.map(\.engine)).count == document.entries.count else {
             throw GameExecutionError.invalidConfiguration("matrix does not cover exactly the 20 engines")
         }

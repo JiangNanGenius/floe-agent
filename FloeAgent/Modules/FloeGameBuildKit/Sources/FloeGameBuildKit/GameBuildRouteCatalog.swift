@@ -177,7 +177,7 @@ public enum GameBuildCatalogLoader {
               catalog.engineCount == 20,
               catalog.engines.count == catalog.engineCount,
               Set(catalog.engines.map(\.engine)).count == catalog.engines.count,
-              Set(catalog.engines.map(\.engine)) == Set(GameEngineID.allCases) else {
+              Set(catalog.engines.map(\.engine)) == Set(GameEngineID.authoringEngines) else {
             throw GameBuildCapabilityError.invalidRouteCatalog("engine coverage is not the agreed 20")
         }
         for entry in catalog.engines {

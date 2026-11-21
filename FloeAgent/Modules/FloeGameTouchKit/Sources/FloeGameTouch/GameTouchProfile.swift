@@ -412,6 +412,12 @@ public enum GameTouchDefaults {
                     button("renpy.hideWindows", .h)
                 ]
             )
+        case .tyranoScript:
+            return GameTouchDefaultCatalog(
+                engine: engine, keyboardTransport: keyboardTransport, source: .templateFallback,
+                summary: "Uses the imported game's touch controls and key configuration.",
+                reference: nil, stick: .none, movement: .init(), buttons: []
+            )
         case .ink, .twine:
             return GameTouchDefaultCatalog(
                 engine: engine, keyboardTransport: keyboardTransport, source: .templateFallback,

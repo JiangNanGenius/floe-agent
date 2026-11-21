@@ -61,10 +61,8 @@ public final class GameDeveloperSession: ObservableObject {
                 sessionID: UUID = UUID(),
                 limits: GameDeveloperLimits = .default) throws {
         let binding = transport.binding
-        let descriptors = try GameDeveloperEngineCatalog.validated()
-        guard let descriptor = descriptors.first(where: { $0.engine == binding.engine }) else {
-            throw GameDeveloperError.unsupported("No descriptor for \(binding.engine.rawValue)")
-        }
+        _ = try GameDeveloperEngineCatalog.validated()
+        let descriptor = try GameDeveloperEngineCatalog.descriptor(for: binding.engine)
         guard !binding.savedRevision.isEmpty, binding.savedRevision.utf8.count <= 256 else {
             throw GameDeveloperError.invalidConfiguration("saved revision")
         }

@@ -47,7 +47,8 @@ to Root after the ownership transfer.
 | RPG Maker MZ | Ready MZ Web export, otherwise licensed MZ runtime/deployment requirement. |
 | Phaser/KAPLAY/Babylon/PlayCanvas | Ready static Web, verified runtime-pack assembly, or typed web-bundle build. |
 | LÖVE | Ready love.js Web or the prepared love.js build through the host portable build port. |
-| Ren'Py | Ready Web build or the official pinned 8.5.3 `web_build` through the host portable build port. |
+| Ren'Py | Ready Web build (`game.zip` or `game.data`), or the official pinned 8.5.3 `web_build` for a compatible project with scripts or standard RPA archives. |
+| TyranoScript | Import a complete browser export with its own runtime and game assets. Playback uses the game's own touch controls and saves. |
 | ink/Twine/WASM-4/TIC-80/microStudio | Reviewed narrative adapters with prepared runtime resources. |
 | GDevelop | Verified GDJS export, otherwise the official SDK export through the host external build port. |
 | Godot | Ready Web export, otherwise the pinned Godot Web export through the host external build port. |

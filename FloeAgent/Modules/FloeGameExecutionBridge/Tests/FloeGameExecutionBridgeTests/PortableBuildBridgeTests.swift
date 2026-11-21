@@ -74,6 +74,38 @@ struct PortableBuildBridgeTests {
         #expect(node.arguments.contains { $0.hasPrefix("/workspace/") })
     }
 
+    @Test("runs the Ren’Py launcher from the staged SDK with a separate source argument")
+    func renpyLauncherWorkingDirectory() async throws {
+        let temp = try ExecutionTemporaryDirectory(); defer { temp.cleanup() }
+        let source = temp.url.appendingPathComponent("source")
+        let sdk = temp.url.appendingPathComponent("sdk")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("game"),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sdk, withIntermediateDirectories: true)
+        try Data("label start:\n    return\n".utf8)
+            .write(to: source.appendingPathComponent("game/script.rpy"))
+        try Data().write(to: sdk.appendingPathComponent("renpy.sh"))
+        let project = try GamePortableProjectDescriptor(rootURL: source, revision: "rev-1")
+        let output = temp.url.appendingPathComponent("out")
+        let adapter = GamePortableRenPyAdapter()
+        let plan = try adapter.plan(for: project, outputURL: output, resources: nil, sdkURL: sdk)
+        let request = try GamePortableBuildRequest(project: project, outputURL: output,
+            resources: nil, sdkURL: sdk, title: "Test", memoryBytes: 8_388_608)
+        let workspace = temp.url
+        let shell = FakeExecutionShell(workspaceRoot: workspace)
+        let bridge = GamePortableBuildBridge(configuration: .init(shell: shell, shellContext: {
+            GameShellContext(workspaceRoot: workspace, environmentID: "linux-guest",
+                             conversationID: UUID(), runID: UUID(), executionBindingGeneration: 1)
+        }))
+        _ = try await bridge.execute(plan, request: request)
+        let command = try #require(await shell.commands.first)
+        let cwd = try #require(command.cwd)
+        #expect(cwd.hasSuffix("/sdk"))
+        #expect(command.executable == "/workspace/\(cwd)/renpy.sh")
+        #expect(command.arguments.prefix(2) == ["launcher", "web_build"])
+        #expect(command.arguments[2] == "/workspace/\(cwd.dropLast(3))source")
+    }
+
     private func sha256(_ url: URL) throws -> String {
         GameDigest.sha256(try Data(contentsOf: url))
     }

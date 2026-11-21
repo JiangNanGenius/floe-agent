@@ -132,10 +132,12 @@ struct GameProjectWebPlayerSurface: View {
                 Label(copy("存档", "Saves"), systemImage: "internaldrive")
                     .frame(minWidth: 44, minHeight: 44)
             }.disabled(presentation.stopped).accessibilityIdentifier("game.play.saves")
-            Button { choosePanel(.developer) } label: {
-                Label(copy("调试／作弊", "Debug / cheats"), systemImage: "slider.horizontal.3")
-                    .frame(minWidth: 44, minHeight: 44)
-            }.disabled(presentation.stopped).accessibilityIdentifier("game.play.developer")
+            if !presentation.request.engine.isImportOnly {
+                Button { choosePanel(.developer) } label: {
+                    Label(copy("调试／作弊", "Debug / cheats"), systemImage: "slider.horizontal.3")
+                        .frame(minWidth: 44, minHeight: 44)
+                }.disabled(presentation.stopped).accessibilityIdentifier("game.play.developer")
+            }
         }
     }
 

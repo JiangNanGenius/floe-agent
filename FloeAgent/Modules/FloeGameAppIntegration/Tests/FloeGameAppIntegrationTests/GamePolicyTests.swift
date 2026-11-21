@@ -92,10 +92,12 @@ final class GameSaveDestinationPolicyTests: XCTestCase {
 final class GameEngineLibraryTests: XCTestCase {
     func testBundledCatalogCoversExactlyTwentyEnginesAndPreservesChords() throws {
         let library = try GameEngineLibrary.bundled()
-        XCTAssertEqual(library.entries.count, 20)
+        XCTAssertEqual(library.creationChoices().count, 20)
         XCTAssertEqual(Set(library.entries.map(\.engine)), Set(GameEngineID.allCases))
+        XCTAssertEqual(try library.entry(for: .tyranoScript).readiness, .importOnly)
+        XCTAssertFalse(library.creationChoices().contains { $0.engine == .tyranoScript })
         XCTAssertEqual(library.catalogVersion, "1.0.0")
-        for entry in library.entries {
+        for entry in library.creationChoices() {
             XCTAssertFalse(entry.displayName.isEmpty)
             XCTAssertFalse(entry.sourceLicense.isEmpty)
             XCTAssertFalse(entry.engineLicense.isEmpty)

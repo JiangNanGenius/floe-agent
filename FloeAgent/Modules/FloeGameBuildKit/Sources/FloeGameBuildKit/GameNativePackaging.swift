@@ -24,6 +24,8 @@ public struct GameNativePackagingRecipe: Equatable, Sendable {
 public enum GameNativePackaging {
     public static func recipes(for engine: GameEngineID) -> [GameNativePackagingRecipe] {
         switch engine {
+        case .tyranoScript:
+            return []
         case .unity:
             return [
                 .init(engine: engine, platform: .windows, configuration: "release", format: .installerEXE,

@@ -131,7 +131,7 @@ final class GameBuildCapabilityTests: XCTestCase {
         XCTAssertFalse(mv.isEmpty)
         XCTAssertTrue(mv.contains(where: { $0.platform == .web && $0.installableFromTemplate }))
         XCTAssertTrue(mv.contains(where: { $0.platform == .windows && !$0.installableFromTemplate }))
-        for engine in GameEngineID.allCases {
+        for engine in GameEngineID.authoringEngines {
             XCTAssertFalse(GameNativePackaging.recipes(for: engine).isEmpty, engine.rawValue)
         }
     }

@@ -40,6 +40,8 @@ enum GameRunRoutePlanner {
             return try love(index: index, entry: entry, web: web, availability: availability)
         case .renpy:
             return try renpy(index: index, entry: entry, web: web, availability: availability)
+        case .tyranoScript:
+            return tyranoScript(index: index, web: web)
         case .tic80:
             return try narrative(engine: .tic80, marker: "cart.tic", index: index,
                                  availability: availability)
@@ -349,7 +351,7 @@ enum GameRunRoutePlanner {
                               web: GameRunWebEntry?,
                               availability: GameRunAvailability) throws -> GameRunRouteEvaluation {
         let wasm = first(index, "renpy.wasm")
-        let game = first(index, "game.zip")
+        let game = first(index, "game.zip") ?? first(index, "game.data")
         let webReady = entry != nil && wasm != nil && game != nil
         if webReady, web?.isSelfContained == true {
             return staticRoute(engine: .renpy, entry: entry!, routeID: "static.renpy-web",
@@ -360,9 +362,16 @@ enum GameRunRoutePlanner {
             $0.path.value.lowercased().hasPrefix("game/")
                 && ($0.path.value.lowercased().hasSuffix(".rpy") || $0.path.value.lowercased().hasSuffix(".rpyc"))
         }?.path
-        guard let script else {
+        let marker: GameRelativePath?
+        if let script {
+            marker = script
+        } else {
+            let reader = try GameProjectReader(rootURL: index.rootURL, maximumFileBytes: 40)
+            marker = try GameRenPyArchive.first(in: reader, paths: index.paths)
+        }
+        guard let marker else {
             return unavailable(engine: .renpy, routeID: "portable.renpy-web",
-                detail: "No Ren'Py game/*.rpy source was found in this root.")
+                detail: "Provide a Ren'Py Web export or a game folder with scripts or a standard RPA archive.")
         }
         var prerequisites: [GameRunPrerequisite] = []
         if !availability.renpySDK {
@@ -376,8 +385,27 @@ enum GameRunRoutePlanner {
         return .init(plan: .init(engine: .renpy, action: .portableAssembly,
                                  routeID: "portable.renpy-web", entry: path("index.html"),
                                  prerequisites: prerequisites,
-                                 notes: ["Authored .rpy source is never treated as a compiled Web build. The full source tree, including existing .rpyc companions, is copied unchanged into the host job; the official 8.5.3 web_build produces the Web export. This package never strips or rewrites compiled companions."]),
-                     evidence: [.init(path: script, kind: .projectMarker)])
+                                 notes: ["The official Ren'Py 8.5.3 SDK builds a Web export from a separate copy of the game tree, including compiled scripts and archives. Desktop games must be compatible with this SDK and Web runtime."]),
+                     evidence: [.init(path: marker, kind: .projectMarker)])
+    }
+
+    private static func tyranoScript(index: GameRunSourceIndex,
+                                     web: GameRunWebEntry?) -> GameRunRouteEvaluation {
+        let route = "static.tyranoscript"
+        guard let web, web.isSelfContained,
+              let engine = first(index, "tyrano/tyrano.js"),
+              web.references.contains(engine.value),
+              let kag = first(index, "tyrano/plugins/kag/kag.js"),
+              web.references.contains(kag.value),
+              let scenario = index.files.first(where: {
+                  $0.path.value.hasPrefix("data/scenario/") && $0.path.value.hasSuffix(".ks")
+              }) else {
+            return unavailable(engine: .tyranoScript, routeID: route,
+                detail: "Import the complete TyranoScript browser export, including index.html, tyrano/ and data/.")
+        }
+        return staticRoute(engine: .tyranoScript, entry: web.entry, routeID: route,
+            notes: ["Plays the imported browser export with its own runtime and per-project browser saves."],
+            evidence: [web.entry, engine, kag, scenario.path])
     }
 
     // MARK: - Narrative and fantasy consoles

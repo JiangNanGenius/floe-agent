@@ -160,7 +160,7 @@ public enum GamePortableArtifactVerifier {
             try require(["index.html", "love.wasm", "game.data", "love.js"])
             entry = profile?.entry ?? (try! GameRelativePath("index.html"))
         case .renpy:
-            try require(["index.html", "renpy.wasm", "renpy.js", "game.zip"])
+            try require(["index.html", "renpy.wasm", "renpy.js"])
             entry = profile?.entry ?? (try! GameRelativePath("index.html"))
         default:
             throw GamePortableError.unsupportedEngine(engine)
@@ -176,7 +176,9 @@ public enum GamePortableArtifactVerifier {
         }
         if engine == .renpy {
             try requireWASM(root: root, path: "renpy.wasm")
-            try requireZIP(root: root, path: "game.zip")
+            let archive = set.contains("game.zip") ? "game.zip" : "game.data"
+            try require([archive])
+            try requireZIP(root: root, path: archive)
         }
         if engine == .rpgMakerMV {
             _ = try GamePortableFileAccess.read(root: root, path: "data/System.json", maximumBytes: 4 * 1_024 * 1_024)

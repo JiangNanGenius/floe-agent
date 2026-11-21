@@ -54,6 +54,7 @@ public actor GameProjectSelectionCoordinator {
             case .static: starterSource = .bundledTemplate
             case .delegated: starterSource = .delegatedProvider
             case .runtimePack: starterSource = .preparedRuntimePack
+            case .importOnly: starterSource = .importOnly
             }
             return GameProjectEngineCapability(
                 engine: descriptor.engine,

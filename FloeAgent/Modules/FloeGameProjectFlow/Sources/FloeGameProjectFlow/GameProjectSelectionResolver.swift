@@ -257,6 +257,7 @@ struct GameProjectSelectionResolver: Sendable {
         case .static: starterSource = .bundledTemplate
         case .delegated: starterSource = .delegatedProvider
         case .runtimePack: starterSource = .preparedRuntimePack
+        case .importOnly: starterSource = .importOnly
         }
         let prerequisites = descriptor.prerequisites.map {
             GameProjectPrerequisiteState(kind: $0.kind, name: $0.name,

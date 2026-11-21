@@ -23,7 +23,7 @@ import FloeGameAuthoring
     }
 
     func testAllTwentyEnginesCopyExactFilesWithoutSharingOwnership() async throws {
-        XCTAssertEqual(GameEngineID.allCases.count, 20)
+        XCTAssertEqual(GameEngineID.authoringEngines.count, 20)
         for engine in GameEngineID.allCases {
             let f = try await Fixture.make(sourceEngine: engine, destinationEngine: engine)
             defer { f.remove() }

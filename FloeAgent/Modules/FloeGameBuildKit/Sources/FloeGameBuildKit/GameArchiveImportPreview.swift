@@ -146,6 +146,37 @@ public struct GameArchiveProjectPreviewer: Sendable {
         if has(".tw") || has(".twee") { engines.insert(.twine); sawEditorMarker = true }
         if has(".tic") { engines.insert(.tic80); sawEditorMarker = true }
 
+        let archiveFiles = Set(paths.lazy.filter { $0.kind == .file }.map { $0.path.lowercased() })
+        let tyranoMarker = "tyrano/tyrano.js"
+        if archiveFiles.contains(where: { path in
+            guard path.hasSuffix(tyranoMarker) else { return false }
+            let prefix = path.dropLast(tyranoMarker.count)
+            guard prefix.isEmpty || prefix.last == "/" else { return false }
+            return (archiveFiles.contains(prefix + "index.html") || archiveFiles.contains(prefix + "index.htm"))
+                && archiveFiles.contains(prefix + "tyrano/plugins/kag/kag.js")
+        }) {
+            engines.insert(.tyranoScript)
+            sawPublishedRuntime = true
+        }
+        for path in archiveFiles {
+            let parts = path.split(separator: "/")
+            if parts.count >= 2, parts[parts.count - 2] == "game" {
+                if path.hasSuffix(".rpa") || path.hasSuffix(".rpyc") {
+                    engines.insert(.renpy)
+                    sawPublishedRuntime = true
+                } else if path.hasSuffix(".rpy") {
+                    engines.insert(.renpy)
+                    sawEditorMarker = true
+                }
+            } else if parts.last == "renpy.wasm" {
+                let prefix = path.dropLast("renpy.wasm".count)
+                if archiveFiles.contains(prefix + "game.zip") || archiveFiles.contains(prefix + "game.data") {
+                    engines.insert(.renpy)
+                    sawPublishedRuntime = true
+                }
+            }
+        }
+
         for entry in paths {
             let path = entry.path
             entryCount += 1

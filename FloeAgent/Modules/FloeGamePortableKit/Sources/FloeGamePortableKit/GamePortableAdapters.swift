@@ -90,8 +90,8 @@ public enum GamePortableRootScanner {
             if has("game/script.rpy") || has("game/screens.rpy") {
                 add(.renpy, ["game/script.rpy", "game/screens.rpy"])
             }
-            if has("renpy.wasm") && has("game.zip") {
-                add(.renpy, ["renpy.wasm", "game.zip"])
+            if has("renpy.wasm") && (has("game.zip") || has("game.data")) {
+                add(.renpy, ["renpy.wasm", "game.zip", "game.data"])
             }
             guard !engines.isEmpty else { continue }
             candidates.append(.init(root: directory.isEmpty ? nil : directory,
@@ -355,14 +355,20 @@ public struct GamePortableRenPyAdapter: GamePortableAdapter {
         let index = GamePortableAdapterSupport.exists(project, "index.html")
         let wasm = GamePortableAdapterSupport.exists(project, "renpy.wasm")
         let game = GamePortableAdapterSupport.exists(project, "game.zip")
+            || GamePortableAdapterSupport.exists(project, "game.data")
         let web = index && wasm && game
         let hasRPY = GamePortableAdapterSupport.hasPrefix(project, "game/") &&
             project.files.contains { $0.value.hasPrefix("game/") && $0.value.hasSuffix(".rpy") }
         let hasRPYC = project.files.contains { $0.value.hasPrefix("game/") && $0.value.hasSuffix(".rpyc") }
+        var hasDesktopProject = hasRPY || hasRPYC
+        if !web, !hasDesktopProject {
+            let reader = try GameProjectReader(rootURL: project.rootURL, maximumFileBytes: 40)
+            hasDesktopProject = try GameRenPyArchive.first(in: reader, paths: project.files) != nil
+        }
         let sourceFormat: GamePortableSourceFormat = web ? .renpyWeb
-            : ((hasRPY || hasRPYC) ? .renpyProject : .unknown)
+            : (hasDesktopProject ? .renpyProject : .unknown)
         let readiness: GamePortableReadiness = web ? .webReady
-            : ((hasRPY || hasRPYC) ? .buildRequired : .sourceOnly)
+            : (hasDesktopProject ? .buildRequired : .sourceOnly)
         if !web {
             warnings.append(.init(code: .webBeta,
                 message: "The official Ren'Py Web route is Beta; the pinned 8.5.3 launcher web_build command is required.",
@@ -390,7 +396,7 @@ public struct GamePortableRenPyAdapter: GamePortableAdapter {
             entry: GamePortableAdapterSupport.entry(project, "index.html"), readiness: readiness,
             capabilities: capabilities, runtime: runtime, inputDeclaration: input.0,
             keyPaths: GamePortableAdapterSupport.keyPaths(project, candidates: [
-                "game/script.rpy", "game/screens.rpy", "game.zip", "renpy.wasm",
+                "game/script.rpy", "game/screens.rpy", "game.zip", "game.data", "renpy.wasm",
                 "index.html", "floe_bridge.js", "floe-inputs.json"
             ]), warnings: warnings)
     }
@@ -405,7 +411,7 @@ public struct GamePortableRenPyAdapter: GamePortableAdapter {
                 outputs: [profile.entry!.value], notes: ["Existing Ren'Py Web build is served unchanged."])
         }
         guard profile.sourceFormat == .renpyProject else {
-            throw GamePortableError.invalidArtifact("Ren'Py project with game/*.rpy")
+            throw GamePortableError.invalidArtifact("Ren'Py game folder with scripts or a standard RPA archive")
         }
         guard sdkURL != nil else {
             throw GamePortableError.invalidArtifact("pinned Ren'Py 8.5.3 SDK path is required")

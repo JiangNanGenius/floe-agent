@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 
-/// The agreed engine scope, not a list of installed or executable adapters.
+/// Engine identifiers shared by recognition, project selection and playback.
 public enum GameEngineID: String, CaseIterable, Codable, Hashable, Sendable {
     case rpgMakerXP, rpgMakerVX, rpgMakerVXAce, rpgMakerMV, rpgMakerMZ
     case phaser, kaplay, godot, babylon, playcanvas, love, renpy, tic80
     case ink, twine, gdevelop, cocosCreator, microStudio, wasm4, unity
+    case tyranoScript
+
+    /// Engines offered by the starter and build catalogs.
+    public static let authoringEngines = allCases.filter { !$0.isImportOnly }
+
+    public var isImportOnly: Bool {
+        self == .tyranoScript
+    }
 }
 
 public enum GameProjectError: Error, Equatable, Sendable {

@@ -241,7 +241,7 @@ final class GameRunPreparerTests: XCTestCase {
         }
     }
 
-    func testAllTwentyEnginesHaveExplicitStableRoutes() throws {
+    func testRegisteredEnginesHaveExplicitStableRoutes() throws {
         let workspace = try TestWorkspace()
         let inline = html([], inline: true)
         let layouts: [GameEngineID: [String: String]] = [
@@ -266,6 +266,9 @@ final class GameRunPreparerTests: XCTestCase {
                           "runtime/engine.js": "", "game.js": ""],
             .love: ["main.lua": "function love.draw() end", "conf.lua": ""],
             .renpy: ["game/script.rpy": "label start:\n    return\n"],
+            .tyranoScript: ["index.html": html(["tyrano/tyrano.js", "tyrano/plugins/kag/kag.js"]),
+                            "tyrano/tyrano.js": "", "tyrano/plugins/kag/kag.js": "",
+                            "data/scenario/first.ks": "Hello[p]"],
             .tic80: ["cart.tic": ""],
             .ink: ["story.ink": "Hello -> END\n"],
             .twine: ["story.twine.json": "{}"],
@@ -298,6 +301,48 @@ final class GameRunPreparerTests: XCTestCase {
             seen.insert(engine)
         }
         XCTAssertEqual(seen, Set(GameEngineID.allCases))
+    }
+
+    func testTyranoScriptRequiresAnOfflineExportWithItsOwnRuntime() throws {
+        let workspace = try TestWorkspace()
+        let (complete, web) = try scannedLayout(workspace, name: "tyrano", files: [
+            "index.html": html(["tyrano/tyrano.js", "tyrano/plugins/kag/kag.js"]),
+            "tyrano/tyrano.js": "", "tyrano/plugins/kag/kag.js": "",
+            "data/scenario/first.ks": "Hello[p]"
+        ])
+        let ready = try GameRunRoutePlanner.evaluate(
+            engine: .tyranoScript, index: complete, web: web, availability: emptyAvailability())
+        XCTAssertEqual(ready.plan.action, .staticWeb)
+        XCTAssertEqual(ready.plan.routeID, "static.tyranoscript")
+        let (incomplete, missing) = try scannedLayout(workspace, name: "missing-runtime", files: [
+            "index.html": html(["https://example.invalid/tyrano.js"]),
+            "data/scenario/first.ks": "Hello[p]"
+        ])
+        let rejected = try GameRunRoutePlanner.evaluate(
+            engine: .tyranoScript, index: incomplete, web: missing, availability: emptyAvailability())
+        XCTAssertEqual(rejected.plan.action, .unavailable)
+    }
+
+    func testRenPyArchiveSelectsSDKBuildAndRenamedWebPackagePlaysUnchanged() throws {
+        let workspace = try TestWorkspace()
+        let archive = "RPA-3.0 0000000000000022 00000000\n" + String(repeating: "x", count: 16)
+        let desktopLayouts = [(archive, GameRunRouteAction.portableAssembly),
+                              ("these bytes are not an RPA archive", .unavailable)]
+        for (number, layout) in desktopLayouts.enumerated() {
+            let (index, web) = try scannedLayout(workspace, name: "rpa-\(number)",
+                files: ["game/archive.rpa": layout.0])
+            let evaluation = try GameRunRoutePlanner.evaluate(
+                engine: .renpy, index: index, web: web, availability: emptyAvailability())
+            XCTAssertEqual(evaluation.plan.action, layout.1)
+        }
+        let (index, web) = try scannedLayout(workspace, name: "web-data", files: [
+            "index.html": html(["renpy.js"]), "renpy.js": "",
+            "renpy.wasm": "wasm", "game.data": "archive"
+        ])
+        let evaluation = try GameRunRoutePlanner.evaluate(
+            engine: .renpy, index: index, web: web, availability: emptyAvailability())
+        XCTAssertEqual(evaluation.plan.routeID, "static.renpy-web")
+        XCTAssertEqual(evaluation.plan.action, .staticWeb)
     }
 
     func testRealWebExportsPlanStaticWeb() throws {

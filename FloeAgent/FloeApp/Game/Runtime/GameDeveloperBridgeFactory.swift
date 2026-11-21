@@ -19,7 +19,8 @@ import FloeGameDeveloperCore
 enum GameDeveloperBridgeFactory {
     static func configuration(for request: GameIDEProjectRunRequest) throws
         -> GameDeveloperBridgeConfiguration? {
-        guard let descriptor = try? GameDeveloperEngineCatalog.descriptor(for: request.engine) else {
+        guard let descriptor = try? GameDeveloperEngineCatalog.descriptor(for: request.engine),
+              descriptor.hookID != nil else {
             return nil
         }
         switch descriptor.route {

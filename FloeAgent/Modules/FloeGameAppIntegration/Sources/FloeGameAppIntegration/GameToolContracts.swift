@@ -255,7 +255,7 @@ public struct GameCreateArguments: Codable, Equatable, Sendable {
               !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw GameToolContractError.invalidTitle
         }
-        guard GameEngineID.allCases.contains(engine) else { throw GameToolContractError.invalidEngine }
+        guard !engine.isImportOnly else { throw GameToolContractError.invalidEngine }
         if let note, note.utf8.count > 4_096 { throw GameToolContractError.invalidTitle }
     }
 }
@@ -285,7 +285,6 @@ public struct GameInputArguments: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
-        guard GameEngineID.allCases.count == 20 else { throw GameToolContractError.invalidEngine }
         let duration = durationMilliseconds ?? 80
         guard (16...2_000).contains(duration) else { throw GameToolContractError.invalidInputAction }
         switch action {

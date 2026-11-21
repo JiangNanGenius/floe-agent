@@ -5,6 +5,29 @@ import FloeGameCore
 @testable import FloeGameRunKit
 
 final class GameRunProjectDiscoveryRecognitionTests: XCTestCase {
+    func testNestedVisualNovelImportsKeepDistinctRoots() async throws {
+        let workspace = try TestWorkspace()
+        let contents = [
+            "Library/Tyrano/index.html": "<script src=\"tyrano/tyrano.js\"></script>",
+            "Library/Tyrano/tyrano/tyrano.js": "",
+            "Library/Tyrano/tyrano/plugins/kag/kag.js": "",
+            "Library/Tyrano/data/scenario/first.ks": "Original fixture",
+            "Library/RenPy/game/script.rpyc": "compiled script marker",
+            "Library/RenPyArchive/game/archive.rpa":
+                "RPA-2.0 0000000000000018" + String(repeating: "x", count: 32),
+            "Library/Other/game/other.rpa": "unrelated .rpa suffix"
+        ]
+        let project = try await TestProject.make(workspace: workspace,
+                                                 files: contents.mapValues { Data($0.utf8) })
+        let stored = try await project.repository.open(project.projectID, owner: project.owner)
+        let roots = try await GameRunProjectDiscovery(contexts: project.host)
+            .discover(context: project.context, files: stored.files)
+        XCTAssertEqual(roots.first { $0.root?.value == "Library/Tyrano" }?.engines, [.tyranoScript])
+        XCTAssertEqual(roots.first { $0.root?.value == "Library/RenPy" }?.engines, [.renpy])
+        XCTAssertEqual(roots.first { $0.root?.value == "Library/RenPyArchive" }?.engines, [.renpy])
+        XCTAssertEqual(roots.first { $0.root?.value == "Library/Other" }?.engines, [])
+    }
+
     func testNestedArbitraryNativeJSONAndExportedRootsAreDiscovered() async throws {
         let workspace = try TestWorkspace()
         let prelude = String(repeating: " ", count: 12_000)

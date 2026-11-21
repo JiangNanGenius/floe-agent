@@ -17,7 +17,7 @@ private func clean(_ imported: InstrumentationFixture.Imported) {
     let instrumenter = try InstrumentationFixture.instrumenter(imported)
     let audit = try await instrumenter.audit()
     #expect(audit.entries.count == 20)
-    #expect(Set(audit.entries.map { $0.engine }) == Set(GameEngineID.allCases))
+    #expect(Set(audit.entries.map { $0.engine }) == Set(GameEngineID.authoringEngines))
     #expect(audit.installerEngines == [.unity, .godot, .gdevelop, .cocosCreator])
     #expect(audit.entries.allSatisfy { !$0.gap.isEmpty && !$0.gapZhHans.isEmpty })
     #expect(audit.entries.allSatisfy { $0.id == $0.engine.rawValue })
@@ -66,7 +66,7 @@ private func clean(_ imported: InstrumentationFixture.Imported) {
 }
 
 @Test func unsupportedInstallerEnginesStillHaveCatalogDescriptors() throws {
-    for engine in GameEngineID.allCases {
+    for engine in GameEngineID.authoringEngines {
         let descriptor = try GameDeveloperEngineCatalog.descriptor(for: engine)
         #expect(descriptor.engine == engine)
         if [.unity, .godot, .gdevelop, .cocosCreator].contains(engine) {

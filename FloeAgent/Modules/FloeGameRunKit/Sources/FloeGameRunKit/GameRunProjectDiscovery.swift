@@ -96,7 +96,8 @@ public struct GameRunProjectDiscovery: Sendable {
             } else if parts.count >= 2, parts[parts.count - 2] == "Data", lower.hasPrefix("system."),
                       ["rxdata", "rvdata", "rvdata2"].contains((lower as NSString).pathExtension) {
                 parent = Array(parts.dropLast(2))
-            } else if parts.count >= 2, parts[parts.count - 2] == "game", lower.hasSuffix(".rpy") {
+            } else if parts.count >= 2, parts[parts.count - 2].lowercased() == "game",
+                      ["rpy", "rpyc", "rpa"].contains((lower as NSString).pathExtension) {
                 parent = Array(parts.dropLast(2))
             } else if !markers.contains(lower) && !extensions.contains((lower as NSString).pathExtension) {
                 continue

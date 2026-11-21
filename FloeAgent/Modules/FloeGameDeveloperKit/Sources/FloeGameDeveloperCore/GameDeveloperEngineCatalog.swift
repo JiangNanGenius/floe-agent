@@ -29,7 +29,7 @@ extension GameDeveloperSupports {
 public enum GameDeveloperEngineCatalog {
     public static let version = "1.0.0"
 
-    /// The exact 20-engine set, in the same order as `GameEngineID.allCases`.
+    /// Engines with authoring instrumentation, in authoring catalog order.
     /// Each descriptor names a real route, a host hook and an instrumentation
     /// plan; an entry is never a placeholder menu page.
     public static let all: [GameDeveloperEngineDescriptor] = [
@@ -65,11 +65,30 @@ public enum GameDeveloperEngineCatalog {
     ]
 
     public static func descriptor(for engine: GameEngineID) throws -> GameDeveloperEngineDescriptor {
+        if engine == .tyranoScript { return tyranoScript }
         guard let descriptor = all.first(where: { $0.engine == engine }) else {
             throw GameDeveloperError.unsupported("No developer descriptor for \(engine.rawValue)")
         }
         return descriptor
     }
+
+    private static let tyranoScript = GameDeveloperEngineDescriptor(
+        engine: .tyranoScript, displayName: "TyranoScript",
+        route: .staticWeb, support: .playbackOnly, hookID: nil,
+        expectedSupports: .init(liveState: false, snapshot: false, restore: false,
+                                pause: false, resume: false, speed: false, reset: .none,
+                                screenshot: false, fields: false, actions: false,
+                                projectRegistration: false),
+        instrumentation: .init(
+            summary: "Play a complete TyranoScript browser export.",
+            summaryZhHans: "播放完整的 TyranoScript 网页版作品。",
+            files: [], steps: ["Import the exported game folder."], stepsZhHans: ["导入导出的游戏目录。"],
+            hookContract: "", requiresRebuild: false,
+            limitations: "Uses the game's controls and save menu.",
+            limitationsZhHans: "使用游戏内的操作和存档菜单。",
+            officialDocumentation: ["https://tyrano.jp/"]),
+        notes: "The browser export supplies its runtime.",
+        notesZhHans: "运行时随导入的作品提供。")
 
     public static func matrix() -> GameDeveloperCapabilityMatrix {
         .init(catalogVersion: version, engines: all)
@@ -705,8 +724,8 @@ public enum GameDeveloperEngineCatalog {
     /// Fail closed if an engine id is missing/duplicated or a descriptor has no
     /// intentional route/plan. Called by tests, the CLI and the Session.
     public static func validated() throws -> [GameDeveloperEngineDescriptor] {
-        guard all.count == GameEngineID.allCases.count,
-              Set(all.map(\.engine)) == Set(GameEngineID.allCases),
+        guard all.count == GameEngineID.authoringEngines.count,
+              Set(all.map(\.engine)) == Set(GameEngineID.authoringEngines),
               Set(all.map(\.engine)).count == all.count else {
             throw GameDeveloperError.invalidConfiguration("engine catalog must contain every id exactly once")
         }

@@ -38,6 +38,7 @@ public enum GameProjectEngineStarterSource: String, Codable, Equatable, Sendable
     case bundledTemplate
     case delegatedProvider
     case preparedRuntimePack
+    case importOnly
 }
 
 /// Whether the host's own toolchain/jobs service reported a prerequisite.

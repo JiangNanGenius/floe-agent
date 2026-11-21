@@ -46,7 +46,7 @@ actor FakeExecutionShell: GameShellRunning {
             if let output = command.arguments.last {
                 try writeGuestFile(output, html: "<!doctype html><title>godot</title>")
             }
-        } else if command.executable == "node" || command.executable == "renpy.sh" {
+        } else if command.executable == "node" || command.executable.hasSuffix("/renpy.sh") {
             guard let output = command.arguments.first(where: { $0.hasSuffix("/out") }) else {
                 return .init(exitCode: 3, stdout: Data(), stderr: Data("no output arg".utf8))
             }

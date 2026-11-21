@@ -54,7 +54,7 @@ for engine in engines {
                            actuallyDispatched: template.actuallyDispatched))
 }
 var recipes: [RecipeRecord] = []
-for engine in GameEngineID.allCases {
+for engine in GameEngineID.authoringEngines {
     for recipe in GameNativePackaging.recipes(for: engine) {
         recipes.append(.init(engine: engine.rawValue, platform: recipe.platform.rawValue,
                              configuration: recipe.configuration, format: recipe.format.rawValue,

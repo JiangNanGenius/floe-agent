@@ -15,12 +15,14 @@ public enum GameStarterReadiness: String, Codable, Equatable, Sendable {
     /// The starter source is complete but a pinned engine runtime pack is
     /// required before files can be written (it is verified byte-for-byte).
     case runtimePackRequired
+    case importOnly
 }
 
 public enum GameStarterTemplateKind: String, Codable, Equatable, Sendable {
     case `static`
     case delegated
     case runtimePack
+    case importOnly
 }
 
 public enum GameStarterPrerequisiteKind: String, Codable, Equatable, Sendable {

@@ -339,10 +339,21 @@ public struct GameProjectInspector: Sendable {
                     if let path = try file(name) { add(.love, path: path, kind: .dataLayout) }
                 }
             }
-            if evidence[.renpy] == nil, has("renpy.wasm"), has("game.zip") {
+            if evidence[.renpy] == nil, has("renpy.wasm"), has("game.zip") || has("game.data") {
                 add(.renpy, path: entry, kind: .dataLayout)
-                for name in ["renpy.wasm", "game.zip"] {
+                for name in ["renpy.wasm", "game.zip", "game.data"] {
                     if let path = try file(name) { add(.renpy, path: path, kind: .dataLayout) }
+                }
+            }
+            if evidence[.tyranoScript] == nil {
+                let runtime = try GameRelativePath("tyrano/tyrano.js")
+                let kag = try GameRelativePath("tyrano/plugins/kag/kag.js")
+                let scenario = try GameRelativePath("data/scenario")
+                if try reader.exists(runtime), try reader.exists(kag),
+                   try reader.exists(scenario, directory: true) {
+                    add(.tyranoScript, path: entry, kind: .dataLayout)
+                    add(.tyranoScript, path: runtime, kind: .dataLayout)
+                    add(.tyranoScript, path: kag, kind: .dataLayout)
                 }
             }
             if evidence[.unity] == nil, let buildName = lowerNames["build"] {
@@ -373,11 +384,14 @@ public struct GameProjectInspector: Sendable {
             let gamePath = try GameRelativePath(gameName)
             if try reader.exists(gamePath, directory: true) {
                 let gameNames = try reader.names(in: gamePath, maximum: 256)
-                if let script = gameNames.first(where: {
-                    ["rpy", "rpyc"].contains(($0 as NSString).pathExtension.lowercased())
+                let paths = try gameNames.map { try GameRelativePath(gameName + "/" + $0) }
+                if let script = try paths.first(where: { path in
+                    let ext = (path.value as NSString).pathExtension.lowercased()
+                    return try ["rpy", "rpyc"].contains(ext) && reader.exists(path)
                 }) {
-                    add(.renpy, path: try GameRelativePath(gameName + "/" + script),
-                        kind: .dataLayout)
+                    add(.renpy, path: script, kind: .dataLayout)
+                } else if let archive = try GameRenPyArchive.first(in: reader, paths: paths) {
+                    add(.renpy, path: archive, kind: .dataLayout)
                 }
             }
         }

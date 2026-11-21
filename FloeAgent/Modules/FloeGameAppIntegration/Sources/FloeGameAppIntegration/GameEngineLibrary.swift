@@ -52,20 +52,19 @@ public struct GameEngineLibraryEntry: Identifiable, Equatable, Sendable {
     }
 }
 
-/// The exact twenty engines from the bundled starter catalog. Loading is
-/// fail-closed: a missing/corrupt catalog or a non-20 set throws instead of
-/// returning an empty or partial product list.
+/// The bundled starter catalog and the formats available for import.
+/// Loading rejects an incomplete starter catalog.
 public struct GameEngineLibrary: Sendable {
     public let catalogVersion: String
     public let entries: [GameEngineLibraryEntry]
 
     public init(catalog: GameStarterCatalog) throws {
-        guard catalog.engines.count == GameEngineID.allCases.count,
-              Set(catalog.engines.map(\.engine)) == Set(GameEngineID.allCases) else {
+        guard catalog.engines.count == GameEngineID.authoringEngines.count,
+              Set(catalog.engines.map(\.engine)) == Set(GameEngineID.authoringEngines) else {
             throw GameStarterError.invalidCatalog("engine library must cover exactly the 20 engines")
         }
         self.catalogVersion = catalog.catalogVersion
-        self.entries = catalog.engines
+        self.entries = (catalog.engines + GameStarterCatalog.importOnlyDescriptors)
             .sorted { $0.engine.rawValue < $1.engine.rawValue }
             .map { descriptor in
                 GameEngineLibraryEntry(
@@ -115,7 +114,7 @@ public struct GameEngineLibrary: Sendable {
     /// What the creation UI may offer. A runtime-pack starter can be listed
     /// with its actual missing prerequisite, but it is not silently selected.
     public func creationChoices() -> [GameEngineLibraryEntry] {
-        entries
+        entries.filter { !$0.engine.isImportOnly }
     }
 }
 

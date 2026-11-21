@@ -252,7 +252,7 @@ struct GameProjectRecognitionProbe {
                             || lower.hasSuffix("data/system.rvdata")
                             || lower.hasSuffix("data/system.rvdata2")
                             || ((lower.hasPrefix("game/") || lower.contains("/game/"))
-                                && (ext == "rpy" || ext == "rpyc")) {
+                                && (ext == "rpy" || ext == "rpyc" || ext == "rpa")) {
                     roots.insert(Self.grandparent(of: path) ?? "")
                 }
             }
@@ -379,8 +379,10 @@ struct GameProjectRecognitionProbe {
         let hasLoveLoader = try exists("love.js")
         if hasLoveWasm, hasLoveData, hasLoveLoader { return true }
         let hasRenpyWasm = try exists("renpy.wasm")
-        let hasRenpyGame = try exists("game.zip")
+        let hasRenpyGame = try exists("game.zip") || exists("game.data")
         if hasRenpyWasm, hasRenpyGame { return true }
+        if try exists("tyrano/tyrano.js"), try exists("tyrano/plugins/kag/kag.js"),
+           try exists("data/scenario", directory: true) { return true }
         for buildName in ["Build", "build"] {
             guard try exists(buildName, directory: true) else { continue }
             let build = try sibling(buildName)

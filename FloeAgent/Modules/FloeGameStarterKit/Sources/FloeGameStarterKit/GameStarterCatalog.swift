@@ -18,8 +18,8 @@ public struct GameStarterCatalog: Sendable {
         catch { throw GameStarterError.invalidCatalog(String(describing: error)) }
         guard document.schemaVersion == 1,
               document.catalogVersion == "1.0.0",
-              document.engines.count == GameEngineID.allCases.count,
-              Set(document.engines.map(\.engine)) == Set(GameEngineID.allCases) else {
+              document.engines.count == GameEngineID.authoringEngines.count,
+              Set(document.engines.map(\.engine)) == Set(GameEngineID.authoringEngines) else {
             throw GameStarterError.invalidCatalog("catalog schema, version or engine set")
         }
         for descriptor in document.engines {
@@ -49,6 +49,8 @@ public struct GameStarterCatalog: Sendable {
                       descriptor.files.isEmpty, descriptor.readiness == .runtimePackRequired else {
                     throw GameStarterError.invalidCatalog("runtime-pack descriptor \(descriptor.engine.rawValue)")
                 }
+            case .importOnly:
+                throw GameStarterError.invalidCatalog("import-only engine in the starter resource")
             }
         }
         self.schemaVersion = document.schemaVersion
@@ -71,11 +73,25 @@ public struct GameStarterCatalog: Sendable {
     }
 
     public func descriptor(for engine: GameEngineID) throws -> GameStarterDescriptor {
+        if let descriptor = Self.importOnlyDescriptors.first(where: { $0.engine == engine }) {
+            return descriptor
+        }
         guard let descriptor = engines.first(where: { $0.engine == engine }) else {
             throw GameStarterError.unsupportedEngine(engine)
         }
         return descriptor
     }
+
+    public static let importOnlyDescriptors: [GameStarterDescriptor] = [
+        GameStarterDescriptor(
+            engine: .tyranoScript, displayName: "TyranoScript", starterVersion: "",
+            entry: try! GameRelativePath("index.html"), webEntry: try! GameRelativePath("index.html"),
+            readiness: .importOnly, sourceLicense: "Imported project terms",
+            engineLicense: "TyranoScript terms", templateKind: .importOnly,
+            templateRoot: nil, provider: nil, runtimePack: nil, files: [], expectedFiles: [],
+            prerequisites: [], notes: [], defaultInput: .init(engine: .tyranoScript, movement: .init(), buttons: []),
+            sourcePins: [])
+    ]
 
     /// Returns a deterministic manifest for hosts/tools that need to compare
     /// the installed catalog. It contains no dates, random IDs or absolute paths.
@@ -100,13 +116,9 @@ public struct GameStarterCatalog: Sendable {
                                  preferred: GameEngineID? = nil) -> GameEngineID? {
         let found = Set(inspection.candidates.map(\.engine))
         if let preferred {
-            return found.contains(preferred) && engines.contains(where: { $0.engine == preferred })
-                ? preferred : nil
+            return found.contains(preferred) ? preferred : nil
         }
-        for engine in GameEngineID.allCases where found.contains(engine) {
-            if engines.contains(where: { $0.engine == engine }) { return engine }
-        }
-        return nil
+        return GameEngineID.allCases.first(where: found.contains)
     }
 
     /// Marker/entry files that the existing inspector may use for recognition.
