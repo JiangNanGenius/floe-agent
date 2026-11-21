@@ -715,19 +715,20 @@ struct MacWorkspaceFilesView: View {
     /// preview header.
     @ViewBuilder private func previewActions(_ entry: MacWorkspaceFileEntry) -> some View {
         if entry.openable {
+            let acceptsText = isEditableText(entry)
             let webPage = MacWorkspaceHTMLSite.isPage(entry.url)
             let openTitle = webPage ? t("在内置浏览器中打开", "Open in Built-in Browser") : t("打开", "Open")
             Button { open(entry) } label: { Image(systemName: webPage ? "safari" : "arrow.up.forward.app") }
                 .help(openTitle)
                 .accessibilityLabel(openTitle)
                 .accessibilityIdentifier("workspace.files.open")
-            if isEditableText(entry) {
+            if acceptsText {
                 Button { edit(entry) } label: { Image(systemName: "pencil") }
                     .help(t("编辑", "Edit"))
                     .accessibilityLabel(t("编辑", "Edit"))
                     .accessibilityIdentifier("workspace.files.edit")
             }
-            if UTType(filenameExtension: entry.url.pathExtension)?.conforms(to: .text) == true {
+            if acceptsText {
                 Button { quoteText(entry) } label: { Image(systemName: "text.quote") }
                     .help(t("引用到任务输入框", "Quote in Task"))
                     .accessibilityLabel(t("引用到任务输入框", "Quote in Task"))
@@ -882,12 +883,7 @@ struct MacWorkspaceFilesView: View {
     }
 
     private func isEditableText(_ entry: MacWorkspaceFileEntry) -> Bool {
-        guard entry.openable, canAccess(entry) else { return false }
-        let ext = entry.url.pathExtension.lowercased()
-        let textLike: Set<String> = ["txt", "text", "md", "markdown", "json", "csv", "log",
-                                     "xml", "html", "htm", "css", "js", "ts", "swift", "py",
-                                     "sh", "yml", "yaml", "toml", "ini", "conf"]
-        return textLike.contains(ext) || UTType(filenameExtension: ext)?.conforms(to: .text) == true
+        entry.openable && WorkspaceTextPolicy.isTextualPath(entry.name) && canAccess(entry)
     }
 
     // MARK: - Row & selection actions
@@ -897,11 +893,12 @@ struct MacWorkspaceFilesView: View {
             Button(t("打开", "Open")) { open(entry) }
         }
         if entry.openable {
+            let acceptsText = isEditableText(entry)
             Button(t("快速查看", "Quick Look")) { focusPreview(of: entry) }
-            if isEditableText(entry) {
+            if acceptsText {
                 Button(t("编辑", "Edit")) { edit(entry) }
             }
-            if UTType(filenameExtension: entry.url.pathExtension)?.conforms(to: .text) == true {
+            if acceptsText {
                 Button(t("引用到任务输入框", "Quote in Task")) { quoteText(entry) }
                     .disabled(!canInsertInDraft || importingText)
             }
@@ -1515,10 +1512,10 @@ struct MacWorkspaceFilesView: View {
         }
     }
 
-    // MARK: - Text quoting (unchanged behavior)
+    // MARK: - Text quoting
 
     private func quoteText(_ entry: MacWorkspaceFileEntry) {
-        guard canInsertInDraft, !importingText, let root, canAccess(entry) else { return }
+        guard canInsertInDraft, !importingText, let root, isEditableText(entry) else { return }
         importingText = true
         Task {
             defer { importingText = false }
@@ -1537,14 +1534,14 @@ struct MacWorkspaceFilesView: View {
     // MARK: - Lightweight editing
 
     private func edit(_ entry: MacWorkspaceFileEntry) {
-        guard isEditableText(entry), let root else { return }
+        guard isEditableText(entry), let root, let directory else { return }
         focused = entry.url
         Task {
             do {
                 let loaded = try await Task.detached(priority: .userInitiated) {
                     try MacWorkspaceFolderSnapshot.readEditableText(entry.url, in: root)
                 }.value
-                guard self.root != nil, self.directory != nil else { return }
+                guard self.root == root, self.directory == directory, focused == entry.url, canAccess(entry) else { return }
                 editing = MacWorkspaceTextEditSession(entry: entry, text: loaded.text,
                                                       savedText: loaded.text, baseline: loaded.identity)
             } catch {
@@ -1791,35 +1788,19 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
         return (descriptor, requested)
     }
 
-    /// Original quoted-text reader; behavior is unchanged from the first
-    /// version of this view (UTF-8, at most 32 KB, no NUL bytes).
+    /// Quote a bounded, nonempty text file through the same path as the editor.
     static func readPlainText(_ url: URL, in root: URL) throws -> String {
-        let limit = textLimit
-        guard let rootPath = physicalPath(root.path), let requested = physicalPath(url.path),
-              contains(URL(fileURLWithPath: requested), in: URL(fileURLWithPath: rootPath)),
-              !BridgeAbsoluteFileRead.isSecretPath(requested) else { throw CocoaError(.fileReadNoPermission) }
-        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        guard descriptor >= 0 else { throw CocoaError(.fileReadNoPermission) }
-        let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        var info = stat()
-        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= limit,
-              fcntl(descriptor, F_GETPATH, &path) == 0, let openedPath = path.withUnsafeBufferPointer({ buffer in
-                  buffer.baseAddress.flatMap { String(validatingCString: $0) }
-              }),
-              physicalPath(openedPath) == requested else {
-            throw CocoaError(.fileReadNoPermission)
-        }
-        let bytes = try file.read(upToCount: limit + 1) ?? Data()
-        guard !bytes.isEmpty, bytes.count <= limit, !bytes.contains(0), let text = String(data: bytes, encoding: .utf8) else {
-            throw CocoaError(.fileReadInapplicableStringEncoding)
-        }
-        return text
+        let loaded = try readEditableText(url, in: root)
+        guard !loaded.text.isEmpty else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+        return loaded.text
     }
 
     /// Loads editable text together with the on-disk revision identity used
-    /// later for conflict rejection. Same guard set as `readPlainText`.
+    /// later for conflict rejection.
     static func readEditableText(_ url: URL, in root: URL) throws -> (text: String, identity: MacWorkspaceFileIdentity) {
+        guard WorkspaceTextPolicy.isTextualPath(url.lastPathComponent) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
         let (descriptor, _) = try openVerifiedRegularFile(url, in: root)
         let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         var info = stat()
@@ -1827,7 +1808,7 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
         let limit = textLimit
         guard info.st_size <= limit else { throw MacWorkspaceFileEditError.tooLarge }
         let bytes = try file.read(upToCount: limit + 1) ?? Data()
-        guard bytes.count <= limit, !bytes.contains(0), let text = String(data: bytes, encoding: .utf8) else {
+        guard bytes.count <= limit, let text = WorkspaceTextPolicy.decodeUTF8(bytes) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         return (text, MacWorkspaceFileIdentity(info))
@@ -2291,7 +2272,40 @@ enum MacWorkspaceFileEditingSmoke {
         checkInPlaceSave(&failures)
         checkConflictPreservesOriginal(&failures)
         checkSaveCopy(&failures)
+        checkSharedTextPolicy(&failures)
         return failures
+    }
+
+    private static func checkSharedTextPolicy(_ failures: inout [String]) {
+        do {
+            let root = try makeFixtureRoot("shared-text-policy")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let file = root.appendingPathComponent("handoff.floetext")
+            let original = Data("\u{FEFF}original\n".utf8)
+            try original.write(to: file, options: .withoutOverwriting)
+            let loaded = try MacWorkspaceFolderSnapshot.readEditableText(file, in: root)
+            let quoted = try MacWorkspaceFolderSnapshot.readPlainText(file, in: root)
+            guard Data(loaded.text.utf8) == original, quoted == loaded.text else {
+                failures.append("shared-text-policy: the reader changed the UTF-8 text")
+                return
+            }
+            let edited = loaded.text + "edited\n"
+            _ = try MacWorkspaceFolderSnapshot.saveEditInPlace(edited, fileName: file.lastPathComponent,
+                in: root, root: root, expected: loaded.identity)
+            guard try Data(contentsOf: file) == Data(edited.utf8) else {
+                failures.append("shared-text-policy: saving changed the UTF-8 byte order mark")
+                return
+            }
+            let pdf = root.appendingPathComponent("document.pdf")
+            try original.write(to: pdf, options: .withoutOverwriting)
+            do {
+                _ = try MacWorkspaceFolderSnapshot.readEditableText(pdf, in: root)
+                failures.append("shared-text-policy: a PDF was accepted by the text editor")
+            } catch let error as CocoaError where error.code == .fileReadInapplicableStringEncoding {
+            }
+        } catch {
+            failures.append("shared-text-policy: \(error.localizedDescription)")
+        }
     }
 
     private static func makeFixtureRoot(_ label: String) throws -> URL {

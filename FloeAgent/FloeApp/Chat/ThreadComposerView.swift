@@ -1085,14 +1085,14 @@ struct ThreadComposerView: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    FloeComposerActionGlyph(systemImage: sendSystemImage, enabled: canSend)
+                    FloeComposerActionGlyph(systemImage: sendRoute.composerSymbol, enabled: canSend)
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 }
             }
             .buttonStyle(.plain)
             .disabled(!canSend || isAttachmentProcessing || isSavingChatReasoning)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel(sendAccessibilityLabel)
+            .accessibilityLabel(Text(LocalizedStringKey(sendRoute.composerTitleKey)))
             .accessibilityIdentifier("composer.send")
         }
         // Identifies the row this composer actually gives the field, so the
@@ -1236,47 +1236,26 @@ struct ThreadComposerView: View {
         }
     }
 
-    private var sendSystemImage: String {
-        guard isRunning, let mode = runningInputMode?.wrappedValue else {
-            return "arrow.up"
-        }
-        return mode == .queue ? "text.badge.plus" : "arrow.turn.up.right"
-    }
-
-    private var sendAccessibilityLabel: String {
-        guard isRunning, let mode = runningInputMode?.wrappedValue else {
-            return String(localized: "thread.send")
-        }
-        return mode == .queue ? FloeL10n.l("chat.thread_composer_view.add_to_message_queue") : FloeL10n.l("chat.thread_composer_view.steer_the_current_run")
+    private var sendRoute: RunningInputSendRoute {
+        guard let mode = runningInputMode?.wrappedValue else { return .executeImmediately }
+        return RunningInputModePolicy.sendRoute(isRunActive: isRunning, mode: mode)
     }
 
     private var modelPicker: some View {
         Group {
             if let modelName {
-                Menu {
-                    ForEach(modelMenuGroups) { group in
-                        Section {
-                            ForEach(group.models) { model in
-                                Button {
-                                    chooseModel(model)
-                                } label: {
-                                    if selectedModelID == model.id {
-                                        Label(model.displayName, systemImage: "checkmark")
-                                    } else {
-                                        Text(model.displayName)
-                                    }
-                                }
-                            }
-                        } header: {
-                            modelMenuSectionHeader(group)
-                        }
-                    }
-                } label: {
+                ThreadComposerModelMenu(
+                    models: models, providers: environment.conversationCenter.providers,
+                    appleSystemModelID: AppleFoundationModelIdentity.remoteModelID,
+                    selectedModelID: selectedModelID, onSelect: chooseModel
+                ) {
                     composerChip(
                         title: modelName,
                         systemImage: preparingLocalModelID == nil ? "cpu" : "hourglass",
                         betaBadge: selectedModelIsMLX
                     )
+                } extraActions: {
+                    EmptyView()
                 }
                 .disabled(preparingLocalModelID != nil)
             } else {
@@ -1295,106 +1274,6 @@ struct ThreadComposerView: View {
         }
         return selected.providerID == ProviderProfile.onDeviceProviderID
             && selected.remoteModelID != AppleFoundationModelIdentity.remoteModelID
-    }
-
-    private struct ModelMenuGroup: Identifiable {
-        let id: String
-        let title: LocalizedStringKey
-        /// Cloud provider display name appended to the cloud group header;
-        /// nil for the on-device groups.
-        let cloudProvider: String?
-        /// Non-nil only for the downloaded MLX device-model group; the Apple
-        /// system model and cloud groups are never marked Beta.
-        let beta: Bool
-        let models: [ModelProfile]
-    }
-
-    /// Keep downloaded device (MLX) models, the Apple system model and each
-    /// cloud provider visibly separate. Only the MLX group carries the Beta
-    /// marker; the Apple system model is identified by its exact identity and
-    /// cloud models by their provider.
-    private var modelMenuGroups: [ModelMenuGroup] {
-        var groups: [ModelMenuGroup] = []
-        let onDevice = models.filter {
-            $0.providerID == ProviderProfile.onDeviceProviderID
-        }
-        let mlx = onDevice.filter {
-            $0.remoteModelID != AppleFoundationModelIdentity.remoteModelID
-        }
-        if !mlx.isEmpty {
-            groups.append(ModelMenuGroup(
-                id: "local-mlx",
-                title: "composer.model.group.on_device",
-                cloudProvider: nil,
-                beta: true,
-                models: mlx.sorted(by: modelDisplayOrder)
-            ))
-        }
-        let apple = onDevice.filter {
-            $0.remoteModelID == AppleFoundationModelIdentity.remoteModelID
-        }
-        if !apple.isEmpty {
-            groups.append(ModelMenuGroup(
-                id: "local-apple",
-                title: "composer.model.group.apple",
-                cloudProvider: nil,
-                beta: false,
-                models: apple.sorted(by: modelDisplayOrder)
-            ))
-        }
-        let cloud = Dictionary(grouping: models.filter {
-            $0.providerID != ProviderProfile.onDeviceProviderID
-        }, by: \.providerID)
-        let providers = environment.conversationCenter.providers
-        for providerID in cloud.keys.sorted(by: { lhs, rhs in
-            providerDisplayName(id: lhs, providers: providers)
-                .localizedCaseInsensitiveCompare(providerDisplayName(id: rhs, providers: providers))
-                == .orderedAscending
-        }) {
-            guard let providerModels = cloud[providerID] else { continue }
-            groups.append(ModelMenuGroup(
-                id: providerID.uuidString,
-                title: "composer.model.group.cloud_prefix",
-                cloudProvider: providerDisplayName(id: providerID, providers: providers),
-                beta: false,
-                models: providerModels.sorted(by: modelDisplayOrder)
-            ))
-        }
-        return groups
-    }
-
-    /// Section header inside the model menu; the cloud header also shows its
-    /// provider name, and the MLX group carries the short Beta marker.
-    @ViewBuilder
-    private func modelMenuSectionHeader(_ group: ModelMenuGroup) -> some View {
-        HStack(spacing: 6) {
-            if let providerName = group.cloudProvider {
-                Text(verbatim: "\(String(localized: "composer.model.group.cloud_prefix")) · \(providerName)")
-            } else {
-                Text(group.title)
-            }
-            if group.beta {
-                Text("localmodels.beta_badge")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(FloeTheme.pending)
-            }
-        }
-    }
-
-    private func providerDisplayName(
-        id: UUID,
-        providers: [ProviderProfile]
-    ) -> String {
-        guard let provider = providers.first(where: { $0.id == id }) else {
-            return String(localized: "composer.model.group.unknown_provider")
-        }
-        let custom = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return custom.flatMap { $0.isEmpty ? nil : $0 }
-            ?? provider.kind.rawValue
-    }
-
-    private func modelDisplayOrder(_ lhs: ModelProfile, _ rhs: ModelProfile) -> Bool {
-        lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
     }
 
     private struct PendingLocalModelSwitch: Identifiable {

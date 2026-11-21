@@ -794,9 +794,8 @@ struct MacWorkspaceRootView: View {
         return nil
     }
 
-    private var taskDraft: Binding<String> {
-        let id = destinationConversationID ?? workspace.attachmentOwnerID
-        return Binding(get: { draftStore.text(for: id) }, set: { draftStore.setText($0, for: id) })
+    private func taskDraft(for id: UUID) -> Binding<String> {
+        Binding(get: { draftStore.text(for: id) }, set: { draftStore.setText($0, for: id) })
     }
 
     private var recoverableDrafts: [(id: UUID, date: Date)] {
@@ -1074,13 +1073,15 @@ struct MacWorkspaceRootView: View {
         switch destination {
         case .newTask, .conversation:
             if !workspace.isReady || destinationConversationID == workspace.selectedID {
+                let draftOwner = destinationConversationID ?? workspace.attachmentOwnerID
                 VStack(spacing: 0) {
                     if draftStore.saveFailed {
                         let language = Locale.preferredLanguages.first ?? "en"
                         ErrorEventView(message: language.hasPrefix("zh") ? "草稿保存失败。" : "The draft could not be saved.")
                             .padding(.horizontal)
                     }
-                    HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft,
+                    HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft(for: draftOwner),
+                                           captureDraftCommit: { draftStore.captureSendCommit(for: draftOwner) },
                                            openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
                                            openFiles: { showInspector = true },
                                            openImageWorkbench: openImageWorkbench,

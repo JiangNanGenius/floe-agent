@@ -900,3 +900,11 @@
 "providers.supplier_picker.builtin" = "Built-in";
 "providers.supplier_picker.no_matching_catalog" = "No catalog result matches. Choose a built-in or manual option above.";
 "providers.supplier_picker.title" = "Choose a provider";
+
+// Shared composer
+"thread.send" = "Send";
+"composer.model.group.on_device" = "On-device models";
+"composer.model.group.apple" = "Apple system model";
+"composer.model.group.cloud_prefix" = "Cloud";
+"composer.model.group.unknown_provider" = "Unknown provider";
+"localmodels.beta_badge" = "Beta · Experimental";

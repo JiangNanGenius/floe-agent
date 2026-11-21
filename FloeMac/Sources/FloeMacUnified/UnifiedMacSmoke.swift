@@ -11,6 +11,7 @@ import FloeCore
 import FloeMacBridgeProtocol
 import FloeMacToolbox
 import FloeModels
+import FloePersistence
 import FloeProviders
 import FloeTools
 import Foundation
@@ -99,6 +100,10 @@ final class UnifiedMacSmoke {
         }
         if CommandLine.arguments.contains("--transcript-parity-only") {
             await exerciseTranscriptParity(model)
+            return
+        }
+        if CommandLine.arguments.contains("--project-workbench-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseProjectWorkbench(model, endpoint: endpoint)
             return
         }
         let firstLaunch = CommandLine.arguments.contains("--verify-first-launch")
@@ -239,6 +244,9 @@ final class UnifiedMacSmoke {
             while !agent.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(40)) }
             var checks = ["settings": await exerciseUnifiedSettings(model: model)]
             checks["files"] = await MacWorkspaceFileOperationsSmoke.verify(in: root)
+            let fileEditorFailures = MacWorkspaceFileEditingSmoke.runSyntheticChecks()
+            checks["sharedFileEditor"] = fileEditorFailures.isEmpty
+            settingsDiagnostics.append(contentsOf: fileEditorFailures)
             checks["temporaryLifecycle"] = await MacTemporaryChatModel.verify(in: agent)
             _ = agent.addProvider(name: "Workbench fixture", endpoint: "https://example.invalid/v1",
                                   protocolKind: .openAIChatCompletions, modelID: "workbench-fixture", key: "")
@@ -469,30 +477,8 @@ final class UnifiedMacSmoke {
                     )
                     if let endpoint = projectTaskFixtureEndpoint,
                        await openNewProjectTask(workspace: agent, projectID: project.id) {
-                        projectWorkflow = await agent.verifyProjectTaskWorkflowSmoke(project: project,
-                            folder: folder, attachment: document, endpoint: endpoint, chooseMode: { mode in
-                                await selectComposerMode(mode, workspace: agent)
-                            }, answerQuestion: {
-                                guard CommandLine.arguments.contains("--project-question-fixture") else { return true }
-                                return await self.answerProjectQuestion(in: agent)
-                            }) {
-                                guard clickWorkbenchButton(ids: ["thread.plan.close"], frame: agent.smokeClosePlanFrame,
-                                                           screenshot: "project-task-plan.png") else { return false }
-                                await Task.yield()
-                                guard clickWorkbenchButton(ids: ["thread.plan.reopen"], frame: agent.smokeReopenPlanFrame,
-                                                           screenshot: nil) else { return false }
-                                await Task.yield()
-                                return clickWorkbenchButton(ids: ["thread.plan.executeNormal"],
-                                                     frame: agent.smokePlanExecuteFrame, screenshot: "project-task-plan.png")
-                            } approve: {
-                                guard await enterSteerDuringApproval(workspace: agent) else { return false }
-                                return clickApproval(in: agent, allow: true, screenshot: "project-task-approval.png")
-                            } newProjectTask: {
-                                await openNewProjectTask(workspace: agent, projectID: project.id)
-                            } approveSubtask: {
-                                try? await Task.sleep(for: .milliseconds(160))
-                                return clickApproval(in: agent, allow: true, screenshot: "project-subtask-approval.png")
-                            }
+                        projectWorkflow = await verifyProjectWorkflow(agent, project: project, folder: folder,
+                                                                    attachment: document, endpoint: endpoint)
                         if CommandLine.arguments.contains("--task-browser-fixture"), let workspace = model.macWorkspace {
                             childDetails = await verifyChildDetail(agent)
                             taskBrowser = await verifyTaskBrowser(workspace, agent: agent, endpoint: endpoint)
@@ -719,6 +705,55 @@ final class UnifiedMacSmoke {
         finish(["checks": checks])
     }
 
+    private func exerciseProjectWorkbench(_ model: BridgeAppModel, endpoint: URL) async {
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+        await agent.prepare()
+        let deadline = ContinuousClock.now + .seconds(6)
+        while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
+        let folder = root.appendingPathComponent("Fixture Project", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil,
+              let project = await agent.addWorkspace(name: folder.lastPathComponent, rootURL: folder, selectForNewTask: false),
+              let document = try? writePDFTextAttachment(in: folder),
+              await openNewProjectTask(workspace: agent, projectID: project.id) else {
+            finish(["opened": false, "diagnostics": settingsDiagnostics]); return
+        }
+        let passed = await verifyProjectWorkflow(agent, project: project, folder: folder, attachment: document, endpoint: endpoint)
+        let fileEditorFailures = MacWorkspaceFileEditingSmoke.runSyntheticChecks()
+        finish(["projectTaskWorkflowVerified": passed, "sharedFileEditor": fileEditorFailures.isEmpty,
+                "diagnostics": agent.smokeRunDiagnostics + settingsDiagnostics + fileEditorFailures])
+    }
+
+    private func verifyProjectWorkflow(_ agent: HostAgentWorkspace, project: WorkspaceRecord, folder: URL,
+                                       attachment: URL, endpoint: URL) async -> Bool {
+        await agent.verifyProjectTaskWorkflowSmoke(project: project, folder: folder, attachment: attachment,
+            endpoint: endpoint, chooseModel: { title in
+                await selectMenuChoice(frame: agent.smokeComposerModelFrame, titles: [title], target: title)
+            }, chooseMode: { mode in
+                await selectComposerMode(mode, workspace: agent)
+            }, answerQuestion: {
+                guard CommandLine.arguments.contains("--project-question-fixture") else { return true }
+                return await answerProjectQuestion(in: agent)
+            }, confirm: {
+                guard clickWorkbenchButton(ids: ["thread.plan.close"], frame: agent.smokeClosePlanFrame,
+                                           screenshot: "project-task-plan.png") else { return false }
+                await Task.yield()
+                guard clickWorkbenchButton(ids: ["thread.plan.reopen"], frame: agent.smokeReopenPlanFrame,
+                                           screenshot: nil) else { return false }
+                await Task.yield()
+                return clickWorkbenchButton(ids: ["thread.plan.executeNormal"], frame: agent.smokePlanExecuteFrame,
+                                            screenshot: "project-task-plan.png")
+            }, approve: {
+                guard await enterSteerDuringApproval(workspace: agent) else { return false }
+                return clickApproval(in: agent, allow: true, screenshot: "project-task-approval.png")
+            }, newProjectTask: {
+                await openNewProjectTask(workspace: agent, projectID: project.id)
+            }, approveSubtask: {
+                try? await Task.sleep(for: .milliseconds(160))
+                return clickApproval(in: agent, allow: true, screenshot: "project-subtask-approval.png")
+            })
+    }
+
     private func exerciseTranscriptParity(_ model: BridgeAppModel) async {
         model.openAgentWorkspace()
         guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
@@ -857,13 +892,21 @@ final class UnifiedMacSmoke {
         let promptA = "First independent stream"
         let promptB = "Second independent stream"
         drafts.setText(promptA, for: first)
-        let firstSent = agent.send(promptA, mode: .chat) { drafts.setText("", for: first) }
+        let firstSent = agent.send(promptA, mode: .chat, onAdmitted: drafts.captureSendCommit(for: first))
         // No suspension before opening the next composer. This hits the
         // first-send race before the first durable conversation exists.
         let secondOpened = agent.selectNewDraft(in: nil) && !agent.isSending
         let second = agent.uncommittedDraftID
         drafts.setText(promptB, for: second)
-        let secondSent = agent.send(promptB, mode: .chat) { drafts.setText("", for: second) }
+        let secondSent = agent.send(promptB, mode: .chat, onAdmitted: drafts.captureSendCommit(for: second))
+        let repeatedDraft = UUID()
+        drafts.setText(promptA, for: repeatedDraft)
+        let oldCommit = drafts.captureSendCommit(for: repeatedDraft)
+        drafts.setText(promptB, for: repeatedDraft)
+        drafts.setText(promptA, for: repeatedDraft)
+        oldCommit()
+        let retypedDraftPreserved = drafts.text(for: repeatedDraft) == promptA
+        drafts.captureSendCommit(for: repeatedDraft)()
         let visible = ContinuousClock.now + .seconds(6)
         while agent.selectedID != second && ContinuousClock.now < visible { try? await Task.sleep(for: .milliseconds(50)) }
         let concurrentlyRunning = agent.isTaskRunning(first) && agent.isTaskRunning(second)
@@ -889,7 +932,8 @@ final class UnifiedMacSmoke {
             && !agent.messages.contains { $0.role == "user" && $0.content == promptA }
         var results: [String: Any] = ["firstSent": firstSent, "secondOpenedBeforeAdmission": secondOpened && first != second,
                 "secondSent": secondSent, "concurrentStreams": concurrentlyRunning,
-                "draftAfterStreams": staysOnDraft, "separateSavedMessages": firstSaved && secondSaved && firstUnused && secondUnused]
+                "draftAfterStreams": staysOnDraft, "separateSavedMessages": firstSaved && secondSaved && firstUnused && secondUnused,
+                "retypedDraftPreserved": retypedDraftPreserved && drafts.text(for: repeatedDraft).isEmpty]
         if usesSidebar { results["newTaskFromSidebar"] = thirdUsable }
         else {
             results["newTaskFromMenu"] = thirdUsable

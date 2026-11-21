@@ -1635,6 +1635,7 @@
 		A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */; };
 		A50453D68B13EC169E35B187 /* ToolboxConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9432EB70D16078095F9F421 /* ToolboxConnection.swift */; };
 		A513363756E58D540282E699 /* CadDocumentCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB89387AE42228EB05B6E255 /* CadDocumentCenter.swift */; };
+		A53F056EF9807331B2C47E8D /* ComposerDraftTextRevisions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0457A408705D980BE2C492A9 /* ComposerDraftTextRevisions.swift */; };
 		A5534D340294AF8446983C78 /* AudioServicesTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DC4213DF9F3D021E69CC73 /* AudioServicesTool.swift */; };
 		A5601520971758EB3FAA8970 /* CloudRecognitionSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27193B83587D2210EC6972BF /* CloudRecognitionSettingsUITests.swift */; };
 		A59669E7DB8E3FD65120A094 /* StudioMediaContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A2D292EECE0A31A2C2ECB7D /* StudioMediaContractTests.swift */; };
@@ -2005,6 +2006,7 @@
 		CA48FBFF18E0D21F5BBB7477 /* ProviderCatalogAddView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09192A54F67E7B8EFAB89CC /* ProviderCatalogAddView.swift */; };
 		CA542333137384EB390BAAAB /* CADPresentationFloorBoundsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79CE70300B6920E8C65D882A /* CADPresentationFloorBoundsTests.swift */; };
 		CA5D829AFA91788E9D1495E8 /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
+		CA8D98E3B0A0C10041B7CE4F /* ThreadComposerModelMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC419CB38C5CB2DA392769D9 /* ThreadComposerModelMenu.swift */; };
 		CAAE3D8CA1FCD12AC52C9663 /* CADDrawingInputPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C8EB5C413E2A4A240C49436 /* CADDrawingInputPolicyTests.swift */; };
 		CAC163D56D73A655CB67AC34 /* CanvasCADStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEFD6884204D3C555BA87EED /* CanvasCADStorage.swift */; };
 		CADC63442229DC0E31FB74F6 /* StudioCADRenameSaveContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B358440D36F2E90D87A4E431 /* StudioCADRenameSaveContractTests.swift */; };
@@ -2160,6 +2162,7 @@
 		DAF4CB8FA435F1C75049BE6F /* MacBridgeWorkspaceSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2FA7FC0B63E82744E2B1428 /* MacBridgeWorkspaceSyncTests.swift */; };
 		DAF69978B99B20F06191B2CB /* PiPAudioService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B28D9D00B0F8DC98654AE54 /* PiPAudioService.swift */; };
 		DAF72966D0954BAC05D562E5 /* LocalMLXRealCADQualificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BA4FD6D735713BF17CCD7D2 /* LocalMLXRealCADQualificationTests.swift */; };
+		DB20F5C8B294E0910246E26F /* TaskHistoryPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C685E2127765C4EC0404AFB /* TaskHistoryPresentation.swift */; };
 		DB81E6DC19F4D550BD1550A9 /* MCPConnectionFailurePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACB2A03A2804DC5B4968C1CB /* MCPConnectionFailurePresentation.swift */; };
 		DBC1FDCC4AB616469B580A7A /* LinuxGuestBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 478A0A4565D3210136338773 /* LinuxGuestBackend.swift */; };
 		DBF3E72A2FB441E919FBD8BE /* SystemAlarmToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3A68C90D403DD311857911 /* SystemAlarmToolsTests.swift */; };
@@ -2624,6 +2627,7 @@
 		04198E818FCEE57CC3312A6D /* PersonalContentBiologyPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalContentBiologyPreviewTests.swift; sourceTree = "<group>"; };
 		042557857C82BCA5F6A5A237 /* TaskScheduleStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskScheduleStoreTests.swift; sourceTree = "<group>"; };
 		043503BC53802666E09898DA /* SkillAuthoringView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillAuthoringView.swift; sourceTree = "<group>"; };
+		0457A408705D980BE2C492A9 /* ComposerDraftTextRevisions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDraftTextRevisions.swift; sourceTree = "<group>"; };
 		04817BC1C53D9C361D0650AD /* BraveSearchNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BraveSearchNormalizationTests.swift; sourceTree = "<group>"; };
 		04A1276E61D10A592E4FF3AA /* OfficeLiveInkAppQualificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeLiveInkAppQualificationTests.swift; sourceTree = "<group>"; };
 		04B4B8BA9F943E1DD8C44AB2 /* ChatContentReferenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatContentReferenceTests.swift; sourceTree = "<group>"; };
@@ -2854,6 +2858,7 @@
 		1BDCD26CD873E596E52B036D /* PersonalLibraryPermanentDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalLibraryPermanentDeletion.swift; sourceTree = "<group>"; };
 		1BED50B2B524010095D18E24 /* SourceControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceControlView.swift; sourceTree = "<group>"; };
 		1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloeShellBridge.mm; sourceTree = "<group>"; };
+		1C685E2127765C4EC0404AFB /* TaskHistoryPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskHistoryPresentation.swift; sourceTree = "<group>"; };
 		1C6B1EC019A21A34A766A7F0 /* CADPresentationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADPresentationUITests.swift; sourceTree = "<group>"; };
 		1C6BC21C486387EBE3A38BF8 /* LuaShellInstallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LuaShellInstallTests.swift; sourceTree = "<group>"; };
 		1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
@@ -4246,6 +4251,7 @@
 		BBDFEC90E83D7C77EE8374E5 /* NextRoundOfficeSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextRoundOfficeSearchTests.swift; sourceTree = "<group>"; };
 		BBE3BC88CB0EB1234CB9DC08 /* OfficeReadModeSaveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeReadModeSaveTests.swift; sourceTree = "<group>"; };
 		BBEE1F0A384BE6AF13D14BD4 /* LocalShellLargeScriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalShellLargeScriptTests.swift; sourceTree = "<group>"; };
+		BC419CB38C5CB2DA392769D9 /* ThreadComposerModelMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadComposerModelMenu.swift; sourceTree = "<group>"; };
 		BC8899594213A82039751EF6 /* ProviderSaveRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderSaveRegressionTests.swift; sourceTree = "<group>"; };
 		BCA926A445027AC9B8090552 /* MainGameBuildSourcePublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainGameBuildSourcePublisher.swift; sourceTree = "<group>"; };
 		BCABBA0847350BE5D3F0A418 /* InteractiveStateIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractiveStateIntegrationTests.swift; sourceTree = "<group>"; };
@@ -7300,6 +7306,7 @@
 				CCA98DDB6FF4D590440D83C8 /* ChatAttachmentOpen.swift */,
 				A996D38EE5391954CD21A90E /* ChatAutomaticReadController.swift */,
 				492B93A9FE5F3B7768E9E895 /* ComposerDraftStore.swift */,
+				0457A408705D980BE2C492A9 /* ComposerDraftTextRevisions.swift */,
 				A88E81F353E8C7B2FFB15A74 /* ComposerEditingPrimitives.swift */,
 				D5E2D697D7443EBCC4ECDEB5 /* ComposerFullEditorSheet.swift */,
 				9E86A8E54493DBC09A0A8BD0 /* ContinuousVoicePresentation.swift */,
@@ -7329,8 +7336,10 @@
 				CE1EE021FED26EBFA80248B6 /* StepGroupView.swift */,
 				5E7060AD81E96B04931A0CBA /* SVGChatUITestFixture.swift */,
 				A133ED32AAC354CE6CABCB5D /* TaskBulkManagement.swift */,
+				1C685E2127765C4EC0404AFB /* TaskHistoryPresentation.swift */,
 				09B2D6D0AFA36BC051A7DEAA /* TaskScheduleCapsule.swift */,
 				DF13C78E7841E6D58D7EF3C1 /* TaskScheduleDetailView.swift */,
+				BC419CB38C5CB2DA392769D9 /* ThreadComposerModelMenu.swift */,
 				F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */,
 				17F136474D0FB91E6F810317 /* ThreadDetailView.swift */,
 				EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */,
@@ -9549,6 +9558,7 @@
 				E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */,
 				79E45C40E9939AE4EB5B0202 /* CodeEditorCore.swift in Sources */,
 				A1040B5981D1A1F0F7862FB6 /* ComposerDraftStore.swift in Sources */,
+				A53F056EF9807331B2C47E8D /* ComposerDraftTextRevisions.swift in Sources */,
 				38A17C950D8EF61D31DAF79B /* ComposerEditingPrimitives.swift in Sources */,
 				158F08E0CBDEC368D1D41EBB /* ComposerFullEditorSheet.swift in Sources */,
 				7076EE1653E57127C00D24BC /* ComposerResponsiveRow.swift in Sources */,
@@ -10286,6 +10296,7 @@
 				2DE2E06E2F1889FFD1B78652 /* TaskExecutionEnvironmentCenter.swift in Sources */,
 				FA261AF3E25BFDF3992CD3EB /* TaskExecutionEnvironmentView.swift in Sources */,
 				BB6184264ADF27C7C18AE482 /* TaskExecutionTargetServices.swift in Sources */,
+				DB20F5C8B294E0910246E26F /* TaskHistoryPresentation.swift in Sources */,
 				0F303F4875B02B64A9475FBC /* TaskInspectorViews.swift in Sources */,
 				7953AFC1E2B30BB419F8EEFE /* TaskLifecycleUITestFixture.swift in Sources */,
 				1893DFC3ECEDC0CCF004376D /* TaskLiveActivityCoordinator.swift in Sources */,
@@ -10307,6 +10318,7 @@
 				14FA0A8A02DE853A54CC1EFE /* TextReaderSource.swift in Sources */,
 				3ACBDB1D694AE9818F8CDAD0 /* TextReaderView.swift in Sources */,
 				3292C80C4ADB8F3DD441E3AC /* ThirdPartyLicensesView.swift in Sources */,
+				CA8D98E3B0A0C10041B7CE4F /* ThreadComposerModelMenu.swift in Sources */,
 				E848083DD6CD8D1D0C33B8EE /* ThreadComposerView.swift in Sources */,
 				144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */,
 				EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */,

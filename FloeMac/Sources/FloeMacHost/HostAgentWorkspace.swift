@@ -356,6 +356,7 @@ final class HostAgentWorkspace: ObservableObject {
     var smokePromptFrame: CGRect?
     var smokeSteerFrame: CGRect?
     var smokeModeFrame: CGRect?
+    var smokeComposerModelFrame: CGRect?
     var smokeClosePlanFrame: CGRect?
     var smokeReopenPlanFrame: CGRect?
     var smokePlanExecuteFrame: CGRect?
@@ -4308,7 +4309,7 @@ final class HostAgentWorkspace: ObservableObject {
 
     func verifyProjectTaskWorkflowSmoke(
         project: WorkspaceRecord, folder: URL, attachment: URL, endpoint: URL,
-        chooseMode: (HostAgentMode) async -> Bool, answerQuestion: () async -> Bool,
+        chooseModel: (String) async -> Bool, chooseMode: (HostAgentMode) async -> Bool, answerQuestion: () async -> Bool,
         confirm: () async -> Bool, approve: () async -> Bool,
         newProjectTask: () async -> Bool, approveSubtask: () async -> Bool
     ) async -> Bool {
@@ -4331,8 +4332,11 @@ final class HostAgentWorkspace: ObservableObject {
         providers = [other, chosen]
         selectedProviderID = other.profile.id
         selectedModelID = other.model.id
-        selectComposerProvider(chosen.profile.id)
         smokePlanExecuteFrame = nil
+        guard await chooseModel(chosen.model.displayName), composerProvider?.model.id == chosen.model.id else {
+            smokeRunDiagnostics.append("The intended model was unavailable in the composer menu.")
+            return false
+        }
 
         func exercise() async -> Bool {
             let prompt = "Use the attached brief to write and save the project acceptance report."
@@ -4361,8 +4365,15 @@ final class HostAgentWorkspace: ObservableObject {
             }
             guard let approval = pendingApproval, approval.conversationID == taskID,
                   approval.workspaceID == project.id, approval.path == report.lastPathComponent,
-                  !FileManager.default.fileExists(atPath: report.path), await approve(),
-                  await waitForSmokeRun(),
+                  !FileManager.default.fileExists(atPath: report.path) else {
+                smokeRunDiagnostics.append("Project task did not present the correct file approval.")
+                return false
+            }
+            guard await approve() else {
+                smokeRunDiagnostics.append("Project task approval controls could not be used after sending guidance.")
+                return false
+            }
+            guard await waitForSmokeRun(),
                   (try? String(contentsOf: report, encoding: .utf8)) == "# Acceptance\nSynthetic attachment verified.\n" else {
                 smokeRunDiagnostics.append("Project task did not write the approved report.")
                 return false

@@ -220,8 +220,7 @@ struct ConversationBatchManagementView: View {
             selected = TaskBulkSelectionRules.toggled(selected, id: conversation.id)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: selected.contains(conversation.id) ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selected.contains(conversation.id) ? Color.accentColor : .secondary)
+                TaskHistoryPresentation.SelectionMark(isSelected: selected.contains(conversation.id))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(displayTitle(conversation)).foregroundStyle(.primary).lineLimit(2)
                     if let snippet = contentMatches[conversation.id] {

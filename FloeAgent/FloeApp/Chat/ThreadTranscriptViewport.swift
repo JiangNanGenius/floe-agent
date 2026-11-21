@@ -48,8 +48,9 @@ struct ThreadTranscriptViewport<Rows: View>: View {
 
     private struct ScrollMetrics: Equatable {
         let offset: Double
-        let height: Double
-        let bottomDistance: Double
+        let latestOffset: Double
+
+        var bottomDistance: Double { latestOffset - offset }
     }
 
     var body: some View {
@@ -75,14 +76,15 @@ struct ThreadTranscriptViewport<Rows: View>: View {
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                     ScrollMetrics(offset: geometry.contentOffset.y,
-                                  height: geometry.contentSize.height,
-                                  bottomDistance: geometry.contentSize.height + geometry.contentInsets.bottom
-                                    - geometry.contentOffset.y - geometry.containerSize.height)
+                                  latestOffset: geometry.contentSize.height + geometry.contentInsets.bottom
+                                    - geometry.containerSize.height)
                 } action: { old, new in
                     latestFollow.observe(offset: new.offset, bottomDistance: new.bottomDistance,
                                          userScrolling: isUserScrolling)
                     showsReturnToLatest = latestFollow.isAwayFromLatest && !latestFollow.followsLatest
-                    if old.height != new.height { followLatest(with: proxy) }
+                    // A queue panel or a larger composer can shrink the viewport
+                    // without changing the content height.
+                    if old.latestOffset != new.latestOffset { followLatest(with: proxy) }
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { viewportFrame = $0 }
 

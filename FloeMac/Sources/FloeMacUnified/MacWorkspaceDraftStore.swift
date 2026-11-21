@@ -14,6 +14,7 @@ final class MacWorkspaceDraftStore: ObservableObject {
     private let directory: URL?
     private let fileQueue = DispatchQueue(label: "org.floeagent.mac.drafts", qos: .utility)
     @Published private var document = Document(drafts: [:], handoffs: [:])
+    private var textRevisions = ComposerDraftTextRevisions()
     private var dirty = false
     private var readFailed = false
     private var deferredWrite: Task<Void, Never>?
@@ -60,6 +61,8 @@ final class MacWorkspaceDraftStore: ObservableObject {
         guard let prior = document.drafts[home], document.drafts[target] == nil else { return }
         document.drafts.removeValue(forKey: home)
         document.drafts[target] = prior
+        textRevisions.advance(for: Document.homeDraftID)
+        textRevisions.advance(for: id)
         dirty = true
         flush()
     }
@@ -96,12 +99,23 @@ final class MacWorkspaceDraftStore: ObservableObject {
         }
     }
 
+    func captureSendCommit(for conversation: UUID) -> () -> Void {
+        let token = textRevisions.token(for: conversation)
+        return { [weak self] in
+            guard let self, textRevisions.matches(token, for: conversation) else { return }
+            setText("", for: conversation)
+        }
+    }
+
     private func update(_ conversation: UUID?, edit: (inout ComposerDraftEntry) -> Void) {
         let key = Self.key(for: conversation)
         let previous = document.drafts[key] ?? ComposerDraftEntry(text: "", attachments: [], revision: 0, updatedAt: Date())
         var updated = previous
         edit(&updated)
         guard updated != previous else { return }
+        if updated.text != previous.text {
+            textRevisions.advance(for: conversation ?? Document.homeDraftID)
+        }
         updated.revision = min(max(previous.revision, 0), Int.max - 1) + 1
         updated.updatedAt = Date()
         document.drafts[key] = updated

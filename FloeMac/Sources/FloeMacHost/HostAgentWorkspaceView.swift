@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
 struct HostAgentWorkspaceView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     var workspaceDraft: Binding<String>? = nil
+    var captureDraftCommit: (() -> (() -> Void))? = nil
     var openModelSettings: (() -> Void)? = nil
     var openPermissionSettings: (() -> Void)? = nil
     var openFiles: (() -> Void)? = nil
@@ -64,12 +65,14 @@ struct HostAgentWorkspaceView: View {
     #endif
 
     init(workspace: HostAgentWorkspace, workspaceDraft: Binding<String>? = nil,
+         captureDraftCommit: (() -> (() -> Void))? = nil,
          openModelSettings: (() -> Void)? = nil, openPermissionSettings: (() -> Void)? = nil, openFiles: (() -> Void)? = nil,
          openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
          findConversationID: UUID? = nil, requestedMessageID: UUID? = nil,
          didHandleSearchResult: ((UUID, UUID) -> Void)? = nil) {
         self.workspace = workspace
         self.workspaceDraft = workspaceDraft
+        self.captureDraftCommit = captureDraftCommit
         self.openModelSettings = openModelSettings
         self.openPermissionSettings = openPermissionSettings
         self.openFiles = openFiles
@@ -101,9 +104,12 @@ struct HostAgentWorkspaceView: View {
     private func submitDraft(workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "") {
         let binding = draft
         let submitted = binding.wrappedValue
-        workspace.send(submitted, workspaceID: workspaceID, mode: mode, criterion: criterion) {
-            if binding.wrappedValue == submitted { binding.wrappedValue = "" }
-        }
+        workspace.send(submitted, workspaceID: workspaceID, mode: mode, criterion: criterion,
+            onAdmitted: draftCommit(for: binding, submitted: submitted))
+    }
+
+    private func draftCommit(for binding: Binding<String>, submitted: String) -> () -> Void {
+        captureDraftCommit?() ?? { if binding.wrappedValue == submitted { binding.wrappedValue = "" } }
     }
 
     #if FLOE_UNIFIED_MAC
@@ -459,10 +465,12 @@ struct HostAgentWorkspaceView: View {
     }
 
     #if FLOE_UNIFIED_MAC
+    private var composerSendRoute: RunningInputSendRoute {
+        RunningInputModePolicy.sendRoute(isRunActive: workspace.isSending, mode: workspace.runningInputMode)
+    }
+
     private var composerSubmitLabel: LocalizedStringKey {
-        if !workspace.isSending { return "host.chat.send" }
-        return workspace.runningInputMode == .steer ? "chat.thread_composer_view.steer_the_current_run"
-                                                    : "chat.thread_composer_view.add_to_message_queue"
+        LocalizedStringKey(composerSendRoute.composerTitleKey)
     }
 
     private var canSubmitComposer: Bool {
@@ -484,7 +492,7 @@ struct HostAgentWorkspaceView: View {
             let attachments = workspace.stagedAttachments
             let binding = draft
             let text = binding.wrappedValue
-            let clear = { if binding.wrappedValue == text { binding.wrappedValue = "" } }
+            let clear = draftCommit(for: binding, submitted: text)
             if workspace.runningInputMode == .steer { workspace.steer(text, attachments: attachments, onAccepted: clear) }
             else { workspace.enqueue(text, attachments: attachments, onAccepted: clear) }
         } else {
@@ -566,9 +574,7 @@ struct HostAgentWorkspaceView: View {
                 .disabled(workspace.isTerminating || (workspace.isSending && workspace.selectedID == nil))
                 if workspace.isSending {
                     Button(action: submitComposer) {
-                        let steering = workspace.runningInputMode == .steer
-                        Label(composerSubmitLabel,
-                              systemImage: steering ? "arrow.turn.up.right" : "text.badge.plus")
+                        Label(composerSubmitLabel, systemImage: composerSendRoute.composerSymbol)
                             .labelStyle(.iconOnly)
                     }
                     .buttonStyle(ComposerButtonStyle())
@@ -587,10 +593,10 @@ struct HostAgentWorkspaceView: View {
                     .disabled(!workspace.canStop)
                 } else {
                     Button(action: submitComposer) {
-                        FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSubmitComposer)
+                        FloeComposerActionGlyph(systemImage: composerSendRoute.composerSymbol, enabled: canSubmitComposer)
                     }
                     .buttonStyle(ComposerButtonStyle())
-                    .accessibilityLabel("host.chat.send")
+                    .accessibilityLabel(Text(composerSubmitLabel))
                     .accessibilityIdentifier("composer.send")
                     .help(workspace.composerProvider == nil ? Text("host.chat.configureFirst") : Text("mac.workspace.sendShortcut"))
                     .keyboardShortcut(.return, modifiers: .command)
@@ -599,11 +605,12 @@ struct HostAgentWorkspaceView: View {
             }
             if let openModelSettings {
                 ComposerContextLayout {
-                    composerContext(openModelSettings)
-                    modeControl.disabled(workspace.isSending)
-                    permissionControl.disabled(workspace.isStopping || workspace.isResolvingApproval || (workspace.isSending && workspace.runPhase == nil))
+                    modelControl(openSettings: openModelSettings).disabled(workspace.isSending)
                     if let provider = workspace.composerProvider { reasoningMenu(provider.model) }
+                    composerWorkspace
+                    modeControl.disabled(workspace.isSending)
                     if workspace.isSending { runningInputControl }
+                    permissionControl.disabled(workspace.isStopping || workspace.isResolvingApproval || (workspace.isSending && workspace.runPhase == nil))
                 }
                 .disabled(workspace.isTerminating || workspace.isAcceptingPlan)
             }
@@ -635,8 +642,7 @@ struct HostAgentWorkspaceView: View {
         #endif
     }
 
-    @ViewBuilder private func composerContext(_ openModelSettings: @escaping () -> Void) -> some View {
-        modelControl(openSettings: openModelSettings).disabled(workspace.isSending)
+    @ViewBuilder private var composerWorkspace: some View {
         if let openFiles {
             if let owner = workspace.selectedConversationWorkspace {
                 Button(action: openFiles) {
@@ -1067,45 +1073,27 @@ struct HostAgentWorkspaceView: View {
             }
             .buttonStyle(ComposerButtonStyle())
         } else {
-            Menu {
-                let groups = Dictionary(grouping: chatModels, by: { $0.profile.id })
-                    .sorted {
-                        providerGroupTitle($0.value).localizedStandardCompare(providerGroupTitle($1.value)) == .orderedAscending
-                    }
-                ForEach(groups, id: \.key) { _, records in
-                    Section {
-                        ForEach(records, id: \.model.id) { record in
-                            Button {
-                                _ = workspace.selectComposerModel(record.model.id)
-                            } label: {
-                                if record.model.id == workspace.composerProvider?.model.id {
-                                    Label(record.model.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(verbatim: record.model.displayName)
-                                }
-                            }
-                            .disabled(workspace.isSending || workspace.isLoadingHistory || workspace.isTerminating)
-                        }
-                    } header: { Text(verbatim: providerGroupTitle(records)) }
-                }
+            ThreadComposerModelMenu(
+                models: chatModels.map(\.model), providers: workspace.accounts.map(\.profile),
+                selectedModelID: workspace.composerProvider?.model.id,
+                onSelect: { _ = workspace.selectComposerModel($0.id) }
+            ) {
+                FloeThreadComposerChip(
+                    title: Text(verbatim: composerModelTitle), systemImage: "cpu", maximumWidth: 205
+                )
+            } extraActions: {
                 Divider()
                 Button("host.chat.provider", action: openSettings)
-            } label: {
-                FloeThreadComposerChip(
-                    title: Text(verbatim: composerModelTitle),
-                    systemImage: "cpu", maximumWidth: 205
-                )
             }
             .menuStyle(.button)
             .buttonStyle(ComposerButtonStyle())
             .menuIndicator(.hidden)
+            .disabled(workspace.isLoadingHistory)
+            .accessibilityIdentifier("composer.model.menu")
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { workspace.smokeComposerModelFrame = $0 })
+            #endif
         }
-    }
-
-    /// Readable account title for a composer model group.
-    private func providerGroupTitle(_ records: [HostAgentProvider]) -> String {
-        guard let first = records.first else { return "" }
-        return first.profile.displayName ?? first.profile.baseURL.host ?? first.displayTitle
     }
 
     /// Readable "Provider · Model" chip title; the plain provider label only

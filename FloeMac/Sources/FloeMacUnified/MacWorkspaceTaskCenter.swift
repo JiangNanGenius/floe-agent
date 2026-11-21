@@ -382,8 +382,7 @@ struct MacWorkspaceTaskCenter: View {
             } label: {
                 HStack(alignment: .center, spacing: 10) {
                     if selectingTasks {
-                        Image(systemName: selection.contains(record.id) ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(selection.contains(record.id) ? Color.accentColor : .secondary)
+                        TaskHistoryPresentation.SelectionMark(isSelected: selection.contains(record.id))
                     } else if workspace.hasPendingApproval(in: record.id) {
                         Image(systemName: "hand.raised.fill").foregroundStyle(.orange).accessibilityHidden(true)
                     } else if workspace.isWaitingForAnswer(in: record.id) {
@@ -397,29 +396,29 @@ struct MacWorkspaceTaskCenter: View {
                             .frame(width: 8, height: 8)
                             .accessibilityHidden(true)
                     }
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
+                    // Same shared history anatomy as the iPad run-history row;
+                    // the status line stays the Mac state caption with its own
+                    // colors, and the pin stays a Mac-only title accessory.
+                    TaskHistoryPresentation.HistoryRow(
+                        title: title(for: record),
+                        subtitle: snippet,
+                        subtitleLineLimit: 2,
+                        subtitleAccessibilityIdentifier: "workspace.task.snippet",
+                        titleFont: .body,
+                        statusFont: .caption,
+                        titleAccessory: {
                             if record.isPinned {
                                 Image(systemName: "pin.fill")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .accessibilityHidden(true)
                             }
-                            Text(title(for: record))
-                                .font(.body)
+                        },
+                        statusLine: {
+                            caption(run: run, taskID: record.id, sendingHere: sendingHere)
                                 .lineLimit(1)
                         }
-                        if let snippet {
-                            Text(snippet)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .accessibilityIdentifier("workspace.task.snippet")
-                        }
-                        caption(run: run, taskID: record.id, sendingHere: sendingHere)
-                            .font(.caption)
-                            .lineLimit(1)
-                    }
+                    )
                     Spacer(minLength: 8)
                     Text(timeText(rowDate(record: record, run: run)))
                         .font(.caption)

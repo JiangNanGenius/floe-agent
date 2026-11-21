@@ -897,3 +897,11 @@
 "providers.supplier_picker.builtin" = "内置";
 "providers.supplier_picker.no_matching_catalog" = "目录中没有匹配结果，请选择上方的内置或手动选项。";
 "providers.supplier_picker.title" = "选择服务商";
+
+// Shared composer
+"thread.send" = "发送";
+"composer.model.group.on_device" = "本机模型";
+"composer.model.group.apple" = "Apple 系统模型";
+"composer.model.group.cloud_prefix" = "云端";
+"composer.model.group.unknown_provider" = "未知供应商";
+"localmodels.beta_badge" = "Beta · 实验性";

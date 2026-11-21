@@ -76,10 +76,7 @@ final class ComposerDraftStore: ObservableObject {
     /// unchanged. Attachment-only and selection-only updates never advance
     /// the text generation, so staging a file during a send never keeps the
     /// sent prompt alive.
-    struct SendCommitToken: Equatable, Sendable {
-        fileprivate let conversationID: UUID
-        fileprivate let textGeneration: Int
-    }
+    typealias SendCommitToken = ComposerDraftTextRevisions.Token
 
     struct SendHandoffUpdate {
         enum Phase { case began, accepted, failed }
@@ -101,7 +98,7 @@ final class ComposerDraftStore: ObservableObject {
 
     private func pendingSend(for id: UUID) -> PendingSend? {
         pendingSends.values.first { pending in
-            pending.conversationID == id && pending.token.textGeneration == (textGenerations[id] ?? 0)
+            pending.conversationID == id && textRevisions.matches(pending.token, for: id)
         }
     }
 
@@ -137,7 +134,7 @@ final class ComposerDraftStore: ObservableObject {
     @discardableResult
     func failSendHandoff(id: UUID, allowTextRecovery: Bool) -> Bool {
         guard let pending = pendingSends.removeValue(forKey: id) else { return false }
-        let matches = pending.token.textGeneration == (textGenerations[pending.conversationID] ?? 0)
+        let matches = textRevisions.matches(pending.token, for: pending.conversationID)
         if !allowTextRecovery && matches {
             clearAfterSend(conversationID: pending.conversationID, sentText: pending.text,
                            sentAttachments: pending.attachments, sendToken: pending.token)
@@ -642,7 +639,7 @@ final class ComposerDraftStore: ObservableObject {
     /// compare it instead of string equality. Deliberately in-memory: a token
     /// only has to outlive one in-flight send, and a relaunch starts a new
     /// draft epoch anyway.
-    private var textGenerations: [UUID: Int] = [:]
+    private var textRevisions = ComposerDraftTextRevisions()
     private let fileURL: URL
     private let writeQueue: DispatchQueue
     /// Monotonic revision of the in-memory snapshot, bumped by every
@@ -833,10 +830,7 @@ final class ComposerDraftStore: ObservableObject {
     /// away. A send that starts before any edit and commits after the user
     /// retyped the same string gets a mismatched token and keeps the draft.
     func sendCommitToken(for conversationID: UUID) -> SendCommitToken {
-        SendCommitToken(
-            conversationID: conversationID,
-            textGeneration: textGenerations[conversationID] ?? 0
-        )
+        textRevisions.token(for: conversationID)
     }
 
     // MARK: - Writes
@@ -873,7 +867,7 @@ final class ComposerDraftStore: ObservableObject {
         let storedText = maskedEmpty ? entry.text : text
         let textChanged = pending != nil ? (!maskedEmpty && !text.isEmpty) : storedText != entry.text
         if textChanged {
-            textGenerations[conversationID, default: 0] += 1
+            textRevisions.advance(for: conversationID)
         }
         entry.text = storedText
         if maskedEmpty, let pending {
@@ -921,7 +915,7 @@ final class ComposerDraftStore: ObservableObject {
         revisionFloor[conversationID] = max(
             revisionFloor[conversationID] ?? 0, removed.revision
         )
-        textGenerations[conversationID, default: 0] += 1
+        textRevisions.advance(for: conversationID)
         markDirty()
     }
 
@@ -946,10 +940,7 @@ final class ComposerDraftStore: ObservableObject {
         guard let current = provenStoredEntry(for: conversationID) else { return false }
         let sentIDs = Set(sentAttachments.map(\.id))
         let remaining = current.attachments.filter { !sentIDs.contains($0.id) }
-        let identityMatches = sendToken.map {
-            $0.conversationID == conversationID
-                && $0.textGeneration == (textGenerations[conversationID] ?? 0)
-        } ?? true
+        let identityMatches = sendToken.map { textRevisions.matches($0, for: conversationID) } ?? true
         let consumedText = identityMatches
             && (current.text == sentText || current.text.isEmpty)
         if consumedText, remaining.isEmpty {
@@ -1078,7 +1069,7 @@ final class ComposerDraftStore: ObservableObject {
             // The rollback is itself a text change: the generation advances
             // so a token captured against the failed placement can never be
             // mistaken for the restored draft.
-            textGenerations[conversationID, default: 0] += 1
+            textRevisions.advance(for: conversationID)
         }
         if let handoff, handoffs[handoff.entryID] == handoff {
             handoffs[handoff.entryID] = previousReceipt

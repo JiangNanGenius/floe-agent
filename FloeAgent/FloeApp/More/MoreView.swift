@@ -84,16 +84,10 @@ struct RunsHistoryView: View {
                 }
             } else {
                 List(viewModel.runs) { run in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(taskTitle(for: run))
-                            .font(FloeTheme.Typography.body)
-                            .lineLimit(1)
-                        if !run.goal.isEmpty {
-                            Text(run.goal)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                    TaskHistoryPresentation.HistoryRow(
+                        title: taskTitle(for: run),
+                        subtitle: run.goal.isEmpty ? nil : run.goal
+                    ) {
                         HStack {
                             Text(
                                 run.startedAt,
@@ -102,10 +96,7 @@ struct RunsHistoryView: View {
                             Text("·")
                             Text(RunStateLocalizer.title(for: run.state))
                         }
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
                     }
-                    .frame(minHeight: FloeTheme.minimumTarget)
                 }
             }
         }

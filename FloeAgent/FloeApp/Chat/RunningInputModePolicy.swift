@@ -28,6 +28,22 @@ enum RunningInputSendRoute: Equatable, Sendable {
     /// An active run owns the turn: route through the running-input path
     /// with the resolved steer/queue mode.
     case runningInput(RunningInputMode)
+
+    var composerSymbol: String {
+        switch self {
+        case .executeImmediately: "arrow.up"
+        case .runningInput(.queue): "text.badge.plus"
+        case .runningInput(.steer): "arrow.turn.up.right"
+        }
+    }
+
+    var composerTitleKey: String {
+        switch self {
+        case .executeImmediately: "thread.send"
+        case .runningInput(.queue): "chat.thread_composer_view.add_to_message_queue"
+        case .runningInput(.steer): "chat.thread_composer_view.steer_the_current_run"
+        }
+    }
 }
 
 enum RunningInputModePolicy {
