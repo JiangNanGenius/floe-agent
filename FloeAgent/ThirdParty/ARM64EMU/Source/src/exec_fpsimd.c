@@ -8,6 +8,9 @@
 #include <string.h>
 #include <stdint.h>
 #include <fenv.h>
+#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+#include <arm_neon.h>
+#endif
 
 #define BIT(i)      ((insn >> (i)) & 1u)
 #define BITS(hi,lo) ((insn >> (lo)) & ((1u << ((hi) - (lo) + 1)) - 1))
@@ -3422,13 +3425,25 @@ static inline u64 rol64(u64 x, unsigned n) { n &= 63; return n ? (x << n) | (x >
 static u32 sha_ch(u32 x, u32 y, u32 z)  { return (x & y) ^ (~x & z); }
 static u32 sha_maj(u32 x, u32 y, u32 z) { return (x & y) ^ (x & z) ^ (y & z); }
 static u32 sha_par(u32 x, u32 y, u32 z) { return x ^ y ^ z; }
+#if !defined(__aarch64__) || !defined(__ARM_FEATURE_SHA2)
 static u32 sha256_bsig0(u32 x) { return ror32(x,2)  ^ ror32(x,13) ^ ror32(x,22); }
 static u32 sha256_bsig1(u32 x) { return ror32(x,6)  ^ ror32(x,11) ^ ror32(x,25); }
 static u32 sha256_ssig0(u32 x) { return ror32(x,7)  ^ ror32(x,18) ^ (x >> 3); }
 static u32 sha256_ssig1(u32 x) { return ror32(x,17) ^ ror32(x,19) ^ (x >> 10); }
 
+#endif
+
 /* Sha256hash(): 4 rounds with the <y,x> = ROL(y:x,32) one-word rotation. */
 static V128 sha256_hash(V128 x, V128 y, V128 w, int part1) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+    uint32x4_t abcd = vld1q_u32(x.s);
+    uint32x4_t efgh = vld1q_u32(y.s);
+    uint32x4_t words = vld1q_u32(w.s);
+    V128 result;
+    vst1q_u32(result.s, part1 ? vsha256hq_u32(abcd, efgh, words)
+                              : vsha256h2q_u32(efgh, abcd, words));
+    return result;
+#else
     for (int e = 0; e < 4; e++) {
         u32 chs = sha_ch(y.s[0], y.s[1], y.s[2]);
         u32 maj = sha_maj(x.s[0], x.s[1], x.s[2]);
@@ -3441,14 +3456,26 @@ static V128 sha256_hash(V128 x, V128 y, V128 w, int part1) {
         y.s[0]=ny0; y.s[1]=ny1; y.s[2]=ny2; y.s[3]=ny3;
     }
     return part1 ? x : y;
+#endif
 }
 static V128 sha256_su0(V128 x, V128 y) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+    V128 result;
+    vst1q_u32(result.s, vsha256su0q_u32(vld1q_u32(x.s), vld1q_u32(y.s)));
+    return result;
+#else
     u32 T[4] = { x.s[1], x.s[2], x.s[3], y.s[0] };
     V128 r;
     for (int e = 0; e < 4; e++) r.s[e] = sha256_ssig0(T[e]) + x.s[e];
     return r;
+#endif
 }
 static V128 sha256_su1(V128 x, V128 y, V128 z) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+    V128 result;
+    vst1q_u32(result.s, vsha256su1q_u32(vld1q_u32(x.s), vld1q_u32(y.s), vld1q_u32(z.s)));
+    return result;
+#else
     u32 T3[4] = { y.s[1], y.s[2], y.s[3], z.s[0] };
     V128 r;
     r.s[0] = sha256_ssig1(z.s[2]) + x.s[0] + T3[0];
@@ -3456,6 +3483,7 @@ static V128 sha256_su1(V128 x, V128 y, V128 z) {
     r.s[2] = sha256_ssig1(r.s[0]) + x.s[2] + T3[2];
     r.s[3] = sha256_ssig1(r.s[1]) + x.s[3] + T3[3];
     return r;
+#endif
 }
 
 /* Cryptographic 3-register SHA: SHA1C/P/M/SU0 (op 0-3), SHA256H/H2/SU1 (op 4-6). */

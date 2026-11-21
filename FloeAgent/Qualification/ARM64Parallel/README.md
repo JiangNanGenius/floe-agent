@@ -61,3 +61,15 @@ fixture paths for its firmware and disk. It submits a block queue notification
 and replaces only the callback that drains the disk. The real scheduler must
 retire the full instruction budget even while block work stays pending.
 Success prints `ARM64_BLOCK_PROGRESS_OK`.
+
+
+## CRC and SHA-256 instruction equivalence
+
+Link `ChecksumInstructionTests.c` with the production ARM64 engine objects
+and enable assertions. Compile a second copy of `01_decode.c` and
+`11_exec_fpsimd.c` with `-U__ARM_FEATURE_CRC32 -U__ARM_FEATURE_SHA2`
+to force the portable paths. Substitute those two objects when linking a
+second executable. Both must report `ARM64_CHECKSUM_OK`. The test checks
+80,000 CRC instructions against an independent bitwise reference, including
+register aliasing and zero registers. Compare the two stdout streams
+byte-for-byte to verify 40,000 SHA-256 SIMD results.

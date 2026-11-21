@@ -174,7 +174,7 @@
     },
     {
       "path": "Source/src/decode.c",
-      "sha256": "17eb87d00a48215f51a632797a94309c0cc014c43a7ffd5266e3706cb434f7b9"
+      "sha256": "da4fbb989d60604d81ac1bea72773752ef17fdce3f6d9755b3e349a8dc77f303"
     },
     {
       "path": "Source/src/devices.h",
@@ -278,7 +278,7 @@
     },
     {
       "path": "Source/src/exec_fpsimd.c",
-      "sha256": "261dee471daf2adfa6fac81428212275834c13048549c0d11c3780b9c12e90a4"
+      "sha256": "a977e3275bd0f2af9260cb0bf1633a223c86741321a33177152b75eecc7bf402"
     },
     {
       "path": "Source/src/fdt/fdt.c",
@@ -748,6 +748,23 @@
         }
       ],
       "qualification": "Independent arm64 iOS26 Simulator dynamic GPU and engine target link/export validation is separate from full App and runtime acceptance."
+    },
+    {
+      "name": "Ahead-of-time ARM checksum and SHA-256 intrinsics",
+      "scope": "Two existing decoder units. ARM CRC32/CRC32C and SHA-256 instructions on supported compiler targets; original software paths on other targets. Guest ISA, decoder step, timing and ABI unchanged.",
+      "files": [
+        {
+          "path": "Source/src/decode.c",
+          "baseSHA256": "17eb87d00a48215f51a632797a94309c0cc014c43a7ffd5266e3706cb434f7b9",
+          "sha256": "da4fbb989d60604d81ac1bea72773752ef17fdce3f6d9755b3e349a8dc77f303"
+        },
+        {
+          "path": "Source/src/exec_fpsimd.c",
+          "baseSHA256": "261dee471daf2adfa6fac81428212275834c13048549c0d11c3780b9c12e90a4",
+          "sha256": "a977e3275bd0f2af9260cb0bf1633a223c86741321a33177152b75eecc7bf402"
+        }
+      ],
+      "qualification": "80,000 CRC and 40,000 SHA instruction vectors matched the original and forced software paths. Real ARM64 Linux guest compared both routes in swapped order. iOS device objects contain the expected AOT instructions."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",

@@ -4,7 +4,11 @@
 /* A64 instruction decoder/executor — integer/branch/load-store (M1).
  * FP/SIMD lives in exec_fpsimd.c (M4). System regs in sysreg.c (M2). */
 #include "cpu.h"
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#else
 #include "crc32_tables.h"
+#endif
 #include "machine.h"
 #include <string.h>
 #include "mmu.h"
@@ -98,12 +102,21 @@ static u64 shift_reg(u64 v, unsigned type, unsigned amount, bool is64) {
 /* ARMv8 CRC32/CRC32C: bit-reflected CRC over `bytes` low bytes of `data`,
  * accumulator `acc`. poly is the reflected polynomial (0xEDB88320 for CRC32,
  * 0x82F63B78 for CRC32C). Matches the hardware instruction the kernel uses.
- * Slicing-by-8 (immutable 8x256 tables per polynomial): CRC32X consumes
- * its 8 bytes in one combined lookup instead of 64 bit-steps — ext4 metadata
- * checksumming leans on this, and all three tiers execute CRC32 through this
- * helper (predecode leaves the family GENERIC). */
+ * The decoder calls ahead-of-time compiled CRC instructions on supported
+ * hosts. Other hosts use the existing immutable slicing-by-8 tables.
+ * The guest's ISA and instruction retirement stay the same in either case. */
 static u32 crc32_step(u32 acc, u64 data, unsigned bytes, u32 poly) {
-    unsigned p = (poly == 0x82F63B78u);
+    const bool castagnoli = poly == 0x82F63B78u;
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+    switch (bytes) {
+        case 1: return castagnoli ? __crc32cb(acc, (u8)data) : __crc32b(acc, (u8)data);
+        case 2: return castagnoli ? __crc32ch(acc, (u16)data) : __crc32h(acc, (u16)data);
+        case 4: return castagnoli ? __crc32cw(acc, (u32)data) : __crc32w(acc, (u32)data);
+        case 8: return castagnoli ? __crc32cd(acc, data) : __crc32d(acc, data);
+    }
+    return acc;
+#else
+    unsigned p = castagnoli;
     const u32 (*t)[256] = a64_crc32_slicing_tables[p];
     if (bytes == 8) {
         acc ^= (u32)data;
@@ -116,6 +129,7 @@ static u32 crc32_step(u32 acc, u64 data, unsigned bytes, u32 poly) {
     for (unsigned i = 0; i < bytes; i++)
         acc = (acc >> 8) ^ t[0][(acc ^ (u32)(data >> (8 * i))) & 0xff];
     return acc;
+#endif
 }
 
 static u64 extend_reg(u64 v, unsigned option, unsigned shift) {

@@ -150,3 +150,18 @@ iPhoneOS 的四个受影响编译单元通过对象编译。完整 App 在已有
 合并同一次等待中的 vCPU 完成唤醒。定向测试验证四次完成只写一个唤醒字节，
 随后重新等待仍能被唤醒。中断、事件、CPU 状态隔离和磁盘积压时的 CPU 进度
 回归均通过。上表为本机组件测试，吞吐量变化随任务和 vCPU 数改变。
+
+## 2026-11-22 客机校验和与散列 / Guest checksum and hash
+
+CRC32、CRC32C 和 SHA-256 使用宿主编译时可用的 ARM 指令。原软件实现保留为编译回退。指令解码、客机 CPU 特性和执行步数保持原语义，ARM64 引擎仍禁用 JIT。 / CRC32, CRC32C and SHA-256 use ARM instructions available for the host compiler target. Other targets retain the original implementation. Guest instruction semantics and retirement are unchanged and JIT remains disabled.
+
+Apple M5 Pro 上的真实四 vCPU Debian 客机使用基线、候选、候选、基线顺序。每个客机跑每项三次，以下是各版本六次的中位数，所有输出一致。 / A real four-vCPU Debian guest on an Apple M5 Pro ran baseline, candidate, candidate and baseline. Medians below use six samples per version, with identical outputs.
+
+| 操作 / Operation | 基线 / Baseline | 候选 / Candidate |
+| --- | ---: | ---: |
+| CRC32 与 CRC32C 指令循环 / CRC32 and CRC32C instruction loop | 0.787 s | 0.728 s |
+| SHA-256 指令循环 / SHA-256 instruction loop | 1.922 s | 1.720 s |
+| Python hashlib SHA-256（96 MiB） | 3.128 s | 2.995 s |
+| Python zlib CRC32（96 MiB） | 3.477 s | 3.437 s |
+
+另有 80,000 组 CRC 和 40,000 组 SHA-256 指令验证硬件与原软件的输出一致。iOS arm64 实际对象中核对了 CRC 与 SHA 指令。以上数据仅适用于所测主机和负载。 / A separate instruction check verified exact agreement across 80,000 CRC and 40,000 SHA-256 vectors. The iOS arm64 objects contain the expected CRC and SHA instructions. Timings apply to the measured host and workloads.
