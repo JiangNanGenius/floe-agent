@@ -559,7 +559,8 @@ public actor BackgroundJobService {
                         + "Check the workspace for partial outputs before retrying."
                 } else {
                     finalState = .failed
-                    errorText = NativeJobTextLimits.bounded(String(describing: error))
+                    let message = (error as? LinuxResidentRecoveryError)?.localizedDescription ?? String(describing: error)
+                    errorText = NativeJobTextLimits.bounded(message)
                 }
             }
             // Spool the FULL output before settling: a consumer paging

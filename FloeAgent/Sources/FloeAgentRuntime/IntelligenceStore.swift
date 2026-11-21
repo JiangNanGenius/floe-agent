@@ -22,6 +22,7 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
     public var originConversationID: UUID?
     public var originWorkspaceID: UUID?
     public var isOriginTaskDeleted: Bool?
+    public var isAssociationDeleted: Bool?
     public var factIdentity: MemoryFactIdentity?
     public var expiresAt: Date?
     public var createdAt: Date
@@ -897,30 +898,35 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         guard !Self.looksLikeSecret(normalized) else {
             throw FloeError.validationFailed("Authentication material cannot be saved to memory")
         }
+        if entry.status == .pending || entry.status == .rejected {
+            let active = try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM memory_entries WHERE id = ? AND status = 'active')",
+                                          arguments: [entry.id.uuidString]) ?? false
+            guard !active else { throw FloeError.validationFailed(FloeL10n.l("memory.fact_already_updated")) }
+        }
         let replacementRevision = Int64(Date().timeIntervalSince1970 * 1_000)
-        if let identity = entry.factIdentity {
+        if entry.status == .active, let identity = entry.factIdentity {
             let arguments: StatementArguments = [
-                identity.subjectKey, identity.attributeKey, entry.id.uuidString, scope,
+                identity.subjectKey, identity.attributeKey, scope,
                 workspaceID?.uuidString, workspaceID?.uuidString,
                 conversationID?.uuidString, conversationID?.uuidString
             ]
-            let superseded = try String.fetchAll(db, sql: """
-                SELECT id FROM memory_entries
-                WHERE subject_key = ? AND attribute_key = ? AND id <> ? AND scope = ?
+            let sameFact = try Row.fetchAll(db, sql: """
+                SELECT id, updated_at FROM memory_entries
+                WHERE subject_key = ? AND attribute_key = ? AND scope = ? AND status = 'active'
                   AND (workspace_id IS ? OR origin_workspace_id IS ?)
                   AND (conversation_id IS ? OR origin_conversation_id IS ?)
                 """, arguments: arguments)
+            guard !sameFact.contains(where: { Self.parseDate($0["updated_at"]) > entry.updatedAt }) else {
+                throw FloeError.validationFailed(FloeL10n.l("memory.fact_already_updated"))
+            }
             let deletedAt = Self.date(Date())
-            for oldID in superseded {
-                try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [oldID])
-                try db.execute(sql: """
-                    INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
-                    VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
-                        deleted_at=excluded.deleted_at,
-                        sync_revision=MAX(memory_tombstones.sync_revision, excluded.sync_revision)
-                    """, arguments: [oldID, deletedAt, replacementRevision])
+            for row in sameFact {
+                if let id = UUID(uuidString: row["id"]), id != entry.id {
+                    try Self.deleteMemory(id, revision: replacementRevision, deletedAt: deletedAt, db: db)
+                }
             }
         }
+        try Self.invalidateTextEmbedding(ifChanging: entry.id, to: entry.content, in: db)
         try db.execute(sql: """
             INSERT INTO memory_entries (
                 id, scope, workspace_id, conversation_id, status, content, normalized_content,
@@ -1130,6 +1136,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     guard !normalized.isEmpty, !Self.looksLikeSecret(normalized) else {
                         throw FloeError.validationFailed("Replacement memory is empty or contains authentication material")
                     }
+                    try Self.invalidateTextEmbedding(ifChanging: memoryID, to: entry.content, in: db)
                     try db.execute(sql: """
                         UPDATE memory_entries SET content = ?, normalized_content = ?, status = ?,
                             confidence = ?, importance = ?, is_pinned = ?, expires_at = ?,
@@ -1162,6 +1169,46 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         AND NOT EXISTS(SELECT 1 FROM conversations c
             WHERE c.id = COALESCE(m.conversation_id, m.origin_conversation_id))
         """
+
+    public func libraryMemories(workspaceID: UUID?, conversationID: UUID?) async throws -> [MemoryEntry] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT m.*, (\(Self.missingOriginTaskSQL)) AS origin_task_deleted,
+                    (\(Self.deletedMemoryOwnerPredicate)) AS owner_is_deleted
+                FROM memory_entries m
+                WHERE m.scope IN ('user', 'agent')
+                   OR (m.scope = 'workspace' AND COALESCE(m.workspace_id, m.origin_workspace_id) = ?)
+                   OR (m.scope = 'task' AND COALESCE(m.conversation_id, m.origin_conversation_id) = ?)
+                   OR owner_is_deleted = 1
+                ORDER BY m.updated_at DESC, m.id
+                """, arguments: [workspaceID?.uuidString, conversationID?.uuidString]).map(Self.memory)
+        }
+    }
+
+    /// The editor owns one exact active revision. Preserve its provenance and
+    /// pin even when the text changes, and remove the old semantic vector.
+    public func replaceMemoryContent(id: UUID, expectedContent: String, content: String) async throws {
+        let value = String(content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4_096))
+        let normalized = value.lowercased()
+        guard !normalized.isEmpty, !Self.looksLikeSecret(normalized) else {
+            throw FloeError.validationFailed(FloeL10n.l("memory.invalid_replacement"))
+        }
+        try await database.writer { db in
+            try Self.invalidateTextEmbedding(ifChanging: id, to: value, in: db)
+            try db.execute(sql: """
+                UPDATE memory_entries SET content = ?, normalized_content = ?, updated_at = ?
+                WHERE id = ? AND status = 'active' AND content = ?
+                """, arguments: [value, normalized, Self.date(Date()), id.uuidString, expectedContent])
+            guard db.changesCount == 1 else { throw FloeError.validationFailed(FloeL10n.l("memory.fact_already_updated")) }
+        }
+    }
+
+    private static func invalidateTextEmbedding(ifChanging id: UUID, to content: String, in db: Database) throws {
+        try db.execute(sql: """
+            DELETE FROM memory_embeddings WHERE memory_id = ? AND modality = 'text'
+                AND EXISTS(SELECT 1 FROM memory_entries WHERE id = ? AND content <> ?)
+            """, arguments: [id.uuidString, id.uuidString, content])
+    }
 
     public func memoriesFromDeletedTasks() async throws -> [MemoryEntry] {
         try await database.reader { db in
@@ -1283,6 +1330,10 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func saveEmbedding(_ embedding: MemoryEmbedding) async throws {
+        try await saveEmbedding(embedding, ifContentMatches: nil)
+    }
+
+    public func saveEmbedding(_ embedding: MemoryEmbedding, ifContentMatches expectedContent: String?) async throws {
         guard embedding.isValid else {
             throw FloeError.validationFailed("Embedding must contain finite values with a supported dimension")
         }
@@ -1293,9 +1344,14 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         var values = embedding.values
         let blob = values.withUnsafeMutableBytes { Data($0) }
         try await database.writer { db in
-            let exists = try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM memory_entries WHERE id = ?)",
-                arguments: [embedding.memoryID.uuidString]) ?? false
-            guard exists else { throw FloeError.validationFailed("Embedding memory entry does not exist") }
+            let row = try Row.fetchOne(db, sql: "SELECT content, status FROM memory_entries WHERE id = ?",
+                                       arguments: [embedding.memoryID.uuidString])
+            if let expectedContent {
+                guard let row, (row["content"] as String) == expectedContent,
+                      (row["status"] as String) == MemoryEntryStatus.active.rawValue else { return }
+            } else if row == nil {
+                throw FloeError.validationFailed("Embedding memory entry does not exist")
+            }
             try db.execute(sql: """
                 INSERT INTO memory_embeddings (
                     memory_id, modality, model_identifier, model_revision,
@@ -2210,6 +2266,9 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             expiresAt: expires.map(Self.parseDate), createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
         if row.columnNames.contains("origin_task_deleted"), row["origin_task_deleted"] as Bool {
             entry.isOriginTaskDeleted = true
+        }
+        if row.columnNames.contains("owner_is_deleted") {
+            entry.isAssociationDeleted = row["owner_is_deleted"] as Bool
         }
         return entry
     }

@@ -124,7 +124,8 @@ actor GlobalSourceMemoryService {
                     let digest = MemoryContentDigest.make(memory.content)
                     if try await memories.embeddingNeedsRefresh(memoryID: memory.id, modality: .text, modelIdentifier: embedding.modelIdentifier, modelRevision: embedding.modelRevision, contentDigest: digest),
                        let vector = try? await embedding.embedding(for: memory.content) {
-                        try await memories.saveEmbedding(.init(memoryID: memory.id, modality: .text, modelIdentifier: embedding.modelIdentifier, modelRevision: embedding.modelRevision, values: vector, contentDigest: digest))
+                        try await memories.saveEmbedding(.init(memoryID: memory.id, modality: .text, modelIdentifier: embedding.modelIdentifier, modelRevision: embedding.modelRevision, values: vector, contentDigest: digest),
+                                                         ifContentMatches: memory.content)
                     }
                 }
                 cursor = page.nextCursor

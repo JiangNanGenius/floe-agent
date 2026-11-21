@@ -71,6 +71,10 @@ final class MemoryUseRegistry: @unchecked Sendable {
 }
 
 public enum MemoryForgettingPolicy {
+    public enum Association: Equatable, Sendable {
+        case linked, forgetting, sourceDeleted
+    }
+
     public static let importanceHalfLife: TimeInterval = 30 * 86_400
     public static let recallRetention: TimeInterval = 90 * 86_400
     public static let archiveAfter: TimeInterval = 90 * 86_400
@@ -100,6 +104,17 @@ public enum MemoryForgettingPolicy {
         guard memory.expiresAt == nil else { return false }
         if memory.scope == .userProfile { return true }
         return memory.scope == .agentGlobal && memory.sourceKind == .explicitUserRequest
+    }
+
+    public static func association(for memory: MemoryEntry) -> Association? {
+        guard let deleted = memory.isAssociationDeleted else { return nil }
+        switch memory.scope {
+        case .task, .workspace: break
+        case .userProfile, .agentGlobal:
+            guard memory.originConversationID != nil || memory.originWorkspaceID != nil else { return nil }
+        }
+        guard deleted else { return .linked }
+        return memory.status == .active && !isLongTerm(memory) ? .forgetting : .sourceDeleted
     }
 
     /// Unconditional prompt context must not renew unrelated automatic facts

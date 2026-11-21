@@ -206,7 +206,7 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "7565a51ed9b4597f992297bba23ad3396e39ef1d41514bccb33b8ff55138c527"
+      "sha256": "f31b8da8aa3d6686939dceeaa83e7e14624acca5585f18756351b1399b563633"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
@@ -218,7 +218,7 @@
     },
     {
       "path": "Source/src/devices/virtio_blk.c",
-      "sha256": "71a84ee966c39491e1dadf56624f802db186fbdb62bfe501a9882062a9e4145f"
+      "sha256": "d92f597cc83b0fab46aae92e27214d7051987f4ac782553af4c528b16bf274ad"
     },
     {
       "path": "Source/src/devices/virtio_console.c",
@@ -765,6 +765,23 @@
         }
       ],
       "qualification": "80,000 CRC and 40,000 SHA instruction vectors matched the original and forced software paths. Real ARM64 Linux guest compared both routes in swapped order. iOS device objects contain the expected AOT instructions."
+    },
+    {
+      "name": "Bounded disk I/O, sparse discard and shared DMA",
+      "scope": "Coalesce adjacent workspace DMA spans using existing memory guards. Batch virtual disk I/O and negotiate discard for writable host volumes that advertise hole punching. The interpreter and ABI are unchanged.",
+      "files": [
+        {
+          "path": "Source/src/devices/virtio_blk.c",
+          "baseSHA256": "71a84ee966c39491e1dadf56624f802db186fbdb62bfe501a9882062a9e4145f",
+          "sha256": "d92f597cc83b0fab46aae92e27214d7051987f4ac782553af4c528b16bf274ad"
+        },
+        {
+          "path": "Source/src/devices/virtio_9p.c",
+          "baseSHA256": "7565a51ed9b4597f992297bba23ad3396e39ef1d41514bccb33b8ff55138c527",
+          "sha256": "f31b8da8aa3d6686939dceeaa83e7e14624acca5585f18756351b1399b563633"
+        }
+      ],
+      "qualification": "See the matching disk, workspace and sparse-allocation evidence in ARM64_RUNTIME_PERFORMANCE.md."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",

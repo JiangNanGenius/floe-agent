@@ -135,16 +135,22 @@ struct BackgroundJobTests {
     func cancelRunningJob() async throws {
         let (db, _, run) = try await fixture()
         let registry = ToolRunnerRegistry()
+        let gate = ServiceExitGate()
         registry.register(AnyAgentTool(
             descriptor: ToolCatalog.Descriptor(
                 name: "exec.shell", toolDescription: "test python",
                 parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true
             )
         ) { _, context in
-            while true {
-                try context.cancellation.throwIfCancelled()
-                try await Task.sleep(nanoseconds: 20_000_000)
+            await gate.enter()
+            for _ in 0..<500 {
+                if await gate.canExit {
+                    try context.cancellation.throwIfCancelled()
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(20))
             }
+            throw FloeError.internalError("The test processor did not receive an acknowledged cancellation")
         })
         let service = BackgroundJobService(store: BackgroundJobStore(database: db), registry: registry)
         let submit = JobsSubmitTool(service: service)
@@ -155,7 +161,7 @@ struct BackgroundJobTests {
                                                       callID: "call-c", toolName: "jobs.submit"))
         )
         let jobID = try #require(extractJobID(output.summary))
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try #require(try await gate.waitForEntry())
         let requested = try await JobsCancelTool(service: service).execute(
             .init(jobID: jobID.uuidString),
             context: .init(runID: run, cancellation: CancellationToken())
@@ -164,6 +170,7 @@ struct BackgroundJobTests {
         // and reports cancelling=true, never a premature terminal "cancelled".
         #expect(!requested.summary.contains("\"state\":\"cancelled\""))
         #expect(requested.summary.contains("\"cancelling\":true"))
+        await gate.allowExit()
         let terminal = try await waitForTerminal(service, id: jobID)
         #expect(terminal.state == .cancelled)
         #expect(terminal.workKind == .job && terminal.serviceState == nil)
@@ -183,6 +190,23 @@ struct BackgroundJobTests {
         let service = BackgroundJobService(store: store, registry: ToolRunnerRegistry())
         #expect(try await service.reconcileInterruptedOnLaunch() == 1)
         #expect(try await store.job(id: orphaned.id)?.state == .interrupted)
+    }
+
+    @Test("A background Linux job reports the recovery steps for an unverified disk")
+    func residentDiskFailureReportsRecoveryGuidance() async throws {
+        let (db, _, run) = try await fixture()
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(descriptor: .init(name: "exec.shell", toolDescription: "test shell",
+            parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true)) { _, _ in
+            throw LinuxResidentRecoveryError.identityChanged
+        })
+        let service = BackgroundJobService(store: BackgroundJobStore(database: db), registry: registry)
+        let job = try await service.submit(runID: run, toolCallID: "offline-pip", targetTool: "exec.shell",
+            payloadJSON: Data(#"{"command":"true"}"#.utf8), scope: .local, workspaceRootURL: nil,
+            allowedWorkspacePaths: [], waitForCompletion: false)
+        let terminal = try await waitForTerminal(service, id: job.id)
+        #expect(terminal.state == .failed)
+        #expect(terminal.lastError == LinuxResidentRecoveryError.identityChanged.localizedDescription)
     }
 
     @Test("Relaunch reconciliation tells the owning task its service is gone")
@@ -553,13 +577,18 @@ struct BackgroundJobTests {
         let store = BackgroundJobStore(database: db)
         let registry = ToolRunnerRegistry()
         let gate = ServiceExitGate()
-        registry.register(AnyAgentTool(descriptor: .init(name: "exec.localService", toolDescription: "test service",
-            parametersJSON: "{}", riskLabels: [], isSideEffecting: true)) { _, context in
+        // The synthetic environment belongs to this fixture's store.
+        let routing = ToolEnvironmentRouting()
+        registry.register(AnyAgentTool(
+            descriptor: .init(name: "exec.localService", toolDescription: "test service",
+                              parametersJSON: "{}", riskLabels: [], isSideEffecting: true),
+            run: { _, context in
                 await gate.enter()
                 while !context.cancellation.isCancelled { try await Task.sleep(for: .milliseconds(10)) }
                 while !(await gate.canExit) { try await Task.sleep(for: .milliseconds(10)) }
                 return ToolExecutionOutput(summary: "stopped", fullOutputSHA256: "stopped")
-            })
+            },
+            routing: routing))
         let dependencies = SQLiteRunDependencyStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry,
             registerDependency: { jobID, runID, conversationID, kind in
@@ -572,11 +601,7 @@ struct BackgroundJobTests {
         let job = try await service.submit(runID: run, toolCallID: "service", targetTool: "exec.localService",
             payloadJSON: Data("{}".utf8), scope: .local, workspaceRootURL: nil, allowedWorkspacePaths: [],
             environmentID: "owner", submissionSource: .nativeService)
-        for _ in 0..<200 {
-            if await gate.entered { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(await gate.entered)
+        try #require(try await gate.waitForEntry())
         try await store.updateProgress(id: job.id,
             data: Data(#"{"state":"running","previewURL":"http://127.0.0.1:8123/"}"#.utf8))
         await service.resolveServiceReady(id: job.id, note: "Synthetic native HTTP readiness proof")
@@ -656,8 +681,16 @@ private actor TerminalJobCollector {
 }
 
 private actor ServiceExitGate {
-    private(set) var entered = false
+    private var entered = false
     private(set) var canExit = false
     func enter() { entered = true }
     func allowExit() { canExit = true }
+
+    func waitForEntry() async throws -> Bool {
+        let deadline = ContinuousClock.now + .seconds(15)
+        while !entered && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return entered
+    }
 }

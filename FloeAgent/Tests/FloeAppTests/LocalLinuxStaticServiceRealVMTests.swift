@@ -16,6 +16,41 @@ import FloeSkills
 
 @Suite("FloeApp.LocalLinuxStaticServiceRealVM", .serialized)
 @MainActor struct LocalLinuxStaticServiceRealVMTests {
+    @Test("preserving recovery replaces a legacy Linux identity in a disposable App sandbox",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_RECOVERY_FIXTURE"] != nil))
+    func recoverDisposableResidentLinux() async throws {
+        let value = try #require(ProcessInfo.processInfo.environment["FLOE_REALVM_RECOVERY_FIXTURE"])
+        let token = try #require(UUID(uuidString: value)).uuidString
+        let artifacts = try FloeArtifactStore.root()
+        let marker = artifacts.appendingPathComponent(".resident-qualification-fixture")
+        try #require(try String(contentsOf: marker, encoding: .utf8) == token,
+                     "Recovery requires the owned disposable simulator App sandbox")
+        let app = try await appQualificationEnvironment()
+        try await app.ensureDurableAutomationReady()
+        let services = FloePlatformServices.shared
+        let guests = try #require(services.linuxGuestController())
+        let ticket = try #require(try await guests.residentIdentityRepairTicket())
+        let root = artifacts.appendingPathComponent("LinuxGuest/ResidentARM64", isDirectory: true)
+        let disk = LinuxResidentDiskStorage.directory(in: root)
+        func diskInode(_ directory: URL) throws -> UInt64 {
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: directory.appendingPathComponent(LinuxResidentDiskStorage.diskFileName).path)
+            return try #require((attributes[.systemFileNumber] as? NSNumber)?.uint64Value)
+        }
+        let oldInode = try diskInode(disk)
+        let oldOrigin = try Data(contentsOf: disk.appendingPathComponent(LinuxResidentDiskStorage.originFileName))
+
+        try await services.rebuildLinuxRuntimePreservingData(repairTicket: ticket)
+
+        let receipt = try #require(try await guests.residentRecoveryReceipt())
+        try #require(receipt.imageID == LinuxGuestImageDistributionCatalog.defaultImageID)
+        let retained = root.appendingPathComponent(try #require(receipt.preservedRelativePath))
+        try #require(try diskInode(retained) == oldInode && diskInode(disk) != oldInode)
+        try #require(try Data(contentsOf: retained.appendingPathComponent(LinuxResidentDiskStorage.originFileName)) == oldOrigin)
+        try #require(try await guests.residentIdentityRepairTicket() == nil)
+        print("FLOE_RESIDENT_QUALIFICATION_RECOVERED image=\(receipt.imageID) retainedDiskConfirmed=true")
+    }
+
     // Operational cleanup for one explicitly identified, obsolete fixture.
     // Disabled in normal qualification; never scan or remove user environments.
     @Test("remove one explicitly owned stopped qualification layer through production lifecycle",
@@ -1038,23 +1073,25 @@ import FloeSkills
     @Test("offline tiny wheel installs through the real job and timed-out shell preserves output after child cleanup",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_QUALIFICATION"] == "1"))
     func offlinePipAndTimeoutOutputLifecycle() async throws {
-        let app = AppEnvironment.live()
-        await app.bootstrap()
-        try #require(app.persistenceReady)
-        let jobs = try #require(app.backgroundJobService)
+        let app = try await appQualificationEnvironment()
+        try await app.ensureDurableAutomationReady()
+        let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
         let services = FloePlatformServices.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("pip-real-vm-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let conversationID = UUID(), runID = UUID()
         var environmentID: String?, jobID: UUID?
+        var binding: TaskExecutionBinding?
         var recordsCreated = false
         var evidence = ["kind": "real-offline-pip-and-timeout-not-model-not-ui", "root": root.path]
 
         func runShell(_ command: String, timeout: Double) async throws -> ToolExecutionOutput {
-            let id = try #require(environmentID)
-            let context = ToolContext(runID: runID, toolCallID: "pip-qualification-" + UUID().uuidString,
+            let pin = try #require(binding)
+            var context = ToolContext(runID: runID, toolCallID: "pip-qualification-" + UUID().uuidString,
                 allowedToolNames: ["exec.shell"], workspaceRootURL: root, cancellation: CancellationToken(),
-                environmentID: id, conversationID: conversationID)
+                environmentID: pin.target.environmentID, executionBindingGeneration: pin.generation,
+                conversationID: conversationID)
+            context.executionToolName = "exec.shell"
             let lease = try await ToolEnvironmentRouting.shared.acquire(context)
             do {
                 let tool = LocalShellTool(shell: app.localShellService)
@@ -1090,14 +1127,15 @@ import FloeSkills
             try await app.conversationStore.saveConversation(ConversationRecord(id: conversationID,
                 title: "Offline pip qualification", createdAt: date, updatedAt: date, titleOrigin: .manual))
             recordsCreated = true
-            try await app.database.writer { database in
-                try database.execute(sql: "INSERT INTO runs (id, conversation_id, state, goal, started_at) VALUES (?, ?, 'running', 'Synthetic offline pip qualification', ?)",
-                    arguments: [runID.uuidString, conversationID.uuidString, ISO8601DateFormatter().string(from: date)])
-            }
             try await services.prepareWorkspaceEnvironment(root: root)
             environmentID = try await ownedEnvironment(root: root, app: app)
             let id = try #require(environmentID)
             evidence["environmentID"] = id
+            let pin = try await app.taskExecutionEnvironments.resolveBinding(conversationID: conversationID,
+                runID: runID, root: root, workspace: nil, override: id)
+            binding = pin
+            try await app.runStore.saveRun(RunRecord(id: runID, conversationID: conversationID,
+                state: "running", goal: "Synthetic offline pip qualification", startedAt: date, executionBinding: pin))
             try await services.activateLinuxGuestWithPreparation(id: id, cancellation: CancellationToken())
             // No network, package source lookup, venv bootstrap or download.
             let fixtureCommand = #"""

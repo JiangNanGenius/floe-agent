@@ -134,19 +134,11 @@ final class MemoryCenter: ObservableObject {
         let token = publication.begin(.memories)
         do {
             try await environment.intelligenceStore.maintainMemoryLifecycle()
-            var result: [MemoryEntry] = []
-            result += try await environment.intelligenceStore.memories(scope: .userProfile, status: nil)
-            result += try await environment.intelligenceStore.memories(scope: .agentGlobal, status: nil)
-            if let workspace = environment.workspaceCenter.currentWorkspace {
-                result += try await environment.intelligenceStore.memories(scope: .workspace(workspace.id), status: nil)
-            }
-            if let conversationID = environment.browserCenter.conversationID,
-               try await environment.conversationStore.conversation(id: conversationID) != nil {
-                result += try await environment.intelligenceStore.memories(scope: .task(conversationID), status: nil)
-            }
-            result += try await environment.intelligenceStore.memoriesFromDeletedTasks()
+            let result = try await environment.intelligenceStore.libraryMemories(
+                workspaceID: environment.workspaceCenter.currentWorkspace?.id,
+                conversationID: environment.browserCenter.conversationID)
             guard canPublish(token, in: .memories) else { return }
-            entries = result.sorted { $0.updatedAt > $1.updatedAt }
+            entries = result
             if publication.clearError(onSuccessFor: .load) { errorMessage = nil }
         } catch {
             finishLoad(error, token: token, channel: .memories, scope: .load)
@@ -249,6 +241,11 @@ final class MemoryCenter: ObservableObject {
             errorMessage = error.localizedDescription
             publication.recordError(scope: .memoryMutation)
         }
+    }
+
+    func replaceContent(id: UUID, expectedContent: String, content: String) async throws {
+        try await environment.intelligenceStore.replaceMemoryContent(id: id, expectedContent: expectedContent, content: content)
+        await load()
     }
 
     func delete(ids: Set<UUID>) async {
@@ -809,11 +806,11 @@ struct MemoryView: View {
     private func memoryRow(_ entry: MemoryEntry) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(entry.content)
-            HStack {
+            HStack(spacing: 8) {
                 Text(scope(entry.scope))
                 if entry.isPinned { Image(systemName: "pin.fill") }
                 Text(memoryStatusLabel(entry.status))
-                if entry.isOriginTaskDeleted == true { Text("memory.origin_task_deleted") }
+                MemoryAssociationLabel(entry: entry)
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -848,23 +845,61 @@ private func memoryStatusLabel(_ status: MemoryEntryStatus) -> String {
     }
 }
 
-private struct MemoryEntryDetailView: View {
+private struct MemoryAssociationLabel: View {
     let entry: MemoryEntry
+
+    var body: some View {
+        switch MemoryForgettingPolicy.association(for: entry) {
+        case .linked: Label("memory.associated", systemImage: "link")
+        case .forgetting: Label("memory.forgetting", systemImage: "hourglass")
+        case .sourceDeleted: Label("memory.source_deleted", systemImage: "tray")
+        case nil: EmptyView()
+        }
+    }
+}
+
+private struct MemoryEntryDetailView: View {
+    let original: MemoryEntry
     @ObservedObject var center: MemoryCenter
     @Environment(\.dismiss) private var dismiss
+    @State private var editingContent: String?
+    @State private var draft = ""
+    @State private var isSaving = false
+    @State private var editError: String?
+
+    init(entry: MemoryEntry, center: MemoryCenter) {
+        original = entry
+        self.center = center
+    }
+
+    private var entry: MemoryEntry { center.entries.first { $0.id == original.id } ?? original }
 
     var body: some View {
         Form {
             Section("memory.memory_view.memory_content") {
-                Text(entry.content)
-                    .textSelection(.enabled)
+                if editingContent != nil {
+                    TextEditor(text: $draft)
+                        .frame(minHeight: 120)
+                        .accessibilityLabel("memory.memory_view.memory_content")
+                        .disabled(isSaving)
+                    Button("workspace.workspace_canvas_view.cancel") {
+                        editingContent = nil
+                        editError = nil
+                    }
+                    .disabled(isSaving)
+                } else {
+                    Text(entry.content).textSelection(.enabled)
+                }
+                if let editError { Text(editError).font(.footnote).foregroundStyle(.red) }
             }
             Section("workspace.workspace_canvas_view.properties") {
                 LabeledContent("approval.scope", value: scopeTitle)
                 LabeledContent("memory.memory_view.status", value: memoryStatusLabel(entry.status))
                 LabeledContent("memory.memory_view.importance", value: entry.importance, format: .percent)
                 LabeledContent("memory.memory_view.confidence", value: entry.confidence, format: .percent)
-                if entry.isOriginTaskDeleted == true {
+                MemoryAssociationLabel(entry: entry)
+                    .foregroundStyle(.secondary)
+                if entry.isOriginTaskDeleted == true && MemoryForgettingPolicy.association(for: entry) == .linked {
                     Label("memory.origin_task_deleted", systemImage: "tray")
                         .foregroundStyle(.secondary)
                 }
@@ -884,10 +919,37 @@ private struct MemoryEntryDetailView: View {
                         dismiss()
                     }
                 }
+                .disabled(editingContent != nil)
             }
         }
         .navigationTitle("memory.memory_view.memory_details")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if editingContent != nil {
+                    Button("workspace.workspace_canvas_view.save") { Task { await save() } }
+                        .disabled(isSaving || draft == editingContent || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } else if entry.status == .active {
+                    Button("workspace.workspace_canvas_view.edit", systemImage: "pencil") {
+                        editingContent = entry.content
+                        draft = entry.content
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        guard !isSaving, let editingContent else { return }
+        isSaving = true
+        editError = nil
+        defer { isSaving = false }
+        do {
+            try await center.replaceContent(id: entry.id, expectedContent: editingContent, content: draft)
+            self.editingContent = nil
+        } catch {
+            editError = error.localizedDescription
+        }
     }
 
     private var scopeTitle: String {

@@ -107,29 +107,22 @@ public struct MemoryRememberTool: AgentTool {
         let normalized = args.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let priorEntries = try await store.memories(scope: scope, status: .active)
         if let existing = priorEntries.first(where: {
-            $0.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
+            (factIdentity == nil || $0.factIdentity == factIdentity)
+                && $0.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
         }) {
             return Self.output(
                 "status=unchanged priorMemoryChecked=true id=\(existing.id.uuidString)",
                 exitStatus: 0
             )
         }
-        let supersededCount: Int
-        if let factIdentity {
-            supersededCount = try await store.memories(
-                factIdentity: factIdentity,
-                scope: scope
-            ).count
-        } else {
-            supersededCount = 0
-        }
+        let sameFact = factIdentity.map { identity in priorEntries.filter { $0.factIdentity == identity } } ?? []
         let entry = MemoryEntry(
             scope: scope,
             status: .active,
             content: args.content,
             confidence: 1.0,
             importance: min(1, max(0, args.importance ?? 0.5)),
-            isPinned: args.isPinned ?? false,
+            isPinned: args.isPinned ?? sameFact.contains(where: \.isPinned),
             sourceKind: .explicitUserRequest,
             originConversationID: ownerTaskID,
             factIdentity: factIdentity
@@ -137,7 +130,7 @@ public struct MemoryRememberTool: AgentTool {
         do {
             try await store.saveMemory(entry, evidence: [])
             return Self.output(
-                "status=remembered priorMemoryChecked=true superseded=\(supersededCount) id=\(entry.id.uuidString)",
+                "status=remembered priorMemoryChecked=true superseded=\(sameFact.count) id=\(entry.id.uuidString)",
                 exitStatus: 0
             )
         } catch {
@@ -402,7 +395,9 @@ public struct MemoryUpdateTool: AgentTool {
         if let importance = args.importance { entry.importance = min(1, max(0, importance)) }
         if let isPinned = args.isPinned { entry.isPinned = isPinned }
         if let subject = args.subjectKey, let attribute = args.attributeKey {
-            entry.factIdentity = MemoryFactIdentity(subjectKey: subject, attributeKey: attribute)
+            let identity = MemoryFactIdentity(subjectKey: subject, attributeKey: attribute)
+            guard identity.isValid else { throw FloeError.validationFailed("subjectKey and attributeKey must both be non-empty") }
+            entry.factIdentity = identity
         }
         entry.updatedAt = Date()
         let batch = MemoryMaintenanceBatch(

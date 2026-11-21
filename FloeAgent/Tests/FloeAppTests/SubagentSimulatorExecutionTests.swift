@@ -117,10 +117,11 @@ private final class ScriptedProviderAdapter: ProviderAdapter, @unchecked Sendabl
     private var schemaNames: [[String]] = []
     private var ceilingNames: [[String]] = []
     private var systemPrompts: [String] = []
-    /// Optional gate awaited before a turn at this index is delivered.
-    private var gates: [Int: @Sendable () async -> Void]
+    /// Cancelling a gate releases its scripted turn. The stream emits progress
+    /// while waiting so production provider idle deadlines stay in force.
+    private let gates: [Int: CancellationToken]
 
-    init(turns: [[AgentEvent]], gates: [Int: @Sendable () async -> Void] = [:]) {
+    init(turns: [[AgentEvent]], gates: [Int: CancellationToken] = [:]) {
         self.turns = turns
         self.gates = gates
     }
@@ -135,16 +136,26 @@ private final class ScriptedProviderAdapter: ProviderAdapter, @unchecked Sendabl
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        let index = lock.withLock { schemaNames.count }
-        lock.withLock {
+        let gate = lock.withLock {
+            let index = schemaNames.count
             schemaNames.append(request.toolSchemas.map(\.name))
             ceilingNames.append(request.allToolNames)
             systemPrompts.append(request.messages.first(where: { $0.role == "system" })?.content ?? "")
+            return gates[index]
         }
-        let gate = lock.withLock { gates[index] }
         return AsyncThrowingStream { continuation in
-            Task {
-                if let gate { await gate() }
+            let producer = Task {
+                if let gate {
+                    var ticks = 0
+                    while !gate.isCancelled && !Task.isCancelled {
+                        if ticks % 100 == 0 {
+                            continuation.yield(.textDelta(.init(text: ".")))
+                        }
+                        try? await Task.sleep(for: .milliseconds(50))
+                        ticks += 1
+                    }
+                }
+                guard !Task.isCancelled else { return }
                 let turn: [AgentEvent]? = self.lock.withLock {
                     self.turns.isEmpty ? nil : self.turns.removeFirst()
                 }
@@ -159,6 +170,7 @@ private final class ScriptedProviderAdapter: ProviderAdapter, @unchecked Sendabl
                 continuation.yield(.completed(.init(stopReason: .endTurn)))
                 continuation.finish()
             }
+            continuation.onTermination = { _ in producer.cancel() }
         }
     }
 
@@ -279,7 +291,7 @@ struct SubagentSimulatorExecutionTests {
     }
 
     /// Boots this test's own guest and returns its explicit environment id.
-    private func bootGuest(root: URL) async throws -> String {
+    private func bootGuest(root: URL, onPrepared: (String) -> Void = { _ in }) async throws -> String {
         let environment = try await appQualificationEnvironment()
         let services = FloePlatformServices.shared
         try await services.prepareWorkspaceEnvironment(root: root)
@@ -288,6 +300,7 @@ struct SubagentSimulatorExecutionTests {
         ) else {
             throw FloeError.notFound("No Linux project environment exists for this test's workspace root")
         }
+        onPrepared(environmentID)
         try await services.activateLinuxGuestWithPreparation(
             id: environmentID, cancellation: CancellationToken())
         let ready = await waitForAsync(timeout: bootTimeout) {
@@ -359,7 +372,8 @@ struct SubagentSimulatorExecutionTests {
         environmentID: String?,
         adapter: any ProviderAdapter,
         auditSink: (any AuditSink)? = DiscardingAuditSink(),
-        environmentLifecycleWait: TimeInterval = 30
+        environmentLifecycleWait: TimeInterval = 30,
+        executionBinding: TaskExecutionBinding? = nil
     ) -> FloeAgentRuntime {
         let provider = ProviderProfile(
             kind: .openAI,
@@ -380,6 +394,7 @@ struct SubagentSimulatorExecutionTests {
                 allowedToolNames: allowedToolNames,
                 workspaceRootURL: root,
                 environmentID: environmentID,
+                executionBinding: executionBinding,
                 environmentLifecycleWait: environmentLifecycleWait
             ),
             adapter: adapter,
@@ -687,12 +702,30 @@ struct SubagentSimulatorExecutionTests {
         .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_QUALIFICATION"] == "1")
     )
     func parentAndTwoChildrenShareOneGuest() async throws {
+        let app = try await appQualificationEnvironment()
+        try await app.ensureDurableAutomationReady()
         let root = try makeWorkspaceRoot()
         try writeHelperScripts(root: root)
         var ownedEnvironmentID = ""
         let services = FloePlatformServices.shared
+        let conversationID = UUID(), runID = UUID()
+        var ownsConversation = false
+        let parentStartGate = CancellationToken()
+        let parentFinishGate = CancellationToken()
+        var parentRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
 
         func cleanup() async {
+            if let parentTask {
+                parentTask.cancel()
+                parentStartGate.cancel()
+                parentFinishGate.cancel()
+                if let parentRuntime { await parentRuntime.cancel() }
+                do { try await parentTask.value }
+                catch is CancellationError { }
+                catch let error as FloeError where error == .cancelled { }
+                catch { Issue.record("Shared-guest parent cleanup failed: \(error)") }
+            }
             if !ownedEnvironmentID.isEmpty {
                 do {
                     try await services.stopEnvironment(id: ownedEnvironmentID)
@@ -702,14 +735,23 @@ struct SubagentSimulatorExecutionTests {
                     return // Preserve its workspace if shutdown/deletion did not finish.
                 }
             }
+            if ownsConversation {
+                do { try await app.conversationStore.deleteConversation(id: conversationID) }
+                catch { Issue.record("Shared-guest conversation cleanup failed: \(error)") }
+            }
             try? FileManager.default.removeItem(at: root)
         }
         do {
-            let environmentID = try await bootGuest(root: root)
-            ownedEnvironmentID = environmentID
+            let environmentID = try await bootGuest(root: root) { ownedEnvironmentID = $0 }
 
-            let conversationID = UUID()
-            let runID = UUID()
+            let now = Date()
+            try await app.conversationStore.saveConversation(ConversationRecord(id: conversationID,
+                title: "Shared-guest qualification", createdAt: now, updatedAt: now, titleOrigin: .manual))
+            ownsConversation = true
+            let pin = try await app.taskExecutionEnvironments.resolveBinding(conversationID: conversationID,
+                runID: runID, root: root, workspace: nil, override: environmentID)
+            try await app.runStore.saveRun(RunRecord(id: runID, conversationID: conversationID,
+                state: "running", goal: "Shared-guest qualification", startedAt: now, executionBinding: pin))
             let ceiling: Set<String> = [
                 "exec.shell", "shell.open", "shell.exchange",
                 "shell.close", "shell.signal", "environment.stopLinux",
@@ -725,15 +767,12 @@ struct SubagentSimulatorExecutionTests {
                 turns: [
                     [.toolRequest(parentCall)],
                     [.textDelta(.init(text: parentFinalText)), .completed(.init(stopReason: .endTurn))],
-                ])
+                ], gates: [0: parentStartGate, 1: parentFinishGate])
             let runtime = makeRuntime(
                 root: root, conversationID: conversationID, runID: runID,
                 allowedToolNames: ceiling, environmentID: environmentID,
-                adapter: parentAdapter, auditSink: auditSink, environmentLifecycleWait: 1)
-            // NOTE: the parent run is started only AFTER both children's guest
-            // processes are really running (see below), so the three real
-            // executions overlap without holding a provider stream open across
-            // the children's setup.
+                adapter: parentAdapter, auditSink: auditSink, environmentLifecycleWait: 1, executionBinding: pin)
+            parentRuntime = runtime
 
             let executor = CatalogToolExecutor()
             let bus = SubagentPeerBus()
@@ -742,7 +781,7 @@ struct SubagentSimulatorExecutionTests {
                 identity: ChildExecutionIdentity,
                 cancellation: CancellationToken = CancellationToken()
             ) -> ToolContext {
-                clientContext(
+                var context = clientContext(
                     runID: runID, conversationID: conversationID,
                     environmentID: environmentID, root: root,
                     allowedToolNames: ceiling, identity: identity,
@@ -755,6 +794,8 @@ struct SubagentSimulatorExecutionTests {
                         }),
                     peers: bus.handle(for: identity),
                     cancellation: cancellation)
+                context.executionBindingGeneration = pin.generation
+                return context
             }
 
             // Kernel prerequisite through a dedicated child identity, before
@@ -763,6 +804,18 @@ struct SubagentSimulatorExecutionTests {
             let kernelIdentity = ChildExecutionIdentity(
                 parentRunID: runID, rootTaskID: conversationID, delegateCallID: "delegate-kernel")
             let kernelContext = makeClient(identity: kernelIdentity)
+            let inactiveCall = try toolCall(
+                id: "inactive-parent", toolName: "exec.shell", arguments: #"{"command":"true"}"#)
+            let inactive = await runtime.dispatchChildTool(inactiveCall, identity: kernelIdentity, childContext: kernelContext)
+            try #require(inactive.status == .denied && inactive.outputSummary.contains("owning task is no longer active"))
+
+            let run = Task { try await runtime.start(goal: "parent multi-client task") }
+            parentTask = run
+            let parentIsActive = await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return parentAdapter.requestCount == 1 }
+                return false
+            }
+            try #require(parentIsActive, "Parent must be active before child execution")
             try await requireQualifiedKernel(
                 runtime: runtime, identity: kernelIdentity, context: kernelContext)
 
@@ -876,11 +929,9 @@ struct SubagentSimulatorExecutionTests {
             #expect(child1Started && child2Started, "both child session commands must start in the guest")
             try #require(child1Started && child2Started, "children never started")
 
-            // The parent run starts NOW: its first provider turn dispatches
-            // exec.shell immediately (provider call id `call_1`, identical to
-            // the first call of both children), while both child processes are
-            // still sleeping in their own PTY sessions.
-            let parentTask = Task { try await runtime.start(goal: "parent multi-client task") }
+            // Release the active parent's first tool call while both child
+            // processes are still running in their own PTY sessions.
+            parentStartGate.cancel()
 
             // --- Lifecycle refusal while consumers are active --------------
             let parentStarted = await waitForTimeline("PARENT", marker: "PARENT_START", root: root, timeout: 30)
@@ -1135,7 +1186,9 @@ struct SubagentSimulatorExecutionTests {
             _ = await runtime.dispatchChildTool(
                 close2, identity: child2, childContext: child2Context)
 
-            try await parentTask.value
+            parentFinishGate.cancel()
+            try await run.value
+            parentTask = nil
             let parentState = await runtime.state
             if case .completed = parentState {
                 // The parent's own run completed with its gated call_1.

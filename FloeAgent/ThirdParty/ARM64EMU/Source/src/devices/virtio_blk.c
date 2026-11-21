@@ -15,12 +15,17 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
+#if defined(__APPLE__)
+#include <sys/attr.h>
+#include <sys/mount.h>
+#endif
 
 #define SECTOR_SIZE   512
 #define QUEUE_NUM_MAX 256        /* QueueNumMax for the single requestq */
 #define VIRTQ_MAX     256        /* descriptor-chain walk bound (== QueueNumMax) */
-#define BLK_BATCH_BYTES (64 * 1024)
+#define BLK_BATCH_BYTES (128 * 1024)
 #define BLK_BATCH_SPANS 32
+#define BLK_DISCARD_MAX_SECTORS (32 * 1024 * 1024 / SECTOR_SIZE)
 
 /* Feature bits we advertise: VIRTIO_F_VERSION_1 (bit 32), mandatory for a modern
  * device, plus VIRTIO_BLK_F_RO (bit 5) for read-only disks. VIRTIO_BLK_F_RO is
@@ -28,6 +33,7 @@
 #define VIRTIO_F_VERSION_1 (1ULL << 32)
 #define VIRTIO_BLK_F_RO    (1ULL << 5)
 #define VIRTIO_BLK_F_FLUSH (1ULL << 9)   /* device honors VIRTIO_BLK_T_FLUSH (fsync) */
+#define VIRTIO_BLK_F_DISCARD (1ULL << 13)
 #define BLK_FEATURES       (VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_FLUSH)
 
 /* Split-virtqueue descriptor flags. */
@@ -39,6 +45,7 @@
 #define VIRTIO_BLK_T_OUT     1
 #define VIRTIO_BLK_T_FLUSH   4
 #define VIRTIO_BLK_T_GET_ID  8
+#define VIRTIO_BLK_T_DISCARD 11
 #define VIRTIO_BLK_S_OK      0
 #define VIRTIO_BLK_S_IOERR   1
 #define VIRTIO_BLK_S_UNSUPP  2
@@ -47,6 +54,7 @@ typedef struct VirtIOBlk {
     Machine *m; GIC *gic; int irq;     /* INTID_VIRTIO0 + slot */
     int index;                         /* attach order (0-based); used for the serial */
     int fd; u64 capacity;              /* backing image; capacity in 512B sectors */
+    u32 discard_alignment;             /* host allocation block in 512B sectors */
     bool ro;                           /* read-only disk (advertises VIRTIO_BLK_F_RO) */
     u64 features;                      /* device feature bits (BLK_FEATURES [| RO]) */
 
@@ -142,10 +150,12 @@ static bool request_begin(VirtIOBlk *v,u32 head) {
     u64 sector=descriptor_le(header+8,8),total=0;
     for(u32 i=1;i+1<n;i++)total+=v->request.length[i];
     v->request.off=sector*SECTOR_SIZE;
-    if((v->request.type==VIRTIO_BLK_T_OUT&&v->ro)||sector>v->capacity||
-       total>(v->capacity-sector)*SECTOR_SIZE||
-       (v->request.type==VIRTIO_BLK_T_IN&&total>UINT32_MAX-1))
-        v->request.status=VIRTIO_BLK_S_IOERR;
+    if (v->request.type == VIRTIO_BLK_T_IN || v->request.type == VIRTIO_BLK_T_OUT) {
+        if ((v->request.type == VIRTIO_BLK_T_OUT && v->ro) || sector > v->capacity ||
+            total > (v->capacity - sector) * SECTOR_SIZE ||
+            (v->request.type == VIRTIO_BLK_T_IN && total > UINT32_MAX - 1))
+            v->request.status = VIRTIO_BLK_S_IOERR;
+    }
     return true;
 }
 bool virtio_blk_has_work(struct VirtIOBlk *v) { return v&&v->work_pending; }
@@ -213,6 +223,63 @@ io_error:
     request_finish(v);
 }
 
+static u32 discard_alignment(int fd) {
+#if defined(__APPLE__) && defined(F_PUNCHHOLE)
+    struct attrlist attrs = {.bitmapcount = ATTR_BIT_MAP_COUNT,
+                             .volattr = ATTR_VOL_INFO | ATTR_VOL_CAPABILITIES};
+    struct { u32 size; vol_capabilities_attr_t info; } caps = {0};
+    struct statfs volume;
+    if (fgetattrlist(fd, &attrs, &caps, sizeof(caps), 0) != 0 || caps.size < sizeof(caps) ||
+        !(caps.info.capabilities[VOL_CAPABILITIES_INTERFACES] &
+          caps.info.valid[VOL_CAPABILITIES_INTERFACES] & VOL_CAP_INT_PUNCHHOLE) ||
+        fstatfs(fd, &volume) != 0 || volume.f_bsize < SECTOR_SIZE || volume.f_bsize % SECTOR_SIZE)
+        return 0;
+    return volume.f_bsize / SECTOR_SIZE;
+#else
+    (void)fd;
+    return 0;
+#endif
+}
+
+static u8 discard_request(VirtIOBlk *v) {
+#if defined(__APPLE__) && defined(F_PUNCHHOLE)
+    if (!(v->drv_feat & v->features & VIRTIO_BLK_F_DISCARD)) return VIRTIO_BLK_S_UNSUPP;
+    u8 range[16];                    /* one virtio_blk_discard_write_zeroes segment */
+    u32 received = 0;
+    for (u32 i = 1; i + 1 < v->request.n; ++i) {
+        u32 length = v->request.length[i];
+        u64 addr = v->request.addr[i];
+        if (v->request.flags[i] & VIRTQ_DESC_F_WRITE || length > sizeof(range) - received)
+            return VIRTIO_BLK_S_IOERR;
+        if (!length) continue;
+        if (!ram_ptr(v->m, addr, length)) return VIRTIO_BLK_S_IOERR;
+        phys_read_blk(v->m, addr, range + received, length);
+        if (machine_bus_status(v->m) != BUS_OK) return VIRTIO_BLK_S_IOERR;
+        received += length;
+    }
+    if (received != sizeof(range)) return VIRTIO_BLK_S_IOERR;
+    u64 first = descriptor_le(range, 8);
+    u32 count = (u32)descriptor_le(range + 8, 4);
+    if (descriptor_le(range + 12, 4) != 0) return VIRTIO_BLK_S_UNSUPP;
+    if (count > BLK_DISCARD_MAX_SECTORS || first > v->capacity || count > v->capacity - first)
+        return VIRTIO_BLK_S_IOERR;
+
+    /* Drop only complete host allocation blocks inside the guest's range. */
+    u64 align = v->discard_alignment;
+    u64 start = ((first + align - 1) / align) * align;
+    u64 end = ((first + count) / align) * align;
+    if (end <= start) return VIRTIO_BLK_S_OK;
+    fpunchhole_t hole = {.fp_offset = (off_t)(start * SECTOR_SIZE),
+                         .fp_length = (off_t)((end - start) * SECTOR_SIZE)};
+    int rc;
+    do { rc = fcntl(v->fd, F_PUNCHHOLE, &hole); } while (rc != 0 && errno == EINTR);
+    return rc == 0 ? VIRTIO_BLK_S_OK : VIRTIO_BLK_S_IOERR;
+#else
+    (void)v;
+    return VIRTIO_BLK_S_UNSUPP;
+#endif
+}
+
 void virtio_blk_service(struct VirtIOBlk *v) {
     if(!v||!v->work_pending)return;
     if(!v->q_ready||!v->q_num){v->work_pending=false;return;}
@@ -232,6 +299,7 @@ void virtio_blk_service(struct VirtIOBlk *v) {
         transfer_batch(v, type == VIRTIO_BLK_T_IN);
     } else {
         if(type==VIRTIO_BLK_T_FLUSH){if(fsync(v->fd))v->request.status=VIRTIO_BLK_S_IOERR;}
+        else if(type==VIRTIO_BLK_T_DISCARD)v->request.status=discard_request(v);
         else if(type==VIRTIO_BLK_T_GET_ID) {
             char text[20];snprintf(text,sizeof(text),"arm64emu-vblk%d",v->index);
             if(v->request.n>=3) {u8 id[20]={0};memcpy(id,text,strlen(text));u32 count=v->request.length[1]<20?v->request.length[1]:20;phys_write_blk(v->m,v->request.addr[1],id,count);v->request.used+=count;}
@@ -245,6 +313,13 @@ static u64 blk_config_read(VirtIOBlk *v, u64 off, unsigned size) {
     u8 cfg[64];
     memset(cfg, 0, sizeof(cfg));
     for (int i = 0; i < 8; i++) cfg[i] = (u8)(v->capacity >> (i * 8));
+    if (v->discard_alignment) {
+        for (int i = 0; i < 4; i++) {
+            cfg[36 + i] = (u8)((u32)BLK_DISCARD_MAX_SECTORS >> (i * 8));
+            cfg[44 + i] = (u8)(v->discard_alignment >> (i * 8));
+        }
+        cfg[40] = 1;
+    }
     u64 r = 0;
     for (unsigned i = 0; i < size && off + i < sizeof(cfg); i++)
         r |= (u64)cfg[off + i] << (i * 8);
@@ -319,6 +394,8 @@ struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, bool
     v->fd = fd;
     v->ro = ro;
     v->features = BLK_FEATURES | (ro ? VIRTIO_BLK_F_RO : 0);
+    v->discard_alignment = ro ? 0 : discard_alignment(fd);
+    if (v->discard_alignment) v->features |= VIRTIO_BLK_F_DISCARD;
     v->capacity = (u64)st.st_size / SECTOR_SIZE;
     machine_add_device(m, base, 0x200, blk_read, blk_write, v, "virtio-blk");
     m->blk[m->n_blk++] = v;

@@ -795,8 +795,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.66"
-        CURRENT_PROJECT_VERSION: "387"
+        MARKETING_VERSION: "1.8.67"
+        CURRENT_PROJECT_VERSION: "388"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -879,8 +879,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.66"
-        CURRENT_PROJECT_VERSION: "387"
+        MARKETING_VERSION: "1.8.67"
+        CURRENT_PROJECT_VERSION: "388"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -930,8 +930,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.66"
-        CURRENT_PROJECT_VERSION: "387"
+        MARKETING_VERSION: "1.8.67"
+        CURRENT_PROJECT_VERSION: "388"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -974,8 +974,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.66"
-        CURRENT_PROJECT_VERSION: "387"
+        MARKETING_VERSION: "1.8.67"
+        CURRENT_PROJECT_VERSION: "388"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1027,8 +1027,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.66"
-        CURRENT_PROJECT_VERSION: "387"
+        MARKETING_VERSION: "1.8.67"
+        CURRENT_PROJECT_VERSION: "388"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1585,6 +1585,7 @@ targets:
       # Per-boot guest loopback startup provisioning: scripted-console
       # regression for the registry seam (no engine, no image).
       - path: Tests/FloeExecutionTests/LinuxGuestLoopbackProvisioningTests.swift
+      - path: Tests/FloeExecutionTests/LinuxResidentRecoveryTests.swift
       - path: Tests/FloeExecutionTests/GuestPythonRuntimeTests.swift
       # G2 integration of the K storage repair: the changed accounting
       # (device-scoped clone-stream dedup, file counts), report builder and

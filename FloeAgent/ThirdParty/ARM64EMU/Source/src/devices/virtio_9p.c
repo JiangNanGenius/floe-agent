@@ -797,7 +797,7 @@ static u32 h_write(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
     P9Fid *f = fid_find_live(v, fid);
     if (!f || f->fd < 0) return mk_lerror(v, tag, EBADF, cap);
-    if (in->pos + count > in->cap) count = in->cap - in->pos;  /* clamp to gathered data */
+    if (count > in->cap - in->pos) count = in->cap - in->pos;  /* clamp to gathered data */
     ssize_t n = pwrite(f->fd, v->req + in->pos, count, (off_t)off);
     if (n < 0) return mk_lerror(v, tag, errno, cap);
     Cur o = resp_begin(v, P9_RWRITE, tag, cap);
@@ -1211,6 +1211,32 @@ static bool p9_ensure_bufs(VirtIO9P *v) {
     return true;
 }
 
+/* Coalesce adjacent guest-RAM descriptors before taking the memory guard.
+ * The same guarded DMA helpers still handle all copies and write notices. */
+static bool p9_transfer(Machine *m, const u64 *addresses, const u32 *lengths, u32 spans,
+                        u8 *buffer, u32 limit, bool to_guest, u32 *copied) {
+    u32 offset = 0;
+    for (u32 i = 0; i < spans && offset < limit; ++i) {
+        u64 addr = addresses[i];
+        u32 remaining = limit - offset;
+        u32 size = lengths[i] < remaining ? lengths[i] : remaining;
+        if (!size) continue;
+        while (size < remaining && i + 1 < spans && addresses[i + 1] == addr + size) {
+            u32 room = remaining - size;
+            u32 next = lengths[i + 1] < room ? lengths[i + 1] : room;
+            if (!next || !ram_ptr(m, addr, size + next)) break;
+            size += next;
+            ++i;
+        }
+        if (to_guest) phys_write_blk(m, addr, buffer + offset, size);
+        else          phys_read_blk(m, addr, buffer + offset, size);
+        if (machine_bus_status(m) != BUS_OK) return false;
+        offset += size;
+    }
+    *copied = offset;
+    return true;
+}
+
 /* Service one request head: gather readable descriptors into the T-message
  * buffer, dispatch, then scatter the R-message across the writable descriptors. */
 static void p9_handle(VirtIO9P *v, u32 head) {
@@ -1245,24 +1271,16 @@ static void p9_handle(VirtIO9P *v, u32 head) {
     if (!terminated || !n_r || !n_w) { v->status |= 64; return; }
 
     u32 reqlen = 0;
-    for (u32 i = 0; i < n_r && reqlen < P9_MSIZE_MAX; i++) {
-        u32 take = rlen[i];
-        if (take > P9_MSIZE_MAX - reqlen) take = P9_MSIZE_MAX - reqlen;
-        phys_read_blk(m, raddr[i], v->req + reqlen, take);
-        if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
-        reqlen += take;
+    if (!p9_transfer(m, raddr, rlen, n_r, v->req, P9_MSIZE_MAX, false, &reqlen)) {
+        v->status |= 64; return;
     }
     u32 resplen = p9_dispatch(v, reqlen, wcap);
 
     u32 off = 0;
-    for (u32 i = 0; i < n_w && off < resplen; i++) {
-        u32 chunk = wlen[i];
-        if (chunk > resplen - off) chunk = resplen - off;
-        phys_write_blk(m, waddr[i], v->resp + off, chunk);
-        if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
-        off += chunk;
+    if (!p9_transfer(m, waddr, wlen, n_w, v->resp, resplen, true, &off)) {
+        v->status |= 64; return;
     }
-    push_used(v, head, resplen);
+    push_used(v, head, off);
 }
 
 static void virtio_9p_process(VirtIO9P *v) {

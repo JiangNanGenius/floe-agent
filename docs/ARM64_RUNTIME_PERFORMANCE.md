@@ -165,3 +165,20 @@ Apple M5 Pro 上的真实四 vCPU Debian 客机使用基线、候选、候选、
 | Python zlib CRC32（96 MiB） | 3.477 s | 3.437 s |
 
 另有 80,000 组 CRC 和 40,000 组 SHA-256 指令验证硬件与原软件的输出一致。iOS arm64 实际对象中核对了 CRC 与 SHA 指令。以上数据仅适用于所测主机和负载。 / A separate instruction check verified exact agreement across 80,000 CRC and 40,000 SHA-256 vectors. The iOS arm64 objects contain the expected CRC and SHA instructions. Timings apply to the measured host and workloads.
+
+## Build 388 虚拟盘与工作区 / Virtual disk and workspace
+
+基线为 `6aa53cde6`。Xcode 27.2（27B52）在 M5 Pro Mac 上编译，使用同一份双 vCPU Debian ARM64 资格镜像和相同输入。一个 128 KiB、32 段的虚拟盘请求中，宿主的 `pread` 和 `pwrite` 各从两次降为一次，数据回读一致。真实客机做了四轮对照。两轮候选各把 **138,043,392 字节（131.65 MiB）**归还给 APFS，由宿主盘镜像的分配块数核得。保留的数据摘要一致。
+
+工作区挂载继续直接读写原文件。四轮客机改写并重命名同一个宿主文件后，宿主均读回相同的 inode 和预期内容。三个 32 MiB 输出的宿主分配总量为 96.5–98.6 MiB。128 MiB 稀疏文件跨两个 APFS 卷复制后，目标保留 32 KiB 的实际分配量，内容摘要一致。
+
+工作区传输合并连续的客机内存段。开启 ASan 和 UBSan 的组件测试中，32 个连续段每个方向只做一次受保护的内存拷贝，离散段和部分响应均通过逐字节回读。完整客机每项跑三次。四轮的中位数如下，盘和挂载耗时均随主机负载波动。
+
+| 32 MiB 读写 | 首轮基线 → 候选 | 交换顺序后基线 → 候选 |
+| --- | ---: | ---: |
+| 虚拟盘直接读 | 1.052 → 0.155 s | 0.127 → 1.212 s |
+| 虚拟盘写入并同步 | 1.960 → 2.163 s | 1.600 → 2.562 s |
+| 工作区挂载读 | 4.115 → 5.454 s | 3.006 → 7.211 s |
+| 工作区挂载写入并同步 | 3.920 → 4.675 s | 3.316 → 15.429 s |
+
+The comparison used Xcode 27.2 on an M5 Pro with the same two-vCPU Debian ARM64 qualification image and inputs. A fragmented 128 KiB block request used one host `pread` or `pwrite` per operation, down from two, with exact byte readback. Both candidate runs released 131.65 MiB of APFS image allocation and kept the live data intact. Mounted writes and renames kept the original host inode. The cross-volume 128 MiB logical copy preserved its 32 KiB allocation and digest. The engine continues to use its JIT-free interpreter. [Virtio block specification, section 5.2](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)

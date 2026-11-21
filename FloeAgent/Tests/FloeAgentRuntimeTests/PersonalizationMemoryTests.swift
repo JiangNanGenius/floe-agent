@@ -783,6 +783,54 @@ struct PersonalizationMemoryTests {
         #expect(!suggestion.canApplyAutomatically)
     }
 
+    @Test("A pending or out-of-order fact leaves the current confirmed value in place")
+    func confirmedFactCannotBeDisplacedByPendingOrOlderValue() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let identity = MemoryFactIdentity(subjectKey: "project:example", attributeKey: "version")
+        let now = Date()
+        let current = MemoryEntry(scope: .agentGlobal, status: .active, content: "cobalt current version",
+            confidence: 1, importance: 0.8, sourceKind: .explicitUserRequest, factIdentity: identity,
+            createdAt: now, updatedAt: now)
+        let pending = MemoryEntry(scope: .agentGlobal, status: .pending, content: "cobalt unverified version",
+            confidence: 1, importance: 0.8, sourceKind: .automaticTurnReview, factIdentity: identity)
+        let older = MemoryEntry(scope: .agentGlobal, status: .active, content: "cobalt older version",
+            confidence: 1, importance: 0.8, sourceKind: .explicitUserRequest, factIdentity: identity,
+            createdAt: now.addingTimeInterval(-60), updatedAt: now.addingTimeInterval(-60))
+        try await store.saveMemory(current, evidence: [])
+        try await store.saveMemory(pending, evidence: [])
+        await #expect(throws: (any Error).self) { try await store.saveMemory(older, evidence: []) }
+        #expect(try await store.recall(query: "cobalt", workspaceID: nil).map(\.id) == [current.id])
+        #expect(try await store.memory(id: pending.id)?.status == .pending)
+    }
+
+    @Test("Editing a fact removes its old index and preserves its identity and pin")
+    func editFactUpdatesRecallAtomically() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let original = MemoryEntry(scope: .userProfile, status: .active, content: "azure previous preference",
+            confidence: 1, importance: 0.8, isPinned: true, sourceKind: .explicitUserRequest,
+            factIdentity: MemoryFactIdentity(subjectKey: "project:example", attributeKey: "color"))
+        let vector = MemoryEmbedding(memoryID: original.id, modality: .text, modelIdentifier: "test",
+            modelRevision: "1", values: [1, 0], contentDigest: "old")
+        try await store.saveMemory(original, evidence: [])
+        try await store.saveEmbedding(vector, ifContentMatches: original.content)
+        try await store.replaceMemoryContent(id: original.id, expectedContent: original.content, content: "jade current preference")
+        // An index request started before the edit is allowed to finish. Its
+        // result must not reintroduce the vector for the previous content.
+        try await store.saveEmbedding(vector, ifContentMatches: original.content)
+        await #expect(throws: (any Error).self) {
+            try await store.replaceMemoryContent(id: original.id, expectedContent: original.content, content: "stale edit")
+        }
+        let current = try #require(try await store.memory(id: original.id))
+        #expect(current.content == "jade current preference" && current.isPinned && current.factIdentity == original.factIdentity)
+        #expect(try await store.recall(query: "jade", workspaceID: nil).map(\.id) == [original.id])
+        let old = try await store.browseMemories(.init(query: "azure", queryEmbedding: [1, 0], modelIdentifier: "test", modelRevision: "1"))
+        #expect(old.isEmpty)
+    }
+
     @Test("Maintenance batch rolls back every operation when one item is stale")
     func maintenanceBatchRollback() async throws {
         let database = try DatabaseManager.inMemory()

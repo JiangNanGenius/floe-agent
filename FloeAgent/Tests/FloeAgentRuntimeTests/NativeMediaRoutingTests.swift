@@ -222,19 +222,21 @@ struct NativeMediaRoutingTests {
 
     // MARK: - Prompt layer
 
-    @Test func promptStatesCapabilityFactsWithoutEnforcedRouting() {
+    @Test func promptStatesCapabilityFactsWithoutEnforcedRouting() throws {
         let cloud = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", toolsAvailable: true)
-        let facts = cloud.range(of: "# Capability facts")
-        let mode = cloud.range(of: "# Chat mode")
-        #expect(facts != nil && mode != nil)
-        #expect(facts!.lowerBound < mode!.lowerBound)
+        let facts = try #require(cloud.range(of: "# Capability facts"))
+        let mode = try #require(cloud.range(of: "# Chat mode"))
+        #expect(facts.lowerBound < mode.lowerBound)
         #expect(!cloud.contains("Route by capability"))
         #expect(!cloud.contains("purpose-built native tools"))
         #expect(!cloud.contains("is owned by the app"))
         #expect(cloud.contains("do not request the global tool directory"))
-        #expect(cloud.contains("environment.linuxStatus before exec.shell"))
-        #expect(cloud.contains("environment.startLinux(vcpus=2)"))
-        #expect(cloud.contains("environment.hardRestartLinux(vcpus=2)"))
+        #expect(cloud.contains("environment.linuxStatus reports actual state without starting or repairing anything"))
+        #expect(cloud.contains("environment.startLinux can update 1–4 online CPUs"))
+        #expect(cloud.contains("RAM changes require an explicit stop"))
+        #expect(cloud.contains("omitted resource arguments reuse them"))
+        #expect(cloud.contains("recheck actual occupancy, then perform the power operation"))
+        #expect(!cloud.contains("environment.hardRestartLinux(vcpus=2)"))
         #expect(cloud.contains("choose based on the task"))
         #expect(cloud.contains("host Apple GPU through virtio-gpu/Venus backed by Metal"))
         #expect(cloud.contains("Rendering, compute and hardware video codecs need separate evidence"))
@@ -243,8 +245,9 @@ struct NativeMediaRoutingTests {
         let local = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", compactForLocal: true)
         #expect(!local.contains("Route by capability"))
         #expect(!local.contains("use shell/Python only when"))
-        #expect(local.contains("environment.startLinux(vcpus, memoryMB)"))
-        #expect(local.contains("after interruption reuse the last successful shape"))
+        #expect(local.contains("reuse a running environment"))
+        #expect(local.contains("Resource changes follow the current tool schema and saved user choices"))
+        #expect(local.contains("verify release, perform the power operation"))
         #expect(local.contains("virtio-gpu can use the host Apple GPU through Metal"))
         #expect(local.utf8.count < 8_000)
     }

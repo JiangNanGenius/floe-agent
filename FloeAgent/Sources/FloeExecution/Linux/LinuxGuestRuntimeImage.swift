@@ -17,7 +17,7 @@
 //    sibling staging file and an atomic rename, then reused across restarts so
 //    packages installed in the guest survive a stop/start. The clone uses
 //    APFS clonefile (copy-on-write) when the volume supports it and falls
-//    back to a byte copy;
+//    back to a sparse extent copy when possible;
 //  - every environment disk is a raw ext4 image grown logically (sparse,
 //    grow-only) to `LinuxGuestDiskLayout.targetLogicalCapacityBytes`
 //    (16 GiB by default, expandable to 32 GiB); the guest extends the ext4 filesystem to that capacity on the
@@ -622,11 +622,26 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
 
     /// Copies the verified base to a sibling staging file. An APFS clone is
     /// preferred: it is O(1), copy-on-write, and later guest writes never
-    /// reach the verified base. Filesystems without clone support fall back to
-    /// an ordinary byte copy.
+    /// reach the verified base. Across volumes, preserve existing holes when
+    /// the destination supports sparse copies.
     private func stageCopy(from base: URL, to staging: URL, fileManager: FileManager) throws {
         if clonefile(base.path, staging.path, 0) != 0 {
-            try fileManager.copyItem(at: base, to: staging)
+            var info = stat()
+            guard lstat(base.path, &info) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            let allocated = Int64(info.st_blocks).multipliedReportingOverflow(by: 512)
+            if !allocated.overflow, allocated.partialValue >= 0, allocated.partialValue < info.st_size {
+                let flags = copyfile_flags_t(COPYFILE_DATA_SPARSE | COPYFILE_EXCL | COPYFILE_NOFOLLOW)
+                if copyfile(base.path, staging.path, nil, flags) != 0 {
+                    let failure = errno
+                    guard failure == ENOTSUP || failure == EOPNOTSUPP || failure == EINVAL else {
+                        throw POSIXError(POSIXErrorCode(rawValue: failure) ?? .EIO)
+                    }
+                    try removeIfPresent(staging, fileManager: fileManager)
+                    try fileManager.copyItem(at: base, to: staging)
+                }
+            } else {
+                try fileManager.copyItem(at: base, to: staging)
+            }
         }
         // APFS clones inherit the immutable base's mode. Only the verified
         // private working copy becomes writable; never chmod the base.

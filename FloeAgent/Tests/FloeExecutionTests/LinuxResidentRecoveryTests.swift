@@ -340,6 +340,43 @@ final class LinuxResidentRecoveryTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(nodeValue.inode, 147868626)
     }
 
+    func testBootSealsOnlyVerifiedLegacyVolumeIdentity() throws {
+        let f = try Fixture(); defer { f.remove() }
+        let store = try LinuxResidentRecoveryStore(root: f.root)
+        let transaction = try store.begin(imageID: "trusted-new")
+        defer { transaction.endAdmission() }
+        let id = try f.operationID()
+        let receipt = try transaction.replace(prepare: { try f.prepare($0) })
+        transaction.endAdmission()
+
+        let recordURL = f.root.appendingPathComponent("recovery/\(id)/record.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        var legacy = try decoder.decode(LinuxResidentRecoveryStore.Record.self, from: Data(contentsOf: recordURL))
+        let uuid = try XCTUnwrap(legacy.fresh?.directory.volumeUUID)
+        legacy.fresh?.directory.volumeUUID = nil
+        legacy.fresh?.disk?.volumeUUID = nil
+
+        var unverified = legacy
+        unverified.fresh?.disk?.device &+= 1
+        let unverifiedBytes = try encoder.encode(unverified)
+        try unverifiedBytes.write(to: recordURL, options: .atomic)
+        try LinuxResidentDiskBarrier.acquireUse(root: f.root).releaseAfterConfirmedClose()
+        XCTAssertEqual(try Data(contentsOf: recordURL), unverifiedBytes)
+        XCTAssertThrowsError(try store.currentCommittedReceipt()) {
+            XCTAssertEqual($0 as? LinuxResidentRecoveryError, .identityChanged)
+        }
+
+        try encoder.encode(legacy).write(to: recordURL, options: .atomic)
+        try LinuxResidentDiskBarrier.acquireUse(root: f.root).releaseAfterConfirmedClose()
+        let sealed = try decoder.decode(LinuxResidentRecoveryStore.Record.self, from: Data(contentsOf: recordURL))
+        XCTAssertEqual(sealed.fresh?.directory.volumeUUID, uuid)
+        XCTAssertEqual(sealed.fresh?.disk?.volumeUUID, uuid)
+        XCTAssertEqual(try store.currentCommittedReceipt(), receipt)
+        XCTAssertEqual(try f.bytes(f.current), f.newBytes)
+        XCTAssertEqual(try f.bytes(f.previous(id)), f.oldBytes)
+    }
+
     /// A real committed receipt is accepted by the recovery guard, and a disk
     /// replaced afterwards (new inode) is refused as tampering.
     func testCommittedReceiptRoundTripsAndRefusesReplacedDisk() throws {

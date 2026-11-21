@@ -176,6 +176,12 @@ enum LinuxResidentDiskBarrier {
         let gate = try admissionRead(store)
         defer { _ = close(gate) }
         let disk = try store.lockFile("disk-use.lock", operation: LOCK_EX | LOCK_NB)
+        // Upgrade the receipt while the old device and inode still verify.
+        // Boot retains the existing explicit recovery path for disks whose
+        // identity was already ambiguous or whose receipt cannot be written.
+        do { try store.sealVerifiedLegacyVolumeIdentity() }
+        catch LinuxResidentRecoveryError.identityChanged { }
+        catch { FloeLogger(category: .tools).warning("residentRecoveryLegacyVolumeSealUnavailable") }
         let use = Use(descriptor: disk)
         retainer.retain(use)
         return use
@@ -556,6 +562,25 @@ struct LinuxResidentRecoveryStore {
     /// writes/growth. Only physical directory/disk identity is immutable;
     /// mtime and logical length deliberately change during actual use.
     func currentCommittedReceipt() throws -> LinuxResidentRecoveryReceipt? {
+        try checkedCommittedRuntime()?.record.receipt
+    }
+
+    /// Requires the shared admission and exclusive disk-use locks. Persist a
+    /// stable volume UUID only after the existing disk identity check passes.
+    func sealVerifiedLegacyVolumeIdentity() throws {
+        guard var checked = try checkedCommittedRuntime(),
+              var fresh = checked.record.fresh, var disk = fresh.disk,
+              fresh.directory.volumeUUID == nil || disk.volumeUUID == nil,
+              let volume = checked.tree.directory.volumeUUID,
+              checked.tree.disk?.volumeUUID == volume else { return }
+        fresh.directory.volumeUUID = volume
+        disk.volumeUUID = volume
+        fresh.disk = disk
+        checked.record.fresh = fresh
+        try persist(checked.record)
+    }
+
+    private func checkedCommittedRuntime() throws -> (record: Record, tree: Tree)? {
         guard let observed = try Tree.read(current) else { return nil }
         let path = current.appendingPathComponent(LinuxResidentDiskStorage.originFileName)
         guard let origin: LinuxGuestRuntimeDiskOrigin = try read(LinuxGuestRuntimeDiskOrigin.self, from: path),
@@ -569,7 +594,7 @@ struct LinuxResidentRecoveryStore {
               originalDisk.sameFile(as: currentDisk) else {
             throw LinuxResidentRecoveryError.identityChanged
         }
-        return record.receipt
+        return (record, observed)
     }
 
     private func requiredRecord(_ id: UUID) throws -> Record {

@@ -131,6 +131,41 @@ struct MemoryForgettingTests {
         #expect(try await store.memory(id: unknown.id)?.status == .active)
     }
 
+    @Test("The memory library follows the actual linked owner and forgetting policy")
+    func libraryAssociationTracksActualOwner() async throws {
+        let db = try await database()
+        let owner = try await source(db)
+        let registry = SQLiteIntelligenceStore(database: db)
+        let workspaceStore = SQLiteWorkspaceStore(database: db)
+        let workspace = try await workspaceStore.ensureWorkspace(conversationID: owner, title: "Memory source workspace")
+        let linked = MemoryEntry(scope: .task(owner), status: .active, content: "Project reference", confidence: 1,
+            importance: 1, sourceKind: .automaticTurnReview, createdAt: clock, updatedAt: clock)
+        let workspaceNote = MemoryEntry(scope: .workspace(workspace.id), status: .active, content: "Workspace convention",
+            confidence: 1, importance: 1, sourceKind: .automaticTurnReview, originConversationID: owner,
+            createdAt: clock, updatedAt: clock)
+        let pinned = MemoryEntry(scope: .userProfile, status: .active, content: "Pinned preference", confidence: 1,
+            importance: 1, isPinned: true, sourceKind: .explicitUserRequest, originConversationID: owner,
+            createdAt: clock, updatedAt: clock)
+        for entry in [linked, workspaceNote, pinned] { try await registry.saveMemory(entry, evidence: []) }
+        let before = try await registry.libraryMemories(workspaceID: workspace.id, conversationID: owner)
+        #expect(before.count == 3)
+        #expect(before.allSatisfy { MemoryForgettingPolicy.association(for: $0) == .linked })
+
+        try await registry.preserveMemoriesBeforeConversationDeletion(conversationID: owner, ownerLabel: "Source", now: clock)
+        try await SQLiteConversationStore(database: db).deleteConversation(id: owner)
+        let surviving = try await registry.libraryMemories(workspaceID: workspace.id, conversationID: nil)
+        let stillLinked = try #require(surviving.first { $0.id == workspaceNote.id })
+        #expect(MemoryForgettingPolicy.association(for: stillLinked) == .linked)
+        try await registry.preserveMemoriesBeforeWorkspaceDeletion(workspaceID: workspace.id, ownerLabel: "Workspace", now: clock)
+        try await workspaceStore.deleteWorkspace(id: workspace.id)
+        try await registry.maintainMemoryLifecycle(now: clock.addingTimeInterval(day))
+        let after = try await registry.libraryMemories(workspaceID: nil, conversationID: nil)
+        #expect(Set(after.map(\.id)) == [linked.id, workspaceNote.id, pinned.id])
+        #expect(MemoryForgettingPolicy.association(for: try #require(after.first { $0.id == linked.id })) == .forgetting)
+        #expect(MemoryForgettingPolicy.association(for: try #require(after.first { $0.id == workspaceNote.id })) == .forgetting)
+        #expect(MemoryForgettingPolicy.association(for: try #require(after.first { $0.id == pinned.id })) == .sourceDeleted)
+    }
+
     @Test("Actual SQLite hybrid ranking weakens a deleted task's old fact before the archive boundary")
     func deletedFactImportanceDecaysInActualRecall() async throws {
         let db = try await database(), oldOwner = try await source(db), recentOwner = try await source(db)
