@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 FloeVirtioGPUBackend *floe_virtual_gpu_backend_create(char *error, size_t size) {
     (void)error;
@@ -84,11 +85,37 @@ static void emit_sha(CPU *cpu, u64 *seed) {
     }
 }
 
+static void emit_aes_and_pmull(CPU *cpu, u64 *seed) {
+    static const u32 ops[] = {
+        0x4e284800, 0x4e285800, 0x4e286800, 0x4e287800,
+        0x0ee0e000, 0x4ee0e000, 0x0e20e000, 0x4e20e000
+    };
+    for (unsigned op = 0; op < sizeof(ops) / sizeof(ops[0]); ++op) {
+        for (unsigned i = 0; i < 10000; ++i) {
+            for (unsigned r = 0; r < 3; ++r) {
+                for (unsigned lane = 0; lane < 2; ++lane) {
+                    cpu->v[r].d[lane] = i < 8 && (i & (1u << r))
+                        ? (i & 1 ? 0 : ~0ULL) : next(seed);
+                }
+            }
+            const unsigned dn = i % 5 == 0 ? 1 : (op >= 4 && i % 3 == 0 ? 2 : 0);
+            const V128 before1 = cpu->v[1], before2 = cpu->v[2];
+            cpu->nzcv = 0x90000000;
+            exec_fpsimd(cpu, ops[op] | (1u << 5) | dn | (op >= 4 ? 2u << 16 : 0));
+            if (dn != 1) assert(!memcmp(&before1, &cpu->v[1], sizeof(V128)));
+            if (dn != 2) assert(!memcmp(&before2, &cpu->v[2], sizeof(V128)));
+            assert(cpu->nzcv == 0x90000000);
+            assert(fwrite(&cpu->v[dn], sizeof(cpu->v[dn]), 1, stdout) == 1);
+        }
+    }
+}
+
 int main(void) {
     CPU cpu = {0};
     u64 seed = 0x4f1bbcdc4eaf3b93ULL;
     check_crc(&cpu, &seed);
     emit_sha(&cpu, &seed);
-    fprintf(stderr, "ARM64_CHECKSUM_OK crc=80000 sha=40000\n");
+    emit_aes_and_pmull(&cpu, &seed);
+    fprintf(stderr, "ARM64_CHECKSUM_OK crc=80000 sha=40000 aes_pmull=80000\n");
     return 0;
 }

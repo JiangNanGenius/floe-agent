@@ -278,7 +278,7 @@
     },
     {
       "path": "Source/src/exec_fpsimd.c",
-      "sha256": "a977e3275bd0f2af9260cb0bf1633a223c86741321a33177152b75eecc7bf402"
+      "sha256": "08173a1ebd29b546fd0dac4343cbc7948c60381051797af8f09a4adf393ddf4a"
     },
     {
       "path": "Source/src/fdt/fdt.c",
@@ -799,6 +799,18 @@
         }
       ],
       "qualification": "Use ARM64Parallel qualifications and the four-vCPU Linux small-file measurements in ARM64_RUNTIME_PERFORMANCE.md."
+    },
+    {
+      "name": "Ahead-of-time ARM AES and polynomial multiply intrinsics",
+      "scope": "Run the existing guest AES and 64-bit PMULL operations using compiler intrinsics on supported hosts. Keep the portable paths and the existing guest ISA, checks and ABI.",
+      "files": [
+        {
+          "path": "Source/src/exec_fpsimd.c",
+          "baseSHA256": "a977e3275bd0f2af9260cb0bf1633a223c86741321a33177152b75eecc7bf402",
+          "sha256": "08173a1ebd29b546fd0dac4343cbc7948c60381051797af8f09a4adf393ddf4a"
+        }
+      ],
+      "qualification": "80,000 vectors matched the original software execution byte-for-byte. Debian ARM64 AES-GCM was measured in alternating engine order with one, two and four encryption jobs on the same four-vCPU guest. iPhoneOS disassembly confirms the compiled instructions."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",

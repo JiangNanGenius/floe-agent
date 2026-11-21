@@ -41,6 +41,36 @@ import XCTest
         XCTAssertTrue(elements.firstMatch.waitForExistence(timeout:15),text)
         return elements.allElementsBoundByIndex.last(where:{$0.isHittable}) ?? elements.firstMatch
     }
+    func testMessageBurstKeepsTheTranscriptVisibleAndFollowing() {
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+            "-ui-testing", "-ui-testing-ipad", "--ui-test-skip-onboarding",
+            "--ui-test-native-answer-fixture", "message-burst"]
+        app.launch()
+        let viewport = app.scrollViews["thread.messages.viewport"].firstMatch
+        let baseline = app.staticTexts["QA history marker 23"].firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 30))
+        XCTAssertTrue(baseline.waitForExistence(timeout: 15))
+        XCTAssertTrue(baseline.frame.intersects(viewport.frame))
+
+        let marker = app.staticTexts.matching(NSPredicate(
+            format: "label BEGINSWITH %@ OR label BEGINSWITH %@", "QA history marker", "QA burst marker"))
+        let final = app.staticTexts["QA burst marker 95"].firstMatch
+        let deadline = Date().addingTimeInterval(15)
+        repeat {
+            let region = viewport.frame.intersection(app.windows.firstMatch.frame)
+            XCTAssertTrue(marker.allElementsBoundByIndex.contains { node in
+                let frame = node.frame
+                return !frame.isEmpty && frame.intersects(region)
+            }, "A committed message must stay in the visible viewport during the burst")
+            if final.exists && final.frame.intersects(region) {
+                capture("Message timeline after the committed burst")
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+        } while Date() < deadline
+        XCTFail("The final message did not reach the viewport while following the conversation")
+    }
+
     func testSixChartFamiliesRenderInsideTheSavedAnswer() {
         for mode in ["line","histogram","candlestick","treemap","sankey","gantt"] {
             launch(mode)

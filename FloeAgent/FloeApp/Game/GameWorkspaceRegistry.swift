@@ -1440,22 +1440,52 @@ final class GameWorkspaceRegistry {
     private func performWebLaunch(session: GameWorkspaceSession,
                                   request: GameIDEProjectRunRequest,
                                   token: UInt64) async throws {
-        let execution = try await composeExecution(for: session)
+        var execution = try await composeExecution(for: session)
+        if let resource = runtimeResources.readiness(for: request.engine) {
+            let root = try GameRunSelection(context: request.context, root: request.gameRoot?.value ?? ".")
+            let plan = try await execution.preparer.plan(context: request.context,
+                engine: request.engine, selection: root)
+            let needsPack = plan.prerequisites.contains { prerequisite in
+                switch prerequisite {
+                case .preparedResourcePack:
+                    return true
+                case .externalTool(let id, _):
+                    return request.engine == .renpy && id == "renpy-8.5.3-web"
+                default:
+                    return false
+                }
+            }
+            if needsPack {
+                switch resource.state {
+                case .ready, .downloadable, .installing, .failed, .unknown:
+                    _ = try await runtimeResources.prepare(for: request.engine)
+                    try Task.checkCancellation()
+                    guard session.launchIsCurrent(token) else { throw GameIDEBridgeError.superseded }
+                    // The existing execution session captured the old set of
+                    // verified packs. Recompose only before starting this request.
+                    try await closeExecutionForReplacement(session)
+                    execution = try await composeExecution(for: session)
+                case .missing, .userAction:
+                    break
+                }
+            }
+        }
+        let activeExecution = execution
         do {
-            try await execution.launch(request)
+            try await activeExecution.launch(request)
             try Task.checkCancellation()
             guard session.launchIsCurrent(token) else {
                 throw GameIDEBridgeError.superseded
             }
-            guard let controller = execution.controller(for: request.id) else {
+            guard let controller = activeExecution.controller(for: request.id) else {
                 throw GameWorkspaceRegistryError.noSavedRun
             }
             let presentation = try await GameProjectWebRunPresentation.make(
                 request: request, controller: controller,
                 repository: session.project.repository,
                 supportDirectory: session.support,
-                cleanupOwnedRequest: { [weak execution] id in
-                    await execution?.stop(id)
+                cleanupOwnedRequest: { [weak activeExecution] id in
+                    await activeExecution?.stop(id)
                 })
             session.setWebPresentation(presentation)
             try Task.checkCancellation()
@@ -1470,7 +1500,7 @@ final class GameWorkspaceRegistry {
                 do { try await cleanupOwnedRequest(session: session, request: request) }
                 catch { throw error }
             } else {
-                await execution.stop(request.id)
+                await activeExecution.stop(request.id)
             }
             throw error
         }

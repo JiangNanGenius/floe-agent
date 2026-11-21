@@ -662,16 +662,15 @@ final class ThreadDetailViewModel: ObservableObject {
 
     // MARK: - Loading
 
+    /// Inline tools notify the thread after inserting the durable message. A
+    /// later paging or live snapshot can contain the same row.
+    func presentCommittedMessage(_ message: PersistedMessage) {
+        guard message.conversationID == conversationID, !isConversationMissing else { return }
+        mergeMessageRows([message])
+    }
+
     /// Loads persisted state, then subscribes to the selected run's bounded
     /// push stream while it is non-terminal.
-    func refreshPresentedMessages() async {
-        do {
-            let values = try await center.conversationStore(for: conversationID).recentMessages(conversationID: conversationID, limit: 64)
-            var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-            for value in values { byID[value.id] = value }
-            messages = byID.values.sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt }
-        } catch { actionError = error.localizedDescription }
-    }
     func load() async {
         loadGeneration &+= 1
         let generation = loadGeneration
@@ -724,17 +723,17 @@ final class ThreadDetailViewModel: ObservableObject {
             preferredModeWarning = await restorePreferredExecutionMode(generation: generation)
             guard generation == loadGeneration else { return }
             stage = "runList"
+            let messageStore = center.conversationStore(for: conversationID)
+            async let messagePage = messageStore.messagePage(conversationID: conversationID, before: nil, limit: 20)
             let loadedRuns = try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30)
             try Task.checkCancellation()
             guard generation == loadGeneration else { return }
-            runs = loadedRuns
+            if runs != loadedRuns { runs = loadedRuns }
             if let latest = runs.first {
                 center.environment.browserCenter.recordOwnerRun(conversationID: conversationID, runID: latest.id)
             }
             stage = "messageList"
-            let page = try await center.conversationStore(for: conversationID).messagePage(
-                conversationID: conversationID, before: nil, limit: 20
-            )
+            let page = try await messagePage
             try Task.checkCancellation()
             guard generation == loadGeneration else { return }
             mergeMessagePage(page)
@@ -1039,13 +1038,7 @@ final class ThreadDetailViewModel: ObservableObject {
     }
 
     private func mergeSearchWindow(_ rows: [PersistedMessage]) {
-        let existing = Set(messages.map(\.id))
-        let added = rows.filter { !existing.contains($0.id) }
-        guard !added.isEmpty else { return }
-        for message in added { messageIDs.insert(message.id) }
-        messages = (messages + added).sorted {
-            ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
-        }
+        mergeMessageRows(rows.sorted { Self.messageCursor($0) < Self.messageCursor($1) })
     }
 
     /// Highlight offsets for one visible message. They are recomputed from the
@@ -1178,37 +1171,35 @@ final class ThreadDetailViewModel: ObservableObject {
         eventsByRun[runID] = merged
     }
 
+    private nonisolated static func messageCursor(_ message: PersistedMessage) -> ConversationMessageCursor {
+        .init(createdAt: message.createdAt, messageID: message.id)
+    }
+
     private func mergeMessagePage(_ page: ConversationMessagePage, before: ConversationMessageCursor? = nil) {
-        func cursor(_ message: PersistedMessage) -> ConversationMessageCursor {
-            .init(createdAt: message.createdAt, messageID: message.id)
-        }
-        messageCoverage.record(first: page.messages.first.map(cursor), last: page.messages.last.map(cursor),
+        messageCoverage.record(first: page.messages.first.map(Self.messageCursor),
+                               last: page.messages.last.map(Self.messageCursor),
                                before: before, hasEarlier: page.hasEarlier)
-        let existing = messages
-        var added: [PersistedMessage] = []
-        for message in page.messages where messageIDs.insert(message.id).inserted {
-            added.append(message)
-        }
-        guard !added.isEmpty else {
-            hasEarlierMessages = messageCoverage.earlierCursor != nil
+        mergeMessageRows(page.messages)
+        let hasEarlier = messageCoverage.earlierCursor != nil
+        if hasEarlierMessages != hasEarlier { hasEarlierMessages = hasEarlier }
+    }
+
+    /// All presentation paths use the same membership index. The incoming
+    /// page is in cursor order, including when a reconnect overlaps history.
+    private func mergeMessageRows(_ page: [PersistedMessage]) {
+        let added = page.filter { messageIDs.insert($0.id).inserted }
+        guard let head = added.first, let tail = added.last else { return }
+        guard let first = messages.first, let last = messages.last else {
+            messages = added
             return
         }
-        let merged: [PersistedMessage]
-        if existing.isEmpty {
-            merged = added
-        } else if cursor(added.last!) <= cursor(existing.first!) {
-            // An earlier page (or an earlier reconnect snapshot): prepend.
-            merged = added + existing
-        } else if cursor(existing.last!) <= cursor(added.first!) {
-            // The newest page: append after everything loaded.
-            merged = existing + added
+        if Self.messageCursor(tail) <= Self.messageCursor(first) {
+            messages = added + messages
+        } else if Self.messageCursor(last) <= Self.messageCursor(head) {
+            messages += added
         } else {
-            // Out-of-order overlap after reconnect: rare; restore the exact
-            // cursor order over the merged superset.
-            merged = (existing + added).sorted { cursor($0) < cursor($1) }
+            messages = (messages + added).sorted { Self.messageCursor($0) < Self.messageCursor($1) }
         }
-        messages = merged
-        hasEarlierMessages = messageCoverage.earlierCursor != nil
     }
 
     func dismissActionError() {
@@ -2567,8 +2558,9 @@ final class ThreadDetailViewModel: ObservableObject {
         if !force, let last = lastChildRunRefresh, now - last < .seconds(1) { return }
         lastChildRunRefresh = now
         do {
-            childRunRecords = try await SQLiteChildRunStore(database: center.environment.database)
+            let records = try await SQLiteChildRunStore(database: center.environment.database)
                 .children(conversationID: conversationID)
+            if childRunRecords != records { childRunRecords = records }
         } catch {
             // Presentation projection only: keep the previous records rather
             // than blanking the cards on a transient read failure. The
@@ -2609,7 +2601,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.sessionRevision = snapshot.revision
                 let previousRunID = self.selectedRunID
                 let wasFollowingLatest = self.selectedRunID == self.runs.first?.id
-                self.taskTitle = snapshot.conversation.title
+                if self.taskTitle != snapshot.conversation.title { self.taskTitle = snapshot.conversation.title }
                 self.mergeMessagePage(ConversationMessagePage(
                     messages: snapshot.messages, earlierCursor: snapshot.earlierMessageCursor,
                     hasEarlier: snapshot.hasEarlierMessages
@@ -2633,14 +2625,14 @@ final class ThreadDetailViewModel: ObservableObject {
                 if self.events != selectedEvents {
                     self.events = selectedEvents
                 }
-                self.latestPlan = snapshot.latestPlan
-                self.taskChecklist = snapshot.taskChecklist
+                if self.latestPlan != snapshot.latestPlan { self.latestPlan = snapshot.latestPlan }
+                if self.taskChecklist != snapshot.taskChecklist { self.taskChecklist = snapshot.taskChecklist }
                 // Observe each pending card once; an old card cannot undo
                 // a subsequent explicit Plan selection.
                 self.reconcilePlanComposerMode()
-                self.activeGoal = snapshot.activeGoal
-                self.taskPolicy = snapshot.taskPolicy
-                self.pendingInputs = snapshot.pendingInputs
+                if self.activeGoal != snapshot.activeGoal { self.activeGoal = snapshot.activeGoal }
+                if self.taskPolicy != snapshot.taskPolicy { self.taskPolicy = snapshot.taskPolicy }
+                if self.pendingInputs != snapshot.pendingInputs { self.pendingInputs = snapshot.pendingInputs }
                 await self.refreshChildRuns()
                 self.startChildRunPollingIfNeeded()
                 let serviceBecameAvailable = self.selectedRunID.flatMap {

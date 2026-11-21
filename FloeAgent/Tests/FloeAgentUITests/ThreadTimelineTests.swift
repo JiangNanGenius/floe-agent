@@ -41,6 +41,53 @@ struct ThreadTimelineTests {
         }
     }
 
+    @MainActor @Test("Interactive burst and durable pages share one ordered transcript")
+    func interactiveBurstKeepsVisibleRowsAcrossReload() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = environment.conversationCenter
+        let conversation = try await center.createConversation(title: "Synthetic interactive burst")
+        func row(_ index: Int, owner: UUID) -> PersistedMessage {
+            .init(id: UUID(), conversationID: owner, role: "assistant",
+                  content: "Message \(index)", createdAt: Date(timeIntervalSince1970: Double(index)), parts: [])
+        }
+        for index in 0..<40 {
+            try await environment.conversationStore.appendMessage(row(index, owner: conversation.id))
+        }
+        let model = ThreadDetailViewModel(conversationID: conversation.id, center: center)
+        await model.load()
+        model.stopLiveUpdates()
+        let earlierIDs = model.timeline.map(\.id)
+        #expect(earlierIDs.count == 20)
+        #expect(model.hasEarlierMessages)
+
+        let burst = (40..<120).map { row($0, owner: conversation.id) }
+        for message in burst { try await environment.conversationStore.appendMessage(message) }
+        for message in burst.reversed() {
+            model.presentCommittedMessage(message)
+            model.presentCommittedMessage(message)
+        }
+        model.presentCommittedMessage(row(121, owner: UUID()))
+        let order = model.messages.map(\.id)
+        #expect(order.count == 100)
+        #expect(Array(order.suffix(burst.count)) == burst.map(\.id))
+        #expect(Array(model.timeline.prefix(earlierIDs.count).map(\.id)) == earlierIDs)
+
+        await model.load()
+        model.stopLiveUpdates()
+        #expect(model.messages.map(\.id) == order)
+        #expect(Set(model.timeline.map(\.id)).count == order.count)
+        // Pushed messages have identities but don't establish contiguous
+        // database coverage. Fill each bounded gap without dropping rows.
+        for _ in 0..<4 {
+            await model.loadEarlierMessages()
+            #expect(Set(order).isSubset(of: Set(model.messages.map(\.id))))
+        }
+        #expect(model.messages.count == 120)
+        #expect(Set(model.timeline.map(\.id)).count == 120)
+        #expect(!model.hasEarlierMessages)
+    }
+
     @Test("Native service runs never demand a model final reply; model and cross-owner runs still do")
     func nativeServiceRunHasNoMissingModelReply() throws {
         let conversation = UUID()

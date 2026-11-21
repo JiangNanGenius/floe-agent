@@ -201,3 +201,25 @@ The four-vCPU Debian runs used the same 192 small files on tmpfs, the guest disk
 | 虚拟盘写入与同步 / Guest disk write and sync | 0.656 → 0.640 s | 0.781 → 0.463 s | 0.349 → 0.409 s |
 | 挂载目录打开并读取 / Mounted open and read | 2.870 → 2.152 s | 1.414 → 1.424 s | 1.012 → 1.060 s |
 | 挂载目录写入与同步 / Mounted write and sync | 2.816 → 2.058 s | 1.757 → 1.428 s | 1.033 → 1.052 s |
+
+## 2026-11-22 AES-GCM 对照 / AES-GCM comparison
+
+基线为冻结的 1.8.68（389）。在同一台 M5 Pro 上，从同一份四 vCPU
+Debian ARM64 镜像启动基线和候选，按基线、候选、候选、基线顺序运行。
+客体使用 OpenSSL 的 AES-256-GCM，每路加密 2 MiB。每格为六次中位数。
+
+| 并发数 | 基线 | 候选 | 耗时降幅 |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.1965 s | 0.1302 s | 33.7% |
+| 2 | 0.2560 s | 0.2168 s | 15.3% |
+| 4 | 0.5429 s | 0.4667 s | 14.0% |
+
+密文和认证标签的摘要在 36 次样本中一致，并通过解密回读。80,000 组
+AES 和 PMULL 指令结果与原软件路径逐字节一致。iPhoneOS 对象确认生成了
+AES 和 PMULL 指令。客体可见指令、软件回退和解释器的无 JIT 运行方式
+继续沿用。此处测量覆盖客体加密计算，真实下载、装包总耗时和 iPad 真机
+吞吐需要独立测量。 [Arm Neon 内建函数参考](https://arm-software.github.io/acle/neon_intrinsics/advsimd.html)
+
+另测了小文件句柄记录复用。四个客机启动共 144 项内容校验通过，挂载的
+四进程读由 1.359 秒增至 1.563 秒，同步写由 1.342 秒增至 1.558 秒。
+候选保留原有的小文件句柄路径。

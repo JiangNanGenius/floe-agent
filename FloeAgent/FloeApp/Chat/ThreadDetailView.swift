@@ -122,6 +122,7 @@ struct ThreadDetailView: View {
     @State private var selectedAttachment: ChatAttachmentOpenRequest?
     @State private var showsReturnToLatest = false
     @State private var latestFollow = LatestMessageFollowState()
+    @State private var threadPosition = ScrollPosition(idType: String.self)
     @State private var isUserScrolling = false
     /// Viewport rect in global coordinates, measured from the thread scroll
     /// container. The earlier-activity row pages only when it actually
@@ -264,23 +265,29 @@ struct ThreadDetailView: View {
                 .padding(.horizontal)
                 TaskMacBridgeAvailability(conversationID: viewModel.conversationID, runID: viewModel.selectedRunID)
                 TaskRuntimePreparationBanner(runID: viewModel.selectedRunID)
-                if let status = viewModel.compactionStatus {
-                    HStack {
-                        if viewModel.isCompacting { ProgressView().controlSize(.small) }
-                        Text(status).font(.caption).foregroundStyle(.secondary)
-                        Spacer()
+                Group {
+                    if let status = viewModel.compactionStatus {
+                        HStack(spacing: 8) {
+                            if viewModel.isCompacting { ProgressView().controlSize(.small) }
+                            Text(status).font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal).padding(.vertical, 8)
+                        .accessibilityIdentifier("thread.compaction.status")
+                        .transition(.opacity)
                     }
-                    .padding(.horizontal).padding(.vertical, 8)
-                    .accessibilityIdentifier("thread.compaction.status")
-                    .transition(.opacity)
                 }
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
                 if let error = viewModel.actionError {
                     errorBanner(error)
                 }
-                if viewModel.canContinue {
-                    continuationBar
-                        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                Group {
+                    if viewModel.canContinue {
+                        continuationBar
+                            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
                 if let goal = viewModel.activeGoal {
                     goalStatusRow(goal)
                 }
@@ -327,8 +334,6 @@ struct ThreadDetailView: View {
                     }
                 }
             })
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
             .modifier(ThreadNavigationTitle(title: viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle, enabled: ownsNavigationTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { if !embedded { stateToolbar } }
@@ -397,7 +402,7 @@ struct ThreadDetailView: View {
                 consumeComposerInputIfReady()
             }
             .onReceive(NotificationCenter.default.publisher(for: .floeInteractiveMessageDidChange)) { notice in
-                if notice.object as? UUID == viewModel.conversationID { Task { await viewModel.refreshPresentedMessages() } }
+                if let message = notice.object as? PersistedMessage { viewModel.presentCommittedMessage(message) }
             }
             .onDisappear {
                 automaticRead.cancel()
@@ -785,10 +790,9 @@ struct ThreadDetailView: View {
     // MARK: - Thread content
 
     private var threadScroll: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
+        ZStack(alignment: .bottomTrailing) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
                     if viewModel.hasEarlierMessages {
                         Button("chat.thread_detail_view.load_earlier_messages", systemImage: "arrow.up.circle") {
                             Task { await viewModel.loadEarlierMessages() }
@@ -803,7 +807,6 @@ struct ThreadDetailView: View {
                     // "Completed" can never float above the final reply.
                     ForEach(viewModel.timeline) { item in
                         datedTimelineRow(item)
-                            .id(item.id)
                     }
 
                     #if canImport(AlarmKit)
@@ -840,96 +843,93 @@ struct ThreadDetailView: View {
                         ThreadUsageFooter(summary: usage)
                     }
 
-                        if !embedded && viewModel.events.isEmpty && viewModel.messages.isEmpty {
-                            ContentUnavailableView {
-                                Label("thread.empty", systemImage: "text.bubble")
-                            } description: {
-                                Text("thread.empty.hint")
-                            }
+                    if !embedded && viewModel.events.isEmpty && viewModel.messages.isEmpty {
+                        ContentUnavailableView {
+                            Label("thread.empty", systemImage: "text.bubble")
+                        } description: {
+                            Text("thread.empty.hint")
                         }
-
-                        Color.clear
-                            .frame(height: 1)
-                            .id("thread-latest-anchor")
                     }
-                    .padding()
                 }
-                .accessibilityIdentifier("thread.messages.viewport")
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                // Keep the bottom pinned in the layout pass. Repeated scrollTo
-                // calls during lazy-row measurement can target an estimated
-                // content height before the new rows have been laid out.
-                .defaultScrollAnchor(latestFollow.followsLatest && !isUserScrolling && !search.isActive ? .bottom : nil,
-                                     for: .sizeChanges)
-                .onScrollPhaseChange { old, phase in
-                    if phase == .interacting, old != .interacting {
-                        earlierActivityScrollDemand &+= 1
-                    }
-                    isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-                }
-                .onScrollGeometryChange(for: ThreadScrollMetrics.self) { geometry in
-                    ThreadScrollMetrics(offset: geometry.contentOffset.y,
-                        bottomDistance: geometry.contentSize.height + geometry.contentInsets.bottom
-                            - geometry.contentOffset.y - geometry.containerSize.height)
-                } action: { _, new in
-                    latestFollow.observe(offset: new.offset, bottomDistance: new.bottomDistance,
-                                         userScrolling: isUserScrolling)
-                    showsReturnToLatest = latestFollow.isAwayFromLatest && !latestFollow.followsLatest
-                }
-                .background(GeometryReader { geometry in
-                    Color.clear
-                        .onAppear { threadViewportFrame = geometry.frame(in: .global) }
-                        .onChange(of: geometry.frame(in: .global)) { _, new in
-                            threadViewportFrame = new
-                        }
-                })
-
-                if showsReturnToLatest {
-                    Button {
-                        latestFollow.returnToLatest()
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
-                            proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-                        }
-                        showsReturnToLatest = false
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 38, height: 38)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.circle)
-                    .padding(.trailing, 14)
-                    .padding(.bottom, 12)
-                    .accessibilityLabel("chat.thread_detail_view.jump_to_latest")
-                    .accessibilityHint("chat.thread_detail_view.scroll_to_the_latest_message_in")
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+                .scrollTargetLayout()
+                .padding()
             }
-            .onChange(of: viewModel.hasLoaded) { _, loaded in
-                guard loaded else { return }
-                latestFollow.returnToLatest()
-                if !search.isActive {
-                    proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
+            .accessibilityIdentifier("thread.messages.viewport")
+            .scrollPosition($threadPosition)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            // Keep the bottom pinned in the layout pass. Repeated scrollTo
+            // calls during lazy-row measurement can target an estimated
+            // content height before the new rows have been laid out.
+            .defaultScrollAnchor(latestFollow.followsLatest && !isUserScrolling && !search.isActive ? .bottom : nil,
+                                 for: .sizeChanges)
+            .onScrollPhaseChange { old, phase in
+                if phase == .interacting, old != .interacting {
+                    earlierActivityScrollDemand &+= 1
                 }
-                showsReturnToLatest = false
+                isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
             }
-            .onChange(of: scrollRequest) { _, request in
-                guard let request,
-                      let rowID = viewModel.timelineID(forMessageID: request.messageID) else {
-                    return
-                }
-                // The row may be inserted by the bounded search window in the
-                // same turn; one yield lets LazyVStack see the new data before
-                // asking ScrollViewReader to move to it.
-                Task { @MainActor in
-                    await Task.yield()
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        proxy.scrollTo(rowID, anchor: .center)
+            .onScrollGeometryChange(for: ThreadScrollMetrics.self) { geometry in
+                ThreadScrollMetrics(offset: geometry.contentOffset.y,
+                    bottomDistance: geometry.contentSize.height + geometry.contentInsets.bottom
+                        - geometry.contentOffset.y - geometry.containerSize.height)
+            } action: { old, new in
+                // Lazy layout recalculates estimated offsets while content
+                // arrives. Only changes in follow intent or proximity update
+                // the view; every geometry sample can still inform the policy.
+                var follow = latestFollow
+                follow.observe(previousOffset: old.offset, offset: new.offset,
+                               bottomDistance: new.bottomDistance, userScrolling: isUserScrolling)
+                if follow != latestFollow { latestFollow = follow }
+                let showReturn = follow.isAwayFromLatest && !follow.followsLatest
+                if showsReturnToLatest != showReturn { showsReturnToLatest = showReturn }
+            }
+            .background(GeometryReader { geometry in
+                Color.clear
+                    .onAppear { threadViewportFrame = geometry.frame(in: .global) }
+                    .onChange(of: geometry.frame(in: .global)) { _, new in
+                        threadViewportFrame = new
                     }
-                    showsReturnToLatest = true
-                }
-            }
+            })
 
+            if showsReturnToLatest {
+                Button {
+                    latestFollow.returnToLatest()
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
+                        threadPosition.scrollTo(edge: .bottom)
+                    }
+                    showsReturnToLatest = false
+                } label: {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.circle)
+                .padding(.trailing, 14)
+                .padding(.bottom, 12)
+                .accessibilityLabel("chat.thread_detail_view.jump_to_latest")
+                .accessibilityHint("chat.thread_detail_view.scroll_to_the_latest_message_in")
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .onChange(of: viewModel.hasLoaded) { _, loaded in
+            guard loaded else { return }
+            latestFollow.returnToLatest()
+            if !search.isActive {
+                threadPosition.scrollTo(edge: .bottom)
+            }
+            showsReturnToLatest = false
+        }
+        .onChange(of: scrollRequest, initial: false) { _, request in
+            guard let request,
+                  let rowID = viewModel.timelineID(forMessageID: request.messageID) else {
+                return
+            }
+            latestFollow.pauseFollowing()
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                threadPosition.scrollTo(id: rowID, anchor: .center)
+            }
+            showsReturnToLatest = true
         }
     }
 

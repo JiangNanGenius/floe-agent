@@ -308,14 +308,58 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         guard let record = await environment.environmentRegistry.record(id: pin.target.environmentID) else { return pin }
         if LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(record.runtimeGeneration),
            record.runtimeGeneration != pin.target.runtimeGeneration {
-            throw TaskExecutionAvailabilityError(message: copy(
-                "Linux 环境已重建，请重新选择运行位置。旧资料已保留。",
-                "Linux was rebuilt. Choose this task's location again. Previous data was kept."))
+            return try await resumeAfterResidentRebuild(pin, record: record)
         }
         guard record.effectiveExecutionBackend == .linuxVM, !record.requiresRebuild,
               record.pendingRuntimeResetID == nil, record.architecture == "arm64",
               record.runtimeGeneration != nil, record.runtimeGeneration != pin.target.runtimeGeneration else { return pin }
         return try await store.refreshResetLinuxBinding(pin, target: target(record))
+    }
+
+    private func resumeAfterResidentRebuild(_ pin: TaskExecutionBinding,
+                                            record: ContainerRecord) async throws -> TaskExecutionBinding {
+        let current = try target(record)
+        let retainedLocationRequired = TaskExecutionAvailabilityError(message: copy(
+            "Linux 环境已重建，请重新选择运行位置。旧资料已保留。",
+            "Linux was rebuilt. Choose this task's location again. Previous data was kept."))
+        guard Self.sameIdentity(pin.target, current),
+              record.state == .active, !record.requiresRebuild, record.pendingRuntimeResetID == nil,
+              let guests = environment.linuxGuestService else { throw retainedLocationRequired }
+
+        // This is the already-authorized location. Do not refresh the pin
+        // across a move, an unverified recovery, or any live execution.
+        let id = current.environmentID
+        guard await environment.fenceExecutionForMigration(id) else {
+            throw TaskExecutionAvailabilityError(message: copy(
+                "Linux 正在接续。已有命令结束后可继续。",
+                "Linux is reconnecting. Continue after the existing commands finish."))
+        }
+        do {
+            let next: TaskExecutionBinding
+            do {
+                let physical = try await guests.acquireResidentRecoveryGuard()
+                defer { physical.finish() }
+                guard let receipt = physical.receipt, receipt.preservedRelativePath != nil,
+                      receipt.runtimeGeneration == current.runtimeGeneration else { throw retainedLocationRequired }
+                try await Self.validateSavedTarget(current, registry: environment.environmentRegistry)
+                try Task.checkCancellation()
+                if let saved = try await store.binding(conversationID: pin.conversationID),
+                   saved.target == current {
+                    next = saved
+                } else {
+                    let notice = copy(
+                        "已接续此任务的 Linux 运行位置。工作文件与历史已保留，所需的软件可按需重新安装。",
+                        "This task resumed in its saved Linux location. Workspace files and history were kept. Reinstall software if needed.")
+                    next = try await store.acceptResidentRebuild(pin, target: current,
+                        committedRecoveryID: receipt.recoveryID, notice: notice)
+                }
+            }
+            await environment.releaseExecutionMigrationFence(id)
+            return next
+        } catch {
+            await environment.releaseExecutionMigrationFence(id)
+            throw error
+        }
     }
 
     private static func sameIdentity(_ first: TaskExecutionTarget, _ second: TaskExecutionTarget) -> Bool {

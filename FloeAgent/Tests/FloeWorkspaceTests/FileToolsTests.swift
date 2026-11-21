@@ -751,6 +751,59 @@ struct FileToolsTests {
         #expect(reapplied.summary.contains(" change=unchanged saved=true"))
     }
 
+    @Test("Git patch finds shifted exact context and preserves BOM and CRLF bytes")
+    func appliesGitPatchWithShiftedContext() async throws {
+        let fixture = try makeFixture()
+        let original = "\u{FEFF}new header\r\none\r\ntwo\r\nthree\r\n"
+        try fixture.write("sample.txt", original)
+        let patch = """
+        diff --git a/sample.txt b/sample.txt
+        index 1111111..2222222 100644
+        --- a/sample.txt
+        +++ b/sample.txt
+        @@ -1,3 +1,3 @@
+         one
+        -two
+        +TWO
+         three
+        """
+        let tool = WorkspaceApplyPatchTool(environment: fixture.environment)
+        let result = try await tool.execute(.init(path: "sample.txt", patch: patch,
+            expectedSHA256: WorkspaceFileService.sha256Hex(of: Data(original.utf8))), context: fixture.context)
+        #expect(result.summary.contains("change=modified saved=true"))
+        #expect(try Data(fixture.read("sample.txt").utf8) == Data("\u{FEFF}new header\r\none\r\nTWO\r\nthree\r\n".utf8))
+    }
+
+    @Test("Unified patch inserts into an empty file and honors a missing final newline")
+    func patchHandlesExactEndOfFile() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("sample.txt", "")
+        let service = try fixture.environment.makeService()
+        try service.applyPatch("sample.txt", patch: "@@ -0,0 +1 @@\n+new\n")
+        #expect(try fixture.read("sample.txt") == "new\n")
+        let patch = "@@ -1 +1 @@\n-new\n+NEW\n" + #"\ No newline at end of file"#
+        try service.applyPatch("sample.txt", patch: patch)
+        #expect(try fixture.read("sample.txt") == "NEW")
+    }
+
+    @Test("A shifted ambiguous hunk and a stale revision both leave the file intact")
+    func patchRefusesAmbiguityAndStaleRevision() async throws {
+        let fixture = try makeFixture()
+        let original = "other\nmatch\nmatch\n"
+        try fixture.write("sample.txt", original)
+        let tool = WorkspaceApplyPatchTool(environment: fixture.environment)
+        let ambiguous = "@@ -1 +1 @@\n-match\n+replacement\n"
+        await #expect(throws: (any Error).self) {
+            _ = try await tool.execute(.init(path: "sample.txt", patch: ambiguous), context: fixture.context)
+        }
+        let exact = "@@ -2 +2 @@\n-match\n+replacement\n"
+        await #expect(throws: (any Error).self) {
+            _ = try await tool.execute(.init(path: "sample.txt", patch: exact,
+                expectedSHA256: String(repeating: "0", count: 64)), context: fixture.context)
+        }
+        #expect(try fixture.read("sample.txt") == original)
+    }
+
     @Test("applyPatch failure leaves the file untouched")
     func applyPatchAtomicity() async throws {
         let fixture = try makeFixture()
@@ -817,6 +870,12 @@ struct FileToolsTests {
         @@ -1 +1 @@
         -x
         +y
+        diff --git a/b.txt b/b.txt
+        --- a/b.txt
+        +++ b/b.txt
+        @@ -1 +1 @@
+        -b
+        +c
         """
         let tool = WorkspaceApplyPatchTool(environment: fixture.environment)
         do {

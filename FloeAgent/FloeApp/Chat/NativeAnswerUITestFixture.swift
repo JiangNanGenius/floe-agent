@@ -27,6 +27,11 @@ import FloeAgentRuntime
         let arguments=ProcessInfo.processInfo.arguments
         guard arguments.contains("-ui-testing"),let index=arguments.firstIndex(of:argument),arguments.indices.contains(index+1) else { return }
         let mode=arguments[index+1]
+        if mode == "message-burst" {
+            do { try await prepareBurst(environment: environment, router: router) }
+            catch { FloeLogger(category: .app).error("messageBurstFixtureFailed errorType=\(String(describing: type(of: error)))") }
+            return
+        }
         guard ["line","histogram","candlestick","treemap","sankey","gantt","small-diff","large-diff","large-text","plan-ready","plan-accepted"].contains(mode) else { return }
         do {
             if mode == "plan-ready" || mode == "plan-accepted" {
@@ -93,6 +98,44 @@ import FloeAgentRuntime
         }
         #endif
     }
+    #if targetEnvironment(simulator)
+    private static func prepareBurst(environment: AppEnvironment, router: AppRouter) async throws {
+        let center = environment.conversationCenter
+        let conversation = try await center.createConversation(title: "QA Message Burst Fixture")
+        let store = environment.conversationStore
+        let first = Date()
+        func message(_ index: Int, text: String) -> PersistedMessage {
+            PersistedMessage(id: UUID(), conversationID: conversation.id,
+                role: index.isMultiple(of: 4) ? "user" : "assistant", content: text,
+                createdAt: first.addingTimeInterval(Double(index) / 100))
+        }
+        for index in 0..<24 {
+            try await store.appendMessage(message(index, text: "QA history marker \(index)"))
+        }
+        await center.reload()
+        router.openConversation(conversation.id)
+        Task { @MainActor in
+            do {
+                // The first window is visible before the repeatable burst.
+                try await Task.sleep(for: .seconds(5))
+                for packet in 0..<8 {
+                    for index in 0..<12 {
+                        let ordinal = packet * 12 + index
+                        let body = ordinal.isMultiple(of: 4)
+                            ? String(repeating: "\n\nQA varying row height", count: 4) : ""
+                        let row = message(24 + ordinal, text: "QA burst marker \(ordinal)" + body)
+                        try await store.appendMessage(row)
+                        NotificationCenter.default.post(name: .floeInteractiveMessageDidChange, object: row)
+                    }
+                    try await Task.sleep(for: .milliseconds(120))
+                }
+            } catch {
+                FloeLogger(category: .app).error("messageBurstFixtureWriteFailed errorType=\(String(describing: type(of: error)))")
+            }
+        }
+    }
+    #endif
+
     /// Both modes use the production plan store and message projection.
     /// Confirmation only: no run, provider request, guest or paid service.
     private static func preparePlan(mode:String,environment:AppEnvironment,router:AppRouter) async throws {

@@ -204,7 +204,7 @@ private struct ChatPresentTool: AgentTool {
         let store = environment.conversationStore
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let requestDigest = InteractiveDigest.sha256(try encoder.encode(args.parts))
-        if let existing = try await store.messages(conversationID: conversationID).first(where: { $0.id == id }) {
+        if let existing = try await store.message(id: id, conversationID: conversationID) {
             guard existing.parts.first?.metadata["requestDigest"] == requestDigest else { throw InteractiveError.contentChanged }
             return try StudioToolOutput.make(["messageID": existing.id.uuidString, "status": "presented"])
         }
@@ -222,9 +222,10 @@ private struct ChatPresentTool: AgentTool {
             }
         }
         if !parts.isEmpty { parts[0].metadata["requestDigest"] = requestDigest }
-        try await store.appendMessage(.init(id: id, conversationID: conversationID, role: "assistant",
-            content: fallback.joined(separator: "\n\n"), createdAt: Date(), parts: parts, runID: context.runID))
-        NotificationCenter.default.post(name: .floeInteractiveMessageDidChange, object: conversationID)
+        let message = PersistedMessage(id: id, conversationID: conversationID, role: "assistant",
+            content: fallback.joined(separator: "\n\n"), createdAt: Date(), parts: parts, runID: context.runID)
+        try await store.appendMessage(message)
+        NotificationCenter.default.post(name: .floeInteractiveMessageDidChange, object: message)
         return try StudioToolOutput.make(["messageID": id.uuidString, "status": "presented"])
     }
 }

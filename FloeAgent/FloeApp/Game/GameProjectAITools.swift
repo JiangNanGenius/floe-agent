@@ -23,7 +23,7 @@ final class GameProjectToolService {
     static let names: Set<String> = [
         "game.list", "game.inspect", "game.read", "game.edit", "game.history",
         "game.rollback", "game.create", "game.selection", "game.run", "game.input",
-        "game.build", "game.instrument", "game.saveToSpace"
+        "game.build", "game.instrument", "game.saveToSpace", "game.runtime"
     ]
 
     let environment: AppEnvironment
@@ -1119,10 +1119,40 @@ private struct GameSelectionTool: AgentTool {
     }
 }
 
+private struct GameRuntimeTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let engine: GameEngineID
+    }
+
+    static let name = "game.runtime"
+    static let toolDescription = "Prepare the reviewed runtime for an explicit game engine before testing. This works on an unfinished or empty project. Use the engine ID from game.selection, the current project, or the user's choice. Returns after verifying the installed package. An imported TyranoScript Web export supplies its own runtime. After preparing the engine, finish and save the project before calling game.run."
+    static let parametersJSON = #"{"type":"object","properties":{"engine":{"type":"string","description":"Engine ID, for example rpgMakerMV or renpy"}},"required":["engine"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.networkAccess, .writesFiles]
+    static let isSideEffecting = true
+    let service: GameProjectToolService
+
+    func validate(_ args: Arguments) throws {}
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard context.scope == .local else {
+            throw FloeError.validationFailed("Game runtimes are prepared on this device")
+        }
+        _ = try await service.conversation(context)
+        if args.engine == .tyranoScript {
+            return try gameToolOutput(["engine": args.engine.rawValue, "status": "runtimeInImportedExport"])
+        }
+        let runtime = try await service.registry.runtimeResources.prepare(for: args.engine)
+        try context.cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        guard runtime.isReady else { throw GameRuntimeResourceError.corruptInstallation(runtime.packID) }
+        return try gameToolOutput(["engine": args.engine.rawValue, "status": "ready", "version": runtime.version])
+    }
+}
+
 private struct GameRunTool: AgentTool {
     typealias Arguments = GameRunArguments
     static let name = "game.run"
-    static let toolDescription = "Run, stop, save, logs, or screenshot the selected game's actual owned run. Web uses the existing GameProjectWebRunPresentation/player; legacy XP/VX/VX Ace uses the existing RGSSGuestPlaySession. Stop is serialized per request; an unconfirmed stop is retained for retry. screenshot publishes one bounded verified image artifact for the model and historical UI; a digest alone is not visual feedback. logs use the real Web console capture or bounded RGSS log reader. saveAndStop always stops the owned run and reports the explicit save status; it never claims a save that was unsupported or failed."
+    static let toolDescription = "Run, stop, save, logs, or screenshot the selected game's actual owned run. A required available runtime can be prepared during Run. Use game.runtime with the intended engine before the game has a runnable entry. Web uses the existing GameProjectWebRunPresentation/player; legacy XP/VX/VX Ace uses the existing RGSSGuestPlaySession. Stop is serialized per request; an unconfirmed stop is retained for retry. screenshot publishes one bounded verified image artifact for the model and historical UI; a digest alone is not visual feedback. logs use the real Web console capture or bounded RGSS log reader. saveAndStop always stops the owned run and reports the explicit save status; it never claims a save that was unsupported or failed."
     static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["run","stop","logs","screenshot","save","saveAndStop"]},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":65536}},"required":["projectID","action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode]
     static let isSideEffecting = true
@@ -1228,6 +1258,7 @@ func registerGameAgentTools(environment: AppEnvironment, registry: ToolRunnerReg
     ToolCatalog.register(GameCreateTool.self); registry.register(GameCreateTool(service: service))
     ToolCatalog.register(GameSelectionTool.self); registry.register(GameSelectionTool(service: service))
     ToolCatalog.register(GameRunTool.self); registry.register(GameRunTool(service: service))
+    ToolCatalog.register(GameRuntimeTool.self); registry.register(GameRuntimeTool(service: service))
     ToolCatalog.register(GameInputTool.self); registry.register(GameInputTool(service: service))
     ToolCatalog.register(GameBuildTool.self); registry.register(GameBuildTool(service: service))
     ToolCatalog.register(GameInstrumentTool.self); registry.register(GameInstrumentTool(service: service))

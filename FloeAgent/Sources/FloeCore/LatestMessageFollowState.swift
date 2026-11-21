@@ -5,20 +5,20 @@ import Foundation
 public struct LatestMessageFollowState: Sendable, Equatable {
     public private(set) var followsLatest = true
     public private(set) var isAwayFromLatest = false
-    private var previousOffset: Double?
     public init() {}
 
     public mutating func returnToLatest() { followsLatest = true }
+    public mutating func pauseFollowing() { followsLatest = false }
 
-    public mutating func observe(offset: Double, bottomDistance: Double, userScrolling: Bool) {
+    public mutating func observe(previousOffset: Double, offset: Double,
+                                 bottomDistance: Double, userScrolling: Bool) {
         isAwayFromLatest = bottomDistance > 48
         if userScrolling {
             if bottomDistance <= 48 {
                 followsLatest = true
-            } else if let previousOffset, offset < previousOffset - 0.5 {
+            } else if offset < previousOffset - 0.5 {
                 followsLatest = false
             }
         }
-        previousOffset = offset
     }
 }

@@ -81,9 +81,9 @@ public struct TaskExecutionBindingStore: Sendable {
         }
     }
 
-    /// Explicit native confirmation for the same environment after a retaining
-    /// rebuild. The caller holds the current native generation guard and the
-    /// existing idle migration fence. This entry is not exposed as a model tool.
+    /// Native acceptance for the same environment after a retaining rebuild.
+    /// The caller holds the current native generation guard and idle migration
+    /// fence. Both confirmed and verified same-location resumption use this CAS.
     /// Exact old pins/checkpoints and the visible notice commit atomically.
     public func acceptResidentRebuild(_ expected: TaskExecutionBinding, target: TaskExecutionTarget,
                                       committedRecoveryID: UUID, notice: String) async throws -> TaskExecutionBinding {

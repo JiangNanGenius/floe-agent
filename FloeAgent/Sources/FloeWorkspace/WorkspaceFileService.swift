@@ -603,7 +603,7 @@ public struct WorkspaceFileService: Sendable {
     }
 
     func applyPatchWithChange(
-        _ path: String, patch: String, cancellation: CancellationToken?
+        _ path: String, patch: String, expectedSHA256: String? = nil, cancellation: CancellationToken?
     ) throws -> (outcome: PatchOutcome, changed: Bool, path: String?) {
         let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
         mutationLock.lock(); defer { mutationLock.unlock() }
@@ -622,52 +622,27 @@ public struct WorkspaceFileService: Sendable {
 
         let hunks = try Self.parseUnifiedDiff(patch)
         let originalData = try Data(floeContentsOf: url)
+        let digest = Self.sha256Hex(of: originalData)
+        try WorkspaceTextEdit.check(expectedSHA256, actual: digest)
         let original = try WorkspaceTextEdit.decode(originalData)
-        var lines = original.components(separatedBy: "\n")
-
-        var applied = 0
-        var added = 0
-        var removed = 0
-        // Adjust subsequent hunk positions by the net growth of earlier ones.
-        var lineDelta = 0
-        for hunk in hunks {
+        let patched = try Self.apply(hunks, to: original, cancellation: cancellation)
+        let changed = !originalData.elementsEqual(patched.utf8)
+        var savedDigest = digest
+        if changed {
             try cancellation?.throwIfCancelled()
-            let (zeroBased, startUnderflow) = hunk.oldStart.subtractingReportingOverflow(1)
-            let (startIndex, startOverflow) = zeroBased.addingReportingOverflow(lineDelta)
-            let (endIndex, endOverflow) = startIndex.addingReportingOverflow(hunk.oldLines.count)
-            guard !startUnderflow, !startOverflow, !endOverflow,
-                  startIndex >= 0, endIndex <= lines.count else {
-                throw WorkspaceToolError.invalidPatch(
-                    "hunk @@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@ is out of range"
-                )
+            try Task.checkCancellation()
+            try assertNotFrozen(url)
+            let current = try Data(floeContentsOf: url)
+            guard current == originalData else {
+                throw WorkspaceToolError.conflict(expected: digest, actual: Self.sha256Hex(of: current))
             }
-            let window = Array(lines[startIndex..<endIndex])
-            guard window == hunk.oldLines else {
-                throw WorkspaceToolError.invalidPatch(
-                    "context mismatch near line \(hunk.oldStart); file contents do not match the patch"
-                )
-            }
-            lines.replaceSubrange(startIndex..<endIndex, with: hunk.newLines)
-            let delta = hunk.newLines.count - hunk.oldLines.count
-            let (nextDelta, deltaOverflow) = lineDelta.addingReportingOverflow(delta)
-            guard !deltaOverflow else {
-                throw WorkspaceToolError.invalidPatch("hunk line delta overflow")
-            }
-            lineDelta = nextDelta
-            applied += 1
-            added += hunk.addedCount
-            removed += hunk.removedCount
+            savedDigest = try performWrite(url, path: path, content: patched).sha256
         }
-
-        let patched = lines.joined(separator: "\n")
-        let outcome = try performWrite(url, path: path, content: patched)
-        let patchOutcome = PatchOutcome(
-            hunksApplied: applied,
-            linesAdded: added,
-            linesRemoved: removed,
-            sha256: outcome.sha256
-        )
-        return (patchOutcome, !originalData.elementsEqual(patched.utf8), receiptPath(path, resolved: url))
+        let outcome = PatchOutcome(hunksApplied: hunks.count,
+            linesAdded: hunks.reduce(0) { $0 + $1.addedCount },
+            linesRemoved: hunks.reduce(0) { $0 + $1.removedCount },
+            sha256: savedDigest)
+        return (outcome, changed, receiptPath(path, resolved: url))
     }
 
     // MARK: - Move / Delete
@@ -1076,132 +1051,217 @@ public struct WorkspaceFileService: Sendable {
         var removedCount: Int
         /// Raw body lines for re-emission (diff generation only).
         var body: [String]
+        var oldNoNewline = false
+        var newNoNewline = false
     }
 
-    /// Parses a unified diff into hunks for one file. Multi-file patches
-    /// (more than one `--- `/`+++ ` pair, or `diff --git` headers) throw
-    /// `.invalidPatch`.
+    private struct PatchLine {
+        var text: String
+        var ending: String
+    }
+
+    /// Split at LF bytes so CRLF is handled independently of Swift's
+    /// grapheme segmentation. The final separator never creates a fake row.
+    private static func patchLines(_ text: String) -> [PatchLine] {
+        guard !text.isEmpty else { return [] }
+        let pieces = text.utf8.split(separator: 10, omittingEmptySubsequences: false)
+        let trailingLF = text.utf8.last == 10
+        return pieces.indices.dropLast(trailingLF ? 1 : 0).map { index in
+            let bytes = pieces[index]
+            let terminated = index < pieces.count - 1
+            let crlf = terminated && bytes.last == 13
+            let content = crlf ? bytes.dropLast() : bytes
+            return PatchLine(text: String(decoding: content, as: UTF8.self),
+                ending: crlf ? "\r\n" : (terminated ? "\n" : ""))
+        }
+    }
+
+    private static func apply(_ hunks: [DiffHunk], to original: String,
+                              cancellation: CancellationToken?) throws -> String {
+        let bom = "\u{FEFF}"
+        let hasBOM = original.hasPrefix(bom)
+        let source = patchLines(hasBOM ? String(original.dropFirst()) : original)
+        let defaultEnding = source.first { !$0.ending.isEmpty }?.ending ?? "\n"
+        var result = [PatchLine]()
+        result.reserveCapacity(source.count)
+        var cursor = 0
+        var declaredEnd = 0
+        var offset = 0
+        for hunk in hunks {
+            try cancellation?.throwIfCancelled()
+            try Task.checkCancellation()
+            let anchor = hunk.oldCount == 0 ? hunk.oldStart : hunk.oldStart - 1
+            let (end, endOverflow) = anchor.addingReportingOverflow(hunk.oldCount)
+            let (expected, positionOverflow) = anchor.addingReportingOverflow(offset)
+            guard !endOverflow, !positionOverflow, anchor >= declaredEnd else {
+                throw WorkspaceToolError.invalidPatch("hunks overlap, are out of order, or have invalid line coordinates")
+            }
+            declaredEnd = end
+            let lastStart = source.count - hunk.oldCount
+            func matches(at index: Int) -> Bool {
+                guard index >= cursor, index <= lastStart else { return false }
+                if hunk.oldNoNewline {
+                    guard index == lastStart, source.last?.ending == "" else { return false }
+                }
+                return hunk.oldLines.enumerated().allSatisfy { position, expected in
+                    let actual = source[index + position].text
+                    let text = index + position == 0 && hasBOM && expected.hasPrefix(bom)
+                        ? String(expected.dropFirst()) : expected
+                    return actual.utf8.elementsEqual(text.utf8)
+                }
+            }
+            let position: Int
+            if matches(at: expected) {
+                position = expected
+            } else {
+                guard hunk.oldCount > 0, cursor <= lastStart else {
+                    throw WorkspaceToolError.invalidPatch("cannot locate hunk near line \(hunk.oldStart)")
+                }
+                var found: Int?
+                for index in cursor...lastStart {
+                    if index.isMultiple(of: 1_024) {
+                        try cancellation?.throwIfCancelled()
+                        try Task.checkCancellation()
+                    }
+                    guard matches(at: index) else { continue }
+                    guard found == nil else {
+                        throw WorkspaceToolError.invalidPatch("ambiguous hunk near line \(hunk.oldStart); include more unchanged context")
+                    }
+                    found = index
+                }
+                guard let found else {
+                    throw WorkspaceToolError.invalidPatch("context mismatch near line \(hunk.oldStart); read the current file and regenerate the hunk")
+                }
+                position = found
+            }
+            offset = position - anchor
+            result.append(contentsOf: source[cursor..<position])
+            let ending = source.dropFirst(position).first?.ending
+            let preferredEnding = ending.flatMap { $0.isEmpty ? nil : $0 } ?? defaultEnding
+            var oldIndex = position
+            for row in hunk.body {
+                switch row.first {
+                case " ":
+                    result.append(source[oldIndex])
+                    oldIndex += 1
+                case "-":
+                    oldIndex += 1
+                case "+":
+                    var text = String(row.dropFirst())
+                    if result.isEmpty && hasBOM && text.hasPrefix(bom) { text.removeFirst() }
+                    result.append(PatchLine(text: text, ending: preferredEnding))
+                default:
+                    break
+                }
+            }
+            if hunk.newNoNewline {
+                guard oldIndex == source.count, let index = result.indices.last, hunk.newCount > 0 else {
+                    throw WorkspaceToolError.invalidPatch("no-newline marker must describe the last line")
+                }
+                result[index].ending = ""
+            }
+            cursor = oldIndex
+        }
+        result.append(contentsOf: source[cursor...])
+        // An insertion at EOF creates a new line boundary for the old last line.
+        for index in result.indices.dropLast() where result[index].ending.isEmpty {
+            result[index].ending = defaultEnding
+        }
+        return (hasBOM ? bom : "") + result.map { $0.text + $0.ending }.joined()
+    }
+
+    /// Accept standard diff -u and one complete git diff. Paths inside the
+    /// envelope are display metadata. The separately authorized path is the
+    /// sole destination, and file additions, deletions and renames are excluded.
     static func parseUnifiedDiff(_ patch: String) throws -> [DiffHunk] {
-        let lines = patch.components(separatedBy: "\n")
+        var lines = patchLines(patch).map(\.text)
+        while lines.last == "" { lines.removeLast() }
+        while lines.first == "" { lines.removeFirst() }
+        if let opening = lines.first, ["```diff", "```patch", "```"].contains(opening), lines.last == "```", lines.count > 2 {
+            lines.removeLast()
+            lines.removeFirst()
+        }
         var hunks: [DiffHunk] = []
         var index = 0
-        var sawFileHeader = 0
-
+        var sawFileHeader = false
+        var sawGitHeader = false
         while index < lines.count {
             let line = lines[index]
-            if line.hasPrefix("diff --git") {
-                throw WorkspaceToolError.invalidPatch(
-                    "multi-file patches are not supported; apply one file per call"
-                )
-            }
-            if line.hasPrefix("--- ") {
-                sawFileHeader += 1
-                if sawFileHeader > 1 {
-                    throw WorkspaceToolError.invalidPatch(
-                        "multi-file patches are not supported; apply one file per call"
-                    )
+            if line.hasPrefix("diff --git ") {
+                guard !sawGitHeader, !sawFileHeader, hunks.isEmpty else {
+                    throw WorkspaceToolError.invalidPatch("apply one file per call")
                 }
+                sawGitHeader = true
+            } else if line.hasPrefix("--- ") {
+                guard !sawFileHeader, hunks.isEmpty, lines.indices.contains(index + 1),
+                      lines[index + 1].hasPrefix("+++ ") else {
+                    throw WorkspaceToolError.invalidPatch("expected one old/new file header pair")
+                }
+                guard !line.hasPrefix("--- /dev/null"), !lines[index + 1].hasPrefix("+++ /dev/null") else {
+                    throw WorkspaceToolError.invalidPatch("use a file creation or deletion tool for this patch")
+                }
+                sawFileHeader = true
                 index += 1
-                if index < lines.count, lines[index].hasPrefix("+++ ") {
-                    index += 1
-                }
+            } else if line.hasPrefix("@@") {
+                hunks.append(try parseHunk(lines, index: &index))
                 continue
-            }
-            if line.hasPrefix("@@") {
-                let (hunk, consumed) = try parseHunk(Array(lines[index...]))
-                hunks.append(hunk)
-                index += consumed
-                continue
+            } else if line.hasPrefix("+") || line.hasPrefix("-") || line.hasPrefix("\\")
+                        || line.hasPrefix("rename ") || line.hasPrefix("copy ")
+                        || line.hasPrefix("new file mode") || line.hasPrefix("deleted file mode") {
+                throw WorkspaceToolError.invalidPatch("unexpected patch content outside a hunk")
             }
             index += 1
         }
         guard !hunks.isEmpty else {
-            throw WorkspaceToolError.invalidPatch("no hunks found")
+            throw WorkspaceToolError.invalidPatch("no unified diff hunks found")
         }
         return hunks
     }
 
-    private static func parseHunk(_ lines: [String]) throws -> (DiffHunk, Int) {
-        guard let header = lines.first else {
-            throw WorkspaceToolError.invalidPatch("truncated hunk")
-        }
-        // @@ -oldStart,oldCount +newStart,newCount @@
-        let pattern = #"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(
-                  in: header, range: NSRange(header.startIndex..., in: header)
-              ),
-              let oldStartRange = Range(match.range(at: 1), in: header),
-              let newStartRange = Range(match.range(at: 3), in: header),
-              let oldStart = Int(header[oldStartRange]),
-              let newStart = Int(header[newStartRange])
-        else {
-            throw WorkspaceToolError.invalidPatch("malformed hunk header: \(header)")
-        }
-        let oldCount = match.range(at: 2).location != NSNotFound
-            ? Range(match.range(at: 2), in: header).flatMap { Int(header[$0]) } ?? 1
-            : 1
-        let newCount = match.range(at: 4).location != NSNotFound
-            ? Range(match.range(at: 4), in: header).flatMap { Int(header[$0]) } ?? 1
-            : 1
+    private static let patchHeader = try! NSRegularExpression(
+        pattern: #"^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@"#)
 
-        var oldLines: [String] = []
-        var newLines: [String] = []
-        var added = 0
-        var removed = 0
-        var consumed = 1
-        var seenOld = 0
-        var seenNew = 0
-        var bodyIndex = 1
-        while bodyIndex < lines.count, seenOld < oldCount || seenNew < newCount {
-            let line = lines[bodyIndex]
-            if line.hasPrefix(#"\ "#) {
-                // "\ No newline at end of file" marker: skip.
-                bodyIndex += 1
-                consumed += 1
+    private static func parseHunk(_ lines: [String], index: inout Int) throws -> DiffHunk {
+        let header = lines[index]
+        guard let match = patchHeader.firstMatch(in: header, range: NSRange(header.startIndex..., in: header)) else {
+            throw WorkspaceToolError.invalidPatch("expected a unified diff hunk header")
+        }
+        func value(_ capture: Int, default fallback: Int? = nil) -> Int? {
+            let range = match.range(at: capture)
+            guard range.location != NSNotFound else { return fallback }
+            return Range(range, in: header).flatMap { Int(header[$0]) }
+        }
+        guard let oldStart = value(1), let oldCount = value(2, default: 1),
+              let newStart = value(3), let newCount = value(4, default: 1),
+              (oldCount == 0 || oldStart > 0), (newCount == 0 || newStart > 0),
+              oldCount > 0 || newCount > 0 else {
+            throw WorkspaceToolError.invalidPatch("invalid hunk coordinates")
+        }
+        var hunk = DiffHunk(oldStart: oldStart, oldCount: oldCount, newStart: newStart,
+            newCount: newCount, oldLines: [], newLines: [], addedCount: 0, removedCount: 0, body: [])
+        index += 1
+        while index < lines.count {
+            let row = lines[index]
+            if row == #"\ No newline at end of file"#, let last = hunk.body.last?.first {
+                if last != "+" { hunk.oldNoNewline = true }
+                if last != "-" { hunk.newNoNewline = true }
+                index += 1
                 continue
             }
-            guard let marker = line.first, marker == " " || marker == "-" || marker == "+" else {
-                break
-            }
-            let content = String(line.dropFirst())
-            switch marker {
-            case " ":
-                oldLines.append(content)
-                newLines.append(content)
-                seenOld += 1
-                seenNew += 1
-            case "-":
-                oldLines.append(content)
-                removed += 1
-                seenOld += 1
-            default: // "+"
-                newLines.append(content)
-                added += 1
-                seenNew += 1
-            }
-            bodyIndex += 1
-            consumed += 1
+            if hunk.oldLines.count == oldCount && hunk.newLines.count == newCount { return hunk }
+            guard let marker = row.first, marker == " " || marker == "-" || marker == "+" else { break }
+            let text = String(row.dropFirst())
+            if marker != "+" { hunk.oldLines.append(text) }
+            if marker != "-" { hunk.newLines.append(text) }
+            if marker == "-" { hunk.removedCount += 1 }
+            if marker == "+" { hunk.addedCount += 1 }
+            hunk.body.append(row)
+            index += 1
         }
-        guard seenOld == oldCount, seenNew == newCount else {
-            throw WorkspaceToolError.invalidPatch(
-                "hunk truncated: expected -\(oldCount)/+\(newCount) lines, saw -\(seenOld)/+\(seenNew)"
-            )
+        guard hunk.oldLines.count == oldCount && hunk.newLines.count == newCount else {
+            throw WorkspaceToolError.invalidPatch("hunk counts -\(oldCount)/+\(newCount) do not match its body")
         }
-        return (
-            DiffHunk(
-                oldStart: oldStart,
-                oldCount: oldCount,
-                newStart: newStart,
-                newCount: newCount,
-                oldLines: oldLines,
-                newLines: newLines,
-                addedCount: added,
-                removedCount: removed,
-                body: []
-            ),
-            consumed
-        )
+        return hunk
     }
 
     /// Myers-free diff: computes hunks by longest-common-subsequence over

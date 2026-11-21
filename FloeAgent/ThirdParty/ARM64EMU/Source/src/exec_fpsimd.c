@@ -8,7 +8,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <fenv.h>
-#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+#if defined(__aarch64__) && (defined(__ARM_FEATURE_SHA2) || defined(__ARM_FEATURE_AES))
 #include <arm_neon.h>
 #endif
 
@@ -3536,6 +3536,7 @@ static void crypto_sha2(CPU *c, u32 insn) {
     }
 }
 
+#if !defined(__aarch64__) || !defined(__ARM_FEATURE_AES)
 static const u8 aes_sbox[256] = {
   0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
   0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -3604,10 +3605,23 @@ static void aes_mixcols(const V128 *in, V128 *out, int inv) {
         }
     }
 }
+#endif
 
 /* Cryptographic AES: AESE(4) AESD(5) AESMC(6) AESIMC(7). */
 static void crypto_aes(CPU *c, u32 insn) {
     unsigned op = BITS(16, 12), Rn = BITS(9, 5), Rd = BITS(4, 0);
+#if defined(__aarch64__) && defined(__ARM_FEATURE_AES)
+    const uint8x16_t input = vld1q_u8(c->v[Rn].b);
+    uint8x16_t result;
+    switch (op) {
+        case 4: result = vaeseq_u8(vld1q_u8(c->v[Rd].b), input); break;
+        case 5: result = vaesdq_u8(vld1q_u8(c->v[Rd].b), input); break;
+        case 6: result = vaesmcq_u8(input); break;
+        case 7: result = vaesimcq_u8(input); break;
+        default: fpsimd_undef(c, insn); return;
+    }
+    vst1q_u8(c->v[Rd].b, result);
+#else
     V128 in = c->v[Rn], r;
     r.d[0] = r.d[1] = 0;
     switch (op) {
@@ -3623,14 +3637,21 @@ static void crypto_aes(CPU *c, u32 insn) {
         case 7: aes_mixcols(&in, &r, 1); c->v[Rd] = r; return;   /* AESIMC */
         default: fpsimd_undef(c, insn); return;
     }
+#endif
 }
 
 /* Carryless (polynomial, GF(2)) multiplies for PMULL/PMULL2. */
 static void pmull64(u64 a, u64 b, u64 *lo, u64 *hi) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_AES)
+    const uint64x2_t result = vreinterpretq_u64_p128(vmull_p64(a, b));
+    *lo = vgetq_lane_u64(result, 0);
+    *hi = vgetq_lane_u64(result, 1);
+#else
     u64 rl = 0, rh = 0;
     for (int i = 0; i < 64; i++)
         if ((a >> i) & 1) { rl ^= b << i; if (i) rh ^= b >> (64 - i); }
     *lo = rl; *hi = rh;
+#endif
 }
 static u16 pmull8(u8 a, u8 b) {
     u16 r = 0;

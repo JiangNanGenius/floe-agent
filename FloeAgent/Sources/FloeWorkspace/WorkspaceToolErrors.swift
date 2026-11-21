@@ -76,6 +76,8 @@ public extension WorkspaceToolError {
             "Use workspace.listDirectory on the nearest existing parent inside the authorized workspace, or workspace.searchFiles, to locate the current path before retrying."
         case .conflict:
             "Read the current file with workspace.readFile and recompute the edit using its current revision. Do not retry with the stale revision or overwrite concurrent changes."
+        case .invalidPatch:
+            "Read the current file with workspace.readFile, then build one unified diff with exact context or use workspace.replaceText for a uniquely identifiable range."
         case .alreadyExists:
             "Read the existing file and verify its contents before choosing an edit or a different destination."
         default:

@@ -257,23 +257,26 @@ public struct WorkspaceApplyPatchTool: AgentTool {
         /// Standard unified diff (`diff -u` subset, single file).
         public var patch: String
         public var scope: String?
+        public var expectedSHA256: String?
 
-        public init(path: String, patch: String, scope: String? = nil) {
+        public init(path: String, patch: String, scope: String? = nil, expectedSHA256: String? = nil) {
             self.path = path
             self.patch = patch
             self.scope = scope
+            self.expectedSHA256 = expectedSHA256
         }
     }
 
     public static let name = "workspace.applyPatch"
     public static let toolDescription =
-        "Apply a single-file unified diff to any UTF-8 plain-text workspace file: code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Hunks apply sequentially; if any hunk fails, the file is left untouched. Multi-file patches are rejected. BOM and CRLF bytes are preserved when the hunk context matches them."
+        "Apply a single-file unified diff to any UTF-8 plain-text workspace file: code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Accepts diff -u and single-file git diff. Uses the stated line position or uniquely matching unchanged context. If a hunk fails, the file is left untouched. Pass the SHA-256 from workspace.readFile to guard against concurrent edits. UTF-8 BOM and CRLF are preserved."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative plain-text file path to patch"},
-        "patch": {"type": "string", "description": "Unified diff (diff -u subset) for this one file; context must match the file's BOM/CRLF bytes"}
+        "patch": {"type": "string", "description": "Unified diff for one existing file. Use @@ -old[,count] +new[,count] @@ headers and exact line text"},
+        "expectedSHA256": {"type": "string", "description": "SHA-256 of the complete file before editing"}
       },
       "required": ["path", "patch"],
       "additionalProperties": false
@@ -308,6 +311,9 @@ public struct WorkspaceApplyPatchTool: AgentTool {
             // isolated temporary file, then upload the resulting bytes with
             // the remote entity tag as the conflict precondition.
             let metadata = try await route.adapter.metadata(path: route.relativePath)
+            guard let revision = metadata.entityTag else {
+                throw WorkspaceToolError.invalidArguments("Remote server has no revision token; exact edits require conditional writes")
+            }
             let original = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxReadBytes)
             guard metadata.byteCount == original.count else {
                 throw WorkspaceToolError.invalidArguments("Incomplete read; refresh the file before editing")
@@ -321,9 +327,13 @@ public struct WorkspaceApplyPatchTool: AgentTool {
             let temporaryFile = temporaryRoot.appendingPathComponent("remote.txt")
             try original.write(to: temporaryFile, options: .atomic)
             let temporaryService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: temporaryRoot, maxReadBytes: environment.maxReadBytes, maxWriteBytes: environment.maxWriteBytes))
-            let (outcome, changed, _) = try temporaryService.applyPatchWithChange("remote.txt", patch: args.patch, cancellation: context.cancellation)
+            let (outcome, changed, _) = try temporaryService.applyPatchWithChange("remote.txt", patch: args.patch, expectedSHA256: args.expectedSHA256, cancellation: context.cancellation)
             let updated = try Data(contentsOf: temporaryFile)
-            _ = try await route.adapter.write(path: route.relativePath, data: updated, expectedEntityTag: metadata.entityTag)
+            try context.cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            if changed {
+                _ = try await route.adapter.write(path: route.relativePath, data: updated, expectedEntityTag: revision)
+            }
             return WorkspaceFileChangeEvidence.savedOutput(
                 "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256) network=true",
                 path: WorkspaceFileChangeEvidence.networkPath(route),
@@ -332,7 +342,7 @@ public struct WorkspaceApplyPatchTool: AgentTool {
             }
         }
         let service = try environment.makeService(context: context)
-        let (outcome, changed, path) = try service.applyPatchWithChange(args.path, patch: args.patch, cancellation: context.cancellation)
+        let (outcome, changed, path) = try service.applyPatchWithChange(args.path, patch: args.patch, expectedSHA256: args.expectedSHA256, cancellation: context.cancellation)
         return WorkspaceFileChangeEvidence.savedOutput(
             "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256)",
             path: path, change: changed ? .modified : .unchanged) {
