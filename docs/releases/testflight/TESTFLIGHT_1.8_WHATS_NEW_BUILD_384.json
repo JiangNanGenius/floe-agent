@@ -1,0 +1,4 @@
+{
+  "en-US": "Check that the Linux VM stays responsive while reading or writing large files, running calculations, and opening shared project files. The build also improves floor-plan wall drawing, snapping, pan, and zoom.",
+  "zh-Hans": "请检查 Linux 虚拟机在读写大文件、运行运算及打开共享工程文件时的响应。此版也改进了户型图的拖画墙线、吸附、平移和缩放。"
+}

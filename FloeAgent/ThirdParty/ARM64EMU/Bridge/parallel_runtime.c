@@ -490,10 +490,12 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
         pthread_mutex_lock(&s->mutex);result.observed_sequence=s->sequence;
         size_t room=s->channels[0].output.cap-s->channels[0].output.count;pthread_mutex_unlock(&s->mutex);
         m->io_poll_due=0;fn->tick(m);
-        bool io_work=false;
+        bool io_work=false,block_work=false;
         if(!defer_dma&&!atomic_load_explicit(&s->stop,memory_order_acquire)&&!m->host_error&&!m->system_off&&!m->system_reset){
         if(fwcfg_has_work(m->fwcfg)){fn->fw_service(m->fwcfg,4096);io_work=true;}
-        else for(int i=0;i<m->n_blk;i++)if(virtio_blk_has_work(m->blk[i])){fn->blk_service(m->blk[i]);io_work=true;break;}
+        else for(int i=0;i<m->n_blk;i++)if(virtio_blk_has_work(m->blk[i])){
+            fn->blk_service(m->blk[i]);io_work=true;block_work=true;break;
+        }
         /* Same coordinator ownership and the same defer_dma protection as blk:
          * guest memory, used ring and IRQ publication happen here, never on a
          * renderer thread. */
@@ -537,8 +539,13 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
             pthread_mutex_lock(&p->mutex);
             continue;
         }
-        if(io_work)continue;
+        /* Let a runnable hart consume a completed block request while more
+         * batches are queued. Draining the entire queue first can spend the
+         * slice without granting any CPU work. Keep pending DMA on the
+         * coordinator, and retain the quiescence and shutdown checks above. */
+        if(io_work&&!block_work)continue;
         int error=grant(p);if(error){result.error=error;close_run(p);continue;}
+        if(io_work)continue;
         if(!busy(p)){
             /* All private state is now quiet. No periodic per-hart timeout:
              * external wait uses earliest actual timer/RTC/control/IO event. */

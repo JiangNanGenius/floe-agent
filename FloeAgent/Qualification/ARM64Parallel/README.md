@@ -50,3 +50,11 @@ that existing strict GPU callers still fail, while callers setting
 `FLOE_AE_GPU_ALLOW_CPU_FALLBACK` start a real CPU machine, expose no guest GPU,
 and retain CPU, disk and network failures. Success prints
 `ARM64_GPU_OPTIONAL_CPU_FALLBACK_OK`.
+
+## CPU progress with a backlogged virtual disk
+
+`BlockProgressTests.c` uses the ordinary engine link setup above. Pass two new
+fixture paths for its firmware and disk. It submits a block queue notification
+and replaces only the callback that drains the disk. The real scheduler must
+retire the full instruction budget even while block work stays pending.
+Success prints `ARM64_BLOCK_PROGRESS_OK`.
