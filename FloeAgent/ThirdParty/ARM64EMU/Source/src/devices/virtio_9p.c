@@ -1189,8 +1189,10 @@ static void push_used(VirtIO9P *v, u32 id, u32 len) {
     Machine *m = v->m;
     u16 used_idx = (u16)phys_read(m, v->q_used + 2, 2);
     u64 e = v->q_used + 4 + (u64)(used_idx % v->q_num) * 8;
-    phys_write(m, e + 0, 4, id);
-    phys_write(m, e + 4, 4, len);
+    u8 entry[8];
+    patch_size(entry, id);
+    patch_size(entry + 4, len);
+    phys_write_blk(m, e, entry, sizeof(entry));
     phys_write(m, v->q_used + 2, 2, (u16)(used_idx + 1));
 }
 
@@ -1208,32 +1210,6 @@ static bool p9_ensure_bufs(VirtIO9P *v) {
         fprintf(stderr, "[virtio-9p] out of memory\n");
         return false;
     }
-    return true;
-}
-
-/* Coalesce adjacent guest-RAM descriptors before taking the memory guard.
- * The same guarded DMA helpers still handle all copies and write notices. */
-static bool p9_transfer(Machine *m, const u64 *addresses, const u32 *lengths, u32 spans,
-                        u8 *buffer, u32 limit, bool to_guest, u32 *copied) {
-    u32 offset = 0;
-    for (u32 i = 0; i < spans && offset < limit; ++i) {
-        u64 addr = addresses[i];
-        u32 remaining = limit - offset;
-        u32 size = lengths[i] < remaining ? lengths[i] : remaining;
-        if (!size) continue;
-        while (size < remaining && i + 1 < spans && addresses[i + 1] == addr + size) {
-            u32 room = remaining - size;
-            u32 next = lengths[i + 1] < room ? lengths[i + 1] : room;
-            if (!next || !ram_ptr(m, addr, size + next)) break;
-            size += next;
-            ++i;
-        }
-        if (to_guest) phys_write_blk(m, addr, buffer + offset, size);
-        else          phys_read_blk(m, addr, buffer + offset, size);
-        if (machine_bus_status(m) != BUS_OK) return false;
-        offset += size;
-    }
-    *copied = offset;
     return true;
 }
 
@@ -1271,14 +1247,22 @@ static void p9_handle(VirtIO9P *v, u32 head) {
     if (!terminated || !n_r || !n_w) { v->status |= 64; return; }
 
     u32 reqlen = 0;
-    if (!p9_transfer(m, raddr, rlen, n_r, v->req, P9_MSIZE_MAX, false, &reqlen)) {
-        v->status |= 64; return;
+    for (u32 i = 0; i < n_r && reqlen < P9_MSIZE_MAX; i++) {
+        u32 take = rlen[i];
+        if (take > P9_MSIZE_MAX - reqlen) take = P9_MSIZE_MAX - reqlen;
+        phys_read_blk(m, raddr[i], v->req + reqlen, take);
+        if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
+        reqlen += take;
     }
     u32 resplen = p9_dispatch(v, reqlen, wcap);
 
     u32 off = 0;
-    if (!p9_transfer(m, waddr, wlen, n_w, v->resp, resplen, true, &off)) {
-        v->status |= 64; return;
+    for (u32 i = 0; i < n_w && off < resplen; i++) {
+        u32 chunk = wlen[i];
+        if (chunk > resplen - off) chunk = resplen - off;
+        phys_write_blk(m, waddr[i], v->resp + off, chunk);
+        if (machine_bus_status(m) != BUS_OK) { v->status |= 64; return; }
+        off += chunk;
     }
     push_used(v, head, off);
 }

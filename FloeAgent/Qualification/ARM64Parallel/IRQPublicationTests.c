@@ -75,19 +75,33 @@ int main(int argc,char **argv) {
      * When armed, four completions need a single unread byte. */
     pthread_mutex_lock(&p->mutex);
     progress=p->progress;
-    worker_completed(p);
+    notify_hart_progress(p);
     assert(p->progress==progress+1&&!pipe_ready(s));
     p->poll_needs_wake=true;
-    for(unsigned i=0;i<4;i++)worker_completed(p);
+    for(unsigned i=0;i<4;i++)notify_hart_progress(p);
     assert(p->progress==progress+5&&pipe_ready(s));
     unsigned char bytes[8];
     assert(read(s->wake_pipe[0],bytes,sizeof(bytes))==1&&!pipe_ready(s));
     p->poll_needs_wake=true;
-    worker_completed(p);
+    notify_hart_progress(p);
     assert(read(s->wake_pipe[0],bytes,sizeof(bytes))==1&&!pipe_ready(s));
+
+    for(unsigned i=0;i<4;i++)p->hart[i].request.state=MAIL_PENDING;
+    for(unsigned round=0;round<8;round++){
+        int hart=pending(p);
+        assert(hart==(int)(round%4));
+        p->next_mailbox=(unsigned)hart+1;
+    }
+    p->hart[0].request.state=MAIL_DONE;
+    p->hart[1].request.state=MAIL_SERVICING;
+    p->hart[2].request.state=MAIL_EMPTY;
+    assert(pending(p)==3);
+    p->hart[3].request.state=MAIL_EMPTY;
+    assert(pending(p)==-1);
+    p->hart[0].request.state=p->hart[1].request.state=MAIL_EMPTY;
     pthread_mutex_unlock(&p->mutex);
     m->parallel_ops=NULL;m->parallel_owner=NULL;
     assert(!floe_ae_destroy(handle)&&!unlink(firmware));
-    puts("ARM64_IRQ_PUBLICATION_OK duplicate_low=10000 rising=1 repeated_high=1 falling=1 pending_preserved=1 event_preserved=1 gic_four_harts=1 worker_wakes_coalesced=1");
+    puts("ARM64_IRQ_PUBLICATION_OK duplicate_low=10000 rising=1 repeated_high=1 falling=1 pending_preserved=1 event_preserved=1 gic_four_harts=1 worker_wakes_coalesced=1 fair_mailbox_order=1");
     return 0;
 }

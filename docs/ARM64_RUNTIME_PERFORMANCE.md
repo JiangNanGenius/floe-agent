@@ -182,3 +182,22 @@ Apple M5 Pro 上的真实四 vCPU Debian 客机使用基线、候选、候选、
 | 工作区挂载写入并同步 | 3.920 → 4.675 s | 3.316 → 15.429 s |
 
 The comparison used Xcode 27.2 on an M5 Pro with the same two-vCPU Debian ARM64 qualification image and inputs. A fragmented 128 KiB block request used one host `pread` or `pwrite` per operation, down from two, with exact byte readback. Both candidate runs released 131.65 MiB of APFS image allocation and kept the live data intact. Mounted writes and renames kept the original host inode. The cross-volume 128 MiB logical copy preserved its 32 KiB allocation and digest. The engine continues to use its JIT-free interpreter. [Virtio block specification, section 5.2](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)
+
+## 并发小文件 / Concurrent small files
+
+在同一台 M5 Pro 上，四个在线 vCPU 的 Debian 分别从内存盘、虚拟盘和挂载目录读取 192 个 512 B 文件，共用相同目录深度和数据。进程数按 1、2、4 和反向顺序测试。写入用例每 16 个文件同步一次，另核对宿主目录中的文件数量与数据。
+
+首轮四进程读的中位数为内存盘 0.287 秒、虚拟盘 0.293 秒、挂载目录 1.249 秒。开启采样后，全部挂载用例（包括准备文件）产生 67,829 次 9P 请求，宿主处理请求共用 0.820 秒。打开、创建、路径遍历和释放句柄的次数远高于文件读写次数。虚拟盘采样记录 129 次同步，每次此前都有写入。后续改动集中在 vCPU 请求公平性和唤醒开销。
+
+Build 389 将 vCPU 请求改为轮流服务。只有协调器正在等待时，才为新的内部请求写入唤醒管道，同一次等待合并为一个字节。原生回归验证了四核轮转、等待重新唤醒、IRQ 与 TLB 发布，以及磁盘队列积压时 CPU 仍能前进。挂载目录的每个完成条目由两次受保护的写入改为一次，之后更新队列索引。定向测试校核了字段字节序、回绕、相邻条目和提交顺序。
+
+The four-vCPU Debian runs used the same 192 small files on tmpfs, the guest disk and the mounted workspace. A host trace counted 67,829 9P requests and about 0.82 seconds inside the device handler, including setup. The guest disk issued 129 flushes after writes. Build 389 rotates between ready vCPU requests and coalesces wakeups while the coordinator is waiting. Each workspace completion entry uses one guarded write before publishing its queue index. Native checks verify ring ordering, wake rearming, interrupt publication and CPU progress while disk work is backlogged.
+
+最终顺序为 389、已发布的 387、389。下表是每组的实际中位耗时。387 每格两次，389 每格四次。各组均通过文件数量和内容回读。宿主负载随轮次变化，四进程虚拟盘写入和部分尾延迟升高，真机吞吐仍需测量。 / The final run order was 389, 387, 389. Each baseline median has two samples and each candidate median has four. All runs passed file-count and content checks. Several four-process results and tail latencies were higher. Physical iPad throughput remains to be measured.
+
+| 192 个小文件 / 192 small files | 1 个进程 / process | 2 个进程 / processes | 4 个进程 / processes |
+| --- | ---: | ---: | ---: |
+| 虚拟盘打开并读取 / Guest disk open and read | 0.362 → 0.344 s | 0.523 → 0.284 s | 0.261 → 0.284 s |
+| 虚拟盘写入与同步 / Guest disk write and sync | 0.656 → 0.640 s | 0.781 → 0.463 s | 0.349 → 0.409 s |
+| 挂载目录打开并读取 / Mounted open and read | 2.870 → 2.152 s | 1.414 → 1.424 s | 1.012 → 1.060 s |
+| 挂载目录写入与同步 / Mounted write and sync | 2.816 → 2.058 s | 1.757 → 1.428 s | 1.033 → 1.052 s |

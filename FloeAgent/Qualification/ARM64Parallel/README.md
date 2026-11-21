@@ -17,6 +17,8 @@ pipe and pending publications while all workers are quiet. It verifies:
 - Four worker completions in one wait need a single pipe byte. The next wait
   still wakes, and completions while the coordinator is working publish
   progress without writing to the readiness pipe.
+- Pending requests from four vCPUs advance in round-robin order. Requests
+  that are already serviced or completed do not participate.
 
 Success prints `ARM64_IRQ_PUBLICATION_OK`. The original implementation fails
 the first no-op publication assertion. This is a notification-path regression,

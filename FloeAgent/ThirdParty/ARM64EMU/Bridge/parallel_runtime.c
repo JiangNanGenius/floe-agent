@@ -42,7 +42,7 @@ typedef struct AEParallel {
     atomic_bool abort_run;
     _Atomic u64 tlbi_epoch;
     u64 deadline,remaining,executed,progress;
-    unsigned next_hart;
+    unsigned next_hart, next_mailbox;
     AEParallelCallbacks callbacks;
     AEHart *hart;
     atomic_uint in_pd,max_in_pd;
@@ -85,11 +85,11 @@ static void changed(AEParallel *p){
     p->progress++;pthread_cond_broadcast(&p->changed);
     wake_coordinator(p);
 }
-static void worker_completed(AEParallel *p){
+static void notify_hart_progress(AEParallel *p){
     p->progress++;pthread_cond_broadcast(&p->changed);
     /* The mutex pairs the poll arm with this publication. If the coordinator
-     * is processing work, its next pass sees the completed ticket directly.
-     * If it is polling, one pending byte suffices for all completing harts. */
+     * is processing work, its next pass sees new mailbox requests and completed
+     * tickets directly. One byte is enough to wake a coordinator in poll(). */
     if(p->poll_needs_wake)wake_coordinator(p);
 }
 static void enter_pd(AEHart *h){
@@ -212,7 +212,7 @@ static void publish_irq(Machine *m,unsigned i,bool level){
 static AERPC rpc(CPU *c,AERPC request){
     AEHart *h=current(c);AEParallel *p=h->parallel;
     leave_pd(h);pthread_mutex_lock(&p->mutex);
-    request.state=MAIL_PENDING;h->request=request;changed(p);
+    request.state=MAIL_PENDING;h->request=request;notify_hart_progress(p);
     while(h->request.state!=MAIL_DONE){
         apply_epoch_locked(h);
         if(h->request.state!=MAIL_DONE)pthread_cond_wait(&h->condition,&p->mutex);
@@ -352,7 +352,7 @@ static void *hart_main(void *argument){
          * instruction returns. Preserve the new pending boot across that end. */
         if(!h->reset_pending)atomic_store_explicit(&h->power,c->power,memory_order_release);
         h->busy=false;h->await_yield=false;atomic_store_explicit(&h->ack_epoch,atomic_load(&p->tlbi_epoch),memory_order_release);
-        worker_completed(p);pthread_mutex_unlock(&p->mutex);ae_parallel_test_boundary(c,5);pthread_mutex_lock(&p->mutex);
+        notify_hart_progress(p);pthread_mutex_unlock(&p->mutex);ae_parallel_test_boundary(c,5);pthread_mutex_lock(&p->mutex);
     }
     pthread_mutex_unlock(&p->mutex);ae_parallel_test_boundary(c,6);cpu_debug_release();ae_fp_unbind();ae_current=NULL;worker=NULL;return NULL;
 }
@@ -449,7 +449,13 @@ static int grant(AEParallel *p){
     p->next_hart=m->next_hart;return 0;
 }
 static int pending(AEParallel *p){
-    for(unsigned i=0;i<p->session->machine.ncpus;i++)if(p->hart[i].request.state==MAIL_PENDING)return (int)i;
+    unsigned count=p->session->machine.ncpus;
+    unsigned i=p->next_mailbox;
+    for(unsigned n=0;n<count;n++){
+        if(i>=count)i=0;
+        if(p->hart[i].request.state==MAIL_PENDING)return (int)i;
+        ++i;
+    }
     return -1;
 }
 static void close_run(AEParallel *p){
@@ -482,6 +488,8 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
     for(;;){
         int index=pending(p);
         if(index>=0){
+            /* One busy hart cannot repeatedly jump ahead of another ready mailbox. */
+            p->next_mailbox=(unsigned)index+1;
             AEHart *h=&p->hart[index];AERPC r=h->request;h->request.state=MAIL_SERVICING;
             pthread_mutex_unlock(&p->mutex);service(p,(unsigned)index,&r);pthread_mutex_lock(&p->mutex);
             r.state=MAIL_DONE;h->request=r;if(r.type==RPC_BUS&&r.bus.yield)h->await_yield=true;pthread_cond_signal(&h->condition);continue;

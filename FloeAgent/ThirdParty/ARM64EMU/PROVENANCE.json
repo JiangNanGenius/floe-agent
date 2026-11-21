@@ -122,7 +122,7 @@
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "6b0a40a3317cabf6933916888b216d32ba4e524b6bf8ccafd7bfed969c13bd0a"
+      "sha256": "c265aad1516e45953e01b44badce352d06b69933066c05cce04797e8c841a6d6"
     },
     {
       "path": "Bridge/parallel_runtime.h",
@@ -206,7 +206,7 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "f31b8da8aa3d6686939dceeaa83e7e14624acca5585f18756351b1399b563633"
+      "sha256": "3fe6bcf5ec39cea441d1296425494dfc74730f23367543d6fc3f387f20b356a1"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
@@ -782,6 +782,23 @@
         }
       ],
       "qualification": "See the matching disk, workspace and sparse-allocation evidence in ARM64_RUNTIME_PERFORMANCE.md."
+    },
+    {
+      "name": "Fair vCPU device request scheduling",
+      "scope": "Round-robin pending hart mailboxes and coalesce their readiness-pipe wakes under the existing scheduler mutex. Interrupt publication, per-hart request order, interpreter and ABI are unchanged. Publish each workspace used-ring entry with one guarded write and retain split-queue completion order.",
+      "files": [
+        {
+          "path": "Bridge/parallel_runtime.c",
+          "baseSHA256": "6b0a40a3317cabf6933916888b216d32ba4e524b6bf8ccafd7bfed969c13bd0a",
+          "sha256": "c265aad1516e45953e01b44badce352d06b69933066c05cce04797e8c841a6d6"
+        },
+        {
+          "path": "Source/src/devices/virtio_9p.c",
+          "baseSHA256": "f31b8da8aa3d6686939dceeaa83e7e14624acca5585f18756351b1399b563633",
+          "sha256": "3fe6bcf5ec39cea441d1296425494dfc74730f23367543d6fc3f387f20b356a1"
+        }
+      ],
+      "qualification": "Use ARM64Parallel qualifications and the four-vCPU Linux small-file measurements in ARM64_RUNTIME_PERFORMANCE.md."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",
