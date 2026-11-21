@@ -31,11 +31,7 @@ struct HostAgentWorkspaceView: View {
     static var smokeExpandFrame: CGRect?
     static var smokeLocatedMessageID: UUID?
     #endif
-    @StateObject private var search: MacConversationSearchModel
-    @State private var awayFromLatest = false
-    @State private var highlightedResult: UUID?
-    @State private var resultUnavailable = false
-    @State private var searchRetry: UUID?
+    @StateObject private var search: ThreadSearchModel
     @FocusState private var promptFocused: Bool
     @State private var editingPrompt = false
     @State private var promptSelection = NSRange(location: 0, length: 0)
@@ -83,14 +79,12 @@ struct HostAgentWorkspaceView: View {
         self.findRequest = findRequest
         self.findConversationID = findConversationID
         #if FLOE_UNIFIED_MAC
-        _search = StateObject(wrappedValue: MacConversationSearchModel(
-            loadedWindow: { [weak workspace] in
-                guard let workspace, workspace.selectedID == findConversationID else { return ([], nil, false) }
-                return workspace.loadedMessageWindow
-            },
-            historyPage: { [weak workspace] cursor in
-                guard let workspace, let id = findConversationID else { throw CancellationError() }
-                return try await workspace.searchMessagePage(conversationID: id, before: cursor)
+        _search = StateObject(wrappedValue: ThreadSearchModel(
+            provider: { [weak workspace] query in
+                guard let workspace, let id = findConversationID, workspace.selectedID == id else {
+                    return ThreadSearchResult(hits: [], includesDurableHistory: false)
+                }
+                return await workspace.searchTranscript(query, in: id)
             },
             reveal: { [weak workspace] hit in
                 guard let workspace, let id = findConversationID else { return false }
@@ -163,7 +157,7 @@ struct HostAgentWorkspaceView: View {
             } else {
                 #if FLOE_UNIFIED_MAC
                 if search.isActive {
-                    MacConversationSearchBar(model: search)
+                    ThreadSearchBar(model: search)
                         .id(findRequest)
                         #if FLOE_MAC_HOST_SMOKE
                         .onAppear { workspace.smokeConversationSearchMounted = true }
@@ -255,6 +249,17 @@ struct HostAgentWorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
                 }
                 conversation
+                if let question = workspace.pendingQuestion {
+                    HostAgentQuestionCardView(question: question, submit: { target, answer in
+                        await workspace.answerQuestion(target: target, answer: answer)
+                    }, cancel: { requestID in
+                        await workspace.declineQuestion(requestID: requestID)
+                    }, draftChanged: { target, draft in
+                        Task { await workspace.saveQuestionDraft(target: target, answer: draft) }
+                    })
+                    .id(question.cardIdentity)
+                    .padding(.horizontal, 12)
+                }
                 if let run = workspace.continuableRun {
                     Button {
                         Task { await workspace.continueFromHistory(run) }
@@ -330,10 +335,17 @@ struct HostAgentWorkspaceView: View {
         }
         #if FLOE_UNIFIED_MAC
         .background(FloeTheme.readingSurface)
-        .onChange(of: findRequest, initial: true) { _, request in
-            guard request != nil, let id = findConversationID, id == workspace.selectedID else { return }
-            search.bind(conversationID: id)
+        .task(id: [findRequest, workspace.selectedID]) {
+            guard findRequest != nil, let id = findConversationID, id == workspace.selectedID else { return }
             search.begin()
+        }
+        .task(id: search.query) {
+            guard search.isActive else { return }
+            if search.hasQuery {
+                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            await search.search()
         }
         .onDisappear {
             search.end()
@@ -965,67 +977,6 @@ struct HostAgentWorkspaceView: View {
         .help(MacPermissionsText.t("选择此任务的审批模式", "Choose the approval mode for this task"))
     }
 
-    private func toolActivityCard(_ activity: [HostAgentToolActivity]) -> some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 9) {
-                ForEach(activity) { step in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(step.toolName).font(.callout.monospaced())
-                            Spacer()
-                            Text(toolStateTitle(step.state)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let path = step.outputPath, step.outputWorkspaceID == workspace.selectedConversationWorkspace?.id {
-                            Button {
-                                workspace.withOutputFile(step) { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
-                            } label: { Label(path, systemImage: "doc") }
-                            .help("mac.run.revealFile")
-                        }
-                        if step.outputWorkspaceID == workspace.selectedConversationWorkspace?.id {
-                            ForEach(step.mediaArtifacts) { artifact in
-                                Button {
-                                    Task {
-                                        await workspace.withOutputFile(step, artifact: artifact) { url in
-                                            NSWorkspace.shared.activateFileViewerSelecting([url])
-                                        }
-                                    }
-                                } label: {
-                                    Label((artifact.relativePath as NSString).lastPathComponent,
-                                          systemImage: artifact.mimeType.hasPrefix("video/") ? "film" : "photo")
-                                }
-                                .help("mac.run.revealFile")
-                                .accessibilityIdentifier("mac.run.artifact." + artifact.id.uuidString)
-                            }
-                        }
-                        if let summary = step.summary, !summary.isEmpty {
-                            Text(summary).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                .lineLimit(6)
-                        }
-                    }
-                }
-            }
-            .padding(.top, 8)
-        } label: {
-            Label("mac.run.activity", systemImage: "square.stack")
-                .font(.callout.weight(.semibold))
-        }
-        .padding(12)
-        .background(FloeTheme.stepSurface, in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityIdentifier("mac.run.activity")
-    }
-
-    private func toolStateTitle(_ state: String) -> LocalizedStringKey {
-        switch state {
-        case "pending": "mac.run.tool.waiting"
-        case "running": "mac.run.tool.running"
-        case "settling": "mac.run.tool.settling"
-        case "ok": "mac.run.tool.done"
-        case "denied": "mac.run.tool.denied"
-        case "cancelled": "mac.run.tool.cancelled"
-        default: "mac.run.tool.failed"
-        }
-    }
-
     private var attachmentStrip: some View {
         MacComposerInputAttachmentStrip(
             items: workspace.stagedAttachments.map { attachment in
@@ -1168,200 +1119,22 @@ struct HostAgentWorkspaceView: View {
     }
 
     private var conversation: some View {
-        GeometryReader { proxy in
-            ScrollViewReader { scroll in
-                ScrollView {
-                    if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
-                        VStack(spacing: 12) {
-                            FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
-                                Text(mode.prompt)
-                            }
-                            if workspace.composerProvider == nil, let openModelSettings {
-                                Button("host.chat.provider", action: openModelSettings)
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, minHeight: proxy.size.height)
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            earlierHistoryButton(scroll)
-                            ForEach(workspace.messages) { message in
-                                VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
-                                    if let confirmation = PlanConfirmationSnapshot.from(message: message) {
-                                        ConfirmedPlanMessageCard(snapshot: confirmation, onRetryStart: retryPlan(confirmation))
-                                    } else if message.role == "user" {
-                                        UserMessageBubble(text: message.content,
-                                                          attachments: AttachmentChipItem.items(in: message.parts),
-                                                          onOpenAttachment: { item in
-                                            guard let id = item.attachmentID else { return }
-                                            Task {
-                                                await workspace.withSavedAttachment(id: id, conversationID: message.conversationID) {
-                                                    attachmentPreview = MacConversationAttachmentPreview(id: id, url: $0)
-                                                }
-                                            }
-                                        })
-                                    } else if message.role == "assistant" {
-                                        ForEach(message.parts.filter { $0.kind == .reasoning }) { part in
-                                            if let text = part.text, !text.isEmpty { ReasoningBlockView(text: text) }
-                                        }
-                                        MarkdownRendererView(source: message.content)
-                                    } else {
-                                        Text(verbatim: message.content).foregroundStyle(.secondary)
-                                    }
-                                    HStack(spacing: 10) {
-                                        ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
-                                                          userText: message.role == "user" ? message.content : nil)
-                                        if message.role == "assistant", let text = CredentialMessagePart.clipboardText(message.content) {
-                                            ChatMessageCopyButton(text: text)
-                                                .accessibilityIdentifier("thread.assistant.copy." + message.id.uuidString)
-                                        }
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
-                                .id(message.id)
-                                .background((search.isActive ? search.focusedMessageID : highlightedResult) == message.id
-                                            ? Color.accentColor.opacity(0.12) : Color.clear,
-                                            in: RoundedRectangle(cornerRadius: 8))
-                                .contextMenu {
-                                    if let text = CredentialMessagePart.clipboardText(message.content) {
-                                        Button("action.copy") {
-                                            NSPasteboard.general.clearContents()
-                                            NSPasteboard.general.setString(text, forType: .string)
-                                        }
-                                        if message.role == "user", PlanConfirmationSnapshot.from(message: message) == nil {
-                                            Button(draft.wrappedValue.isEmpty ? "mac.workspace.reuseMessage" : "mac.workspace.appendMessage") {
-                                                guard !workspace.isSending, !workspace.isTerminating,
-                                                      workspace.selectedID == message.conversationID else { return }
-                                                let current = draft.wrappedValue
-                                                draft.wrappedValue = current.isEmpty ? text : current + "\n\n" + text
-                                                promptFocused = true
-                                            }
-                                            .disabled(workspace.isSending || workspace.isTerminating)
-                                        }
-                                    }
-                                }
-                                .task(id: message.runID) {
-                                    if message.role == "user", let runID = message.runID {
-                                        await workspace.loadVisibleToolActivity(runID: runID, conversationID: message.conversationID)
-                                    }
-                                }
-                                if message.role == "user", let runID = message.runID,
-                                   let questions = workspace.settledQuestions[runID] {
-                                    MacQuestionHistoryView(requests: questions)
-                                }
-                                if message.role == "user", let runID = message.runID,
-                                   let steps = workspace.runToolActivity[runID], !steps.isEmpty {
-                                    toolActivityCard(steps)
-                                }
-                            }
-                            if let prompt = workspace.pendingPrompt {
-                                UserMessageBubble(text: prompt)
-                                let steps = workspace.liveToolActivity
-                                if !steps.isEmpty { toolActivityCard(steps) }
-                            }
-                            if let question = workspace.pendingQuestion {
-                                HostAgentQuestionCardView(question: question, submit: { target, answer in
-                                    await workspace.answerQuestion(target: target, answer: answer)
-                                }, cancel: { requestID in
-                                    await workspace.declineQuestion(requestID: requestID)
-                                }, draftChanged: { target, draft in
-                                    Task { await workspace.saveQuestionDraft(target: target, answer: draft) }
-                                })
-                                .id(question.cardIdentity)
-                            }
-                            if let approval = workspace.pendingApproval {
-                                MacWorkspaceApprovalView(workspace: workspace, approval: approval)
-                                    .id(approval.callID)
-                            }
-                            if let attempt = workspace.reconnectAttempt {
-                                Label { Text("mac.agent.reconnecting \(attempt)") } icon: { Image(systemName: "arrow.clockwise") }
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            if !workspace.liveReasoning.isEmpty {
-                                ReasoningBlockView(text: workspace.liveReasoning, isStreaming: workspace.streamedText.isEmpty)
-                            } else if workspace.awaitingModel && workspace.reconnectAttempt == nil && workspace.streamedText.isEmpty {
-                                ModelResponseWaitingView()
-                            }
-                            if !workspace.streamedText.isEmpty {
-                                MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
-                            }
-                        }
-                        .overlay(alignment: .bottom) {
-                            Color.clear.frame(height: 1).id("mac.thread.latest").allowsHitTesting(false)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                        .frame(maxWidth: 824)
-                        .padding(.horizontal, 6)
-                        .frame(maxWidth: .infinity)
+        MacThreadTranscript(workspace: workspace, conversationID: findConversationID,
+            searchText: search.query, searchIsActive: search.isActive, focusedMessageID: search.focusedMessageID,
+            requestedMessageID: requestedMessageID, openModelSettings: openModelSettings,
+            openAttachment: { message, item in
+                guard let id = item.attachmentID else { return }
+                Task {
+                    await workspace.withSavedAttachment(id: id, conversationID: message.conversationID) {
+                        attachmentPreview = MacConversationAttachmentPreview(id: id, url: $0)
                     }
                 }
-                .defaultScrollAnchor(.bottom)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentSize.height - geometry.visibleRect.maxY > 140
-                } action: { _, away in awayFromLatest = away }
-                .overlay(alignment: .bottomTrailing) {
-                    if awayFromLatest {
-                        Button { scroll.scrollTo("mac.thread.latest", anchor: .bottom) } label: {
-                            Label("mac.thread.latest", systemImage: "arrow.down")
-                        }
-                        .buttonStyle(.bordered).controlSize(.small)
-                        .padding(8)
-                    }
-                }
-                .onChange(of: workspace.pendingApproval?.callID) { _, callID in
-                    if let callID { scroll.scrollTo(callID, anchor: .bottom) }
-                }
-                .onChange(of: workspace.lastSteer) { _, _ in
-                    if let callID = workspace.pendingApproval?.callID { scroll.scrollTo(callID, anchor: .bottom) }
-                }
-                .onChange(of: workspace.pendingQuestion?.cardIdentity) { _, identity in
-                    if let identity { scroll.scrollTo(identity, anchor: .bottom) }
-                }
-                .task(id: [requestedMessageID, searchRetry]) {
-                    guard let requestedMessageID, let findConversationID else { return }
-                    highlightedResult = nil
-                    resultUnavailable = false
-                    let found = await workspace.revealMessage(requestedMessageID, in: findConversationID)
-                    guard !Task.isCancelled, workspace.selectedID == findConversationID else { return }
-                    if found {
-                        highlightedResult = requestedMessageID
-                        await Task.yield()
-                        guard !Task.isCancelled else { return }
-                        scroll.scrollTo(requestedMessageID, anchor: .center)
-                        #if FLOE_MAC_HOST_SMOKE
-                        Self.smokeLocatedMessageID = requestedMessageID
-                        #endif
-                        didHandleSearchResult?(findConversationID, requestedMessageID)
-                    } else {
-                        resultUnavailable = true
-                    }
-                }
-                .overlay(alignment: .top) {
-                    if resultUnavailable, let requestedMessageID, let findConversationID {
-                        HStack {
-                            Text("mac.workspace.searchResultUnavailable")
-                            if workspace.hasEarlierMessages {
-                                Button("mac.workspace.continueSearch") { searchRetry = UUID() }
-                                    .disabled(workspace.isLoadingEarlierMessages)
-                            }
-                            Button {
-                                resultUnavailable = false
-                                didHandleSearchResult?(findConversationID, requestedMessageID)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                            }
-                            .accessibilityLabel(Text("mac.workspace.dismissSearchNotice"))
-                        }
-                        .font(.caption).padding(6).background(.regularMaterial, in: Capsule())
-                    }
-                }
-                .onChange(of: search.focusedMessageID) { _, id in
-                    if let id { highlightedResult = nil; resultUnavailable = false; scroll.scrollTo(id, anchor: .center) }
-                }
-            }
-        }
+            }, hasDraft: !draft.wrappedValue.isEmpty, reuseMessage: { text in
+                guard !workspace.isSending, !workspace.isTerminating, workspace.selectedID == findConversationID else { return }
+                let current = draft.wrappedValue
+                draft.wrappedValue = current.isEmpty ? text : current + "\n\n" + text
+                promptFocused = true
+            }, retryPlan: retryPlan, handleSearchResult: didHandleSearchResult)
     }
     #else
     private var conversation: some View {

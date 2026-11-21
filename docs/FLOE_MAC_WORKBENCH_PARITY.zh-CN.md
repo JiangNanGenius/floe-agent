@@ -94,7 +94,7 @@
 
 **iPad**：GRDB 持久 `Sources/FloePersistence/DatabaseManager.swift:93` + `SQLiteConversationStore`/`SQLiteRunStore`/`ConversationPromoter`（临时→正式提升）；全局历史搜索 `Chat/ConversationSearchView.swift` → `IntelligenceStore.conversationSearchMatches`（`Sources/FloeAgentRuntime/IntelligenceStore.swift:1586`）；会话内查找 `ThreadSearchBar`；提问历史 `UserQuestionStore`；上下文引擎 `ContextEngine.swift`（预算/压缩/保护）；批量管理 `ConversationBatchManagementView`。
 
-**Mac**：全部实体持久于 `floe.sqlite`（`HostAgentDatabase.swift`，0700/0600 描述符校验）；重开恢复最近会话/项目（`@AppStorage`）；会话内搜索 `MacConversationSearch.swift:55`（共享 `ConversationSearchQuery`，20 页/2000 条/200 命中上限，Cmd-F）；任务中心+侧栏标题搜索；提问历史 `MacQuestionHistoryView`；导出 Markdown  transcript（`markdownTranscript`，裁剪凭证）。
+**Mac** 使用 `floe.sqlite` 持久化会话，通过 `HostAgentDatabase.swift` 校验数据库与目录权限。重开应用时恢复最近的会话和项目。会话内按 ⌘F 打开共享的 `ThreadSearchBar`，由 `ThreadSearchModel` 定位消息。任务中心、侧栏标题搜索、`MacQuestionHistoryView` 和经凭据过滤的 Markdown 导出各自保留原入口。
 
 **1.11.0 的差距**：当时只能搜索本会话和任务标题、目标。1.11.2 已增加跨会话正文搜索及原消息定位（第 13 节）。会话可按项目、置顶和归档组织。
 
@@ -175,3 +175,15 @@
 - 浏览器从任务右上角的检查器菜单或消息链接打开。应用内回退保留原任务和未发送草稿。「空间」继续聚合文件管理和工具箱。
 
 逐项对照仍发现的缺口包括异常退出后恢复待回答卡、浏览器下载与跨启动保留网页状态、按任务记住非文件工具审批、项目整理、部分诊断页面以及完整创意画布。
+
+## 18. Mac 与 iPad 共用基础组件
+
+基础流程以 iPad 的实现为源。Mac 构建直接编译共用组件，原生宿主负责窗口、菜单、键鼠、文件授权和本机工具。更改通用行为时从共用源修改，并用两端相同的输入检查结果。
+
+| 基础流程 | 共用实现 | Mac 接入 |
+| --- | --- | --- |
+| 会话消息与历史 | `ThreadTimeline`、`ThreadTranscriptViewport`、`ThreadHistoryPaging` | 从当前任务读取同一套分页数据，接入 Mac 的文件预览、工具和审批。 |
+| 会话内查找 | `ThreadSearchModel`、`ThreadSearchBar` 和共用消息搜索索引 | ⌘F 打开查找栏。搜索跳转、翻页和流式更新由共用组件保持位置。 |
+| 模型供应商选择 | `ProviderCatalogPicker` 和现有 `FloeProviders` 目录 | Mac 设置页提供原生窗口和字段。目录行、筛选、选择及刷新按钮共用。 |
+
+完整输入区、任务中心和文件工作台仍需要逐项收敛。原生工具的进程、文件和桌面授权由 Mac 宿主提供，仍经过共用运行时的工具和审批契约。

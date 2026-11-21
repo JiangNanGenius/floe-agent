@@ -26,12 +26,6 @@ private struct ThreadNavigationTitle: ViewModifier {
     }
 }
 
-private struct ThreadScrollMetrics: Equatable {
-    let offset: Double
-    let height: Double
-    let bottomDistance: Double
-}
-
 private struct AutomaticReadSignal: Equatable {
     let loaded: Bool
     let runID: UUID?
@@ -104,14 +98,6 @@ struct ThreadDetailView: View {
     @State private var presentedUsageSummary: ThreadUsageSummary?
     @State private var selectedImportantFile: ImportantFileShortcut?
     @State private var selectedAttachment: ChatAttachmentOpenRequest?
-    @State private var showsReturnToLatest = false
-    @State private var latestFollow = LatestMessageFollowState()
-    @State private var isUserScrolling = false
-    /// Viewport rect in global coordinates, measured from the thread scroll
-    /// container. The earlier-activity row pages only when it actually
-    /// enters this rect, so lazy-margin rows never fetch off-screen.
-    @State private var threadViewportFrame: CGRect = .zero
-    @State private var earlierActivityScrollDemand: UInt64 = 0
     @State private var structuredExport: TaskExportFile?
     @State private var answerForNotes: String?
     @State private var exporting = false
@@ -689,199 +675,83 @@ struct ThreadDetailView: View {
     // MARK: - Thread content
 
     private var threadScroll: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                    if viewModel.hasEarlierMessages {
-                        Button("chat.thread_detail_view.load_earlier_messages", systemImage: "arrow.up.circle") {
-                            Task { await viewModel.loadEarlierMessages() }
-                        }
-                        .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
-                        .disabled(viewModel.loadingEarlierMessages)
-                        .accessibilityHint("chat.thread_detail_view.load_thirty_more_older_messages_each")
-                    }
-                    // The unified timeline: user goal → run events in stored
-                    // sequence → live tail → approvals → terminal last.
-                    // "Completed" can never float above the final reply.
-                    ForEach(viewModel.timeline) { item in
-                        datedTimelineRow(item)
-                            .id(item.id)
-                            .transition(viewModel.isRunning ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
-                    }
-
-                    #if canImport(AlarmKit)
-                    // A successful timer can precede any model text, including
-                    // while this run is parked in task.wait. Supply only its
-                    // unassigned cards until a real answer body takes over.
-                    if !viewModel.isTemporary, !search.isActive,
-                       !viewModel.timeline.contains(where: {
-                           if case .liveAssistantTail = $0 { return true }
-                           return false
-                       }),
-                       let runID = viewModel.selectedRun?.id,
-                       legacyAnswerID(runID: runID) == nil {
-                        let timerProjection = InlineTimerBodyProjection.project(
-                            text: "", events: viewModel.eventsByRun[runID] ?? [], isStreaming: true)
-                        if !timerProjection.isEmpty {
-                            InlineAnswerBodyView(source: "")
-                                .environment(\.inlineTimerProjection, timerProjection)
-                        }
-                    }
-                    #endif
-
-                    if viewModel.isRunning, viewModel.liveStateName == "preparingToolCall" {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("state.preparing_tool_call")
-                                .font(FloeTheme.Typography.metadata)
-                                .foregroundStyle(.secondary)
-                        }
-                        .accessibilityIdentifier("thread.tool_call.preparing")
-                    }
-
-                    if let usage = viewModel.usageSummary {
-                        ThreadUsageFooter(summary: usage)
-                    }
-
-                        if !embedded && viewModel.events.isEmpty && viewModel.messages.isEmpty {
-                            ContentUnavailableView {
-                                Label("thread.empty", systemImage: "text.bubble")
-                            } description: {
-                                Text("thread.empty.hint")
-                            }
-                        }
-
-                        Color.clear
-                            .frame(height: 1)
-                            .id("thread-latest-anchor")
-                    }
-                    .padding()
-                    .animation(viewModel.isRunning && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: viewModel.timelineIDs)
-                }
-                .accessibilityIdentifier("thread.messages.viewport")
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .onScrollPhaseChange { old, phase in
-                    if phase == .interacting, old != .interacting {
-                        earlierActivityScrollDemand &+= 1
-                    }
-                    isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-                    if phase == .idle, latestFollow.followsLatest, !search.isActive {
-                        proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-                    }
-                }
-                .onScrollGeometryChange(for: ThreadScrollMetrics.self) { geometry in
-                    ThreadScrollMetrics(offset: geometry.contentOffset.y,
-                        height: geometry.contentSize.height,
-                        bottomDistance: geometry.contentSize.height + geometry.contentInsets.bottom
-                            - geometry.contentOffset.y - geometry.containerSize.height)
-                } action: { old, new in
-                    latestFollow.observe(offset: new.offset, bottomDistance: new.bottomDistance,
-                                         userScrolling: isUserScrolling)
-                    showsReturnToLatest = latestFollow.isAwayFromLatest && !latestFollow.followsLatest
-                    // Observe layout too: an image or tool card can grow without
-                    // adding an event or increasing the streamed text length.
-                    if old.height != new.height, latestFollow.followsLatest, !isUserScrolling,
-                       !search.isActive {
-                        proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-                    }
-                }
-                .background(GeometryReader { geometry in
-                    Color.clear
-                        .onAppear { threadViewportFrame = geometry.frame(in: .global) }
-                        .onChange(of: geometry.frame(in: .global)) { _, new in
-                            threadViewportFrame = new
-                        }
-                })
-
-                if showsReturnToLatest {
-                    Button {
-                        latestFollow.returnToLatest()
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
-                            proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-                        }
-                        showsReturnToLatest = false
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 38, height: 38)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.circle)
-                    .padding(.trailing, 14)
-                    .padding(.bottom, 12)
-                    .accessibilityLabel("chat.thread_detail_view.jump_to_latest")
-                    .accessibilityHint("chat.thread_detail_view.scroll_to_the_latest_message_in")
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .onChange(of: viewModel.hasLoaded) { _, loaded in
-                guard loaded else { return }
-                latestFollow.returnToLatest()
-                if !search.isActive {
-                    proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
-                }
-                showsReturnToLatest = false
-            }
-            .onChange(of: scrollRequest) { _, request in
-                guard let request,
-                      let rowID = viewModel.timelineID(forMessageID: request.messageID) else {
-                    return
-                }
-                // The row may be inserted by the bounded search window in the
-                // same turn; one yield lets LazyVStack see the new data before
-                // asking ScrollViewReader to move to it.
-                Task { @MainActor in
-                    await Task.yield()
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        proxy.scrollTo(rowID, anchor: .center)
-                    }
-                    showsReturnToLatest = true
-                }
-            }
-            .onChange(of: [viewModel.liveStreamedText.utf8.count, viewModel.liveReasoningText.utf8.count,
-                           viewModel.events.count, viewModel.messages.count,
-                           viewModel.isRunning ? 1 : 0]) { _, _ in
-                // Follow only when the user has not intentionally scrolled
-                // away to inspect earlier reasoning or tool output.
-                guard viewModel.hasLoaded, latestFollow.followsLatest, !isUserScrolling,
-                      !search.isActive else { return }
-                proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
+        let timeline = viewModel.timeline
+        let jump = scrollRequest.flatMap { request in
+            viewModel.timelineID(forMessageID: request.messageID).map {
+                ThreadTranscriptJump(id: request.id, rowID: $0)
             }
         }
-    }
+        return ThreadTranscriptViewport(
+            ready: viewModel.hasLoaded, searchIsActive: search.isActive, jump: jump,
+            updates: ThreadTranscriptUpdates(textBytes: viewModel.liveStreamedText.utf8.count,
+                reasoningBytes: viewModel.liveReasoningText.utf8.count, eventCount: viewModel.events.count,
+                messageCount: viewModel.messages.count, isRunning: viewModel.isRunning),
+            firstRowID: timeline.first?.id, hasEarlierMessages: viewModel.hasEarlierMessages,
+            loadingEarlierMessages: viewModel.loadingEarlierMessages,
+            loadEarlier: {
+                let previous = viewModel.messages.first?.id
+                await viewModel.loadEarlierMessages()
+                return previous != viewModel.messages.first?.id
+            }
+        ) { layout in
+            ThreadTimelineRows(items: timeline, rowIDs: viewModel.timelineIDs, isRunning: viewModel.isRunning) {
+                timelineRow($0, layout: layout)
+            }
 
-    /// Renders one unified timeline row.
-    @ViewBuilder
-    private func datedTimelineRow(_ item: ThreadTimelineItem) -> some View {
-        switch item {
-        case .userMessage(let message):
-            VStack(alignment: .trailing, spacing: 2) {
-                timelineRow(item)
-                ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
-                    userText: PlanConfirmationSnapshot.from(message: message) == nil ? message.content : nil)
+            #if canImport(AlarmKit)
+            // A successful timer can precede any model text, including
+            // while this run is parked in task.wait. Supply only its
+            // unassigned cards until a real answer body takes over.
+            if !viewModel.isTemporary, !search.isActive,
+               !timeline.contains(where: {
+                   if case .liveAssistantTail = $0 { return true }
+                   return false
+               }),
+               let runID = viewModel.selectedRun?.id,
+               legacyAnswerID(runID: runID) == nil {
+                let timerProjection = InlineTimerBodyProjection.project(
+                    text: "", events: viewModel.eventsByRun[runID] ?? [], isStreaming: true)
+                if !timerProjection.isEmpty {
+                    InlineAnswerBodyView(source: "")
+                        .environment(\.inlineTimerProjection, timerProjection)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-        case .assistantMessage(_, let id, let sentAt):
-            VStack(alignment: .leading, spacing: 2) {
-                timelineRow(item)
-                ChatMessageFooter(sentAt: sentAt, messageID: id)
+            #endif
+
+            if viewModel.isRunning, viewModel.liveStateName == "preparingToolCall" {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("state.preparing_tool_call")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("thread.tool_call.preparing")
             }
-        default:
-            timelineRow(item)
+
+            if let usage = viewModel.usageSummary {
+                ThreadUsageFooter(summary: usage)
+            }
+
+            if !embedded && viewModel.events.isEmpty && viewModel.messages.isEmpty {
+                ContentUnavailableView {
+                    Label("thread.empty", systemImage: "text.bubble")
+                } description: {
+                    Text("thread.empty.hint")
+                }
+            }
         }
+        .id(viewModel.conversationID)
     }
 
     @ViewBuilder
-    private func timelineRow(_ item: ThreadTimelineItem) -> some View {
+    private func timelineRow(_ item: ThreadTimelineItem, layout: ThreadTranscriptLayout) -> some View {
         switch item {
         case .earlierEvents(let runID):
             // Visibility and real scroll gestures demand bounded pages.
             // Never move the reader to manufacture a new visibility edge.
             ThreadEarlierActivityRow(viewModel: viewModel, runID: runID,
-                                     viewportFrame: threadViewportFrame,
-                                     scrollDemand: earlierActivityScrollDemand)
+                                     viewportFrame: layout.viewportFrame,
+                                     scrollDemand: layout.earlierActivityDemand)
         case .userMessage(let message):
             if search.isActive,
                !viewModel.searchHighlightRanges(
@@ -1990,54 +1860,6 @@ private struct PendingInputEditor: View {
     }
 }
 
-/// The terminal marker row: a single quiet status line, always rendered
-/// after the final assistant reply. No big card, no raw machine names —
-/// the stop reason resolves through RunStateLocalizer.
-struct TerminalEventRow: View {
-    let event: RunEventRecord
-
-    private var state: String {
-        ConversationCenter.decodePayload(event.payloadJSON)["stopReason"] ?? "completed"
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: state == "completed" || state == "endTurn"
-                ? "checkmark.circle" : "stop.circle")
-                .foregroundStyle(RunStateLocalizer.color(for: "completed"))
-                .accessibilityHidden(true)
-            Text(RunStateLocalizer.terminalTitle(stopReason: state))
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(event.createdAt, style: .time)
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("thread.terminal")
-    }
-}
-
-/// A completed run that produced no final assistant text is an explicit,
-/// honest failure surface — never silent.
-private struct MissingFinalMessageRow: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.bubble")
-                .foregroundStyle(FloeTheme.pending)
-                .accessibilityHidden(true)
-            Text("thread.no_final_reply")
-                .font(FloeTheme.Typography.body)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("thread.no_final_reply")
-    }
-}
-
 /// A persisted message: user goals render as right-aligned bubbles with
 /// attachment chips; other roles (final assistant answers) render as
 /// Markdown in the left-aligned reading column.
@@ -2108,50 +1930,6 @@ private struct MessageBubble: View {
         }
     }
 }
-/// Historical user decision. All content comes from THIS message's frozen
-/// snapshot; opening the card never fetches the current Plan or Goal.
-/// The user's own text with every find term highlighted. Mirrors the normal
-/// user bubble; only the rendering path changes while find is active.
-private struct ThreadSearchHighlightedUserMessage: View {
-    let text: String
-    let ranges: [Range<Int>]
-
-    var body: some View {
-        HStack(alignment: .top) {
-            Spacer(minLength: 40)
-            Text(ThreadSearchText.highlighted(text, ranges: ranges))
-                .font(FloeTheme.Typography.body)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    FloeTheme.primary.opacity(0.14),
-                    in: RoundedRectangle(cornerRadius: 12))
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(String(localized: "thread.role.user"))
-    }
-}
-
-/// The assistant's visible answer with every find term highlighted. Rich
-/// Markdown blocks are temporarily rendered as their flattened visible text so
-/// the highlight cannot drift between source and display offsets.
-private struct ThreadSearchHighlightedAssistantMessage: View {
-    let text: String
-    let ranges: [Range<Int>]
-
-    var body: some View {
-        Text(ThreadSearchText.highlighted(text, ranges: ranges))
-            .font(FloeTheme.Typography.body)
-            .foregroundStyle(.primary)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(String(localized: "thread.role.assistant"))
-    }
-}
-
 private struct TaskExportFile: Identifiable {
     let id = UUID()
     let url: URL

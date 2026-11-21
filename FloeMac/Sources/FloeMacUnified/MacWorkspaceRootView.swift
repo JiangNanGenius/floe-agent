@@ -19,6 +19,7 @@ private enum MacWorkspaceDestination: Hashable {
 struct MacWorkspaceRootView: View {
     #if FLOE_MAC_HOST_SMOKE
     static var smokeTaskCenterFrame: CGRect?
+    static var smokeNewTaskFrame: CGRect?
     static var smokeTemporaryFrame: CGRect?
     static var smokeSidebarFrames: [String: CGRect] = [:]
     static let smokeRevealProjectRow = Notification.Name("FloeWorkbenchSmokeRevealProjectRow")
@@ -415,6 +416,9 @@ struct MacWorkspaceRootView: View {
             sidebarLink(.newTask(nil), title: "workbench.new_task", icon: "square.and.pencil")
                 .accessibilityIdentifier("sidebar.workbench.new_task")
                 .disabled(!canSelectTask)
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { Self.smokeNewTaskFrame = $0 })
+                #endif
             sidebarLink(.taskCenter, title: "app.floe_agent_app.task_center", icon: "checklist")
                 .accessibilityIdentifier("workspace.taskCenter")
                 #if FLOE_MAC_HOST_SMOKE

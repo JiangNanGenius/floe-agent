@@ -152,24 +152,22 @@ struct MacTemporaryChatView: View {
                 .disabled(model.messages.isEmpty || model.keeping)
             }
             Divider()
-            ScrollViewReader { scroll in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(model.messages.filter { ["user", "assistant"].contains($0.role) }) { message in
-                            if message.role == "user" {
-                                UserMessageBubble(text: CredentialMessagePart.clipboardText(message.content)
-                                    ?? String(localized: "chat.user_message_bubble.secure_credentials"))
-                            } else {
-                                MarkdownRendererView(source: message.content)
-                            }
+            ThreadTranscriptViewport(ready: model.session != nil, searchIsActive: false, jump: nil,
+                updates: ThreadTranscriptUpdates(textBytes: model.answer.utf8.count, reasoningBytes: 0,
+                    eventCount: 0, messageCount: model.messages.count, isRunning: model.sending),
+                firstRowID: nil, hasEarlierMessages: false, loadingEarlierMessages: false, loadEarlier: { false }) { _ in
+                ForEach(model.messages.filter { ["user", "assistant"].contains($0.role) }) { message in
+                    Group {
+                        if message.role == "user" {
+                            UserMessageBubble(text: CredentialMessagePart.clipboardText(message.content)
+                                ?? String(localized: "chat.user_message_bubble.secure_credentials"))
+                        } else {
+                            MarkdownRendererView(source: message.content)
                         }
-                        if !model.answer.isEmpty { MarkdownRendererView(source: model.answer, isStreaming: true) }
-                        Color.clear.frame(height: 1).id("end")
                     }
                     .textSelection(.enabled)
                 }
-                .onChange(of: model.messages.count) { scroll.scrollTo("end", anchor: .bottom) }
-                .onChange(of: model.answer) { scroll.scrollTo("end", anchor: .bottom) }
+                if !model.answer.isEmpty { MarkdownRendererView(source: model.answer, isStreaming: true).textSelection(.enabled) }
             }
             if let approval = model.approval {
                 let fields = (try? JSONSerialization.jsonObject(with: approval.toolCall.argumentsJSON)) as? [String: Any]

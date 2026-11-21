@@ -7,12 +7,22 @@
 // typography). Status colors come exclusively from FloeTheme semantic
 // tokens — pending amber, success green, failure red.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
 import CryptoKit
 import FloeCore
 import FloeModels
 import FloeTools
+
+#if canImport(UIKit)
+import UIKit
+/// Platform image for verified tool-artifact thumbnails.
+typealias ThreadToolCardImage = UIImage
+#else
+import AppKit
+/// Platform image for verified tool-artifact thumbnails.
+typealias ThreadToolCardImage = NSImage
+#endif
 
 /// Provider call IDs are unique only within their owning run. A legacy row
 /// without a call ID uses its durable event ID instead of sharing an empty key.
@@ -62,12 +72,20 @@ struct ToolCallCardView: View {
     /// details are collapsed.
     var outputFiles: [RunOutputFile] = []
     /// Trusted identity of the persisted tool-result row that carries the
-    /// receipts; nil for calls without a verifiable envelope.
+    /// receipts; nil for calls without a verifiable envelope. The context
+    /// type is UIKit-gated today (Render/RunOutputFileView.swift); macOS
+    /// supplies nil until that surface is ported.
+    #if canImport(UIKit)
     var outputContext: RunOutputReceiptContext? = nil
+    #endif
     /// Native outcome uncertainty must never become a Saved badge.
     var outcomeUnknown = false
     /// The exact native completion, never a link parsed from model text.
+    /// The reference type depends on FloeGit (not vendored by the unified
+    /// macOS host); macOS supplies nil until that adapter lands.
+    #if canImport(UIKit)
     var gitHubSource: GitHubSourceReference? = nil
+    #endif
     var diagnosticProgress: [TaskDiagnosticProgress] = []
 
     /// The thread supplies its run/call-scoped choice; other hosts retain a
@@ -97,26 +115,37 @@ struct ToolCallCardView: View {
             if name == "network.traceroute", !diagnosticProgress.isEmpty {
                 NativeTracerouteProgressView(observations: diagnosticProgress)
             }
+            #if canImport(UIKit)
             if let gitHubSource { GitHubSourceCard(reference: gitHubSource, inputSummary: inputSummary) }
             if name.hasPrefix("studio."), ["ok", "success", "succeeded"].contains(status), let resultSummary {
                 StudioToolResultView(toolName: name, summary: resultSummary)
             }
+            #endif
             if !imageArtifacts.isEmpty {
                 ArtifactImageGallery(artifacts: imageArtifacts)
             }
             // File changes remain visible even when technical tool details are folded.
+            // The disposition helper (NativeFileDiff.swift) is portable, but the
+            // card it feeds is UIKit-gated and the file is not linked into the
+            // macOS host, so the whole proposal block is UIKit-scoped.
+            #if canImport(UIKit)
             if let proposal = NativeFileDiffDisposition.proposedPatch(tool: name, status: status, input: inputSummary),
                !richArtifacts.contains(where: { $0.mimeType == "text/x-diff" }) {
                 NativeFileChangeCard(diffText: proposal, disposition: .proposal)
             }
+            #endif
             if !richArtifacts.isEmpty {
+                #if canImport(UIKit)
                 RichArtifactGallery(artifacts: richArtifacts,
                     fileDiffDisposition: NativeFileDiffDisposition.result(tool: name, status: status,
                         summary: resultSummary, outcomeUnknown: outcomeUnknown))
+                #endif
             }
+            #if canImport(UIKit)
             if let outputContext, !outputFiles.isEmpty {
                 RunOutputFilesCard(receipts: outputFiles, context: outputContext)
             }
+            #endif
             if isExpanded {
                 Divider()
                 detail.transition(FloeTheme.stepTransition(reduceMotion: reduceMotion))
@@ -142,7 +171,7 @@ struct ToolCallCardView: View {
                     .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(StudioToolResultView.title(for: name)).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    Text(Self.cardTitle(for: name)).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         .lineLimit(2).multilineTextAlignment(.leading)
                     HStack(spacing: 8) {
                         Text(statusTitle).foregroundStyle(statusColor)
@@ -231,8 +260,26 @@ struct ToolCallCardView: View {
     }
 
     private var displayedArtifacts: [ToolArtifactReference] {
+        #if canImport(UIKit)
         ToolArtifactPresentation.withoutLegacyPlaygroundDuplicates(artifacts,
             outputs: outputFiles, context: outputContext)
+        #else
+        // The legacy-playground duplicate filter needs the sealed receipt
+        // context (UIKit-gated); with no output card on macOS the raw
+        // artifact list is the honest projection.
+        artifacts
+        #endif
+    }
+
+    /// The card's accessible title. The studio display names are a UIKit
+    /// surface today; macOS shows the raw tool name until that catalog is
+    /// shared.
+    private static func cardTitle(for name: String) -> String {
+        #if canImport(UIKit)
+        return StudioToolResultView.title(for: name)
+        #else
+        return name
+        #endif
     }
 
     private var statusIcon: String {
@@ -286,6 +333,7 @@ struct ToolCallCardView: View {
 /// the same canonical MIME policy so an image row is never collapsed into one
 /// accessibility element that hides its individual preview controls.
 enum ToolArtifactPresentation {
+    #if canImport(UIKit)
     static func withoutLegacyPlaygroundDuplicates(_ artifacts: [ToolArtifactReference], outputs: [RunOutputFile],
         context: RunOutputReceiptContext?) -> [ToolArtifactReference] {
         guard let context, context.toolName == "image.playground", let callID = context.callID else { return artifacts }
@@ -300,6 +348,7 @@ enum ToolArtifactPresentation {
             return !owned.contains { $0.sha256 == artifact.sha256 && $0.byteCount == artifact.byteCount && $0.mimeType == artifact.mimeType }
         }
     }
+    #endif
     static func isImage(_ artifact: ToolArtifactReference) -> Bool {
         ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil
     }
@@ -334,16 +383,36 @@ struct ArtifactImageView: View {
     let artifact: ToolArtifactReference
     let index: Int
     var preverified: VerifiedChatInlineArtifact? = nil
-    @State private var image: UIImage?
+    @State private var image: ThreadToolCardImage?
     @State private var fileURL: URL?
     @State private var failed = false
     @State private var showingFullScreen = false
+
+    /// Platform decode of verified image bytes.
+    private static func decode(_ data: Data) -> ThreadToolCardImage? {
+        #if canImport(UIKit)
+        return UIImage(data: data)
+        #else
+        return NSImage(data: data)
+        #endif
+    }
+
+    /// The verified thumbnail, rendered with the platform image initializer.
+    /// Concrete `Image` return: the call sites apply Image-specific members
+    /// (`.resizable()`), which an opaque `some View` would hide.
+    private func thumbnail(_ image: ThreadToolCardImage) -> Image {
+        #if canImport(UIKit)
+        return Image(uiImage: image)
+        #else
+        return Image(nsImage: image)
+        #endif
+    }
 
     var body: some View {
         Group {
             if let image, let fileURL {
                 VStack(alignment: .leading, spacing: 8) {
-                    Image(uiImage: image)
+                    thumbnail(image)
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity)
@@ -368,11 +437,19 @@ struct ArtifactImageView: View {
             }
         }
         .task(id: artifact.id) { await loadVerifiedImage() }
+        #if canImport(UIKit)
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let image, let fileURL {
                 FullScreenArtifactImage(image: image, fileURL: fileURL, title: imageTitle)
             }
         }
+        #else
+        .sheet(isPresented: $showingFullScreen) {
+            if let image, let fileURL {
+                FullScreenArtifactImage(image: image, fileURL: fileURL, title: imageTitle)
+            }
+        }
+        #endif
         .onChange(of: artifact.id) { _, _ in showingFullScreen = false }
     }
 
@@ -387,7 +464,7 @@ struct ArtifactImageView: View {
         if let preverified, preverified.artifact == artifact {
             let bytes = await Task.detached(priority: .utility) { preverified.imagePreviewData() }.value
             guard !Task.isCancelled else { return }
-            guard let bytes, let decoded = UIImage(data: bytes) else { failed = true; return }
+            guard let bytes, let decoded = Self.decode(bytes) else { failed = true; return }
             image = decoded; fileURL = preverified.fileURL
             return
         }
@@ -399,7 +476,7 @@ struct ArtifactImageView: View {
                 root: support.appendingPathComponent("FloeAgent", isDirectory: true))
         }.value
         guard !Task.isCancelled else { return }
-        guard let loaded, let decoded = UIImage(data: loaded.data) else {
+        guard let loaded, let decoded = Self.decode(loaded.data) else {
             failed = true
             return
         }
@@ -409,7 +486,7 @@ struct ArtifactImageView: View {
 }
 
 private struct FullScreenArtifactImage: View {
-    let image: UIImage
+    let image: ThreadToolCardImage
     let fileURL: URL
     /// One-based gallery identity, visible in the navigation bar and exposed
     /// to assistive technology so a batch never becomes an anonymous image.
@@ -418,11 +495,19 @@ private struct FullScreenArtifactImage: View {
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
 
+    private func presentedImage(_ image: ThreadToolCardImage) -> Image {
+        #if canImport(UIKit)
+        return Image(uiImage: image)
+        #else
+        return Image(nsImage: image)
+        #endif
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
-                Image(uiImage: image)
+                presentedImage(image)
                     .resizable()
                     .scaledToFit()
                     .scaleEffect(scale)
@@ -444,11 +529,17 @@ private struct FullScreenArtifactImage: View {
                     .accessibilityIdentifier("chat.artifact.image.preview")
             }
             .navigationTitle(Text(verbatim: title))
+            #if canImport(UIKit)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.black.opacity(0.72), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
+            #else
+            .toolbarBackground(.black.opacity(0.72), for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
+            #endif
             .toolbar {
+                #if canImport(UIKit)
                 ToolbarItem(placement: .topBarLeading) {
                     Button("workspace.workspace_canvas_view.done") { dismiss() }
                         .foregroundStyle(.white)
@@ -462,6 +553,21 @@ private struct FullScreenArtifactImage: View {
                             .foregroundStyle(.white)
                     }
                 }
+                #else
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("workspace.workspace_canvas_view.done") { dismiss() }
+                        .foregroundStyle(.white)
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("chat.artifact.image.preview.done")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    ShareLink(item: fileURL) {
+                        Label("chat.tool_call_card_view.save_or_share_image", systemImage: "square.and.arrow.up")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.white)
+                    }
+                }
+                #endif
             }
         }
     }
@@ -476,7 +582,10 @@ private struct BoundedToolEvidence: View {
         VStack(alignment: .leading) {
             Text(String(text[..<end]))
             if end != text.endIndex {
-                Button(IDELanguageRunText.t("显示更多输出", "Show more output")) { limit += 8_192 }
+                Button(ChatBilingualCatalog.localized(
+                    key: "tool.show_more_output",
+                    en: "Show more output",
+                    zh: "显示更多输出")) { limit += 8_192 }
                     .frame(minHeight: 44)
             }
         }

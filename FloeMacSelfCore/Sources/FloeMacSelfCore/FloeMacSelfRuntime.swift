@@ -2423,6 +2423,55 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    // MARK: - Shared transcript pager reads
+
+    /// The read-only stores behind the shared `ThreadHistoryPager`. These are
+    /// the SAME `ConversationStore` / `RunStore` protocols and the same SQLite
+    /// owner the iPad thread reads through; the pager adds no second reader
+    /// and no second persistence format.
+    public func transcriptReadStores() throws -> (conversations: any ConversationStore, runs: any RunStore) {
+        let stores = try requireStores()
+        return (stores.conversations, stores.runs)
+    }
+
+    /// In-conversation durable message matches for the shared in-chat find:
+    /// the SAME visible-text matcher and projected snippets the iPad
+    /// `SQLiteIntelligenceStore` owns, scoped to exactly one conversation.
+    public func conversationMessageMatches(
+        conversationID: UUID,
+        rawQuery: String,
+        limit: Int = 200
+    ) async throws -> [ConversationMessageMatch] {
+        let stores = try requireStores()
+        do {
+            return try await stores.intelligence.conversationMessageMatches(
+                conversationID: conversationID, rawQuery: rawQuery, limit: limit
+            )
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
+    /// ONE direct bounded hit lookup: the exact message plus a fixed number
+    /// of older/newer neighbours, never the whole conversation. Parts are
+    /// hydrated so the merged rows render exactly like a page read. Same
+    /// contract as the iPad `conversationMessageWindow`.
+    public func conversationMessageWindow(
+        conversationID: UUID,
+        around messageID: UUID,
+        before: Int = 40,
+        after: Int = 4
+    ) async throws -> [PersistedMessage] {
+        let stores = try requireStores()
+        do {
+            return try await stores.intelligence.conversationMessageWindow(
+                conversationID: conversationID, around: messageID, before: before, after: after
+            )
+        } catch {
+            throw Self.surface(error)
+        }
+    }
+
     public func conversationTranscript(conversationID: UUID) async throws -> [PersistedMessage] {
         let stores = try requireStores()
         do {

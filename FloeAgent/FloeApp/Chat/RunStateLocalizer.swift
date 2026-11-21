@@ -8,7 +8,7 @@
 // end the loading state — `isLoading(stateName:hasError:)` is the sole
 // decision function.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 import FloePersistence
 import FloeAgentRuntime
@@ -210,6 +210,7 @@ struct ConversationActivityPresentation: Equatable {
 
 /// Reads only bounded current-run facts from the existing database reader.
 /// No whole-thread subscriptions, polling or parallel notification service.
+#if canImport(UIKit)
 struct ConversationActivityBadge: View {
     let conversationID: UUID
     @ObservedObject var center: ConversationCenter
@@ -299,4 +300,5 @@ struct ConversationActivityBadge: View {
                             + Text(activity.detail.map { ": " + $0 } ?? ""))
     }
 }
+#endif
 #endif

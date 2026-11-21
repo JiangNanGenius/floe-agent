@@ -281,7 +281,7 @@ struct ProviderEditorView: View {
             .accessibilityIdentifier("providers.supplier_field")
             .popover(isPresented: $showsCatalogPicker) {
                 ProviderCatalogPicker(
-                    role: viewModel.serviceRole,
+                    role: viewModel.serviceRole.catalogRole,
                     presets: viewModel.availablePresets,
                     selectedPresetID: viewModel.selectedPreset.id,
                     catalog: catalog,

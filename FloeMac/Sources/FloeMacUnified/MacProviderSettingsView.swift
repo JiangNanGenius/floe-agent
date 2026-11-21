@@ -11,6 +11,9 @@ struct MacProviderSettingsView: View {
     #if FLOE_MAC_HOST_SMOKE
     static var smokeEditorRole: ProviderCatalogServiceRole?
     static var smokeSelectionFrames: [ProviderCatalogServiceRole: CGRect] = [:]
+    static var smokeAccountFrames: [String: CGRect] = [:]
+    static var smokeSupplierFrame: CGRect?
+    static var smokeSupplierPickerMounted = false
     #endif
     @Binding private var pendingAddRole: ProviderCatalogServiceRole?
     @Binding private var editingID: UUID?
@@ -150,27 +153,6 @@ struct MacProviderSettingsView: View {
         .onDisappear {
             cancelConnectionCheck()
             workspace.cancelModelDiscovery()
-        }
-        .sheet(isPresented: $showsCatalog) {
-            MacProviderCatalogPicker(
-                role: role,
-                presets: presets,
-                selectedPresetID: draft.presetID,
-                selectedCatalogID: draft.catalogID,
-                catalog: catalog,
-                configuredPresetIDs: Set(groups.compactMap(\.presetID)),
-                isRefreshing: workspace.refreshingModelProviderCatalog,
-                errorMessage: catalogError,
-                onRefresh: { await refreshCatalog() },
-                onSelect: { entry in
-                    applyCatalogEntry(entry)
-                    showsCatalog = false
-                },
-                onSelectPreset: { preset in
-                    applyPreset(preset.id)
-                    showsCatalog = false
-                }
-            )
         }
         .sheet(isPresented: $showingICloud) {
             MacICloudModelsView(workspace: workspace, providerID: editingID, modelID: draft.editingModelID) { id in
@@ -313,6 +295,11 @@ struct MacProviderSettingsView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("settings.providers.account." + role.rawValue + "." + group.id.uuidString)
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader {
+                Self.smokeAccountFrames["\(role.rawValue).\(group.id.uuidString)"] = $0
+            })
+            #endif
             Toggle(isOn: Binding(get: { group.profile.isEnabled },
                                  set: { _ = workspace.setAccountEnabled(id: group.id, enabled: $0) })) {
                 Text(MacProviderText.t("启用供应商", "Enable Provider"))
@@ -356,6 +343,12 @@ struct MacProviderSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("settings.providers.preset")
+                    .popover(isPresented: $showsCatalog, arrowEdge: .bottom) {
+                        supplierPicker
+                    }
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { Self.smokeSupplierFrame = $0 })
+                    #endif
                 }
                 TextField(MacProviderText.t("名称（可选）", "Name (optional)"), text: $draft.name)
                     .accessibilityIdentifier("settings.providers.name")
@@ -492,6 +485,26 @@ struct MacProviderSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    private var supplierPicker: some View {
+        ProviderCatalogPicker(
+            role: role, presets: presets, selectedPresetID: draft.presetID, selectedCatalogID: draft.catalogID,
+            catalog: catalog, configuredPresetIDs: Set(groups.compactMap(\.presetID)),
+            onRefresh: { await refreshCatalog() }, refreshError: catalogError,
+            onSelect: { entry in
+                applyCatalogEntry(entry)
+                showsCatalog = false
+            },
+            onSelectPreset: { preset in
+                applyPreset(preset.id)
+                showsCatalog = false
+            }
+        )
+        #if FLOE_MAC_HOST_SMOKE
+        .onAppear { Self.smokeSupplierPickerMounted = true }
+        .onDisappear { Self.smokeSupplierPickerMounted = false }
+        #endif
     }
 
     private func groupRecords(_ providerID: UUID) -> [HostAgentProvider] {

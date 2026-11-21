@@ -7,7 +7,7 @@
 // shows exactly one of them, never both stacked). The composer draft, its
 // selection and the conversation are never touched here.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 import FloeCore
 
@@ -27,7 +27,9 @@ struct ThreadSearchBar: View {
                 .submitLabel(.search)
                 .focused($fieldFocused)
                 .autocorrectionDisabled()
+                #if canImport(UIKit)
                 .textInputAutocapitalization(.never)
+                #endif
                 .onSubmit { Task { await model.next() } }
                 .accessibilityIdentifier("thread.find.field")
             if model.isSearching {

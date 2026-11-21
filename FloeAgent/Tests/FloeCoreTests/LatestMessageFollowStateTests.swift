@@ -28,4 +28,13 @@ struct LatestMessageFollowStateTests {
         state.observe(offset: 0, bottomDistance: 200, userScrolling: false)
         #expect(state.followsLatest)
     }
+
+    @Test func jumpingToHistoryPausesFollowBeforeTheNewPositionLaysOut() {
+        var state = LatestMessageFollowState()
+        state.observe(offset: 500, bottomDistance: 0, userScrolling: false)
+        state.pauseFollowing()
+        state.observe(offset: 200, bottomDistance: 700, userScrolling: false)
+        #expect(!state.followsLatest)
+        #expect(state.isAwayFromLatest)
+    }
 }

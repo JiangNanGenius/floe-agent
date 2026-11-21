@@ -10,6 +10,8 @@ public struct LatestMessageFollowState: Sendable, Equatable {
 
     public mutating func returnToLatest() { followsLatest = true }
 
+    public mutating func pauseFollowing() { followsLatest = false }
+
     public mutating func observe(offset: Double, bottomDistance: Double, userScrolling: Bool) {
         isAwayFromLatest = bottomDistance > 48
         if userScrolling {

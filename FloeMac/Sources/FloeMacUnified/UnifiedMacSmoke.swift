@@ -97,6 +97,10 @@ final class UnifiedMacSmoke {
             await exerciseRunningAttachments(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--transcript-parity-only") {
+            await exerciseTranscriptParity(model)
+            return
+        }
         let firstLaunch = CommandLine.arguments.contains("--verify-first-launch")
         if firstLaunch || CommandLine.arguments.contains("--verify-saved-launch-mode") {
             let deadline = ContinuousClock.now + .seconds(5)
@@ -715,6 +719,51 @@ final class UnifiedMacSmoke {
         finish(["checks": checks])
     }
 
+    private func exerciseTranscriptParity(_ model: BridgeAppModel) async {
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+        await agent.prepare()
+        let deadline = ContinuousClock.now + .seconds(6)
+        while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
+        guard await agent.verifyChatSmoke(), let id = agent.selectedID else { finish(["savedChat": false]); return }
+        await agent.select(id)
+        let items = ThreadTimelineBuilder.buildConversation(messages: agent.messages, runs: agent.transcriptRuns,
+            eventsByRun: agent.transcriptEventsByRun, liveRunID: nil, isRunning: false,
+            liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
+        let prompts = items.indices.filter { if case .userMessage = items[$0] { true } else { false } }
+        let answers = items.indices.filter { if case .assistantMessage = items[$0] { true } else { false } }
+        let terminals = items.indices.filter { if case .terminal = items[$0] { true } else { false } }
+        let savedOrder = prompts.count == 1 && answers.count == 1 && terminals.count == 1
+            && prompts[0] < answers[0] && answers[0] < terminals[0]
+        let history: Bool
+        if let pdf = try? writePDFTextAttachment() { history = await agent.verifyConversationHistorySmoke(reference: pdf) }
+        else { history = false }
+        var foundEarlierMessage = false
+        if history, let first = try? await agent.transcript(conversationID: id).first {
+            foundEarlierMessage = await openSearchResult(query: "\"Fixture earlier message 0\"",
+                conversationID: id, messageID: first.id, workspace: agent)
+        }
+        if let content = visibleWorkbench?.contentView { capture(content, extension: "shared-transcript.png") }
+        let projectRoot = root.appendingPathComponent("Transcript Approvals", isDirectory: true)
+        var approvals = (allowed: false, denied: false)
+        var pressed = Set<Bool>()
+        if (try? FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: false)) != nil,
+           let project = await agent.addWorkspace(name: "Transcript Approvals", rootURL: projectRoot, selectForNewTask: false),
+           await openNewTaskFromSidebar(workspace: agent) {
+            approvals = await agent.verifyAgentApprovalSmoke(project: project, checkingFile: projectRoot) { allow in
+                let image = allow ? "transcript-approve.png" : "transcript-deny.png"
+                guard clickApproval(in: agent, allow: allow, screenshot: image) else { return false }
+                pressed.insert(allow)
+                return true
+            }
+        }
+        finish(["orderedSingleAnswer": savedOrder, "historyPagingAndExactSearch": history,
+                "openedEarlierMessageFromTaskCenter": foundEarlierMessage,
+                "approvalButtonsReached": pressed == [true, false],
+                "approvalRespected": approvals.allowed && approvals.denied,
+                "diagnostics": agent.smokeRunDiagnostics + settingsDiagnostics])
+    }
+
     private func exerciseOfficialCatalog(_ model: BridgeAppModel) async {
         model.openAgentWorkspace()
         guard let agent = model.macWorkspace?.agent, let catalogs = agent.officialCatalogs else {
@@ -726,11 +775,70 @@ final class UnifiedMacSmoke {
             let stored = try await catalogs.active(.models)
             try await agent.webSearch.refreshCatalog()
             let modelsFound = effective?.search(query: "DeepSeek", filter: .available, configuredPresetIDs: []).isEmpty == false
+            let pickerOpened = await openFixtureSupplierPicker(model, workspace: agent)
             finish(["signedModelCatalog": bytes != nil, "catalogPersisted": bytes != nil && stored == bytes,
-                    "modelSearch": modelsFound, "signedWebSearchCheck": true, "webSearchMatches": agent.webSearch.search("Google", language: "en").count])
+                    "modelSearch": modelsFound, "supplierPickerOpenedFromSettings": pickerOpened,
+                    "signedWebSearchCheck": true, "webSearchMatches": agent.webSearch.search("Google", language: "en").count,
+                    "diagnostics": settingsDiagnostics])
         } catch {
             finish(["signedModelCatalog": false, "error": String(describing: error)])
         }
+    }
+
+    private func openFixtureSupplierPicker(_ model: BridgeAppModel, workspace: HostAgentWorkspace) async -> Bool {
+        await workspace.prepare()
+        let ready = ContinuousClock.now + .seconds(4)
+        while !workspace.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(40)) }
+        guard workspace.addProvider(name: "Catalog Fixture", endpoint: "https://example.invalid/v1",
+                                    protocolKind: .openAIChatCompletions, modelID: "fixture", key: ""),
+              let account = workspace.accounts.first(where: { $0.name == "Catalog Fixture" }) else { return false }
+        model.openSettings(.models)
+        defer { model.closeSettingsWindow() }
+        let accountKey = "\(ProviderCatalogServiceRole.conversation.rawValue).\(account.id.uuidString)"
+        let accountID = "settings.providers.account." + accountKey
+        let deadline = ContinuousClock.now + .seconds(5)
+        var openedAccount = false
+        var openedPicker = false
+        func press(_ content: NSView, in window: NSWindow, id: String, frame: CGRect?) -> Bool {
+            if pressAccessibilityButton(content, id: id) { return true }
+            guard let frame, !frame.isEmpty else { return false }
+            let point = NSPoint(x: frame.midX, y: frame.midY)
+            return content.bounds.contains(content.convert(point, from: nil)) && clickWindowLocation(point, in: window)
+        }
+        while ContinuousClock.now < deadline {
+            if let window = model.smokeAgentSettingsSheet {
+                if let content = window.contentView, !openedPicker {
+                    content.layoutSubtreeIfNeeded()
+                    refreshButtonFrames(in: content)
+                    if !openedAccount {
+                        openedAccount = press(content, in: window, id: accountID,
+                            frame: MacProviderSettingsView.smokeAccountFrames[accountKey])
+                    }
+                    if openedAccount {
+                        openedPicker = press(content, in: window, id: "settings.providers.preset",
+                            frame: MacProviderSettingsView.smokeSupplierFrame)
+                    }
+                }
+                if openedPicker && MacProviderSettingsView.smokeSupplierPickerMounted {
+                    for pickerWindow in [window.attachedSheet, window] + NSApp.windows.filter(\.isVisible).map(Optional.some) {
+                        guard let content = pickerWindow?.contentView,
+                              accessibilityElement(content, id: "providers.catalog.search") != nil else { continue }
+                        capture(content, extension: "supplier-picker.png")
+                        _ = pressAccessibilityButton(content, id: "providers.catalog.cancel")
+                        return true
+                    }
+                    for surface in NSApp.windows where surface.isVisible {
+                        if let content = surface.contentView {
+                            capture(content, extension: "supplier-picker-\(surface.windowNumber).png")
+                        }
+                    }
+                    return true
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        settingsDiagnostics.append("Supplier fixture: settings=\(model.smokeAgentSettingsSheet != nil), account=\(openedAccount), picker=\(openedPicker), mounted=\(MacProviderSettingsView.smokeSupplierPickerMounted).")
+        return false
     }
 
     private func exerciseConcurrentDrafts(_ model: BridgeAppModel, endpoint: URL) async {
@@ -759,11 +867,13 @@ final class UnifiedMacSmoke {
         let visible = ContinuousClock.now + .seconds(6)
         while agent.selectedID != second && ContinuousClock.now < visible { try? await Task.sleep(for: .milliseconds(50)) }
         let concurrentlyRunning = agent.isTaskRunning(first) && agent.isTaskRunning(second)
-        let menu = await performMenuShortcut("n", title: String(localized: "workbench.new_task"))
+        let usesSidebar = CommandLine.arguments.contains("--verify-sidebar-new-task")
+        let newTask = if usesSidebar { await openNewTaskFromSidebar(workspace: agent) }
+            else { await performMenuShortcut("n", title: String(localized: "workbench.new_task")) }
         let draft = ContinuousClock.now + .seconds(2)
         while agent.selectedID != nil && ContinuousClock.now < draft { try? await Task.sleep(for: .milliseconds(30)) }
         let third = agent.uncommittedDraftID
-        let thirdUsable = menu && agent.selectedID == nil && !agent.isSending && third != first && third != second
+        let thirdUsable = newTask && agent.selectedID == nil && !agent.isSending && third != first && third != second
         let unsent = "Keep this unsent draft"
         drafts.setText(unsent, for: third)
         let done = ContinuousClock.now + .seconds(18)
@@ -777,13 +887,16 @@ final class UnifiedMacSmoke {
         await agent.select(second)
         let secondSaved = agent.messages.contains { $0.role == "user" && $0.content == promptB }
             && !agent.messages.contains { $0.role == "user" && $0.content == promptA }
-        let batchArchived = await exerciseBatchArchive(agent, ids: [first, second])
-        finish(["firstSent": firstSent, "secondOpenedBeforeAdmission": secondOpened && first != second,
+        var results: [String: Any] = ["firstSent": firstSent, "secondOpenedBeforeAdmission": secondOpened && first != second,
                 "secondSent": secondSent, "concurrentStreams": concurrentlyRunning,
-                "newTaskFromMenu": thirdUsable, "draftAfterStreams": staysOnDraft,
-                "separateSavedMessages": firstSaved && secondSaved && firstUnused && secondUnused,
-                "batchArchive": batchArchived,
-                "diagnostics": settingsDiagnostics])
+                "draftAfterStreams": staysOnDraft, "separateSavedMessages": firstSaved && secondSaved && firstUnused && secondUnused]
+        if usesSidebar { results["newTaskFromSidebar"] = thirdUsable }
+        else {
+            results["newTaskFromMenu"] = thirdUsable
+            results["batchArchive"] = await exerciseBatchArchive(agent, ids: [first, second])
+        }
+        results["diagnostics"] = settingsDiagnostics
+        finish(results)
     }
 
     private func exerciseBatchArchive(_ agent: HostAgentWorkspace, ids: Set<UUID>) async -> Bool {
@@ -1038,6 +1151,9 @@ final class UnifiedMacSmoke {
         let until = ContinuousClock.now + .seconds(4)
         while HostAgentWorkspaceView.smokeLocatedMessageID != messageID && ContinuousClock.now < until {
             try? await Task.sleep(for: .milliseconds(40))
+        }
+        if HostAgentWorkspaceView.smokeLocatedMessageID == messageID {
+            try? await Task.sleep(for: .milliseconds(320))
         }
         if let content = visibleWorkbench?.contentView { capture(content, extension: "content-search-open.png") }
         let selected = workspace.selectedID == conversationID
@@ -1651,6 +1767,16 @@ final class UnifiedMacSmoke {
         return workspace.selectedID == nil
     }
 
+    private func openNewTaskFromSidebar(workspace: HostAgentWorkspace) async -> Bool {
+        guard clickWorkbenchButton(ids: ["sidebar.workbench.new_task"], frame: MacWorkspaceRootView.smokeNewTaskFrame,
+                                   screenshot: nil) else { return false }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while workspace.selectedID != nil && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        return workspace.selectedID == nil
+    }
+
     private func openNewProjectTask(workspace: HostAgentWorkspace, projectID: UUID,
                                     screenshot: String? = "project-task-start.png", fromName: Bool = false) async -> Bool {
         guard let window = visibleWorkbench, let content = window.contentView, window.attachedSheet == nil else {
@@ -1789,6 +1915,15 @@ final class UnifiedMacSmoke {
         return (element.accessibilityChildren() ?? []).contains {
             pressAccessibilityButton($0, id: id, remaining: remaining - 1)
         }
+    }
+
+    private func accessibilityElement(_ value: Any, id: String, remaining: Int = 16) -> (any NSAccessibilityProtocol)? {
+        guard remaining > 0, let element = value as? any NSAccessibilityProtocol else { return nil }
+        if element.accessibilityIdentifier() == id { return element }
+        for child in element.accessibilityChildren() ?? [] {
+            if let found = accessibilityElement(child, id: id, remaining: remaining - 1) { return found }
+        }
+        return nil
     }
 
     private func captureWindow(_ window: NSWindow, suffix: String) {

@@ -4,11 +4,12 @@
 //
 // The assistant's answer is the visual subject of the thread: a wide,
 // left-aligned reading column on the opaque reading surface, rendered
-// through MarkdownRendererView. It deliberately does NOT mirror the
+// through the shared Markdown body (InlineAnswerBodyView on iPad, the same
+// MarkdownRendererView core on macOS). It deliberately does NOT mirror the
 // user bubble's tint/alignment so the two roles never blur. A read-aloud
-// button lets the user hear the answer.
+// button lets the user hear the answer where the speech service exists.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
 
 /// One assistant answer: Markdown-rendered, full-width reading column.
@@ -29,18 +30,27 @@ struct AssistantMessageView: View {
     var onDesignAttachment: ((AttachmentChipItem) -> Void)? = nil
     var helpRunID: UUID? = nil
 
+    #if canImport(UIKit)
     @EnvironmentObject private var speechService: SpeechService
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
     @State private var localSpeechOwnerID = UUID()
 
     private var playbackOwnerID: UUID { speechOwnerID ?? localSpeechOwnerID }
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            #if canImport(UIKit)
             InlineAnswerBodyView(source: text, isStreaming: isStreaming, helpRunID: helpRunID)
+            #else
+            // The macOS host reuses the identical Markdown reading core;
+            // InlineAnswerBodyView's timer/host overlays are iPad surfaces.
+            MarkdownRendererView(source: text, isStreaming: isStreaming)
+            #endif
             if !attachments.isEmpty {
                 AttachmentChipRow(items: attachments, alignment: .leading, onOpen: onOpenAttachment, onDesign: onDesignAttachment)
             }
+            #if canImport(UIKit)
             if !isStreaming, !text.isEmpty {
                 HStack(spacing: 12) {
                     if allowsReadAloud { readAloudButton }
@@ -62,14 +72,26 @@ struct AssistantMessageView: View {
                 }
                 .disabled(continuousVoiceActive)
             }
+            #else
+            // No speech service is linked into the native Mac host; the
+            // copy action stays available on the same reading column.
+            if !isStreaming, !text.isEmpty {
+                HStack(spacing: 12) {
+                    ChatMessageCopyButton(text: text)
+                }
+            }
+            #endif
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(String(localized: "thread.role.assistant"))
         .accessibilityIdentifier("thread.assistant_message")
+        #if canImport(UIKit)
         .onDisappear { speechService.clearFailure(ownerID: playbackOwnerID) }
+        #endif
     }
 
+    #if canImport(UIKit)
     private var ownsPlayback: Bool {
         speechService.activeOwnerID == playbackOwnerID
     }
@@ -91,5 +113,6 @@ struct AssistantMessageView: View {
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(isThisMessageSpeaking ? "chat.assistant_message_view.stop_reading" : "chat.assistant_message_view.read_aloud")
     }
+    #endif
 }
 #endif

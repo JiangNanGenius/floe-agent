@@ -701,9 +701,24 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var selectedID: UUID?
     #if FLOE_UNIFIED_MAC
     @Published private(set) var admittedDraftID: UUID?
-    #endif
+    private let transcriptPager = ThreadHistoryPager()
+    private var transcriptObservation: AnyCancellable?
+    var messages: [PersistedMessage] { transcriptPager.messages }
+    var hasEarlierMessages: Bool { transcriptPager.hasEarlierMessages }
+    var transcriptLiveRunID: UUID? { activeRun?.identity.runID }
+    var transcriptRuns: [RunRecord] {
+        let visible = Set(messages.compactMap(\.runID))
+            .union([transcriptLiveRunID ?? transcriptPager.runs.first?.id].compactMap { $0 })
+        return transcriptPager.runs.filter { visible.contains($0.id) }
+    }
+    var transcriptEventsByRun: [UUID: [RunEventRecord]] { transcriptPager.eventsByRun }
+    var earlierEventRunIDs: Set<UUID> { transcriptPager.earlierEventRunIDs }
+    var loadingEventRunIDs: Set<UUID> { transcriptPager.loadingEventRunIDs }
+    var failedEarlierEventRunIDs: Set<UUID> { transcriptPager.failedEarlierEventRunIDs }
+    #else
     @Published private(set) var messages: [PersistedMessage] = []
     @Published private(set) var hasEarlierMessages = false
+    #endif
     @Published private(set) var isLoadingHistory = false
     @Published private(set) var isLoadingEarlierMessages = false
     @Published private(set) var historyLoadFailed = false
@@ -815,7 +830,9 @@ final class HostAgentWorkspace: ObservableObject {
     /// reschedules and is covered by the same latest-query-wins fence.
     private static let taskContentSearchDebounce: Duration = .milliseconds(180)
     private var historySelection = UUID()
+    #if !FLOE_UNIFIED_MAC
     private var earlierMessageCursor: ConversationMessageCursor?
+    #endif
     /// Durable user-question event subscription (one per runtime lifetime).
     private var questionSubscription: UUID?
     private static let settingsAccount = "selected-chat-provider.v1"
@@ -845,6 +862,9 @@ final class HostAgentWorkspace: ObservableObject {
         // mode (the explicit choice keeps persisting here).
         self.defaultMode = preferences.string(forKey: "floe.mac.agent.defaultMode").flatMap(HostAgentMode.init(rawValue:)) ?? .agent
         self.taskModes = preferences.dictionary(forKey: Self.taskModesKey) as? [String: String] ?? [:]
+        self.transcriptObservation = transcriptPager.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
         #endif
     }
 
@@ -872,10 +892,14 @@ final class HostAgentWorkspace: ObservableObject {
             await reloadProjectTasks(using: runtime)
             if let recent = conversations.first(where: { $0.isVisibleInOrdinaryList }) {
                 selectedID = recent.id
+                #if FLOE_UNIFIED_MAC
+                try await refreshTranscript(for: recent.id, runtime: runtime)
+                #else
                 applyHistory(try await runtime.conversationMessagePage(conversationID: recent.id))
+                #endif
                 selectedConversationWorkspace = try? await runtime.workspaceForConversation(recent.id)
                 #if FLOE_UNIFIED_MAC
-                let run = try? await runtime.recentRuns(conversationID: recent.id, limit: 1).first
+                let run = transcriptPager.runs.first
                 selectedApprovalMode = try await runtime.taskApprovalMode(conversationID: recent.id)
                 chatReasoning = try await runtime.chatReasoning(conversationID: recent.id)
                 applyComposerRun(run)
@@ -1163,14 +1187,19 @@ final class HostAgentWorkspace: ObservableObject {
             if historySelection == selection { isLoadingHistory = false }
         }
         do {
+            #if FLOE_UNIFIED_MAC
+            try await refreshTranscript(for: id, runtime: runtime)
+            try transcriptFence(for: id, selection: selection).guardCurrent()
+            #else
             let page = try await runtime.conversationMessagePage(conversationID: id)
             guard historySelection == selection, !Task.isCancelled else { return }
             applyHistory(page)
+            #endif
             let owner = try? await runtime.workspaceForConversation(id)
             guard historySelection == selection, !Task.isCancelled else { return }
             selectedConversationWorkspace = owner
             #if FLOE_UNIFIED_MAC
-            let run = try? await runtime.recentRuns(conversationID: id, limit: 1).first
+            let run = transcriptPager.runs.first
             guard historySelection == selection, !Task.isCancelled else { return }
             let reasoning = try await runtime.chatReasoning(conversationID: id)
             guard historySelection == selection, !Task.isCancelled else { return }
@@ -1225,7 +1254,11 @@ final class HostAgentWorkspace: ObservableObject {
         isLoadingHistory = id != nil
         isLoadingEarlierMessages = false
         historyLoadFailed = false
+        #if FLOE_UNIFIED_MAC
+        transcriptPager.reset()
+        #else
         applyHistory(.init(messages: [], earlierCursor: nil, hasEarlier: false))
+        #endif
         selectedID = id
         selectedConversationWorkspace = nil
         #if FLOE_UNIFIED_MAC
@@ -1242,6 +1275,125 @@ final class HostAgentWorkspace: ObservableObject {
         return selection
     }
 
+    #if FLOE_UNIFIED_MAC
+    private func transcriptFence(for id: UUID, selection: UUID) -> ThreadHistoryPager.Fence {
+        .init { [weak self] in
+            self?.selectedID == id && self?.historySelection == selection
+                && self?.isTerminating == false && !Task.isCancelled
+        }
+    }
+
+    private func refreshTranscript(for id: UUID, runtime: FloeMacSelfRuntime, runID: UUID? = nil) async throws {
+        let fence = transcriptFence(for: id, selection: historySelection)
+        try fence.guardCurrent()
+        let stores = try await runtime.transcriptReadStores()
+        try fence.guardCurrent()
+        try await transcriptPager.loadLatestMessages(conversationID: id, store: stores.conversations, fence: fence)
+        try await transcriptPager.loadRunHeaders(conversationID: id, store: stores.runs, fence: fence)
+        try await hydrateTranscriptRuns(for: id, store: stores.runs, fence: fence)
+        if let runID = runID ?? transcriptPager.runs.first?.id {
+            try await transcriptPager.loadLatestEvents(runID: runID, store: stores.runs, fence: fence)
+        }
+    }
+
+    private func hydrateTranscriptRuns(for id: UUID, store: any RunStore, fence: ThreadHistoryPager.Fence) async throws {
+        let ids = Set(messages.compactMap(\.runID))
+        try await transcriptPager.ensureRunHeaders(ids, conversationID: id, store: store, fence: fence)
+        let known = Set(transcriptPager.runs.map(\.id))
+        transcriptPager.markRunsNeedingEventHydration(ids.intersection(known))
+    }
+
+    func loadEarlierMessages() async {
+        guard let id = selectedID, hasEarlierMessages, !isLoadingHistory, !isLoadingEarlierMessages,
+              !isTerminating, let runtime, let release = admit() else { return }
+        let selection = historySelection
+        let fence = transcriptFence(for: id, selection: selection)
+        isLoadingEarlierMessages = true
+        defer {
+            if historySelection == selection { isLoadingEarlierMessages = false }
+            release()
+        }
+        do {
+            let stores = try await runtime.transcriptReadStores()
+            try fence.guardCurrent()
+            try await transcriptPager.loadEarlierMessages(conversationID: id, store: stores.conversations, fence: fence)
+            try await hydrateTranscriptRuns(for: id, store: stores.runs, fence: fence)
+        } catch {
+            if fence.isCurrent() { notice = String(localized: "host.chat.historyUnavailable") }
+        }
+    }
+
+    func loadEarlierEvents(runID: UUID) async {
+        guard let id = selectedID, earlierEventRunIDs.contains(runID), !loadingEventRunIDs.contains(runID),
+              !isTerminating, let runtime, let release = admit() else { return }
+        defer { release() }
+        let fence = transcriptFence(for: id, selection: historySelection)
+        do {
+            let stores = try await runtime.transcriptReadStores()
+            try fence.guardCurrent()
+            try await transcriptPager.loadEarlierEvents(runID: runID, store: stores.runs, fence: fence)
+        } catch {
+            if fence.isCurrent(), failedEarlierEventRunIDs.contains(runID) {
+                notice = String(localized: "host.chat.historyUnavailable")
+            }
+        }
+    }
+
+    private func refreshTranscriptEvents(runID: UUID, conversationID: UUID, runtime: FloeMacSelfRuntime) async {
+        guard selectedID == conversationID, !isLoadingHistory, !isTerminating else { return }
+        let fence = transcriptFence(for: conversationID, selection: historySelection)
+        do {
+            let stores = try await runtime.transcriptReadStores()
+            try fence.guardCurrent()
+            try await transcriptPager.loadLatestEvents(runID: runID, store: stores.runs, fence: fence)
+        } catch {
+            // Refresh the durable tail again at the end of the run.
+        }
+    }
+
+    func searchTranscript(_ query: ConversationSearchQuery, in conversationID: UUID) async -> ThreadSearchResult {
+        let empty = ThreadSearchResult(hits: [], includesDurableHistory: false)
+        guard !query.isEmpty, selectedID == conversationID, !isTerminating, let runtime, let release = admit() else { return empty }
+        defer { release() }
+        let fence = transcriptFence(for: conversationID, selection: historySelection)
+        let local = ThreadSearchText.hits(in: messages.compactMap(ThreadSearchText.document(for:)), query: query)
+        let durable = try? await runtime.conversationMessageMatches(conversationID: conversationID, rawQuery: query.raw)
+        guard fence.isCurrent() else { return empty }
+        var byID = Dictionary(uniqueKeysWithValues: local.map { ($0.messageID, $0) })
+        for match in durable ?? [] where byID[match.messageID] == nil {
+            byID[match.messageID] = ThreadSearchHit(messageID: match.messageID, role: match.role,
+                createdAt: match.createdAt, snippet: match.snippet)
+        }
+        let hits = byID.values.sorted { ($0.createdAt, $0.messageID.uuidString) < ($1.createdAt, $1.messageID.uuidString) }
+        return ThreadSearchResult(hits: hits, includesDurableHistory: durable != nil)
+    }
+
+    func revealMessage(_ messageID: UUID, in conversationID: UUID) async -> Bool {
+        guard selectedID == conversationID, !isLoadingHistory, !isTerminating,
+              let runtime, let release = admit() else { return false }
+        defer { release() }
+        let fence = transcriptFence(for: conversationID, selection: historySelection)
+        do {
+            if !messages.contains(where: { $0.id == messageID }) {
+                let window = try await runtime.conversationMessageWindow(conversationID: conversationID, around: messageID)
+                try fence.guardCurrent()
+                guard window.contains(where: { $0.id == messageID }) else { return false }
+                transcriptPager.mergeSearchWindow(window)
+            }
+            guard let target = messages.first(where: { $0.id == messageID }),
+                  ThreadSearchText.document(for: target) != nil else { return false }
+            if let runID = target.runID {
+                let stores = try await runtime.transcriptReadStores()
+                try fence.guardCurrent()
+                try await hydrateTranscriptRuns(for: conversationID, store: stores.runs, fence: fence)
+                if target.role == "assistant", transcriptPager.eventsByRun[runID] == nil {
+                    try await transcriptPager.loadLatestEvents(runID: runID, store: stores.runs, fence: fence)
+                }
+            }
+            return fence.isCurrent()
+        } catch { return false }
+    }
+    #else
     func loadEarlierMessages() async {
         guard let id = selectedID, let cursor = earlierMessageCursor, hasEarlierMessages,
               !isLoadingHistory, !isLoadingEarlierMessages, !isTerminating,
@@ -1263,34 +1415,6 @@ final class HostAgentWorkspace: ObservableObject {
                 notice = String(localized: "host.chat.historyUnavailable")
             }
         }
-    }
-
-    #if FLOE_UNIFIED_MAC
-    var loadedMessageWindow: (messages: [PersistedMessage], earlierCursor: ConversationMessageCursor?, hasEarlier: Bool) {
-        (messages, earlierMessageCursor, hasEarlierMessages)
-    }
-
-    func searchMessagePage(conversationID: UUID, before cursor: ConversationMessageCursor?) async throws -> ConversationMessagePage {
-        guard selectedID == conversationID, !isTerminating, let runtime, let release = admit() else {
-            throw CancellationError()
-        }
-        let selection = historySelection
-        defer { release() }
-        let page = try await runtime.conversationMessagePage(conversationID: conversationID, before: cursor)
-        guard selection == historySelection, !Task.isCancelled else { throw CancellationError() }
-        return page
-    }
-
-    func revealMessage(_ messageID: UUID, in conversationID: UUID) async -> Bool {
-        let selection = historySelection
-        for _ in 0...MacConversationSearchModel.maximumPagesPerSearch {
-            guard selectedID == conversationID, selection == historySelection, !Task.isCancelled else { return false }
-            if messages.contains(where: { $0.id == messageID }) { return true }
-            guard let cursor = earlierMessageCursor, hasEarlierMessages, !isLoadingEarlierMessages else { return false }
-            await loadEarlierMessages()
-            if earlierMessageCursor == cursor { return false }
-        }
-        return false
     }
     #endif
 
@@ -1338,6 +1462,7 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    #if !FLOE_UNIFIED_MAC
     private func applyHistory(_ page: ConversationMessagePage, retainingVisibleHistory: Bool = false) {
         if retainingVisibleHistory, let first = page.messages.first,
            let overlap = messages.firstIndex(where: { $0.id == first.id }) {
@@ -1348,6 +1473,7 @@ final class HostAgentWorkspace: ObservableObject {
         earlierMessageCursor = page.earlierCursor
         hasEarlierMessages = page.hasEarlier
     }
+    #endif
 
     /// Sets the project for the next draft submission. Existing tasks keep
     /// the workspace captured when their run was admitted.
@@ -2128,6 +2254,11 @@ final class HostAgentWorkspace: ObservableObject {
                 let initialPhase = await handle.phase()
                 liveRuns[taskID]?.phase = initialPhase
                 try? await reloadConversations(using: runtime)
+                #if FLOE_UNIFIED_MAC
+                if selectedID == taskID {
+                    try? await refreshTranscript(for: taskID, runtime: runtime, runID: handle.identity.runID)
+                }
+                #endif
                 await updateLiveRun(handle)
                 var lastPaint = ContinuousClock.now
                 for await event in events {
@@ -2153,6 +2284,13 @@ final class HostAgentWorkspace: ObservableObject {
                         else { liveRuns[taskID]?.reviewingCalls.remove(key) }
                     case .harness(.toolLifecycle(let event)):
                         updateToolActivity(event, runID: handle.identity.runID)
+                        await refreshTranscriptEvents(runID: handle.identity.runID, conversationID: taskID, runtime: runtime)
+                    case .harness(.approvalRequested), .harness(.approvalResolved):
+                        await refreshTranscriptEvents(runID: handle.identity.runID, conversationID: taskID, runtime: runtime)
+                    case .harness(.userInputConsumed):
+                        if selectedID == taskID {
+                            try? await refreshTranscript(for: taskID, runtime: runtime, runID: handle.identity.runID)
+                        }
                     #endif
                     default:
                         break
@@ -2183,11 +2321,15 @@ final class HostAgentWorkspace: ObservableObject {
                 await refreshQueue(taskID)
                 #endif
                 if selectedID == taskID {
+                    #if FLOE_UNIFIED_MAC
+                    try? await refreshTranscript(for: taskID, runtime: runtime, runID: handle.identity.runID)
+                    #else
                     let selection = historySelection
                     if let page = try? await runtime.conversationMessagePage(conversationID: taskID),
                        selectedID == taskID, selection == historySelection {
                         applyHistory(page, retainingVisibleHistory: true)
                     }
+                    #endif
                     if mode == .plan || mode == .goal {
                         await loadPlanning(conversationID: taskID, runtime: runtime)
                     }
@@ -2477,8 +2619,12 @@ final class HostAgentWorkspace: ObservableObject {
         do {
             let receipt = try await runtime.acceptPlan(candidate, conversationID: candidate.conversationID,
                                                        execution: execution)
+            #if FLOE_UNIFIED_MAC
+            try await refreshTranscript(for: candidate.conversationID, runtime: runtime)
+            #else
             let updated = try await runtime.conversationMessagePage(conversationID: candidate.conversationID)
             applyHistory(updated, retainingVisibleHistory: true)
+            #endif
             await loadPlanning(conversationID: candidate.conversationID, runtime: runtime)
             let mode: HostAgentMode = execution == .goal ? .goal : .agent
             #if FLOE_UNIFIED_MAC
@@ -3763,6 +3909,12 @@ final class HostAgentWorkspace: ObservableObject {
         guard vault == nil, let runtime, let id = selectedID, !isSending,
               let config = try? HostAgentProvider(endpoint: "https://example.invalid/v1",
                   protocolKind: .openAIChatCompletions, modelID: "mac-smoke", apiKey: "") else { return false }
+        var stage = "seed"
+        defer {
+            if stage != "complete" {
+                smokeRunDiagnostics.append("Shared history fixture failed at \(stage), loaded=\(messages.count), earlier=\(hasEarlierMessages).")
+            }
+        }
         do {
             let database = try DatabaseManager(path: runtime.databaseURL)
             let store = SQLiteConversationStore(database: database)
@@ -3774,8 +3926,10 @@ final class HostAgentWorkspace: ObservableObject {
                 ))
             }
             try await database.close()
+            stage = "latest page"
             await select(id)
-            guard messages.count == 100, hasEarlierMessages else { return false }
+            guard messages.count == ThreadHistoryPager.latestMessageWindow, hasEarlierMessages else { return false }
+            stage = "transcript export"
             let transcript = try await transcript(conversationID: id)
             let exported = MacWorkspaceRootView.markdownTranscript(name: "Fixture", messages: transcript)
             let plain = MacWorkspaceRootView.readableTranscript(name: "Fixture", messages: transcript, markdown: false)
@@ -3793,21 +3947,37 @@ final class HostAgentWorkspace: ObservableObject {
             guard transcript.count == 107, let earliest = transcript.first,
                   exported.contains("Fixture earlier message 0\n"),
                   exported.contains("Synthetic persisted reply.") else { return false }
-            let search = MacConversationSearchModel(
-                loadedWindow: { self.loadedMessageWindow },
-                historyPage: { try await self.searchMessagePage(conversationID: id, before: $0) },
+            stage = "legacy messages before newer runs"
+            let latestTimeline = ThreadTimelineBuilder.buildConversation(messages: messages, runs: transcriptRuns,
+                eventsByRun: transcriptEventsByRun, liveRunID: nil, isRunning: false,
+                liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
+            guard let oldestLoaded = messages.first,
+                  latestTimeline.first?.id == "assistant.\(oldestLoaded.id.uuidString)",
+                  case .terminal? = latestTimeline.last else { return false }
+            stage = "exact search"
+            let search = ThreadSearchModel(
+                provider: { await self.searchTranscript($0, in: id) },
                 reveal: { await self.revealMessage($0.messageID, in: id) }
             )
-            search.bind(conversationID: id)
             search.begin()
             search.query = "\"Fixture earlier message 0\""
             await search.retry()
             guard search.hits.map(\.id) == [earliest.id], search.focusedMessageID == earliest.id,
-                  !search.isPartial, search.errorText == nil else { return false }
-            search.bind(conversationID: UUID())
+                  search.errorText == nil, messages.first?.id == earliest.id,
+                  messages.count < transcript.count, hasEarlierMessages else { return false }
+            stage = "close find"
+            search.end()
             guard search.hits.isEmpty, search.focusedMessageID == nil else { return false }
+            stage = "earlier pages"
+            let beforeFirstPage = messages.count
+            await loadEarlierMessages()
+            guard messages.count == beforeFirstPage + ThreadHistoryPager.earlierMessageWindow else { return false }
+            for _ in 0..<3 where hasEarlierMessages {
+                await loadEarlierMessages()
+            }
             guard messages.map(\.id) == transcript.map(\.id), !hasEarlierMessages,
                   let attachment = stageAttachments([reference]).first else { return false }
+            stage = "send with history open"
             let provider = FloeMacSelfProviderBinding(provider: config.profile, model: config.model,
                                                       adapter: SmokeChatAdapter(expectedAttachmentText: "Synthetic attachment"),
                                                       credentials: .init())
@@ -3815,12 +3985,17 @@ final class HostAgentWorkspace: ObservableObject {
                   messages.count == 109, messages.first?.id == transcript.first?.id,
                   messages.contains(where: { $0.content == "Fixture follow-up" }),
                   messages.last?.content == "Synthetic persisted reply." else { return false }
+            stage = "reopen the attachment"
             await select(nil)
             await select(id)
             var resolved: URL?
             await withSavedAttachment(id: attachment.id, conversationID: id) { resolved = $0 }
-            return resolved?.standardizedFileURL == reference.standardizedFileURL
-                && messages.contains(where: { $0.parts.contains(where: { $0.attachmentID == attachment.id }) })
+            guard resolved?.standardizedFileURL == reference.standardizedFileURL,
+                  messages.contains(where: { $0.parts.contains(where: { $0.attachmentID == attachment.id }) }) else {
+                return false
+            }
+            stage = "complete"
+            return true
         } catch {
             return false
         }

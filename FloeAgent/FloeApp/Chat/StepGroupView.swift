@@ -4,7 +4,7 @@
 // one collapsible card. Only the latest group is expanded by default; history
 // groups collapse to a single summary row so long runs stay readable.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
 import FloeModels
 import FloePersistence
@@ -38,6 +38,15 @@ struct StepGroupView: View {
     private let onOpenChild: ((ChildRunRecord?) -> Void)?
     private let conversationID: UUID?
     private let toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)?
+    /// Platform adapter for the inline approval card rendered beneath a
+    /// tool request that awaits a human decision. The iPad surface passes
+    /// nil and keeps the exact historical `ApprovalCardView` rendering; the
+    /// native Mac host passes a closure that returns its exact
+    /// `MacWorkspaceApprovalView` (file scopes and `canAllow` evidence). An
+    /// adapter that returns nil renders no inline card — the host's
+    /// standalone approval row owns that fallback. The default iPad grants
+    /// are never routed differently.
+    private let approvalPresentation: (@MainActor (PendingApproval) -> AnyView?)?
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
     @StateObject private var projection = StepGroupMetadata()
     private var payloads: [UUID: [String: String]] { projection.read(events).payloads }
@@ -57,6 +66,7 @@ struct StepGroupView: View {
         onOpenChild: ((ChildRunRecord?) -> Void)? = nil,
         conversationID: UUID? = nil,
         toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)? = nil,
+        approvalPresentation: (@MainActor (PendingApproval) -> AnyView?)? = nil,
         onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
     ) {
         self.events = events
@@ -69,6 +79,7 @@ struct StepGroupView: View {
         self.onOpenChild = onOpenChild
         self.conversationID = conversationID
         self.toolDetailExpansion = toolDetailExpansion
+        self.approvalPresentation = approvalPresentation
         self.onResolveApproval = onResolveApproval
         // The active/latest group is the user's only view into current tool
         // progress. Historical groups stay compact, while the latest group
@@ -125,22 +136,55 @@ struct StepGroupView: View {
         return displayedEvents.filter { urgent.contains($0.id) || pendingApproval(for: $0) != nil }
     }
 
+    /// The inline human-decision card for one pending approval. A non-nil
+    /// platform adapter owns the card (the Mac workbench passes its exact
+    /// `MacWorkspaceApprovalView`); nil keeps the historical iPad
+    /// `ApprovalCardView` with the run-scoped resolver. An adapter that
+    /// returns nil renders no card here: the host's standalone approval row
+    /// owns the fallback presentation.
+    @MainActor @ViewBuilder private func inlineApprovalCard(for pending: PendingApproval) -> some View {
+        if let approvalPresentation {
+            if let presented = approvalPresentation(pending) {
+                presented
+            }
+        } else {
+            ApprovalCardView(approval: pending) { onResolveApproval(pending, $0) }
+        }
+    }
+
     private func hasGitHubSource(_ event: RunEventRecord) -> Bool {
+        #if canImport(UIKit)
         let result = event.kind == .toolRequest ? matchingResult(for: event) : event
         guard result?.runID == event.runID else { return false }
         return GitHubSourceReference.make(result: result, conversationID: conversationID) != nil
+        #else
+        // `GitHubSourceReference` (GitHubSourceResolver.swift) imports
+        // FloeGit, which the unified macOS host does not vend. Until that
+        // dependency is adapted, a collapsed group never claims a GitHub
+        // source row on macOS (the expanded card is UIKit-gated too).
+        return false
+        #endif
     }
 
     private func hasOwnedOutputFiles(_ event: RunEventRecord) -> Bool {
+        #if canImport(UIKit)
         let result = event.kind == .toolRequest ? matchingResult(for: event) : event
         guard let result, result.kind == .toolResult, result.runID == event.runID else { return false }
-        let values = ConversationCenter.decodePayload(result.payloadJSON)
+        let values = ThreadEventPayload.decode(result.payloadJSON)
         guard let encoded = values["outputFilesJSON"], encoded.utf8.count <= 196_608,
               let data = encoded.data(using: .utf8),
               let receipts = try? JSONDecoder().decode([RunOutputFile].self, from: data) else { return false }
         let context = RunOutputReceiptContext(runID: result.runID, conversationID: conversationID,
             callID: values["id"], toolName: values["tool"])
         return receipts.contains { RunOutputReceiptGate.accepts($0, in: context) }
+        #else
+        // `RunOutputReceiptGate`/`RunOutputReceiptContext` live in
+        // Render/RunOutputFileView.swift, which is still UIKit-gated. Until
+        // that file is ported, a collapsed group keeps no owned-output row
+        // on macOS (sealed output cards still render expanded via the
+        // shared output-files surface once it is cross-platform).
+        return false
+        #endif
     }
 
     var body: some View {
@@ -183,7 +227,7 @@ struct StepGroupView: View {
                         )
                         .transition(isLive ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                         if event.kind == .toolRequest, let pending = pendingApproval(for: event) {
-                            ApprovalCardView(approval: pending) { onResolveApproval(pending, $0) }
+                            inlineApprovalCard(for: pending)
                         }
                     }
                 }

@@ -11,7 +11,7 @@
 // Rows carry no credentials; selecting hands the choice back to the editor,
 // which owns duplicate checks, custom-name preservation and prefill.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 import FloeCore
 import FloeProviders
@@ -22,11 +22,12 @@ struct ProviderCatalogPicker: View {
     /// entries a shipped adapter can really serve for this role, so an
     /// image/video add can never pick a chat-only gateway into a dead
     /// configuration.
-    let role: ProviderServiceRole
+    let role: ProviderCatalogServiceRole
     /// Built-in presets valid for the editor's service role.
     let presets: [ProviderPreset]
     /// Currently selected preset (marked in the built-in section).
-    let selectedPresetID: ProviderTemplateID
+    let selectedPresetID: ProviderTemplateID?
+    var selectedCatalogID: String? = nil
     /// Verified catalog index, when available. Without it the selector still
     /// offers every built-in preset.
     let catalog: ProviderCatalogIndex?
@@ -35,6 +36,7 @@ struct ProviderCatalogPicker: View {
     /// Optional async refresh of the official catalog. Errors are owned by
     /// the caller's existing content-update error surface.
     let onRefresh: (() async -> Void)?
+    var refreshError: String? = nil
     /// Called for selectable catalog rows. Unsupported rows never call this.
     let onSelect: (ProviderCatalogEntry) -> Void
     /// Called for a built-in preset choice (including manual/custom).
@@ -46,53 +48,35 @@ struct ProviderCatalogPicker: View {
     @State private var isRefreshing = false
 
     var body: some View {
+        #if os(macOS)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("providers.supplier_picker.title").font(.headline)
+                Spacer(minLength: 8)
+                if onRefresh != nil, catalog != nil { refreshButton }
+                Button("action.cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("providers.catalog.cancel")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            TextField("providers.catalog.search_placeholder", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.leading)
+                .accessibilityIdentifier("providers.catalog.search")
+                .padding(.horizontal, 16)
+            filters.padding(16)
+            Divider()
+            List { catalogSections }.listStyle(.inset)
+        }
+        .frame(minWidth: 540, minHeight: 440)
+        #else
         NavigationStack {
             List {
-                Section {
-                    Picker("providers.catalog.filter_label", selection: $filter) {
-                        ForEach(visibleFilters, id: \.self) { filterKind in
-                            Text(filterLabel(filterKind)).tag(filterKind)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .accessibilityLabel("providers.catalog.filter_label")
-                    .accessibilityIdentifier("providers.catalog.filter")
-                }
-
-                if !matchingPresets.isEmpty {
-                    Section {
-                        ForEach(matchingPresets) { preset in
-                            presetRow(preset)
-                        }
-                    } header: {
-                        Text("providers.supplier_picker.builtin")
-                    }
-                }
-
-                if let catalog {
-                    Section {
-                        if results.isEmpty && matchingPresets.isEmpty {
-                            emptyResults
-                        } else if results.isEmpty {
-                            Text("providers.supplier_picker.no_matching_catalog")
-                                .font(FloeTheme.Typography.metadata)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(results) { entry in
-                                row(entry)
-                            }
-                        }
-                    } header: {
-                        Text("providers.catalog.official")
-                    } footer: {
-                        catalogFooter(catalog)
-                    }
-                }
+                Section { filters }
+                catalogSections
             }
             .listStyle(.insetGrouped)
-            // A persistent search bar stays visible above the scrolling list,
-            // so search and selection happen inside the same supplier popup.
             .searchable(
                 text: $query,
                 placement: .navigationBarDrawer(displayMode: .always),
@@ -108,11 +92,60 @@ struct ProviderCatalogPicker: View {
                         .accessibilityIdentifier("providers.catalog.cancel")
                 }
                 if onRefresh != nil, catalog != nil {
-                    ToolbarItem(placement: .primaryAction) {
-                        refreshButton
-                    }
+                    ToolbarItem(placement: .primaryAction) { refreshButton }
                 }
             }
+        }
+        #endif
+    }
+
+    private var filters: some View {
+        Picker("providers.catalog.filter_label", selection: $filter) {
+            ForEach(visibleFilters, id: \.self) { filterKind in
+                Text(filterLabel(filterKind)).tag(filterKind)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel("providers.catalog.filter_label")
+        .accessibilityIdentifier("providers.catalog.filter")
+    }
+
+    @ViewBuilder private var catalogSections: some View {
+        if let refreshError {
+            Section {
+                Label { Text(verbatim: refreshError) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.pending)
+                    .accessibilityIdentifier("providers.catalog.error")
+                if onRefresh != nil { refreshButton }
+            }
+        }
+        if !matchingPresets.isEmpty {
+            Section {
+                ForEach(matchingPresets) { preset in presetRow(preset) }
+            } header: {
+                Text("providers.supplier_picker.builtin")
+            }
+        }
+        if let catalog {
+            Section {
+                if results.isEmpty && matchingPresets.isEmpty {
+                    emptyResults
+                } else if results.isEmpty {
+                    Text("providers.supplier_picker.no_matching_catalog")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(results) { entry in row(entry) }
+                }
+            } header: {
+                Text("providers.catalog.official")
+            } footer: {
+                catalogFooter(catalog)
+            }
+        } else if matchingPresets.isEmpty {
+            emptyResults
         }
     }
 
@@ -155,7 +188,7 @@ struct ProviderCatalogPicker: View {
             // Only entries whose shipped adapter contract can really serve
             // this media role with verified (or account-listable) identifiers.
             return matches.filter {
-                ProviderFormSpecResolver.isCatalogEntry($0, eligibleFor: role.catalogRole)
+                ProviderFormSpecResolver.isCatalogEntry($0, eligibleFor: role)
             }
         }
     }
@@ -199,7 +232,7 @@ struct ProviderCatalogPicker: View {
                     .lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                if preset.id == selectedPresetID {
+                if preset.id == selectedPresetID, selectedCatalogID == nil {
                     Image(systemName: "checkmark")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(FloeTheme.primary)
@@ -230,6 +263,11 @@ struct ProviderCatalogPicker: View {
                         badge("providers.catalog.unsupported_badge", color: .secondary)
                     }
                     Spacer(minLength: 0)
+                    if entry.presetID == selectedCatalogID {
+                        Image(systemName: "checkmark")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(FloeTheme.primary)
+                    }
                 }
                 if let alias = matchingAlias(entry) {
                     Text(FloeL10n.l("providers.catalog.alias", alias))

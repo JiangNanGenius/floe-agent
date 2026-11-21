@@ -23,13 +23,19 @@
 //   pending approvals) get explicit slots relative to the last persisted
 //   sequence, so refreshing never rebuilds the whole list identity.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import Foundation
 import FloeCore
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
+#if canImport(FloeExecution)
+// Native standalone-service run metadata (native jobs, Linux cache cleanup,
+// BasicMachining) lives in FloeExecution. The unified macOS host does not
+// link that module; the standalone-service detection below compiles to a
+// documented false there (see `isStandaloneNativeServiceRun`).
 import FloeExecution
+#endif
 
 /// One compact decision record projected onto the tool invocation that
 /// produced the proposal. The durable decision message is never deleted or
@@ -401,7 +407,9 @@ enum ThreadTimelineBuilder {
         suppressedDecisionNoticeIDs: Set<UUID> = []
     ) -> [ThreadTimelineItem] {
         let payloadCache = PayloadCache()
-        let sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
+        let sortedRuns = runs.sorted {
+            ($0.startedAt, $0.id.uuidString) < ($1.startedAt, $1.id.uuidString)
+        }
         // Index the loaded messages once; `build` previously re-filtered the
         // full message array per run (O(runs × messages) per rebuild).
         var boundByRun: [UUID: [PersistedMessage]] = [:]
@@ -416,11 +424,11 @@ enum ThreadTimelineBuilder {
                 unboundAssistantMessages.append(message)
             }
         }
-        var result: [ThreadTimelineItem] = []
-        for run in sortedRuns {
+        let blocks = sortedRuns.map { run -> (startedAt: Date, rows: [ThreadTimelineItem]) in
             let isLive = run.id == liveRunID && isRunning
+            var rows: [ThreadTimelineItem] = []
             if earlierEventRunIDs.contains(run.id) {
-                result.append(.earlierEvents(runID: run.id))
+                rows.append(.earlierEvents(runID: run.id))
             }
             let runItems = build(
                 messagesForRun: boundByRun[run.id, default: []],
@@ -437,20 +445,24 @@ enum ThreadTimelineBuilder {
                 pendingApprovals: pendingApprovals.filter { $0.runID == run.id },
                 payloadCache: payloadCache
             )
-            result += runItems.map { item in
+            rows += runItems.map { item in
                 if run.id != liveRunID, case .stepGroup(let events, _) = item {
                     return .stepGroup(events: events, isLatest: false)
                 }
                 return item
             }
+            return (run.startedAt, rows)
         }
         let represented = Set(sortedRuns.map(\.id))
+        let representedRows = Set(blocks.lazy.flatMap { $0.rows }.map(\.id))
         let taskLevel = messages.filter {
             $0.role != "goalContinuation"
                 && $0.runID.map(represented.contains) != true
                 && !ConversationHistoryAssembler.isLegacyWorkspaceContextNotice($0)
         }
-        result += taskLevel.compactMap { message -> ThreadTimelineItem? in
+        let standalone = taskLevel.sorted {
+            ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
+        }.compactMap { message -> (date: Date, row: ThreadTimelineItem)? in
             // A decision projected into its tool step does not repeat as a
             // standalone row. The durable message itself is untouched.
             guard !suppressedDecisionNoticeIDs.contains(message.id) else { return nil }
@@ -458,7 +470,7 @@ enum ThreadTimelineBuilder {
             // sentence (applied / rejected / failed / adopted); an unknown
             // decision vocabulary keeps the existing generic summary.
             if let notice = ProposalDecisionPresentation.trustedNotice(for: message) {
-                return .assistantMessage(text: notice.summary, idSuffix: message.id.uuidString, sentAt: message.createdAt)
+                return (message.createdAt, .assistantMessage(text: notice.summary, idSuffix: message.id.uuidString, sentAt: message.createdAt))
             }
             // The trusted internal notices (design-assistant confirmation and
             // structured proposal decision) are internal structured events.
@@ -467,12 +479,26 @@ enum ThreadTimelineBuilder {
             // the same marker) and every unrecognized system notice keep their
             // existing rendering.
             if let summary = InternalNoticeProjection.userFacingSummary(for: message) {
-                return .assistantMessage(text: summary, idSuffix: message.id.uuidString, sentAt: message.createdAt)
+                return (message.createdAt, .assistantMessage(text: summary, idSuffix: message.id.uuidString, sentAt: message.createdAt))
             }
-            return message.role == "user"
+            let row: ThreadTimelineItem = message.role == "user"
                 ? .userMessage(message)
                 : .assistantMessage(text: message.content, idSuffix: message.id.uuidString, sentAt: message.createdAt)
+            return (message.createdAt, row)
+        }.filter { !representedRows.contains($0.row.id) }
+
+        // Merge standalone messages between run blocks by time while retaining
+        // the event sequence within each run.
+        var result: [ThreadTimelineItem] = []
+        var next = standalone.startIndex
+        for block in blocks {
+            while next < standalone.endIndex, standalone[next].date < block.startedAt {
+                result.append(standalone[next].row)
+                next += 1
+            }
+            result.append(contentsOf: block.rows)
         }
+        result.append(contentsOf: standalone[next...].map(\.row))
         return result
     }
 
@@ -565,11 +591,7 @@ enum ThreadTimelineBuilder {
             return callID.isEmpty ? nil : callID
         })
         let isStandaloneNativeService = run.map { run in
-            sortedEvents.contains {
-                NativeServiceRunMetadata.matches($0, runID: run.id, conversationID: run.conversationID)
-                    || CADBasicMachiningNativeRunMetadata.matches($0,runID:run.id,conversationID:run.conversationID)
-                    || LinuxCacheCleanupRunMetadata.matches($0, runID: run.id, conversationID: run.conversationID)
-            }
+            isStandaloneNativeServiceRun(runID: run.id, conversationID: run.conversationID, events: sortedEvents)
         } ?? false
         let terminalEvent = sortedEvents.last(where: { $0.kind == .terminal })
         let hasReachedTerminal = terminalEvent != nil
@@ -583,9 +605,7 @@ enum ThreadTimelineBuilder {
         let nonTerminalEvents = sortedEvents.filter { event in
             event.kind != .terminal
                 && !(run.map { run in
-                    (NativeServiceRunMetadata.matches(event, runID: run.id, conversationID: run.conversationID)
-                     || CADBasicMachiningNativeRunMetadata.matches(event,runID:run.id,conversationID:run.conversationID)
-                     || LinuxCacheCleanupRunMetadata.matches(event, runID: run.id, conversationID: run.conversationID))
+                    isStandaloneNativeServiceEvent(event, runID: run.id, conversationID: run.conversationID)
                 } ?? false)
                 && !isTerminalStatusEvent(event, payloadCache: payloadCache)
                 && !isStaleStatusEvent(event, currentState: run?.state, payloadCache: payloadCache)
@@ -808,6 +828,31 @@ enum ThreadTimelineBuilder {
     ) -> Bool {
         guard event.kind == .status, let currentState else { return false }
         return payloadCache.payload(for: event)["state"] != currentState
+    }
+
+    /// Whether any event of this run marks it as a standalone native-service
+    /// run (native jobs / Linux cache cleanup / BasicMachining). Those runs
+    /// produce no assistant text by design, so the builder must not render a
+    /// "missing final reply" row for them. On platforms without FloeExecution
+    /// (the unified macOS host) the metadata types do not exist; the
+    /// detection is a documented `false` there, so such a run renders the
+    /// honest explicit no-final-reply row instead of being silently hidden.
+    private static func isStandaloneNativeServiceRun(
+        runID: UUID, conversationID: UUID, events: [RunEventRecord]
+    ) -> Bool {
+        events.contains { isStandaloneNativeServiceEvent($0, runID: runID, conversationID: conversationID) }
+    }
+
+    private static func isStandaloneNativeServiceEvent(
+        _ event: RunEventRecord, runID: UUID, conversationID: UUID
+    ) -> Bool {
+        #if canImport(FloeExecution)
+        return NativeServiceRunMetadata.matches(event, runID: runID, conversationID: conversationID)
+            || CADBasicMachiningNativeRunMetadata.matches(event, runID: runID, conversationID: conversationID)
+            || LinuxCacheCleanupRunMetadata.matches(event, runID: runID, conversationID: conversationID)
+        #else
+        return false
+        #endif
     }
 
 }

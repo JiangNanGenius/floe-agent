@@ -28,9 +28,24 @@ targets:
       - path: Sources/FloeMacUnified
       - path: ../FloeAgent/Sources/FloeWorkspace/CanvasBackupPackage.swift
       - path: ../FloeAgent/FloeApp/Settings/UsageStatisticsView.swift
+      - path: ../FloeAgent/FloeApp/Providers/ProviderCatalogAddView.swift
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadTranscriptViewport.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadTranscriptRows.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadTimeline.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadSharedNotices.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadHistoryPaging.swift
+      - path: ../FloeAgent/FloeApp/Chat/RunStateLocalizer.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadEarlierActivityRow.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadEventView.swift
+      - path: ../FloeAgent/FloeApp/Chat/NativeToolDiagnosticProgressView.swift
+      - path: ../FloeAgent/FloeApp/Chat/StepGroupView.swift
+      - path: ../FloeAgent/FloeApp/Chat/ToolCallCardView.swift
+      - path: ../FloeAgent/FloeApp/Chat/AssistantMessageView.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadSearchModel.swift
+      - path: ../FloeAgent/FloeApp/Chat/ThreadSearchBar.swift
       - path: ../FloeAgent/FloeApp/Chat/ReasoningBlockView.swift
       - path: ../FloeAgent/FloeApp/Chat/UserQuestionCardView.swift
       - path: ../FloeAgent/FloeApp/Chat/RunningInputModePolicy.swift

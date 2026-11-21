@@ -9,7 +9,7 @@
 // file/checkpoint/status keep their honest foldable rendering. State
 // copy and colors resolve exclusively through RunStateLocalizer (§6.2).
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
 import FloeModels
 import FloePersistence
@@ -60,12 +60,12 @@ struct ThreadEventView: View {
     @Environment(\.nativeToolDiagnostics) private var nativeDiagnostics
 
     private var payload: [String: String] {
-        ConversationCenter.decodePayload(event.payloadJSON)
+        ThreadEventPayload.decode(event.payloadJSON)
     }
 
     private var toolRequestResultPayload: [String: String] {
         guard let toolRequestResultPayloadJSON else { return [:] }
-        return ConversationCenter.decodePayload(toolRequestResultPayloadJSON)
+        return ThreadEventPayload.decode(toolRequestResultPayloadJSON)
     }
 
     /// True for the main-run delegation tool. The child identity itself is
@@ -102,7 +102,7 @@ struct ThreadEventView: View {
     }
 
     var body: some View {
-        if isDelegateCall || hasImageArtifacts || gitHubSource != nil {
+        if isDelegateCall || hasImageArtifacts || hasGitHubSource {
             // A delegate row must NOT be combined into one accessibility
             // element: the card owns a real "View subagents" button, and
             // combining made the row container inherit that button's
@@ -117,6 +117,18 @@ struct ThreadEventView: View {
         }
     }
 
+    /// True when this row carries a recoverable GitHub source. The source
+    /// reference type depends on FloeGit (not vendored by the unified macOS
+    /// host), so macOS reports no source until that adapter lands; the
+    /// accessibility grouping decision stays identical everywhere.
+    private var hasGitHubSource: Bool {
+        #if canImport(UIKit)
+        gitHubSource != nil
+        #else
+        false
+        #endif
+    }
+
     /// Tool result payloads carry the retained image references the card will
     /// verify. This only decides accessibility grouping; it never treats the
     /// reference bytes as trusted display data.
@@ -125,6 +137,7 @@ struct ThreadEventView: View {
         return artifacts(from: source).contains(where: ToolArtifactPresentation.isImage)
     }
 
+    #if canImport(UIKit)
     private var gitHubSource: GitHubSourceReference? {
         let result: RunEventRecord?
         if event.kind == .toolRequest {
@@ -135,6 +148,7 @@ struct ThreadEventView: View {
         } else { result = event }
         return GitHubSourceReference.make(result: result, conversationID: conversationID)
     }
+    #endif
 
     private var rowBody: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -212,6 +226,12 @@ struct ThreadEventView: View {
                     onOpen: onOpenChild
                 )
             } else {
+                // The sealed-output context and the GitHub source reference
+                // are UIKit-only types today (Render/RunOutputFileView.swift
+                // and the FloeGit-backed GitHubSourceResolver.swift), so the
+                // whole call is duplicated per platform — Swift has no
+                // conditional compilation inside an argument list.
+                #if canImport(UIKit)
                 ToolCallCardView(
                     name: payload["tool"] ?? event.kind.rawValue,
                     status: toolRequestStatus ?? payload["status"] ?? "pending",
@@ -229,6 +249,23 @@ struct ThreadEventView: View {
                         runID: event.runID, callID: payload["callID"] ?? payload["id"]),
                     detailExpansion: toolDetailExpansion
                 )
+                #else
+                ToolCallCardView(
+                    name: payload["tool"] ?? event.kind.rawValue,
+                    status: toolRequestStatus ?? payload["status"] ?? "pending",
+                    inputSummary: payload["input"] ?? payload["summary"],
+                    resultSummary: toolRequestResultPayload["summary"],
+                    approvalSummary: approvalSummary,
+                    decisionSummary: decisionSummary,
+                    duration: duration(from: toolRequestResultPayload),
+                    artifacts: artifacts(from: toolRequestResultPayload),
+                    outputFiles: outputFiles(from: toolRequestResultPayload),
+                    outcomeUnknown: toolRequestResultPayload["outcomeUnknown"] == "true",
+                    diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
+                        runID: event.runID, callID: payload["callID"] ?? payload["id"]),
+                    detailExpansion: toolDetailExpansion
+                )
+                #endif
             }
 
         case .toolResult:
@@ -246,6 +283,7 @@ struct ThreadEventView: View {
                     onOpen: onOpenChild
                 )
             } else {
+                #if canImport(UIKit)
                 ToolCallCardView(
                     name: payload["tool"]
                         ?? String(localized: "tool.result"),
@@ -264,6 +302,24 @@ struct ThreadEventView: View {
                         runID: event.runID, callID: payload["callID"] ?? payload["id"]),
                     detailExpansion: toolDetailExpansion
                 )
+                #else
+                ToolCallCardView(
+                    name: payload["tool"]
+                        ?? String(localized: "tool.result"),
+                    status: status,
+                    inputSummary: payload["input"],
+                    resultSummary: payload["summary"],
+                    approvalSummary: approvalSummary,
+                    decisionSummary: decisionSummary,
+                    duration: duration(from: payload),
+                    artifacts: artifacts(from: payload),
+                    outputFiles: outputFiles(from: payload),
+                    outcomeUnknown: payload["outcomeUnknown"] == "true",
+                    diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
+                        runID: event.runID, callID: payload["callID"] ?? payload["id"]),
+                    detailExpansion: toolDetailExpansion
+                )
+                #endif
             }
 
         case .approval:
@@ -349,6 +405,7 @@ struct ThreadEventView: View {
         return (try? JSONDecoder().decode([RunOutputFile].self, from: data)) ?? []
     }
 
+    #if canImport(UIKit)
     private func outputContext(from payload: [String: String]) -> RunOutputReceiptContext? {
         guard payload["outputFilesJSON"] != nil else { return nil }
         return RunOutputReceiptContext(
@@ -358,6 +415,7 @@ struct ThreadEventView: View {
             toolName: payload["tool"]
         )
     }
+    #endif
 
     private var usageBody: some View {
         HStack(spacing: 12) {

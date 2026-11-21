@@ -13,7 +13,7 @@
 // thread view model for hits and for loading a bounded history window around
 // the selected hit; it never owns a store or a second conversation reader.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import Foundation
 import Combine
 import SwiftUI
@@ -171,6 +171,7 @@ final class ThreadSearchModel: ObservableObject {
         query = ""
         hits = []
         currentIndex = 0
+        focusedMessageID = nil
         searchedDurableHistory = false
         errorText = nil
     }
@@ -183,6 +184,7 @@ final class ThreadSearchModel: ObservableObject {
             isSearching = false
             hits = []
             currentIndex = 0
+            focusedMessageID = nil
             searchedDurableHistory = false
             errorText = nil
             return
