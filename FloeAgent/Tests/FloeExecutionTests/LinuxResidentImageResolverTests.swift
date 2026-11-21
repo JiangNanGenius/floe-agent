@@ -6,16 +6,16 @@ import XCTest
 /// Real small image files/manifests and the production origin Codable model.
 /// The lookup verifies source bytes instead of returning a canned if/else.
 final class LinuxResidentImageResolverTests: XCTestCase, @unchecked Sendable {
-    func testVideoCatalogKeepsV8AndPinsPublishedArchive() throws {
-        let newID = "floe-debian13-arm64-video-resident-20261117-v1"
-        let oldID = "floe-debian13-arm64-gpu-resident-20261111-v8"
+    func testMetalCatalogPinsPublishedArchiveAndKeepsPreviousImages() throws {
+        let newID = "floe-debian13-arm64-metal-resident-20261122-v1"
         XCTAssertEqual(LinuxGuestImageDistributionCatalog.defaultImageID, newID)
         let current = try XCTUnwrap(LinuxGuestImageDistributionCatalog.entry(id: newID))
-        XCTAssertEqual(current.assetPin?.githubAssetID, 756969199)
-        XCTAssertEqual(current.assetPin?.bytes, 392998346)
-        XCTAssertEqual(current.assetPin?.sha256, "ea97121aedd8e3a3946f341d384879b9c13fd8ebd85a75a9e6e4ec455e9a7242")
-        XCTAssertEqual(current.archiveSHA512, "e4985b602547c56bf97e9ceddf075d341298f28564b57cb1741ed5fbb4fab8ffa9205a4a7c071687abfd3b78e513b391f0a76dff36e340783c6b6f794b32f581")
-        XCTAssertNotNil(LinuxGuestImageDistributionCatalog.entry(id: oldID))
+        XCTAssertEqual(current.assetPin?.githubAssetID, 775796891)
+        XCTAssertEqual(current.assetPin?.bytes, 392525330)
+        XCTAssertEqual(current.assetPin?.sha256, "a618a6cc8fbf15f3576f3df374365cb840331e2c81789741958f4a4b8a62affa")
+        XCTAssertEqual(current.archiveSHA512, "bde1dc4b1b4a2107dce8b6fb9bc673937afed5d622013409a461f45fe927843047720c0b9a5748a0578efcb7e1e19d8b76c29e0df05e10688ca70a5e0c80a63f")
+        XCTAssertNotNil(LinuxGuestImageDistributionCatalog.entry(id: "floe-debian13-arm64-video-resident-20261117-v1"))
+        XCTAssertNotNil(LinuxGuestImageDistributionCatalog.entry(id: "floe-debian13-arm64-gpu-resident-20261111-v8"))
     }
 
     func testNewDefaultDoesNotReplaceExistingV8Disk() async throws {

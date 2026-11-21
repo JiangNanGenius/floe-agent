@@ -705,7 +705,7 @@ public enum LinuxGuestImageDistributionCatalog {
     /// Shared ARM64 Linux. Real four-core hotplug, project separation, process-
     /// tree cancellation, loopback forwarding and initial-state restore passed.
     /// Legacy RISC-V images are not executable candidates for this backend.
-    public static let defaultImageID = "floe-debian13-arm64-video-resident-20261117-v1"
+    public static let defaultImageID = "floe-debian13-arm64-metal-resident-20261122-v1"
 
     /// Publication evidence for an explicit replacement with a fresh resident disk.
     /// These SHA-256 pins identify the exact manifest bytes inside the released archives.
@@ -731,6 +731,20 @@ public enum LinuxGuestImageDistributionCatalog {
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-metal-20261122.1/floe-linux-guest-floe-debian13-arm64-metal-resident-20261122-v1.zip")!,
+            mirrors: [],
+            archiveSHA512: "bde1dc4b1b4a2107dce8b6fb9bc673937afed5d622013409a461f45fe927843047720c0b9a5748a0578efcb7e1e19d8b76c29e0df05e10688ca70a5e0c80a63f",
+            assetPin: LinuxGuestImageAssetPin(githubAssetID: 775796891, bytes: 392525330,
+                sha256: "a618a6cc8fbf15f3576f3df374365cb840331e2c81789741958f4a4b8a62affa"),
+            provenance: LinuxGuestImageProvenance(
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-metal-20261122.1",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-metal-20261122.1/floe-linux-arm64-metal-20261122-source.zip",
+                license: "Floe MPL-2.0; musl MIT; EDK2 per-file BSD/MIT; Linux, BusyBox and virtio-media GPL-2.0; static glibc LGPL-2.1; Mesa/libglvnd MIT/X11 and per-file notices; Debian per-package notices and corresponding sources.",
+                distributionAllowed: true
+            )
+        ),
+        LinuxGuestTrustedImage(
+            id: "floe-debian13-arm64-video-resident-20261117-v1",
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-video-20261117.1/floe-linux-guest-floe-debian13-arm64-video-resident-20261117-v1.zip")!,
             mirrors: [],
             archiveSHA512: "e4985b602547c56bf97e9ceddf075d341298f28564b57cb1741ed5fbb4fab8ffa9205a4a7c071687abfd3b78e513b391f0a76dff36e340783c6b6f794b32f581",
