@@ -1,0 +1,4 @@
+{
+  "en-US": "Check Linux responsiveness with simultaneous CPU work and large file transfers. Ask the model which GPU Linux can use, then verify its answer with Vulkan or a BLAS probe. Also check floor-plan drawing, snapping, pan and zoom.",
+  "zh-Hans": "请检查 Linux 在同时运算和读写大文件时的响应。可以询问模型 Linux 能用什么 GPU，再通过 Vulkan 或 BLAS 探测核对回答。也请检查户型图的拖画墙线、端点吸附、平移和缩放。"
+}

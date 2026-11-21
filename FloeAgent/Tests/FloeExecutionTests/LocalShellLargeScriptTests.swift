@@ -172,8 +172,11 @@ private func stagingEntries(in root: URL) -> [String] {
 }
 
 final class LocalShellLargeScriptTests: XCTestCase {
-    func testVideoDiscoveryRequiresRealBackendEvidence() {
+    func testAccelerationDiscoveryRequiresRealBackendEvidence() {
         let description = LocalShellTool.toolDescription
+        XCTAssertTrue(description.contains("host Apple GPU through virtio-gpu/Venus backed by Metal"))
+        XCTAssertTrue(description.contains("floe-accel graphics status"))
+        XCTAssertTrue(description.contains("floe-accel compute probe"))
         XCTAssertTrue(description.contains("floe-codec list --json"))
         XCTAssertTrue(description.contains("when ffmpeg is installed"))
         XCTAssertTrue(description.contains("may have no usable video acceleration"))

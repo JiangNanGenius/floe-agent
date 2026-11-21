@@ -436,7 +436,7 @@ enum ToolDiscovery {
             let interpreterMentions = ["exec.shell", "shell.open"]
                 .filter { names.contains($0) }
                 .map(n)
-            var line = "Offered native media capabilities: \(examples). They run on-device through Apple frameworks or through the app's configured model route, not through the emulated guest; a Linux guest has no GPU passthrough. The choice of route belongs to the task and the model: offer these capabilities, state their real limits, and let the model choose. "
+            var line = "Offered native media capabilities: \(examples). They run on-device through Apple frameworks or through the app's configured model route, not through the emulated guest. The choice of route belongs to the task and the model: offer these capabilities, state their real limits, and let the model choose. "
             if interpreterMentions.isEmpty {
                 line += "No general interpreter is offered on this turn."
             } else {

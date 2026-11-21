@@ -93,7 +93,7 @@ public enum CapabilityExecutionRouter {
     /// Vision, CoreImage/Metal, CoreML, AVFoundation or PDFKit and never
     /// emulate on TinyEMU.
     static let nativePrefixRules: [(prefix: String, workload: CapabilityWorkloadClass, reason: String)] = [
-        ("video.", .video, "AVFoundation/Metal video pipeline; TinyEMU has no GPU passthrough"),
+        ("video.", .video, "native AVFoundation/Metal video pipeline"),
         ("audio.", .audio, "native AVFoundation audio pipeline"),
         ("media.", .video, "native media engine (AVFoundation/CoreImage)"),
         ("image.ocr", .ocr, "Vision text recognition"),

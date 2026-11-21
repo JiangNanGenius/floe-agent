@@ -197,6 +197,7 @@ struct NativeMediaRoutingTests {
         // made from a name prefix alone.
         #expect(index.contains("configured model route"))
         #expect(index.contains("not through the emulated guest"))
+        #expect(!index.contains("no GPU passthrough"))
         #expect(!index.contains("Media rule"))
 
         let pythonOnly = ToolDiscovery.index(["video.transcode", "exec.localPython"].map(descriptor))
@@ -235,12 +236,16 @@ struct NativeMediaRoutingTests {
         #expect(cloud.contains("environment.startLinux(vcpus=2)"))
         #expect(cloud.contains("environment.hardRestartLinux(vcpus=2)"))
         #expect(cloud.contains("choose based on the task"))
+        #expect(cloud.contains("host Apple GPU through virtio-gpu/Venus backed by Metal"))
+        #expect(cloud.contains("Rendering, compute and hardware video codecs need separate evidence"))
+        #expect(!cloud.contains("no GPU passthrough"))
 
         let local = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", compactForLocal: true)
         #expect(!local.contains("Route by capability"))
         #expect(!local.contains("use shell/Python only when"))
         #expect(local.contains("environment.startLinux(vcpus, memoryMB)"))
         #expect(local.contains("after interruption reuse the last successful shape"))
+        #expect(local.contains("virtio-gpu can use the host Apple GPU through Metal"))
         #expect(local.utf8.count < 8_000)
     }
 }
