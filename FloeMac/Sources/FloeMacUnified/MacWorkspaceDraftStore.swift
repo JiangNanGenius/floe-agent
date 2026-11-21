@@ -9,13 +9,15 @@ import Foundation
 @MainActor
 final class MacWorkspaceDraftStore: ObservableObject {
     private typealias Document = ComposerDraftDocument<DesignJSONValue, DesignJSONValue>
-    private static let textByteLimit = 1_048_576
-    private static let documentByteLimit = 32 * 1_048_576
+    nonisolated private static let textByteLimit = 1_048_576
+    nonisolated private static let documentByteLimit = 32 * 1_048_576
     private let directory: URL?
+    private let fileQueue = DispatchQueue(label: "org.floeagent.mac.drafts", qos: .utility)
     @Published private var document = Document(drafts: [:], handoffs: [:])
     private var dirty = false
     private var readFailed = false
     private var deferredWrite: Task<Void, Never>?
+    private var scheduledWrite: UUID?
     @Published private(set) var saveFailed = false
 
     init(directory: URL?) {
@@ -50,6 +52,24 @@ final class MacWorkspaceDraftStore: ObservableObject {
 
     func attachments(for conversation: UUID?) -> [AttachmentRef] {
         document.drafts[Self.key(for: conversation)]?.attachments ?? []
+    }
+
+    func adoptLegacyHomeDraft(for id: UUID) {
+        let home = Self.key(for: nil)
+        let target = Self.key(for: id)
+        guard let prior = document.drafts[home], document.drafts[target] == nil else { return }
+        document.drafts.removeValue(forKey: home)
+        document.drafts[target] = prior
+        dirty = true
+        flush()
+    }
+
+    func uncommittedDrafts(excluding known: Set<UUID>) -> [(id: UUID, date: Date)] {
+        document.drafts.compactMap { key, draft in
+            guard let id = UUID(uuidString: key), id != Document.homeDraftID, !known.contains(id),
+                  !draft.text.isEmpty || !draft.attachments.isEmpty else { return nil }
+            return (id, draft.updatedAt)
+        }.sorted { $0.date > $1.date }
     }
 
     var attachmentURLs: Set<URL> {
@@ -97,7 +117,37 @@ final class MacWorkspaceDraftStore: ObservableObject {
     func flush() {
         deferredWrite?.cancel()
         deferredWrite = nil
-        guard let directory, dirty, !readFailed else { return }
+        guard let directory, dirty, !readFailed, scheduledWrite == nil else { return }
+        let snapshot = document
+        let writeID = UUID()
+        scheduledWrite = writeID
+        dirty = false
+        fileQueue.async { [weak self] in
+            let saved = Self.write(snapshot, to: directory)
+            Task { @MainActor [weak self] in
+                guard let self, scheduledWrite == writeID else { return }
+                scheduledWrite = nil
+                if !saved { dirty = true }
+                saveFailed = !saved
+                if saved && dirty { flush() }
+            }
+        }
+    }
+
+    func flushBeforeClosing() {
+        deferredWrite?.cancel()
+        deferredWrite = nil
+        guard let directory, !readFailed, dirty || scheduledWrite != nil else { return }
+        let snapshot = document
+        // Join earlier saves before the last snapshot so an old queued write
+        // cannot replace the document we just committed during app teardown.
+        let saved = fileQueue.sync { Self.write(snapshot, to: directory) }
+        scheduledWrite = nil
+        dirty = !saved
+        saveFailed = !saved
+    }
+
+    nonisolated private static func write(_ document: Document, to directory: URL) -> Bool {
         do {
             if try !Self.checkDirectory(directory) {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
@@ -111,10 +161,9 @@ final class MacWorkspaceDraftStore: ObservableObject {
             let archive = directory.appendingPathComponent("drafts.json")
             try bytes.write(to: archive, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
-            dirty = false
-            saveFailed = false
+            return true
         } catch {
-            saveFailed = true
+            return false
         }
     }
 
@@ -152,7 +201,7 @@ final class MacWorkspaceDraftStore: ObservableObject {
         return data
     }
 
-    private static func checkDirectory(_ directory: URL) throws -> Bool {
+    nonisolated private static func checkDirectory(_ directory: URL) throws -> Bool {
         var info = stat()
         if lstat(directory.path, &info) != 0 {
             if errno == ENOENT { return false }

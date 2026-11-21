@@ -34,6 +34,7 @@ targets:
       - path: ../FloeAgent/FloeApp/Chat/ReasoningBlockView.swift
       - path: ../FloeAgent/FloeApp/Chat/UserQuestionCardView.swift
       - path: ../FloeAgent/FloeApp/Chat/RunningInputModePolicy.swift
+      - path: ../FloeAgent/FloeApp/Chat/TaskBulkManagement.swift
       - path: ../FloeAgent/FloeApp/App/NetworkStatusMonitor.swift
       - path: ../FloeAgent/FloeApp/Remote/ApprovalModelBackend.swift
       - path: ../FloeAgent/FloeApp/Remote/AutomaticReasoningEffortClassifier.swift

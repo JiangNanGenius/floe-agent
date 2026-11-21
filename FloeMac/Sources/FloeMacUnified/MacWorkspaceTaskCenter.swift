@@ -25,6 +25,7 @@ struct MacWorkspaceTaskCenter: View {
     /// Optional owner hook for a verified content hit
     /// `(conversationID, messageID)`; nil falls back to plain `onOpen`.
     let onOpenMatch: ((UUID, UUID) -> Void)?
+    let didArchiveTask: (UUID) -> Void
 
     @Environment(\.locale) private var locale
     let findRequest: UUID?
@@ -39,18 +40,23 @@ struct MacWorkspaceTaskCenter: View {
     @State private var confirmsClearArchive = false
     @State private var archiveDeletionIDs: [UUID] = []
     @State private var clearingArchive = false
+    @State private var selectingTasks = false
+    @State private var selection = Set<UUID>()
+    @State private var applyingSelection = false
     private let relativeFormatter: RelativeDateTimeFormatter
 
     #if FLOE_MAC_HOST_SMOKE
     /// Live geometry of each result's open button, recorded by the smoke
     /// frame reader; memory-only and never persisted.
     static var smokeResultFrames: [UUID: CGRect] = [:]
+    static var smokeSelectionFrame: CGRect?
+    static var smokeApplySelectionFrame: CGRect?
     #endif
 
     init(workspace: HostAgentWorkspace, findRequest: UUID? = nil, onOpen: @escaping (UUID) -> Void, onNew: @escaping () -> Void,
          onArchive: @escaping (UUID, Bool) -> Void, onMove: @escaping (ConversationRecord) -> Void,
          onDelete: @escaping (ConversationRecord) -> Void, didDeleteArchived: @escaping (UUID) -> Void,
-         onOpenMatch: ((UUID, UUID) -> Void)? = nil) {
+         onOpenMatch: ((UUID, UUID) -> Void)? = nil, didArchiveTask: @escaping (UUID) -> Void) {
         self.didDeleteArchived = didDeleteArchived
         self.findRequest = findRequest
         self.workspace = workspace
@@ -60,6 +66,7 @@ struct MacWorkspaceTaskCenter: View {
         self.onMove = onMove
         self.onDelete = onDelete
         self.onOpenMatch = onOpenMatch
+        self.didArchiveTask = didArchiveTask
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         self.relativeFormatter = formatter
@@ -108,6 +115,8 @@ struct MacWorkspaceTaskCenter: View {
                 query: value, archived: workspace.taskCenterShowsArchived)
         }
         .onChange(of: workspace.taskCenterShowsArchived) { _, value in
+            selectingTasks = false
+            selection.removeAll()
             workspace.scheduleTaskContentSearch(
                 query: workspace.taskCenterQuery, archived: value)
         }
@@ -116,6 +125,9 @@ struct MacWorkspaceTaskCenter: View {
                 Task { await workspace.loadTaskRuns() }
                 workspace.scheduleTaskContentSearch(query: workspace.taskCenterQuery, archived: workspace.taskCenterShowsArchived)
             }
+        }
+        .onChange(of: selectableTaskIDs) { _, ids in
+            selection = TaskBulkSelectionRules.pruned(selection, to: ids)
         }
         .popover(item: $renameTarget, arrowEdge: .trailing) { record in
             renamePopover(for: record)
@@ -135,7 +147,16 @@ struct MacWorkspaceTaskCenter: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 taskFilters
-                if workspace.taskCenterShowsArchived && !tasks.isEmpty {
+                if !visible.isEmpty && !selectingTasks {
+                    Button(t("选择", "Select")) { selectingTasks = true }
+                        .controlSize(.large)
+                        .disabled(selectableTaskIDs.isEmpty || !canChangeSelection)
+                        .accessibilityIdentifier("workspace.task.batch.select")
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { Self.smokeSelectionFrame = $0 })
+                        #endif
+                }
+                if workspace.taskCenterShowsArchived && !tasks.isEmpty && !selectingTasks {
                     Spacer(minLength: 8)
                     Button(t("清空归档…", "Clear Archive…")) {
                         archiveDeletionIDs = tasks.map(\.id)
@@ -145,6 +166,7 @@ struct MacWorkspaceTaskCenter: View {
                         .accessibilityIdentifier("workspace.task.clearArchive")
                 }
             }
+            if selectingTasks { selectionControls }
             if workspace.taskRunLookupFailed {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -195,6 +217,39 @@ struct MacWorkspaceTaskCenter: View {
         .onChange(of: findRequest) { _, request in
             if request != nil { searchFocused = true }
         }
+    }
+
+    private var canChangeSelection: Bool {
+        !applyingSelection && !clearingArchive && !workspace.isTerminating && !workspace.isAcceptingPlan
+    }
+
+    private var selectableTaskIDs: Set<UUID> {
+        Set(visible.lazy.map(\.id).filter { !workspace.isTaskRunning($0) })
+    }
+
+    private var selectionControls: some View {
+        HStack {
+            Button(t("完成", "Done")) {
+                selectingTasks = false
+                selection.removeAll()
+            }
+            Button(t("全选", "Select All")) {
+                selection = TaskBulkSelectionRules.selectionAfterSelectAllToggle(selection, visible: selectableTaskIDs)
+            }
+            .disabled(selectableTaskIDs.isEmpty)
+            Spacer()
+            Text(t("已选择 \(selection.count) 项", "\(selection.count) selected")).foregroundStyle(.secondary)
+            Button(workspace.taskCenterShowsArchived ? t("恢复所选", "Restore Selected") : t("归档所选", "Archive Selected")) {
+                Task { await applySelection() }
+            }
+            .accessibilityIdentifier("workspace.task.batch.apply")
+            .disabled(selection.isEmpty)
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { Self.smokeApplySelectionFrame = $0 })
+            #endif
+        }
+        .controlSize(.large)
+        .disabled(!canChangeSelection)
     }
 
     @ViewBuilder private var taskFilters: some View {
@@ -310,6 +365,10 @@ struct MacWorkspaceTaskCenter: View {
         let sendingHere = workspace.isTaskRunning(record.id)
         return HStack {
             Button {
+                if selectingTasks {
+                    selection = TaskBulkSelectionRules.toggled(selection, id: record.id)
+                    return
+                }
                 guard !workspace.taskCenterShowsArchived else { return }
                 // A verified durable content hit opens at its exact message;
                 // anything else opens the conversation as before.
@@ -322,7 +381,10 @@ struct MacWorkspaceTaskCenter: View {
                 }
             } label: {
                 HStack(alignment: .center, spacing: 10) {
-                    if workspace.hasPendingApproval(in: record.id) {
+                    if selectingTasks {
+                        Image(systemName: selection.contains(record.id) ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(selection.contains(record.id) ? Color.accentColor : .secondary)
+                    } else if workspace.hasPendingApproval(in: record.id) {
                         Image(systemName: "hand.raised.fill").foregroundStyle(.orange).accessibilityHidden(true)
                     } else if workspace.isWaitingForAnswer(in: record.id) {
                         Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange).accessibilityHidden(true)
@@ -366,16 +428,18 @@ struct MacWorkspaceTaskCenter: View {
                 }
                 .contentShape(Rectangle())
                 .padding(.vertical, 2)
+                .frame(minHeight: FloeTheme.minimumTarget)
             }
             .buttonStyle(.plain)
-            .disabled(workspace.taskCenterShowsArchived)
+            .disabled(selectingTasks ? (!canChangeSelection || sendingHere) : workspace.taskCenterShowsArchived)
+            .accessibilityAddTraits(selection.contains(record.id) ? .isSelected : [])
             .accessibilityIdentifier("workspace.task.open.\(record.id.uuidString)")
             #if FLOE_MAC_HOST_SMOKE
             .background(MacWorkbenchButtonFrameReader {
                 Self.smokeResultFrames[record.id] = $0
             })
             #endif
-            if workspace.taskCenterShowsArchived {
+            if workspace.taskCenterShowsArchived && !selectingTasks {
                 Button(t("恢复", "Restore")) { onArchive(record.id, false) }
                     .disabled(sendingHere || workspace.isTerminating || workspace.isAcceptingPlan)
             }
@@ -410,6 +474,34 @@ struct MacWorkspaceTaskCenter: View {
         .listRowBackground(workspace.selectedID == record.id
                            ? Color.accentColor.opacity(0.12) : Color.clear)
         .accessibilityIdentifier("workspace.task.row.\(record.id.uuidString)")
+    }
+
+    private func applySelection() async {
+        guard selectingTasks, canChangeSelection else { return }
+        let ids = selection.intersection(selectableTaskIDs)
+        let items = visible.filter { ids.contains($0.id) }.map { TaskBulkItem(id: $0.id, title: $0.title) }
+        guard !items.isEmpty else { return }
+        let archive = !workspace.taskCenterShowsArchived
+        applyingSelection = true
+        actionError = nil
+        let workspace = self.workspace
+        let summary = await TaskBulkRunner().run(operation: archive ? .archive : .restore, items: items) { item in
+            guard await workspace.changeConversationMetadata(id: item.id, change: .archive(archive)) else {
+                return .unverified("")
+            }
+            return archive ? .archived : .restored
+        }
+        if archive {
+            for result in summary.results where result.outcome == .archived { didArchiveTask(result.item.id) }
+        }
+        selection.subtract(summary.removedIDs)
+        applyingSelection = false
+        let holds = summary.retainedIDs.count
+        if holds > 0 {
+            actionError = t("\(holds) 个任务的更新未能确认。", "Could not confirm the change for \(holds) tasks.")
+        } else {
+            selectingTasks = false
+        }
     }
 
     /// Archived rows answer "when was it archived" (iPad archive parity);

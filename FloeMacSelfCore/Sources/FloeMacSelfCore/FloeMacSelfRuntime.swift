@@ -971,6 +971,7 @@ public actor FloeMacSelfRuntime {
                 preparedAttachments: prepared.attachments,
                 runningInputStore: stores.runningInputs,
                 steerModelID: resolvedProvider.model.id,
+                steerSupportsImages: resolvedProvider.model.capabilities.contains(.vision),
                 verifyPreparedInput: verifyPreparedInput,
                 verifyWorkspaceLease: verifyWorkspaceLease,
                 questionCenter: questionCenter,
@@ -1933,6 +1934,26 @@ public actor FloeMacSelfRuntime {
     /// or oversized file from ever reaching the model as user-provided
     /// evidence.
     private static let maximumInlineImageBytes = 8 * 1_024 * 1_024
+
+    static func guidanceAttachments(_ attachments: [AttachmentRef], supportsImages: Bool) throws
+    -> (images: [ConversationImagePart], text: [String]) {
+        var images: [ConversationImagePart] = []
+        for file in attachments where file.kind == .image {
+            guard supportsImages, let image = verifiedInlineImage(file) else {
+                throw FloeMacSelfCoreError.attachmentUnavailable(file.displayName)
+            }
+            images.append(image)
+        }
+        let documents = attachments.filter { $0.kind == .document }
+        if let unsupported = documents.first(where: { !canInlineTextDocument(uti: $0.uti, byteCount: $0.byteCount) }) {
+            throw FloeMacSelfCoreError.attachmentUnreadable(unsupported.displayName)
+        }
+        let text = try inlineDocuments(documents)
+        guard text.count == documents.count, images.count + text.count == attachments.count else {
+            throw FloeError.validationFailed("A guidance attachment could not be read")
+        }
+        return (images, text)
+    }
 
     private static func verifiedInlineImage(_ attachment: AttachmentRef) -> ConversationImagePart? {
         guard attachment.kind == .image, attachment.byteCount <= maximumInlineImageBytes,

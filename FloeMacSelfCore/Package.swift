@@ -41,6 +41,7 @@ let package = Package(
                 "FloeSecurity",
                 "FloeTools",
                 "FloeProviders",
+                "FloeSkills",
                 "FloeModels",
                 "FloeCore",
                 "FloeSync",
@@ -53,11 +54,18 @@ let package = Package(
         .package(path: "../FloeDesktopSync"),
         .package(path: "../FloeAgent/ThirdParty/swift-crypto"),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
         // Matches the main FloeAgent host lock; swift-crypto pulls this
         // transitively and the exact pin prevents a second incompatible copy.
         .package(url: "https://github.com/apple/swift-asn1.git", exact: "1.7.1"),
     ],
     targets: [
+        .target(
+            name: "FloeSkills",
+            dependencies: ["FloeTools", .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+                           .product(name: "Crypto", package: "swift-crypto")],
+            swiftSettings: upstreamSwiftSettings
+        ),
         .target(name: "FloeMarkdown", dependencies: ["FloeCore"]),
         .target(name: "FloeSyncCore", dependencies: ["FloeCore"], swiftSettings: upstreamSwiftSettings),
         .target(
@@ -157,6 +165,7 @@ let package = Package(
                 "FloeCore",
                 "FloeModels",
                 "FloeProviders",
+                "FloeSkills",
                 "FloeTools",
                 "FloeSecurity",
                 "FloePersistence",

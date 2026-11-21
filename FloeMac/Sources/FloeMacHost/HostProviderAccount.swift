@@ -25,14 +25,15 @@ struct HostProviderAccount: Codable, Identifiable {
     }
 
     static func configured(name: String?, endpoint: String, protocolKind: ModelProtocol,
-                           apiKey: String, presetID: String?, allowsPlainHTTP: Bool) throws -> Self {
+                           apiKey: String, presetID: String?, allowsPlainHTTP: Bool,
+                           catalog: ProviderCatalogIndex? = providerCatalog) throws -> Self {
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw FloeError.invalidConfiguration("Invalid provider URL")
         }
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.rangeOfCharacter(from: .controlCharacters) == nil else { throw FloeError.invalidConfiguration("Invalid API key") }
         let label = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let entry = presetID.flatMap { providerCatalog?.entry(presetID: $0) }
+        let entry = presetID.flatMap { catalog?.entry(presetID: $0) }
         let kind = ProviderPreset.all.first { $0.id.rawValue == presetID }?.kind ?? entry?.kind ?? .custom
         var profile = ProviderProfile(kind: kind, wireProtocol: protocolKind, baseURL: url,
                                       displayName: label?.isEmpty == false ? label : nil, presetID: presetID)

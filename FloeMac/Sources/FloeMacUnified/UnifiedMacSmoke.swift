@@ -74,6 +74,29 @@ final class UnifiedMacSmoke {
     }
 
     func exercise(model: BridgeAppModel) async {
+        if CommandLine.arguments.contains("--verify-ark-provider") {
+            await exerciseArkProvider(model)
+            return
+        }
+        if CommandLine.arguments.contains("--provider-rejection-only"), let endpoint = projectTaskFixtureEndpoint,
+           endpoint.host == "127.0.0.1" {
+            await exerciseProviderRejection(model, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--concurrent-drafts-only"), let endpoint = projectTaskFixtureEndpoint,
+           endpoint.host == "127.0.0.1" {
+            await exerciseConcurrentDrafts(model, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--official-catalog-only") {
+            await exerciseOfficialCatalog(model)
+            return
+        }
+        if CommandLine.arguments.contains("--running-attachments-only"), let endpoint = projectTaskFixtureEndpoint,
+           endpoint.host == "127.0.0.1" {
+            await exerciseRunningAttachments(model, endpoint: endpoint)
+            return
+        }
         let firstLaunch = CommandLine.arguments.contains("--verify-first-launch")
         if firstLaunch || CommandLine.arguments.contains("--verify-saved-launch-mode") {
             let deadline = ContinuousClock.now + .seconds(5)
@@ -634,6 +657,263 @@ final class UnifiedMacSmoke {
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
         finish(result)
+    }
+
+    private func exerciseRunningAttachments(_ model: BridgeAppModel, endpoint: URL) async {
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+        await agent.prepare()
+        let ready = ContinuousClock.now + .seconds(8)
+        while !agent.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(40)) }
+        guard agent.addProvider(name: "Attachment Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "running-attachments",
+                                key: "", allowsPlainHTTP: true) else { finish(["configured": false]); return }
+        var checks: [String: Bool] = [:]
+        for (name, guidance) in [("guidance", true), ("queue", false)] {
+            guard agent.selectNewDraft(in: nil), agent.send("Begin the \(name) attachment check.", mode: .chat) else {
+                checks[name] = false
+                continue
+            }
+            let active = ContinuousClock.now + .seconds(6)
+            while !agent.canSteer && ContinuousClock.now < active { try? await Task.sleep(for: .milliseconds(40)) }
+            let file = root.appendingPathComponent("\(name)-fixture.txt")
+            let token = "ATTACHMENT_QA_" + name.uppercased()
+            let prompt = "Read the \(name) fixture document."
+            let reply = "DOCUMENT_READ_" + name.uppercased()
+            var consumedFromDraft = false
+            if (try? Data(token.utf8).write(to: file)) != nil, agent.canSteer {
+                let items = agent.stageAttachments([file])
+                if !items.isEmpty {
+                    if guidance { agent.steer(prompt, attachments: items) { consumedFromDraft = true } }
+                    else { agent.enqueue(prompt, attachments: items) { consumedFromDraft = true } }
+                }
+            }
+            let done = ContinuousClock.now + .seconds(19)
+            while ContinuousClock.now < done {
+                if !agent.isSending && agent.messages.contains(where: { $0.role == "assistant" && $0.content.contains(reply) }) { break }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            if let id = agent.selectedID, !agent.isSending { await agent.select(id) }
+            checks[name] = consumedFromDraft && agent.stagedAttachments.isEmpty
+                && agent.messages.contains { $0.role == "assistant" && $0.content.contains(reply) }
+                && agent.messages.contains { $0.role == "user" && $0.content == prompt
+                    && $0.parts.contains { $0.attachmentID != nil && $0.kind == .file } }
+        }
+        let image = NSImage(size: NSSize(width: 700, height: 180))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: image.size)).fill()
+        ("Floe document number 421" as NSString).draw(at: NSPoint(x: 30, y: 50), withAttributes: [
+            .font: NSFont.systemFont(ofSize: 46), .foregroundColor: NSColor.black,
+        ])
+        image.unlockFocus()
+        if let bytes = image.tiffRepresentation,
+           let raster = NSBitmapImageRep(data: bytes)?.representation(using: .png, properties: [:]),
+           let read = try? MacComposerImageTextImport.recognizedText(from: raster) {
+            checks["imageTextRecognition"] = read.contains("421")
+        } else { checks["imageTextRecognition"] = false }
+        finish(["checks": checks])
+    }
+
+    private func exerciseOfficialCatalog(_ model: BridgeAppModel) async {
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent, let catalogs = agent.officialCatalogs else {
+            finish(["opened": false]); return
+        }
+        do {
+            let bytes = try await catalogs.refresh(.models) { _ = try ProviderCatalogIndex.validated(from: $0) }
+            let effective = try bytes.map(ProviderCatalogIndex.validated(from:)) ?? ProviderCatalogIndex.loadBundled()
+            let stored = try await catalogs.active(.models)
+            try await agent.webSearch.refreshCatalog()
+            let modelsFound = effective?.search(query: "DeepSeek", filter: .available, configuredPresetIDs: []).isEmpty == false
+            finish(["signedModelCatalog": bytes != nil, "catalogPersisted": bytes != nil && stored == bytes,
+                    "modelSearch": modelsFound, "signedWebSearchCheck": true, "webSearchMatches": agent.webSearch.search("Google", language: "en").count])
+        } catch {
+            finish(["signedModelCatalog": false, "error": String(describing: error)])
+        }
+    }
+
+    private func exerciseConcurrentDrafts(_ model: BridgeAppModel, endpoint: URL) async {
+        model.openAgentWorkspace()
+        guard let workspace = model.macWorkspace, let agent = workspace.agent, let drafts = workspace.smokeDraftStore else {
+            finish(["opened": false]); return
+        }
+        await agent.prepare()
+        let ready = ContinuousClock.now + .seconds(8)
+        while !agent.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(50)) }
+        guard agent.addProvider(name: "Draft Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "draft-stream",
+                                key: "", allowsPlainHTTP: true),
+              agent.selectNewDraft(in: nil) else { finish(["configured": false]); return }
+        let first = agent.uncommittedDraftID
+        let promptA = "First independent stream"
+        let promptB = "Second independent stream"
+        drafts.setText(promptA, for: first)
+        let firstSent = agent.send(promptA, mode: .chat) { drafts.setText("", for: first) }
+        // No suspension before opening the next composer. This hits the
+        // first-send race before the first durable conversation exists.
+        let secondOpened = agent.selectNewDraft(in: nil) && !agent.isSending
+        let second = agent.uncommittedDraftID
+        drafts.setText(promptB, for: second)
+        let secondSent = agent.send(promptB, mode: .chat) { drafts.setText("", for: second) }
+        let visible = ContinuousClock.now + .seconds(6)
+        while agent.selectedID != second && ContinuousClock.now < visible { try? await Task.sleep(for: .milliseconds(50)) }
+        let concurrentlyRunning = agent.isTaskRunning(first) && agent.isTaskRunning(second)
+        let menu = await performMenuShortcut("n", title: String(localized: "workbench.new_task"))
+        let draft = ContinuousClock.now + .seconds(2)
+        while agent.selectedID != nil && ContinuousClock.now < draft { try? await Task.sleep(for: .milliseconds(30)) }
+        let third = agent.uncommittedDraftID
+        let thirdUsable = menu && agent.selectedID == nil && !agent.isSending && third != first && third != second
+        let unsent = "Keep this unsent draft"
+        drafts.setText(unsent, for: third)
+        let done = ContinuousClock.now + .seconds(18)
+        while agent.activeRunCount != 0 && ContinuousClock.now < done { try? await Task.sleep(for: .milliseconds(50)) }
+        let staysOnDraft = agent.selectedID == nil && third == agent.uncommittedDraftID && drafts.text(for: third) == unsent
+        let firstUnused = drafts.text(for: first).isEmpty
+        let secondUnused = drafts.text(for: second).isEmpty
+        await agent.select(first)
+        let firstSaved = agent.messages.contains { $0.role == "user" && $0.content == promptA }
+            && !agent.messages.contains { $0.role == "user" && $0.content == promptB }
+        await agent.select(second)
+        let secondSaved = agent.messages.contains { $0.role == "user" && $0.content == promptB }
+            && !agent.messages.contains { $0.role == "user" && $0.content == promptA }
+        let batchArchived = await exerciseBatchArchive(agent, ids: [first, second])
+        finish(["firstSent": firstSent, "secondOpenedBeforeAdmission": secondOpened && first != second,
+                "secondSent": secondSent, "concurrentStreams": concurrentlyRunning,
+                "newTaskFromMenu": thirdUsable, "draftAfterStreams": staysOnDraft,
+                "separateSavedMessages": firstSaved && secondSaved && firstUnused && secondUnused,
+                "batchArchive": batchArchived,
+                "diagnostics": settingsDiagnostics])
+    }
+
+    private func exerciseBatchArchive(_ agent: HostAgentWorkspace, ids: Set<UUID>) async -> Bool {
+        guard clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame,
+                                   screenshot: "before-task-center.png") else { return false }
+        for archive in [true, false] {
+            MacWorkspaceTaskCenter.smokeSelectionFrame = nil
+            MacWorkspaceTaskCenter.smokeApplySelectionFrame = nil
+            agent.taskCenterShowsArchived = !archive
+            // Let the segmented filter finish replacing the list and reset
+            // the preceding selection before pressing the new Select button.
+            try? await Task.sleep(for: .milliseconds(300))
+            let limit = ContinuousClock.now + .seconds(3)
+            var selected = false
+            while !selected && ContinuousClock.now < limit {
+                selected = clickWorkbenchButton(ids: ["workspace.task.batch.select"],
+                                               frame: MacWorkspaceTaskCenter.smokeSelectionFrame, screenshot: nil)
+                if !selected { try? await Task.sleep(for: .milliseconds(40)) }
+            }
+            guard selected else { return false }
+            let controlsReady = ContinuousClock.now + .seconds(2)
+            while MacWorkspaceTaskCenter.smokeApplySelectionFrame == nil && ContinuousClock.now < controlsReady {
+                if let content = visibleWorkbench?.contentView {
+                    content.layoutSubtreeIfNeeded()
+                    refreshButtonFrames(in: content)
+                }
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            guard MacWorkspaceTaskCenter.smokeApplySelectionFrame != nil else { return false }
+            for id in ids {
+                guard clickWorkbenchButton(ids: ["workspace.task.open." + id.uuidString],
+                                           frame: MacWorkspaceTaskCenter.smokeResultFrames[id], screenshot: nil) else { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard clickWorkbenchButton(ids: ["workspace.task.batch.apply"], frame: MacWorkspaceTaskCenter.smokeApplySelectionFrame,
+                                       screenshot: archive ? "archive-selection.png" : "restore-selection.png") else { return false }
+            let deadline = ContinuousClock.now + .seconds(4)
+            func updated() -> Bool {
+                ids.isSubset(of: Set(agent.conversations.filter { ($0.archivedAt != nil) == archive }.map(\.id)))
+            }
+            while !updated() && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
+            guard updated() else { return false }
+        }
+        return true
+    }
+
+    private func exerciseProviderRejection(_ model: BridgeAppModel, endpoint: URL) async {
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+        await agent.prepare()
+        let ready = ContinuousClock.now + .seconds(8)
+        while !agent.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(50)) }
+        let accounts = await agent.verifyProviderAccountsSmoke()
+        let prompt = "Check the saved test message."
+        guard agent.addProvider(name: "Rejection Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "model-unavailable",
+                                key: "synthetic-rejection-token", allowsPlainHTTP: true),
+              agent.selectNewDraft(in: nil), agent.send(prompt, mode: .chat) else {
+            finish(["sent": false, "accounts": accounts]); return
+        }
+        let done = ContinuousClock.now + .seconds(12)
+        while agent.isSending && ContinuousClock.now < done { try? await Task.sleep(for: .milliseconds(50)) }
+        let stored = agent.messages.contains { $0.role == "user" && $0.content == prompt }
+        let before = agent.notice
+        let displayed = agent.showsModelSettingsForFailure && before == MacPermissionsText.t(
+            "供应商找不到模型或接口。请检查接口地址、协议和模型 ID。",
+            "The provider could not find the model or endpoint. Check the endpoint, protocol and model ID.")
+        if let id = agent.selectedID { await agent.select(id) }
+        finish(["accounts": accounts, "userMessagePersisted": stored, "providerErrorDisplayed": displayed,
+                "providerErrorAfterReopen": displayed && before == agent.notice && agent.showsModelSettingsForFailure,
+                "noRawResponse": agent.notice?.contains("synthetic-rejection-token") == false,
+                "continuedFromHistoryAvailable": agent.continuableRun != nil])
+    }
+
+    private func exerciseArkProvider(_ model: BridgeAppModel) async {
+        // In-memory test account in the isolated smoke store. The supplied
+        // key is used only for the selected official Ark HTTPS route.
+        guard let key = ProcessInfo.processInfo.environment["FLOE_MAC_QA_ARK_KEY"],
+              !key.isEmpty else { finish(["configured": false]); return }
+        let plan = CommandLine.arguments.contains("--ark-agent-plan")
+        let preset: ProviderPreset = plan ? .volcengineAgentPlan : .volcengineArk
+        let remoteID = plan ? "ark-code-latest" : "doubao-seed-2-1-lite-260915"
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+        await agent.prepare()
+        let ready = ContinuousClock.now + .seconds(8)
+        while !agent.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(50)) }
+        let endpoint = preset.defaultBaseURL.absoluteString
+        guard agent.addProvider(name: "Ark QA", endpoint: endpoint, protocolKind: preset.defaultProtocol,
+                                modelID: remoteID, key: key, supportsTools: true, presetID: preset.id.rawValue,
+                                limits: .init(contextTokens: 32_768, maxOutputTokens: 2_048)) else {
+            finish(["configured": false, "ready": agent.isReady]); return
+        }
+
+        var checks: [String: Bool] = [:]
+        if !plan {
+            agent.requestModelDiscovery(endpoint: endpoint, protocolKind: preset.defaultProtocol, apiKey: key,
+                                       debounce: false, presetID: preset.id)
+            let listed = ContinuousClock.now + .seconds(25)
+            while ContinuousClock.now < listed {
+                if case .succeeded = agent.modelDiscoveryState { break }
+                if case .failed = agent.modelDiscoveryState { break }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            checks["remoteList"] = agent.discoveredModels.contains { $0.remoteModelID == remoteID }
+        }
+        var failures: [[String: Any]] = []
+        for (mode, prompt, expected) in [
+            (HostAgentMode.agent, "Calculate 19 + 23. Reply with QA_TOTAL= followed by the number. No other work is needed.", "QA_TOTAL=42"),
+            (HostAgentMode.chat, "Reply with QA_CHAT= followed by the result of 17 + 8.", "QA_CHAT=25"),
+        ] {
+            let eventsStart = agent.smokeRunDiagnostics.count
+            guard agent.selectNewDraft(in: nil), agent.send(prompt, mode: mode) else {
+                checks[mode.rawValue] = false
+                continue
+            }
+            let until = ContinuousClock.now + .seconds(105)
+            while agent.isSending && ContinuousClock.now < until { try? await Task.sleep(for: .milliseconds(60)) }
+            checks[mode.rawValue] = !agent.isSending && agent.messages.contains {
+                $0.role == "assistant" && $0.content.replacingOccurrences(of: " ", with: "").contains(expected)
+            }
+            if checks[mode.rawValue] == false {
+                if agent.isSending { agent.stop() }
+                failures.append(contentsOf: agent.smokeRunDiagnostics.dropFirst(eventsStart).compactMap {
+                    guard let payload = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] else { return nil }
+                    return payload.filter { ["kind", "status", "httpStatus", "state", "outcome"].contains($0.key) }
+                }.filter { !$0.isEmpty })
+            }
+        }
+        finish(["checks": checks, "model": remoteID, "failures": failures])
     }
 
     private func exerciseNativeCommands(_ model: BridgeAppModel, endpoint: URL) async {

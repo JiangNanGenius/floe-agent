@@ -92,12 +92,25 @@ public enum CompatToolNames {
         return path == arkPAYGRootPath
     }
 
-    /// Providers whose function-name contract needs the deterministic
-    /// per-request collision table (not just dot replacement) so every
-    /// outbound occurrence shares one injective spelling and the inbound
-    /// name recovers the canonical dotted name exactly.
+    /// The official APIs reject dotted names before starting inference. Keep
+    /// the strict contract scoped to the official hosts and wire protocols.
+    private static func officialToolNameLimit(_ provider: ProviderProfile) -> Int? {
+        guard provider.baseURL.scheme?.lowercased() == "https",
+              provider.baseURL.port == nil || provider.baseURL.port == 443 else { return nil }
+        switch (provider.baseURL.host?.lowercased(), provider.wireProtocol) {
+        case ("api.openai.com", .openAIChatCompletions), ("api.openai.com", .openAIResponses):
+            return 64
+        case ("api.anthropic.com", .anthropicMessages):
+            return 128
+        default:
+            return nil
+        }
+    }
+
+    /// Each strict provider needs one collision table for every occurrence
+    /// of a tool name in schemas, request history and the streamed response.
     public static func requiresDeterministicNames(_ provider: ProviderProfile) -> Bool {
-        requiresLetterInitialNames(provider) || requiresArkNames(provider)
+        requiresLetterInitialNames(provider) || requiresArkNames(provider) || officialToolNameLimit(provider) != nil
     }
 
     /// One deterministic Ark-grammar hardening: after the compat
@@ -140,6 +153,7 @@ public enum CompatToolNames {
 
     public static func wireName(_ canonicalName: String, for provider: ProviderProfile) -> String {
         if requiresLetterInitialNames(provider) { return letterInitialSpelling(canonicalName) }
+        if let limit = officialToolNameLimit(provider) { return String(arkSpelling(canonicalName).prefix(limit)) }
         if requiresArkNames(provider) { return arkSpelling(canonicalName) }
         return ToolNameSpelling.wire(canonicalName, safe: usesWireSafeNames(provider))
     }
@@ -180,18 +194,21 @@ public enum CompatToolNames {
     /// providers get an empty table and keep the legacy per-name spelling,
     /// byte-for-byte unchanged.
     public static func wireTable(for request: ProviderStreamRequest) -> [String: String] {
-        let letterInitial = requiresLetterInitialNames(request.provider)
-        guard letterInitial || requiresArkNames(request.provider) else { return [:] }
+        let provider = request.provider
+        guard requiresDeterministicNames(provider) else { return [:] }
+        let limit = officialToolNameLimit(provider)
         let universe = Set(requestUniverse(request)).sorted()
         var table: [String: String] = [:]
         var used = Set<String>()
         for canonical in universe {
-            let base = letterInitial ? letterInitialSpelling(canonical) : arkSpelling(canonical)
+            let base = wireName(canonical, for: provider)
             var candidate = base
-            var suffix = 2
+            var index = 2
             while used.contains(candidate) {
-                candidate = base + "_\(suffix)"
-                suffix += 1
+                let suffix = "_\(index)"
+                let stem = limit.map { String(base.prefix($0 - suffix.count)) } ?? base
+                candidate = stem + suffix
+                index += 1
             }
             used.insert(candidate)
             table[canonical] = candidate
@@ -493,8 +510,8 @@ public extension ProviderAdapter {
 /// Reads a non-streaming response with an application-level byte ceiling.
 /// The Apple path stops reading as soon as the limit is crossed instead of
 /// first buffering the complete body in memory.
-enum BoundedHTTP {
-    static func data(
+public enum BoundedHTTP {
+    public static func data(
         for request: URLRequest,
         session: URLSession = .shared,
         maxBytes: Int
@@ -507,6 +524,7 @@ enum BoundedHTTP {
         return (data, response)
         #else
         let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
         if response.expectedContentLength > Int64(maxBytes) {
             throw FloeError.validationFailed("Provider response exceeds \(maxBytes) bytes")
         }
@@ -638,11 +656,12 @@ struct SSEBytePump: Sendable {
                         let (bytes, response) = try await session.bytes(for: currentRequest)
                         cancellation?.installNetworkTask(bytes.task)
                         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                            var body = ""
+                            var data = Data()
                             for try await byte in bytes {
-                                body.append(Character(UnicodeScalar(byte)))
-                                if body.count > 4096 { break }
+                                data.append(byte)
+                                if data.count == 4096 { break }
                             }
+                            let body = String(decoding: data, as: UTF8.self)
                             try Task.checkCancellation()
                             if retryUnsupportedThinking,
                                let replacement = compatibility.replacementRequest(currentRequest, status: http.statusCode, body: body) {
@@ -686,18 +705,24 @@ struct SSEBytePump: Sendable {
 }
 
 /// Extracts an HTTP error AgentEvent from the pump's sentinel event.
-func httpErrorEvent(from sseEvent: SSEEvent) -> AgentEvent? {
+func httpErrorEvent(
+    from sseEvent: SSEEvent, provider: ProviderProfile? = nil, secret: String? = nil
+) -> AgentEvent? {
     if sseEvent.event == "__floe_sse_error__" {
         return .error(AgentEvent.NormalizedError(
             kind: .malformed,
-            providerMessage: sseEvent.data
+            providerMessage: SecretRedactor.redact(sseEvent.data, secret: secret)
         ))
     }
     guard sseEvent.event == "__http_error__" else { return nil }
     let lines = sseEvent.data.split(separator: "\n", maxSplits: 1)
     let status = Int(lines.first ?? "") ?? 500
     let body = lines.count > 1 ? String(lines[1]) : ""
-    return WireTranslator.httpError(status: status, body: body)
+    if let provider, ProviderConnectionProbe.isInactiveVolcenginePlan(provider: provider, status: status, body: body) {
+        return .error(.init(kind: .auth, providerMessage: ProviderConnectionProbe.inactiveVolcenginePlanMessage,
+                            httpStatus: status))
+    }
+    return WireTranslator.httpError(status: status, body: SecretRedactor.redact(body, secret: secret))
 }
 
 // MARK: - OpenAI Responses adapter
@@ -738,7 +763,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                     )
                     let decoder = JSONDecoder()
                     for try await sseEvent in pump.events(retryUnsupportedThinking: true) {
-                        if let errorEvent = httpErrorEvent(from: sseEvent) {
+                        if let errorEvent = httpErrorEvent(from: sseEvent, provider: request.provider, secret: credentials.apiKey) {
                             if case .error(let error) = errorEvent {
                                 let status = error.httpStatus.map(String.init) ?? "none"
                                 logger.warning(
@@ -982,7 +1007,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                         try await withTaskCancellationHandler {
                             chatEvents: for try await sseEvent in pump.events(cancellation: responseCancellation, retryUnsupportedThinking: true) {
                                 try Task.checkCancellation()
-                                if let errorEvent = httpErrorEvent(from: sseEvent) {
+                                if let errorEvent = httpErrorEvent(from: sseEvent, provider: request.provider, secret: credentials.apiKey) {
                                     if case .error(let error) = errorEvent {
                                         let status = error.httpStatus.map(String.init) ?? "none"
                                         logger.warning(
@@ -1238,18 +1263,21 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         // DeepSeek tool-free turn explicit when native call history remains.
         let explicitNoTools = tools.isEmpty && replaysReasoning
             && messages.contains { !($0.toolCalls ?? []).isEmpty }
+        let usesCompletionLimit = request.provider.baseURL.host?.lowercased() == "api.openai.com"
+        let outputLimit = request.model.limits.configuredMaxOutputTokens
         return ChatRequest(
             model: request.model.remoteModelID,
             messages: messages,
             tools: explicitNoTools ? [] : (tools.isEmpty ? nil : tools),
             toolChoice: explicitNoTools ? "none" : (tools.isEmpty ? nil : "auto"),
-            maxTokens: request.model.limits.configuredMaxOutputTokens,
+            maxTokens: usesCompletionLimit ? nil : outputLimit,
             thinking: request.model.effectiveOmitReasoningParameters ? nil : reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
             reasoningEffort: request.model.effectiveOmitReasoningParameters ? nil : reasoning.reasoningEffort,
             enableThinking: request.model.effectiveOmitReasoningParameters ? nil : reasoning.enableThinking,
             stream: true,
             streamOptions: .init(includeUsage: true),
-            reasoning: request.model.effectiveOmitReasoningParameters ? nil : reasoning.reasoning
+            reasoning: request.model.effectiveOmitReasoningParameters ? nil : reasoning.reasoning,
+            maxCompletionTokens: usesCompletionLimit ? outputLimit : nil
         )
     }
 
@@ -1284,7 +1312,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                     let decoder = JSONDecoder()
                     var aggregator = WireTranslator.AnthropicAggregator()
                     for try await sseEvent in pump.events() {
-                        if let errorEvent = httpErrorEvent(from: sseEvent) {
+                        if let errorEvent = httpErrorEvent(from: sseEvent, provider: request.provider, secret: credentials.apiKey) {
                             continuation.yield(errorEvent)
                             continue
                         }

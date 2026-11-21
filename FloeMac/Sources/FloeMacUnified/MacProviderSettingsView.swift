@@ -38,9 +38,13 @@ struct MacProviderSettingsView: View {
     @State private var connectionStatus: String?
     @State private var testingMediaListing = false
     @State private var showsCatalog = false
-    @State private var catalogQuery = ""
+    @State private var catalogError: String?
+    /// Effective verified catalog (active signed install, else bundled),
+    /// owned by the workspace and refreshed through the shared official
+    /// catalogs service. Catalog data is public provider metadata only.
+    private var catalog: ProviderCatalogIndex? { workspace.modelProviderCatalog }
     private var catalogEntry: ProviderCatalogEntry? {
-        draft.savedPresetID.flatMap { HostProviderAccount.providerCatalog?.entry(presetID: $0) }
+        draft.savedPresetID.flatMap { catalog?.entry(presetID: $0) }
     }
 
     private var resolvedPreset: ProviderPreset {
@@ -142,11 +146,32 @@ struct MacProviderSettingsView: View {
         .onChange(of: draft.protocolKind) { _, _ in scheduleDiscovery() }
         .onChange(of: draft.allowsPlainHTTP) { _, _ in scheduleDiscovery() }
         .onChange(of: draft) { _, _ in cancelConnectionCheck() }
+        .task { await workspace.loadActiveModelProviderCatalog() }
         .onDisappear {
             cancelConnectionCheck()
             workspace.cancelModelDiscovery()
         }
-        .sheet(isPresented: $showsCatalog) { supplierCatalog }
+        .sheet(isPresented: $showsCatalog) {
+            MacProviderCatalogPicker(
+                role: role,
+                presets: presets,
+                selectedPresetID: draft.presetID,
+                selectedCatalogID: draft.catalogID,
+                catalog: catalog,
+                configuredPresetIDs: Set(groups.compactMap(\.presetID)),
+                isRefreshing: workspace.refreshingModelProviderCatalog,
+                errorMessage: catalogError,
+                onRefresh: { await refreshCatalog() },
+                onSelect: { entry in
+                    applyCatalogEntry(entry)
+                    showsCatalog = false
+                },
+                onSelectPreset: { preset in
+                    applyPreset(preset.id)
+                    showsCatalog = false
+                }
+            )
+        }
         .sheet(isPresented: $showingICloud) {
             MacICloudModelsView(workspace: workspace, providerID: editingID, modelID: draft.editingModelID) { id in
                 if let record = workspace.providers.first(where: { $0.model.id == id }) { beginEditing(record) }
@@ -312,21 +337,25 @@ struct MacProviderSettingsView: View {
                 /// loading a record or starting another draft rewrites the
                 /// id without touching endpoint, protocol or key.
                 LabeledContent(MacProviderText.t("用途", "Use"), value: role.macModelTitle)
-                Picker("mac.provider.preset", selection: presetSelection) {
-                    if let catalogID = draft.catalogID {
-                        Text(catalogEntry?.name ?? catalogID).tag(catalogID)
-                    }
-                    ForEach(presets) { preset in
-                        Text(preset.displayName).tag(preset.id.rawValue)
-                    }
-                }
-                .accessibilityIdentifier("settings.providers.preset")
-                if HostProviderAccount.providerCatalog != nil {
-                    Button(MacProviderText.t("浏览供应商目录…", "Browse Provider Directory…")) {
-                        catalogQuery = ""
+                /// One unified supplier entry point, matching iPad: tapping
+                /// the provider field itself opens the searchable selector
+                /// (built-in presets + verified official catalog together).
+                LabeledContent("mac.provider.catalog.field") {
+                    Button {
+                        catalogError = nil
                         showsCatalog = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(supplierFieldTitle).lineLimit(1)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(minHeight: 22, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
-                    .accessibilityIdentifier("settings.providers.directory")
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.providers.preset")
                 }
                 TextField(MacProviderText.t("名称（可选）", "Name (optional)"), text: $draft.name)
                     .accessibilityIdentifier("settings.providers.name")
@@ -864,43 +893,30 @@ struct MacProviderSettingsView: View {
         )
     }
 
-    /// Explicit picker binding: user-driven preset picks apply the preset;
-    /// programmatic id reloads (record load, new draft) change nothing.
-    private var presetSelection: Binding<String> {
-        Binding(get: { draft.savedPresetID ?? "" }, set: { raw in
-            guard raw != draft.savedPresetID, let id = ProviderTemplateID(rawValue: raw) else { return }
-            applyPreset(id)
-        })
+    /// Title of the unified supplier field: the anchored catalog entry name
+    /// wins, then the selected preset label; an explicit choose prompt when
+    /// nothing is selected yet.
+    private var supplierFieldTitle: String {
+        if let catalogID = draft.catalogID,
+           let entry = catalog?.entry(presetID: catalogID) {
+            return entry.name
+        }
+        if let preset = presets.first(where: { $0.id == draft.presetID }) {
+            return preset.displayName
+        }
+        return String(localized: "mac.provider.catalog.choose")
     }
 
-    private var supplierCatalog: some View {
-        let configured = Set(groups.compactMap(\.presetID))
-        let entries = HostProviderAccount.providerCatalog?.search(query: catalogQuery, filter: .available,
-            configuredPresetIDs: configured).filter { ProviderFormSpecResolver.isCatalogEntry($0, eligibleFor: role) } ?? []
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(MacProviderText.t("供应商目录", "Provider Directory")).font(.headline)
-                Spacer()
-                Button(MacProviderText.t("关闭", "Close")) { showsCatalog = false }.keyboardShortcut(.cancelAction)
-            }
-            TextField(MacProviderText.t("搜索名称、域名或模型", "Search by name, domain or model"), text: $catalogQuery)
-            if entries.isEmpty {
-                ContentUnavailableView.search(text: catalogQuery)
-            } else {
-                List(entries) { entry in
-                    Button {
-                        applyCatalogEntry(entry)
-                        showsCatalog = false
-                    } label: {
-                        HStack {
-                            Text(entry.name)
-                            Spacer()
-                            Text(entry.baseURL?.host ?? "").font(.caption).foregroundStyle(.secondary)
-                        }.contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                }
-            }
-        }.padding(18).frame(minWidth: 430, minHeight: 350)
+    /// Signed catalog refresh through the workspace. The picker keeps serving
+    /// the previous snapshot on failure; the real error stays visible next to
+    /// a retry, and manual endpoint/model input remains fully usable.
+    private func refreshCatalog() async {
+        catalogError = nil
+        do {
+            try await workspace.refreshModelProviderCatalog()
+        } catch {
+            catalogError = error.localizedDescription
+        }
     }
 
     private func applyCatalogEntry(_ entry: ProviderCatalogEntry) {
@@ -1037,7 +1053,8 @@ struct MacProviderSettingsView: View {
         let candidate = draft
         if role != .conversation {
             guard (try? HostProviderAccount.configured(name: nil, endpoint: draft.endpoint, protocolKind: draft.protocolKind,
-                apiKey: draft.key, presetID: draft.presetID?.rawValue, allowsPlainHTTP: draft.allowsPlainHTTP)) != nil else {
+                apiKey: draft.key, presetID: draft.savedPresetID, allowsPlainHTTP: draft.allowsPlainHTTP,
+                catalog: catalog)) != nil else {
                 connectionStatus = MacProviderText.t("请检查接口地址和密钥格式。", "Check the endpoint URL and API key format.")
                 return
             }

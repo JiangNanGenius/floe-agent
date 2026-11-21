@@ -30,6 +30,21 @@ import FloeCore
 public enum ProviderConnectionProbe {
     private static let session = ASRTransportSecurity.makeHTTPSession()
 
+    /// Ark uses a deterministic HTTP 400 for an inactive Agent Plan. Trust
+    /// the structured code only on the official subscription endpoint.
+    public static func isInactiveVolcenginePlan(provider: ProviderProfile, status: Int?, body: String) -> Bool {
+        guard status == 400, ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan,
+              let root = try? JSONSerialization.jsonObject(with: Data(body.prefix(4096).utf8)) as? [String: Any],
+              let error = root["error"] as? [String: Any] else { return false }
+        return (error["code"] as? String) == "InvalidSubscription"
+    }
+
+    public static var inactiveVolcenginePlanMessage: String {
+        FloeL10n.isChinese
+            ? "火山引擎 Agent Plan 套餐无效或已到期。请检查订阅，或选择另一个已配置的模型。"
+            : "Your Volcengine Agent Plan subscription is inactive or has expired. Check the subscription or choose another configured model."
+    }
+
     /// True when the adapter's default listing probe must be replaced by a
     /// minimal selected-model chat request.
     public static func usesMinimalChatProbe(provider: ProviderProfile) -> Bool {
@@ -111,8 +126,11 @@ public enum ProviderConnectionProbe {
         guard let http = response as? HTTPURLResponse else {
             throw FloeError.internalError(FloeL10n.l("providers.connection_test.invalid_response"))
         }
-        let rawBody = String(decoding: data.prefix(1_024), as: UTF8.self)
-        let body = SecretRedactor.redact(rawBody, secret: credentials.apiKey)
+        let rawBody = String(decoding: data.prefix(4_096), as: UTF8.self)
+        if isInactiveVolcenginePlan(provider: provider, status: http.statusCode, body: rawBody) {
+            throw FloeError.validationFailed(inactiveVolcenginePlanMessage)
+        }
+        let body = SecretRedactor.redact(String(rawBody.prefix(1_024)), secret: credentials.apiKey)
         switch http.statusCode {
         case 200..<300:
             break

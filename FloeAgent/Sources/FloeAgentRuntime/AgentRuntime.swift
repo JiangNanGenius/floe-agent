@@ -233,6 +233,9 @@ public struct RuntimeSteerInput: Sendable, Hashable, Identifiable {
     public var content: String
     public var images: [ConversationImagePart]
     public var attachments: [AttachmentRef]
+    /// Verified excerpts presented to the model with this user turn. The
+    /// persisted transcript keeps the user's message and original file refs.
+    public var attachmentText: [String]
     public var createdAt: Date
     public var origin: RuntimeSteerOrigin
 
@@ -242,12 +245,14 @@ public struct RuntimeSteerInput: Sendable, Hashable, Identifiable {
         images: [ConversationImagePart] = [],
         attachments: [AttachmentRef] = [],
         createdAt: Date = Date(),
-        origin: RuntimeSteerOrigin = .user
+        origin: RuntimeSteerOrigin = .user,
+        attachmentText: [String] = []
     ) {
         self.id = id
         self.content = content
         self.images = images
         self.attachments = attachments
+        self.attachmentText = attachmentText
         self.createdAt = createdAt
         self.origin = origin
     }
@@ -2452,7 +2457,7 @@ public actor FloeAgentRuntime {
         let trimmed = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .rejected(reason: "Guidance must not be empty") }
         if case .browserControl(let notice) = input.origin,
-           trimmed != notice.message || !input.images.isEmpty || !input.attachments.isEmpty {
+           trimmed != notice.message || !input.images.isEmpty || !input.attachments.isEmpty || !input.attachmentText.isEmpty {
             return .rejected(reason: "Invalid native browser control notice")
         }
         if acceptedSteerIDs.contains(input.id) { return .alreadyAccepted }
@@ -4325,6 +4330,8 @@ public actor FloeAgentRuntime {
             let content: String
             if case .taskCoordination(let sender) = input.origin {
                 content = TaskCoordinationProjection.modelContent(senderRunID: sender, content: input.content)
+            } else if !input.attachmentText.isEmpty {
+                content = ([input.content] + input.attachmentText).joined(separator: "\n\n")
             } else {
                 content = input.content
             }

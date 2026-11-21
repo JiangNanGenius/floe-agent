@@ -16,6 +16,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     /// providers. Omitted together with `tools` for text-only models.
     public var toolChoice: String?
     public var maxTokens: Int?
+    public var maxCompletionTokens: Int?
     public var thinking: Thinking?
     public var reasoningEffort: String?
     public var enableThinking: Bool?
@@ -37,13 +38,15 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         enableThinking: Bool? = nil,
         stream: Bool = true,
         streamOptions: StreamOptions? = StreamOptions(includeUsage: true),
-        reasoning: Reasoning? = nil
+        reasoning: Reasoning? = nil,
+        maxCompletionTokens: Int? = nil
     ) {
         self.model = model
         self.messages = messages
         self.tools = tools
         self.toolChoice = toolChoice
         self.maxTokens = maxTokens
+        self.maxCompletionTokens = maxCompletionTokens
         self.thinking = thinking
         self.reasoningEffort = reasoningEffort
         self.enableThinking = enableThinking
@@ -233,6 +236,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         case model, messages, tools, thinking, stream, reasoning
         case toolChoice = "tool_choice"
         case maxTokens = "max_tokens"
+        case maxCompletionTokens = "max_completion_tokens"
         case reasoningEffort = "reasoning_effort"
         case enableThinking = "enable_thinking"
         case streamOptions = "stream_options"

@@ -2,6 +2,7 @@
 
 import AppKit
 import Combine
+import FloeMacSelfCore
 import FloeMacToolbox
 import SwiftUI
 
@@ -81,6 +82,12 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                                                admitWork: admitWork)
             agent = workspace
             let directory = try? HostAgentDatabase.prepareStorageDirectory(applicationSupport: root, namespace: namespace)
+            if let directory, let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                let catalogs = FloeMacOfficialCatalogs(root: directory.appendingPathComponent("ProviderCatalogs", isDirectory: true),
+                                                       appVersion: version)
+                workspace.officialCatalogs = catalogs
+                workspace.webSearch.officialCatalogs = catalogs
+            }
             let drafts = MacWorkspaceDraftStore(directory: directory?.appendingPathComponent("Drafts", isDirectory: true))
             draftStore = drafts
             let images = directory.map {
@@ -100,6 +107,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
             self.videos = videos
             self.creativeLibrary = library
             videos?.resume()
+            drafts.adoptLegacyHomeDraft(for: workspace.uncommittedDraftID)
             workspace.loadAttachmentDraft = { [weak drafts] in drafts?.attachments(for: $0) ?? [] }
             workspace.saveAttachmentDraft = { [weak drafts] id, attachments in drafts?.setAttachments(attachments, for: id) }
             let browser = MacBrowserWorkbenchController()
@@ -221,13 +229,14 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
 
     #if FLOE_MAC_HOST_SMOKE
     var settingsSheet: NSWindow? { agentWindow?.attachedSheet }
+    var smokeDraftStore: MacWorkspaceDraftStore? { draftStore }
     #endif
 
     func closeForBridgeMode() async throws -> Bool {
         guard let agent, agentLeases.isEmpty, agent.beginTermination() else { throw CloseError.agentBusy }
         defer { if self.agent != nil { agent.cancelTermination() } }
         guard !agent.hasPendingWorkspaceFileChanges else { throw CloseError.pendingFiles }
-        draftStore?.flush()
+        draftStore?.flushBeforeClosing()
         guard draftStore?.saveFailed != true else { throw CloseError.draftSaveFailed }
         agent.cancelModelDiscovery()
         guard await closeToolbox(promptForScannerDraft: true) else { return false }

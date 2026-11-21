@@ -42,3 +42,5 @@ public struct ComposerDraftDocument<Handoff: Codable, LandingProof: Codable>: Co
         self.landingProofs = landingProofs
     }
 }
+
+extension ComposerDraftDocument: Sendable where Handoff: Sendable, LandingProof: Sendable {}

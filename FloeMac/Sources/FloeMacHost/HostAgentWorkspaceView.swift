@@ -49,6 +49,10 @@ struct HostAgentWorkspaceView: View {
     @State private var attachmentImport: Task<Void, Never>?
     @State private var attachmentImportID: UUID?
     @State private var showAttachmentError = false
+    @State private var textImportTask: Task<Void, Never>?
+    @State private var textImportAttachmentID: UUID?
+    @State private var showTextImportError = false
+    @State private var textImportFoundNoText = false
     #if FLOE_UNIFIED_MAC
     @State private var confirmsTaskFullAccess = false
     @State private var approvalSelection: UUID?
@@ -303,10 +307,22 @@ struct HostAgentWorkspaceView: View {
             }
             if let notice = workspace.notice {
                 #if FLOE_UNIFIED_MAC
-                ErrorEventView(message: notice)
-                    .frame(maxWidth: 720)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 20)
+                VStack(alignment: .leading, spacing: 0) {
+                    ErrorEventView(message: notice)
+                    if workspace.showsModelSettingsForFailure, let openModelSettings {
+                        Button(action: openModelSettings) {
+                            Label("mac.settings.models", systemImage: "gearshape")
+                                .padding(.horizontal, 10)
+                                .frame(minHeight: FloeTheme.minimumTarget)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("workbench.providerFailure.settings")
+                    }
+                }
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
                 #else
                 Text(notice).foregroundStyle(.secondary)
                 #endif
@@ -324,10 +340,20 @@ struct HostAgentWorkspaceView: View {
             attachmentImport?.cancel()
             attachmentImport = nil
             attachmentImportID = nil
+            textImportTask?.cancel()
+            textImportTask = nil
+            textImportAttachmentID = nil
         }
         .sheet(isPresented: $editingPrompt, onDismiss: { promptFocused = true }) {
-            MacExpandedComposer(text: draft, selection: $promptSelection, canSend: canSubmitComposer,
-                                sendLabel: composerSubmitLabel, submit: submitComposer)
+            VStack(spacing: 0) {
+                MacExpandedComposer(text: draft, selection: $promptSelection, canSend: canSubmitComposer,
+                                    sendLabel: composerSubmitLabel, submit: submitComposer)
+                if !workspace.stagedAttachments.isEmpty {
+                    attachmentStrip
+                        .padding(.bottom, 6)
+                        .background(FloeTheme.readingSurface)
+                }
+            }
         }
         .sheet(item: $attachmentPreview) { preview in
             MacConversationAttachmentSheet(preview: preview)
@@ -349,8 +375,7 @@ struct HostAgentWorkspaceView: View {
         }
         .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { attachmentSelection = nil }
-            guard attachmentSelection == workspace.draftSelectionID, !workspace.isSending,
-                  !workspace.isTerminating else { return }
+            guard attachmentSelection == workspace.draftSelectionID, acceptsAttachmentImport else { return }
             switch result {
             case .success(let urls):
                 let accepted = workspace.stageAttachments(urls)
@@ -364,6 +389,14 @@ struct HostAgentWorkspaceView: View {
         } message: {
             Text(verbatim: MacPermissionsText.t("每次最多添加 8 个附件。请选择可读取的本机文件或图片，单个文件上限 32 MiB，图片可缩小后重试。",
                                                 "Attach up to 8 items. Choose readable local files up to 32 MiB each, or try a smaller image."))
+        }
+        .alert(Text(verbatim: MacComposerInputText.t("导入识别文字", "Import Recognized Text")),
+               isPresented: $showTextImportError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(verbatim: textImportFoundNoText
+                ? MacComposerInputText.t("在这张图片中没有识别到可用文字。", "No usable text was recognized in this image.")
+                : MacComposerInputText.t("图片无法读取或识别失败，请重试。", "The image could not be read or recognition failed. Try again."))
         }
         .sheet(item: $goalToEdit) { goal in
             GoalBuilderSheet(goal: goal, errorMessage: workspace.notice) { objective, criteria, blockers, stops in
@@ -431,11 +464,17 @@ struct HostAgentWorkspaceView: View {
     private func submitComposer() {
         guard canSubmitComposer else { return }
         if workspace.isSending {
+            // iPad parity: a running task accepts text plus the currently
+            // staged attachments as one queued/steered message. Text stays
+            // required (an attachment-only payload is not part of the shared
+            // contract); the host binds the exact staged refs to the durable
+            // row and only the submitted set is consumed from the strip.
+            let attachments = workspace.stagedAttachments
             let binding = draft
             let text = binding.wrappedValue
             let clear = { if binding.wrappedValue == text { binding.wrappedValue = "" } }
-            if workspace.runningInputMode == .steer { workspace.steer(text, onAccepted: clear) }
-            else { workspace.enqueue(text, onAccepted: clear) }
+            if workspace.runningInputMode == .steer { workspace.steer(text, attachments: attachments, onAccepted: clear) }
+            else { workspace.enqueue(text, attachments: attachments, onAccepted: clear) }
         } else {
             let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
             let isNewGoal = mode == .goal && workspace.goal?.status.isTerminal != false
@@ -657,8 +696,11 @@ struct HostAgentWorkspaceView: View {
         }
     }
 
+    /// Staging stays available while the visible task runs: the in-flight
+    /// run captured its attachments at admission, so anything staged now
+    /// binds to the next queued or steered message on submit.
     private var acceptsAttachmentImport: Bool {
-        workspace.isReady && workspace.selectedID == findConversationID && !workspace.isSending
+        workspace.isReady && workspace.selectedID == findConversationID
             && !workspace.isTerminating && !workspace.isLoadingHistory && attachmentImport == nil
     }
 
@@ -684,7 +726,7 @@ struct HostAgentWorkspaceView: View {
             @MainActor func originIsCurrent() -> Bool {
                 !Task.isCancelled && workspace.isReady && workspace.draftSelectionID == selection
                     && workspace.attachmentOwnerID == owner && workspace.selectedWorkspaceID == project
-                    && !workspace.isSending && !workspace.isTerminating && !workspace.isLoadingHistory
+                    && !workspace.isTerminating && !workspace.isLoadingHistory
             }
             var failed = false
             for input in inputs {
@@ -985,23 +1027,53 @@ struct HostAgentWorkspaceView: View {
     }
 
     private var attachmentStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(workspace.stagedAttachments, id: \.id) { attachment in
-                    let isImage = attachment.kind == .image
-                    let eligible = FloeMacSelfRuntime.canInlineTextDocument(uti: attachment.uti, byteCount: attachment.byteCount)
-                    let detail = Text(LocalizedStringKey(eligible ? "mac.workspace.textAttachment" : "mac.workspace.attachmentReferenceOnly"))
-                    FloeComposerAttachmentChip(name: attachment.displayName, systemImage: isImage ? "photo" : "doc",
-                                               detail: isImage ? nil : detail,
-                                               removeLabel: String(localized: "mac.workspace.removeAttachment")) {
-                        workspace.unstageAttachment(attachment.id)
-                    }
-                }
+        MacComposerInputAttachmentStrip(
+            items: workspace.stagedAttachments.map { attachment in
+                let isImage = attachment.kind == .image
+                let eligible = FloeMacSelfRuntime.canInlineTextDocument(uti: attachment.uti, byteCount: attachment.byteCount)
+                return .init(id: attachment.id, name: attachment.displayName, isImage: isImage,
+                             detail: isImage ? nil : Text(LocalizedStringKey(eligible ? "mac.workspace.textAttachment"
+                                                                                  : "mac.workspace.attachmentReferenceOnly")))
+            },
+            importingItemID: textImportAttachmentID,
+            removeDisabled: workspace.isTerminating,
+            onRemove: { workspace.unstageAttachment($0) },
+            onImportText: { importRecognizedText(from: $0) }
+        )
+    }
+
+    /// Imports the recognized text of one explicitly selected staged image
+    /// into the draft. Runs local Vision OCR (the iPad OCR policy); the
+    /// result is appended to the draft as ordinary editable text and the
+    /// attachment itself stays staged. A task switch between pick and
+    /// completion discards the result instead of leaking it into another
+    /// task's draft.
+    private func importRecognizedText(from attachmentID: UUID) {
+        guard textImportAttachmentID == nil,
+              let attachment = workspace.stagedAttachments.first(where: { $0.id == attachmentID }),
+              attachment.kind == .image, acceptsAttachmentImport else { return }
+        let selection = workspace.draftSelectionID
+        textImportAttachmentID = attachmentID
+        let task = Task { @MainActor in
+            defer { if textImportAttachmentID == attachmentID { textImportAttachmentID = nil } }
+            do {
+                let text = try await MacComposerImageTextImport.recognizedText(from: attachment.url)
+                guard !Task.isCancelled, workspace.draftSelectionID == selection,
+                      !workspace.isTerminating else { return }
+                let binding = draft
+                let current = binding.wrappedValue
+                binding.wrappedValue = current.isEmpty ? text : current + "\n\n" + text
+            } catch MacComposerImageTextImportError.noTextRecognized {
+                guard !Task.isCancelled, workspace.draftSelectionID == selection else { return }
+                textImportFoundNoText = true
+                showTextImportError = true
+            } catch {
+                guard !Task.isCancelled, workspace.draftSelectionID == selection else { return }
+                textImportFoundNoText = false
+                showTextImportError = true
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
         }
-        .disabled(workspace.isSending || workspace.isTerminating)
+        textImportTask = task
     }
 
     private func projectControl(openFiles: @escaping () -> Void) -> some View {

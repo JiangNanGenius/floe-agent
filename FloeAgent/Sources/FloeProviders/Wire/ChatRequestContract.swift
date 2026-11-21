@@ -117,7 +117,7 @@ enum ChatRequestContract {
             }
         }
         let schemaDigest = (try? ProviderWireEncoder.encode(body.tools ?? [])).map { FloeDigest.sha256Hex($0) } ?? "unencodable"
-        return "shape=v1 wireMessages=\(body.messages.count) wireCalls=\(calls) wireResults=\(results) imageParts=\(images) emptyAssistantTurns=\(emptyAssistant) reasoningOnlyTurns=\(reasoningOnly) toolDefinitions=\(body.tools?.count ?? 0) toolDefinitionsSHA256=\(schemaDigest) messageShapes=[\(shapes.joined(separator: ","))] shapesOmitted=\(max(0, body.messages.count - shapes.count)) maxTokens=\(body.maxTokens.map(String.init) ?? "omitted") thinkingPresent=\(body.thinking != nil) reasoningEffortPresent=\(body.reasoningEffort != nil) enableThinkingPresent=\(body.enableThinking != nil)"
+        return "shape=v1 wireMessages=\(body.messages.count) wireCalls=\(calls) wireResults=\(results) imageParts=\(images) emptyAssistantTurns=\(emptyAssistant) reasoningOnlyTurns=\(reasoningOnly) toolDefinitions=\(body.tools?.count ?? 0) toolDefinitionsSHA256=\(schemaDigest) messageShapes=[\(shapes.joined(separator: ","))] shapesOmitted=\(max(0, body.messages.count - shapes.count)) maxTokens=\((body.maxCompletionTokens ?? body.maxTokens).map(String.init) ?? "omitted") thinkingPresent=\(body.thinking != nil) reasoningEffortPresent=\(body.reasoningEffort != nil) enableThinkingPresent=\(body.enableThinking != nil)"
     }
 
     /// Keep the original provider error on its event/details path; persistent

@@ -144,13 +144,14 @@ struct MacWorkspaceRootView: View {
             }
         }
         .task(id: requestedConversation) {
-            guard workspace.isReady, let id = requestedConversation, id != workspace.selectedID else { return }
+            guard !Task.isCancelled, workspace.isReady, let id = requestedConversation,
+                  destination == .conversation(id), id != workspace.selectedID else { return }
             workspace.clearStagedAttachments()
             await workspace.select(id)
         }
         .onDisappear { draftStore.flush() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-            draftStore.flush()
+            draftStore.flushBeforeClosing()
         }
         .onChange(of: workspace.admittedDraftID) { _, id in
             if let id, case .newTask = destination, workspace.selectedID == id {
@@ -412,6 +413,7 @@ struct MacWorkspaceRootView: View {
             .padding(.horizontal, 9)
             .frame(minHeight: FloeTheme.minimumTarget)
             sidebarLink(.newTask(nil), title: "workbench.new_task", icon: "square.and.pencil")
+                .accessibilityIdentifier("sidebar.workbench.new_task")
                 .disabled(!canSelectTask)
             sidebarLink(.taskCenter, title: "app.floe_agent_app.task_center", icon: "checklist")
                 .accessibilityIdentifier("workspace.taskCenter")
@@ -428,8 +430,6 @@ struct MacWorkspaceRootView: View {
                 #if FLOE_MAC_HOST_SMOKE
                 .background(MacWorkbenchButtonFrameReader { workspace.smokeCreativeFrame = $0 })
                 #endif
-            sidebarLink(.browser, verbatimTitle: workspaceText("浏览器", "Browser"), icon: "globe")
-                .accessibilityIdentifier("workspace.browser")
         }
         .padding(8)
     }
@@ -631,22 +631,11 @@ struct MacWorkspaceRootView: View {
         }
     }
 
-    /// Verbatim-label variant for entries whose copy is owned by the workbench
-    /// rather than the shared strings tables.
-    private func sidebarLink(_ route: MacWorkspaceDestination, verbatimTitle: String, icon: String) -> some View {
-        sidebarLinkButton(route) {
-            Label { Text(verbatim: verbatimTitle) } icon: { Image(systemName: icon) }
-        }
-    }
-
     private func sidebarLinkButton<Label: View>(_ route: MacWorkspaceDestination,
                                                 @ViewBuilder label: @escaping () -> Label) -> some View {
         let selected = destination == route || (route == .space(.files) && isInSpace)
         let font: Font = if case .conversation = route { .callout } else { .body }
         return Button {
-            // The sidebar entry is the general browser: it never inherits a
-            // task binding or a remembered return from a previous visit.
-            if route == .browser { browserReturnDestination = nil; browserOwner = nil }
             if case .newTask(let projectID) = route { startNewTask(in: projectID) }
             else { destination = route }
         } label: {
@@ -802,8 +791,15 @@ struct MacWorkspaceRootView: View {
     }
 
     private var taskDraft: Binding<String> {
-        let id = destinationConversationID
+        let id = destinationConversationID ?? workspace.attachmentOwnerID
         return Binding(get: { draftStore.text(for: id) }, set: { draftStore.setText($0, for: id) })
+    }
+
+    private var recoverableDrafts: [(id: UUID, date: Date)] {
+        var known = workspace.idsWithRuns
+        known.formUnion(workspace.conversations.map(\.id))
+        known.insert(workspace.uncommittedDraftID)
+        return draftStore.uncommittedDrafts(excluding: known)
     }
 
     private var title: String {
@@ -972,24 +968,48 @@ struct MacWorkspaceRootView: View {
                 .fixedSize()
                 .help("mac.workspace.backgroundTasks")
             }
+            if case .newTask(let projectID) = destination, !filesTakeDetail {
+                let drafts = recoverableDrafts
+                if !drafts.isEmpty {
+                    let label = workspaceText("恢复未发送草稿", "Recover Unsent Draft")
+                    Menu {
+                        ForEach(drafts, id: \.id) { draft in
+                            Button(draft.date.formatted(date: .abbreviated, time: .standard)) {
+                                startNewTask(in: projectID, recovering: draft.id)
+                            }
+                        }
+                    } label: {
+                        FloeWorkbenchControlIcon(systemImage: "doc.badge.clock")
+                            .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(label)
+                    .help(label)
+                }
+            }
             if showsTask && !filesTakeDetail {
-                Button(action: toggleInspector) {
+                Menu {
+                    Button("mac.workspace.files", systemImage: "folder") { showInspector = true }
+                        .accessibilityIdentifier("workspace.files.open")
+                    Button(workspaceText("浏览器", "Browser"), systemImage: "safari", action: showWorkbenchBrowser)
+                        .accessibilityIdentifier("workspace.browser.open")
+                    if showInspector {
+                        Divider()
+                        Button(workspaceText("隐藏检查器", "Hide Inspector"), systemImage: "sidebar.trailing", action: toggleInspector)
+                    }
+                } label: {
                     FloeWorkbenchControlIcon(systemImage: "sidebar.trailing")
                         .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
                         .contentShape(Rectangle())
                 }
-                .help("mac.workspace.files")
-                .accessibilityLabel("mac.workspace.files")
-                .accessibilityIdentifier("workspace.files.toggle")
-                .accessibilityAddTraits(showInspector ? .isSelected : [])
-                Button(action: showWorkbenchBrowser) {
-                    FloeWorkbenchControlIcon(systemImage: "globe")
-                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
-                        .contentShape(Rectangle())
-                }
-                .help(workspaceText("在浏览器中打开", "Open Browser"))
-                .accessibilityLabel(workspaceText("在浏览器中打开", "Open Browser"))
-                .accessibilityIdentifier("workspace.browser.open")
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .help(workspaceText("任务检查器", "Task Inspector"))
+                .accessibilityLabel(workspaceText("任务检查器", "Task Inspector"))
+                .accessibilityIdentifier("workspace.inspector.menu")
             }
             if case .conversation = destination, !filesTakeDetail {
                 Button(action: findInActiveView) {
@@ -1068,7 +1088,7 @@ struct MacWorkspaceRootView: View {
                                                     searchResultTarget = nil
                                                 }
                                             })
-                        .id(destinationConversationID)
+                        .id(destinationConversationID ?? workspace.attachmentOwnerID)
                         .environment(\.openURL, OpenURLAction { url in
                             // Chat content is untrusted model output. http(s)
                             // links open inside the guarded workbench browser;
@@ -1118,7 +1138,7 @@ struct MacWorkspaceRootView: View {
                                        guard canSelectTask || workspace.selectedID == conversation else { return }
                                        searchResultTarget = (conversation, message)
                                        openTask(conversation)
-                                   })
+                                   }, didArchiveTask: { id in Task { await taskDidLeaveHistory(id) } })
         }
     }
 
@@ -1150,8 +1170,9 @@ struct MacWorkspaceRootView: View {
         startNewTask(in: nil)
     }
 
-    private func startNewTask(in projectID: UUID?) {
-        guard workspace.selectNewDraft(in: projectID) else { return }
+    private func startNewTask(in projectID: UUID?, recovering draftID: UUID? = nil) {
+        guard workspace.selectNewDraft(in: projectID, recovering: draftID) else { return }
+        requestedConversation = nil
         if let projectID { expandedWorkspaceIDs.insert(projectID) }
         showInspector = false
         destination = .newTask(projectID)
@@ -1338,8 +1359,9 @@ struct MacWorkspaceRootView: View {
     private func insertFileText(_ text: String) {
         guard canUseFileInTask, filesVisible else { return }
         let id = workspace.selectedID
-        let current = draftStore.text(for: id)
-        draftStore.setText(current.isEmpty ? text : current + "\n\n" + text, for: id)
+        let storageID = id ?? workspace.uncommittedDraftID
+        let current = draftStore.text(for: storageID)
+        draftStore.setText(current.isEmpty ? text : current + "\n\n" + text, for: storageID)
         if !showsTask { destination = id.map(MacWorkspaceDestination.conversation) ?? .newTask(workspace.selectedWorkspaceID) }
     }
 
@@ -1380,17 +1402,21 @@ struct MacWorkspaceRootView: View {
                     }
                     fallthrough
                 case .archive(true):
-                    if remembersFileRoot, lastConversation == id.uuidString { lastConversation = "" }
-                    if workspace.selectedID == id {
-                        requestedConversation = nil
-                        workspace.clearStagedAttachments()
-                        await workspace.select(nil)
-                        destination = .taskCenter
-                    }
+                    await taskDidLeaveHistory(id)
                 default:
                     break
                 }
             }
+        }
+    }
+
+    private func taskDidLeaveHistory(_ id: UUID) async {
+        if remembersFileRoot, lastConversation == id.uuidString { lastConversation = "" }
+        if workspace.selectedID == id {
+            requestedConversation = nil
+            workspace.clearStagedAttachments()
+            await workspace.select(nil)
+            destination = .taskCenter
         }
     }
 

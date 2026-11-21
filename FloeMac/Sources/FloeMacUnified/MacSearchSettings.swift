@@ -1,17 +1,51 @@
 // SPDX-License-Identifier: MPL-2.0
 import SwiftUI
+import FloeMacSelfCore
 
 @MainActor
 final class MacSearchSettings: ObservableObject {
     let access: MacSearchAccess
-    let entries: [SearchProviderCatalogEntry]
+    @Published private var catalog: SearchProviderCatalogIndex?
+    var officialCatalogs: FloeMacOfficialCatalogs?
+    @Published private(set) var refreshingCatalog = false
+    private var catalogRevision = UUID()
     @Published private(set) var rows: [WebSearchProviderInstance] = []
     @Published private(set) var readFailure: String?
 
     init(namespace: String, useKeychain: Bool, preferences: UserDefaults = .standard) {
         access = MacSearchAccess(namespace: namespace, useKeychain: useKeychain, preferences: preferences)
-        entries = (SearchProviderCatalogIndex.loadBundled()?.entries ?? []).filter { MacSearchAccess.supported($0.supportedAdapter) }
+        catalog = SearchProviderCatalogIndex.loadBundled()
         reload()
+    }
+
+    var entries: [SearchProviderCatalogEntry] {
+        (catalog?.entries ?? []).filter { MacSearchAccess.supported($0.supportedAdapter) }
+    }
+
+    func search(_ query: String, language: String) -> [SearchProviderCatalogEntry] {
+        (catalog?.search(query: query, localePrimary: language) ?? [])
+            .filter { MacSearchAccess.supported($0.supportedAdapter) }
+    }
+
+    func loadActiveCatalog() async {
+        let revision = catalogRevision
+        guard let officialCatalogs, !refreshingCatalog,
+              let bytes = try? await officialCatalogs.active(.webSearch),
+              let index = try? SearchProviderCatalogIndex.validated(from: bytes),
+              revision == catalogRevision else { return }
+        catalog = index
+    }
+
+    func refreshCatalog() async throws {
+        guard let officialCatalogs, !refreshingCatalog else { return }
+        catalogRevision = UUID()
+        refreshingCatalog = true
+        defer { refreshingCatalog = false }
+        if let bytes = try await officialCatalogs.refresh(.webSearch, validate: { bytes in
+            _ = try SearchProviderCatalogIndex.validated(from: bytes)
+        }) {
+            catalog = try SearchProviderCatalogIndex.validated(from: bytes)
+        }
     }
 
     func reload() {
@@ -26,6 +60,10 @@ struct MacSearchSettingsView: View {
     @State private var editor: MacSearchDraft?
     @State private var delete: WebSearchProviderInstance?
     @State private var message: String?
+    @State private var selectingProvider = false
+    @State private var pendingProvider: MacSearchDraft?
+    @State private var query = ""
+    @State private var catalogMessage: String?
     private var language: String { locale.language.languageCode?.identifier == "zh" ? "zh-Hans" : "en" }
     private func t(_ en: String, _ zh: String) -> String { language == "en" ? en : zh }
 
@@ -34,16 +72,17 @@ struct MacSearchSettingsView: View {
             HStack {
                 Text("mac.settings.webSearch").font(.headline)
                 Spacer()
-                Menu {
-                    ForEach(settings.entries) { entry in
-                        Button(entry.displayName(localePrimary: language)) {
-                            if let row = SearchProviderDraftFactory.draftInstance(for: entry, localePrimary: language) {
-                                editor = MacSearchDraft(instance: row, entry: entry, isNew: true)
-                            }
-                        }
-                    }
-                } label: { Label(t("Add provider", "添加供应商"), systemImage: "plus") }
-                .fixedSize().disabled(settings.entries.isEmpty || settings.readFailure != nil)
+                Button {
+                    query = ""
+                    catalogMessage = nil
+                    selectingProvider = true
+                } label: {
+                    Label(t("Add provider", "添加供应商"), systemImage: "plus")
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(settings.readFailure != nil)
                 .accessibilityIdentifier("settings.search.add")
             }.padding()
             Divider()
@@ -85,6 +124,11 @@ struct MacSearchSettingsView: View {
         }
         .accessibilityIdentifier("settings.search")
         .onAppear { settings.reload() }
+        .task { await settings.loadActiveCatalog() }
+        .sheet(isPresented: $selectingProvider, onDismiss: {
+            editor = pendingProvider
+            pendingProvider = nil
+        }) { providerPicker }
         .sheet(item: $editor) { draft in
             MacSearchEditor(settings: settings, draft: draft, language: language)
         }
@@ -94,6 +138,65 @@ struct MacSearchSettingsView: View {
         } message: { row in
             Text(t("The stored key for ", "也将删除此账号的已存密钥 · ") + row.configuration.displayName + (language == "en" ? " will also be removed." : ""))
         }
+    }
+
+    private var providerPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(t("Search Providers", "搜索供应商")).font(.headline)
+                Spacer()
+                if settings.officialCatalogs != nil {
+                    Button {
+                        catalogMessage = nil
+                        Task {
+                            do {
+                                try await settings.refreshCatalog()
+                                catalogMessage = t("Catalog checked.", "已检查目录更新。")
+                            } catch {
+                                catalogMessage = t("Could not update the catalog. You can still use the current list.",
+                                                   "目录更新失败，可以继续使用当前列表。")
+                            }
+                        }
+                    } label: {
+                        Label(t("Refresh Catalog", "刷新目录"), systemImage: "arrow.clockwise")
+                    }
+                    .disabled(settings.refreshingCatalog)
+                    .accessibilityIdentifier("websearch.catalog.refresh")
+                }
+                Button(t("Cancel", "取消")) { selectingProvider = false }
+                    .keyboardShortcut(.cancelAction)
+                    .controlSize(.large)
+            }
+            TextField(t("Search by name", "按名称搜索"), text: $query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("websearch.catalog.search")
+            if settings.refreshingCatalog {
+                ProgressView().controlSize(.small)
+            } else if let catalogMessage {
+                Text(catalogMessage).font(.caption).foregroundStyle(.secondary)
+            }
+            let matches = settings.search(query, language: language)
+            if matches.isEmpty {
+                ContentUnavailableView.search(text: query)
+            } else {
+                List(matches) { entry in
+                    Button {
+                        guard let row = SearchProviderDraftFactory.draftInstance(for: entry, localePrimary: language) else { return }
+                        pendingProvider = MacSearchDraft(instance: row, entry: entry, isNew: true)
+                        selectingProvider = false
+                    } label: {
+                        Label(entry.displayName(localePrimary: language), systemImage: "magnifyingglass")
+                            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("websearch.catalog.provider." + entry.presetID)
+                }
+                .listStyle(.plain)
+            }
+        }
+        .padding(16)
+        .frame(width: 430, height: 370)
     }
 
     private func catalog(for row: WebSearchProviderInstance) -> SearchProviderCatalogEntry? {

@@ -59,9 +59,10 @@ struct HostAgentProvider: Codable {
     @MainActor
     init(displayName: String? = nil, endpoint: String, protocolKind: ModelProtocol, modelID: String, apiKey: String,
          supportsImages: Bool = false, supportsTools: Bool = false, presetID: String? = nil,
-         limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false) throws {
+         limits: ModelLimits = .init(contextTokens: 32_768, maxOutputTokens: 0), allowsPlainHTTP: Bool = false,
+         catalog: ProviderCatalogIndex? = HostProviderAccount.providerCatalog) throws {
         let account = try HostProviderAccount.configured(name: displayName, endpoint: endpoint, protocolKind: protocolKind,
-            apiKey: apiKey, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+            apiKey: apiKey, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP, catalog: catalog)
         let modelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         profile = account.profile
         var capabilities = ModelCapabilities.defaultTextModel(for: protocolKind).subtracting([.tools, .vision])
@@ -267,11 +268,21 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var isPreparing = false
     @Published private(set) var isTerminating = false
     @Published private var liveRuns: [UUID: LiveRun] = [:]
+    #if !FLOE_UNIFIED_MAC
     private var newDraftRunID: UUID?
+    #endif
     private var liveSnapshotVersions: [UUID: Int] = [:]
 
+    private var visibleTaskID: UUID? {
+        #if FLOE_UNIFIED_MAC
+        selectedID ?? cachedDraftTaskID
+        #else
+        selectedID ?? newDraftRunID
+        #endif
+    }
+
     private var visibleRun: LiveRun? {
-        guard let id = selectedID ?? newDraftRunID else { return nil }
+        guard let id = visibleTaskID else { return nil }
         return liveRuns[id]
     }
 
@@ -296,7 +307,7 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     var backgroundTaskIDs: [UUID] {
-        liveRuns.filter { $0.key != selectedID && $0.key != newDraftRunID }
+        liveRuns.filter { $0.key != visibleTaskID }
             .sorted { $0.value.startedAt < $1.value.startedAt }
             .map(\.key)
     }
@@ -617,6 +628,32 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private var changingGoals = Set<UUID>()
     @Published private(set) var settledQuestions: [UUID: [UserQuestionWaitingSnapshot]] = [:]
     @Published private(set) var runToolActivity: [UUID: [HostAgentToolActivity]] = [:]
+    @Published private(set) var showsModelSettingsForFailure = false
+    var officialCatalogs: FloeMacOfficialCatalogs?
+    @Published private(set) var modelProviderCatalog = HostProviderAccount.providerCatalog
+    @Published private(set) var refreshingModelProviderCatalog = false
+    private var modelProviderCatalogRevision = UUID()
+
+    func loadActiveModelProviderCatalog() async {
+        let revision = modelProviderCatalogRevision
+        guard let officialCatalogs, !refreshingModelProviderCatalog,
+              let bytes = try? await officialCatalogs.active(.models),
+              let catalog = try? ProviderCatalogIndex.validated(from: bytes),
+              revision == modelProviderCatalogRevision else { return }
+        modelProviderCatalog = catalog
+    }
+
+    func refreshModelProviderCatalog() async throws {
+        guard let officialCatalogs, !refreshingModelProviderCatalog else { return }
+        modelProviderCatalogRevision = UUID()
+        refreshingModelProviderCatalog = true
+        defer { refreshingModelProviderCatalog = false }
+        if let bytes = try await officialCatalogs.refresh(.models, validate: {
+            _ = try ProviderCatalogIndex.validated(from: $0)
+        }) {
+            modelProviderCatalog = try ProviderCatalogIndex.validated(from: bytes)
+        }
+    }
 
     var liveToolActivity: [HostAgentToolActivity] {
         guard let runID = activeRun?.identity.runID else { return [] }
@@ -645,7 +682,6 @@ final class HostAgentWorkspace: ObservableObject {
     func selectComposerModel(_ id: UUID) -> Bool {
         guard !isSending, !isLoadingHistory, !isTerminating,
               providers.contains(where: { $0.model.id == id && $0.canSelectAsPrimary }) else { return false }
-        if vault != nil, selectedID == nil, !selectDefaultModel(id) { return false }
         taskModelID = id
         return true
     }
@@ -692,6 +728,8 @@ final class HostAgentWorkspace: ObservableObject {
     private static let draftTaskIDKey = "floe.mac.agent.draftTaskID"
 
     var attachmentOwnerID: UUID { selectedID ?? draftTaskID }
+    var uncommittedDraftID: UUID { draftTaskID }
+    var idsWithRuns: Set<UUID> { Set(liveRuns.keys) }
 
     private var draftTaskID: UUID {
         if let cachedDraftTaskID { return cachedDraftTaskID }
@@ -827,6 +865,9 @@ final class HostAgentWorkspace: ObservableObject {
             // Archived tasks stay out of the workspace; they are only
             // reachable again after an explicit restore.
             conversations = try await runtime.conversations(includeArchived: true)
+            #if FLOE_UNIFIED_MAC
+            if conversations.contains(where: { $0.id == draftTaskID }) { clearDraftTaskID() }
+            #endif
             workspaces = try await runtime.workspaces()
             await reloadProjectTasks(using: runtime)
             if let recent = conversations.first(where: { $0.isVisibleInOrdinaryList }) {
@@ -876,6 +917,14 @@ final class HostAgentWorkspace: ObservableObject {
         return addProvider(name: nil, endpoint: endpoint, protocolKind: protocolKind, modelID: modelID, key: key)
     }
 
+    private var configuredProviderCatalog: ProviderCatalogIndex? {
+        #if FLOE_UNIFIED_MAC
+        modelProviderCatalog
+        #else
+        HostProviderAccount.providerCatalog
+        #endif
+    }
+
     /// Media-only accounts leave the currently selected chat model in place.
     @discardableResult
     func addProvider(name: String?, endpoint: String, protocolKind: ModelProtocol,
@@ -887,7 +936,7 @@ final class HostAgentWorkspace: ObservableObject {
         updateProviderStore { store in
             if modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 var account = try HostProviderAccount.configured(name: name, endpoint: endpoint, protocolKind: protocolKind,
-                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP, catalog: configuredProviderCatalog)
                 account.initialRole = role
                 store.accounts.append(account)
                 return
@@ -895,7 +944,8 @@ final class HostAgentWorkspace: ObservableObject {
             var record = try HostAgentProvider(displayName: name, endpoint: endpoint,
                                                protocolKind: protocolKind, modelID: modelID, apiKey: key,
                                                supportsImages: supportsImages, supportsTools: supportsTools,
-                                               presetID: presetID, limits: limits, allowsPlainHTTP: allowsPlainHTTP)
+                                               presetID: presetID, limits: limits, allowsPlainHTTP: allowsPlainHTTP,
+                                               catalog: configuredProviderCatalog)
             record.model.explicitCapabilities = explicit
             record.applyCatalogModel(catalogModel)
             if let supportsApproval { record.setApprovalEligibility(supportsApproval) }
@@ -903,7 +953,7 @@ final class HostAgentWorkspace: ObservableObject {
             var account = HostProviderAccount(record)
             account.initialRole = role
             store.accounts.append(account)
-            if record.canSelectAsPrimary { store.selectedModelID = record.model.id }
+            if store.selected == nil, record.canSelectAsPrimary { store.selectedModelID = record.model.id }
         }
     }
 
@@ -921,7 +971,7 @@ final class HostAgentWorkspace: ObservableObject {
             else {
                 guard account.models.isEmpty && editingModelID == nil else { throw ProviderStoreError.missingRecord }
                 var updated = try HostProviderAccount.configured(name: name, endpoint: endpoint, protocolKind: protocolKind,
-                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+                    apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP, catalog: configuredProviderCatalog)
                 updated.initialRole = account.initialRole
                 updated.profile = account.profileForEdit(updated.profile)
                 store.accounts[i] = updated
@@ -932,7 +982,7 @@ final class HostAgentWorkspace: ObservableObject {
                                                protocolKind: protocolKind, modelID: modelID, apiKey: key,
                                                supportsImages: supportsImages, supportsTools: supportsTools,
                                                presetID: presetID, limits: limits ?? previous.model.limits,
-                                               allowsPlainHTTP: allowsPlainHTTP)
+                                               allowsPlainHTTP: allowsPlainHTTP, catalog: configuredProviderCatalog)
             record.profile = account.profileForEdit(record.profile)
             if previous.profile.baseURL == record.profile.baseURL && previous.profile.wireProtocol == protocolKind {
                 if previous.model.remoteModelID == record.model.remoteModelID {
@@ -981,7 +1031,8 @@ final class HostAgentWorkspace: ObservableObject {
         updateProviderStore { store in
             let i = try store.accountIndex(id)
             let updated = try HostProviderAccount.configured(name: name, endpoint: endpoint,
-                protocolKind: protocolKind, apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP)
+                protocolKind: protocolKind, apiKey: key, presetID: presetID, allowsPlainHTTP: allowsPlainHTTP,
+                catalog: configuredProviderCatalog)
             store.accounts[i].profile = store.accounts[i].profileForEdit(updated.profile)
             store.accounts[i].apiKey = updated.apiKey
             store.accounts[i].presetID = presetID
@@ -1102,11 +1153,12 @@ final class HostAgentWorkspace: ObservableObject {
 
 
     func select(_ id: UUID?) async {
-        guard isReady, !isTerminating, !isAcceptingPlan, let runtime else { return }
+        guard !Task.isCancelled, isReady, !isTerminating, !isAcceptingPlan, let runtime else { return }
         guard let release = admit() else { return }
         defer { release() }
         let selection = resetTaskSelection(to: id)
         guard let id else { return }
+        if let handle = liveRuns[id]?.handle { await updateLiveRun(handle) }
         defer {
             if historySelection == selection { isLoadingHistory = false }
         }
@@ -1143,9 +1195,18 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     #if FLOE_UNIFIED_MAC
-    func selectNewDraft(in projectID: UUID?) -> Bool {
+    func selectNewDraft(in projectID: UUID?, recovering draftID: UUID? = nil) -> Bool {
         guard isReady, !isTerminating, !isAcceptingPlan, let release = admit() else { return false }
         defer { release() }
+        if let draftID {
+            guard liveRuns[draftID] == nil, !conversations.contains(where: { $0.id == draftID }) else { return false }
+            cachedDraftTaskID = draftID
+            preferences.set(draftID.uuidString, forKey: Self.draftTaskIDKey)
+        } else if let current = cachedDraftTaskID, liveRuns[current] != nil || selectedWorkspaceID != projectID {
+            // A pending launch or a different project keeps its draft. The
+            // newly opened composer uses a separate identity.
+            clearDraftTaskID()
+        }
         selectedWorkspaceID = projectID
         if selectedID != nil { clearStagedAttachments() }
         _ = resetTaskSelection(to: nil)
@@ -1160,11 +1221,6 @@ final class HostAgentWorkspace: ObservableObject {
         selectedApprovalMode = nil
         draftApprovalMode = nil
         chatReasoning = .fast
-        // Entering the composer reuses the persisted draft id when the
-        // previous draft has not been admitted yet; selecting a saved task
-        // drops the cached copy (the persisted value survives until the
-        // first durable admission clears it).
-        if id != nil { cachedDraftTaskID = nil }
         #endif
         isLoadingHistory = id != nil
         isLoadingEarlierMessages = false
@@ -1175,6 +1231,7 @@ final class HostAgentWorkspace: ObservableObject {
         #if FLOE_UNIFIED_MAC
         applyComposerRun(nil)
         settledQuestions.removeAll()
+        showsModelSettingsForFailure = false
         let liveIDs = Set(liveRuns.values.compactMap { $0.handle?.identity.runID })
         runToolActivity = runToolActivity.filter { liveIDs.contains($0.key) }
         #endif
@@ -1329,9 +1386,14 @@ final class HostAgentWorkspace: ObservableObject {
     /// staged path are ignored. The bounded read fetches at most the ceiling
     /// plus one byte so an oversized file is rejected without being fully
     /// loaded. The returned array lists exactly what was staged.
+    ///
+    /// Staging stays available while the visible task runs: the in-flight
+    /// run captured its attachment set at admission, so anything staged now
+    /// belongs to the next queued or steered message and is consumed only
+    /// when the user submits that message (see `enqueue`/`steer`).
     @discardableResult
     func stageAttachments(_ urls: [URL], importedImageID: UUID? = nil) -> [HostAgentAttachmentDraft] {
-        guard isReady, !isSending, !isTerminating else { return [] }
+        guard isReady, !isTerminating else { return [] }
         var staged: [HostAgentAttachmentDraft] = []
         var stagedPaths = Set(stagedAttachments.map {
             $0.url.resolvingSymlinksInPath().standardizedFileURL
@@ -1377,7 +1439,7 @@ final class HostAgentWorkspace: ObservableObject {
         }
         guard !staged.isEmpty else { return [] }
         stagedAttachments.append(contentsOf: staged)
-        saveAttachmentDraft?(selectedID, stagedAttachments.map(\.reference))
+        saveAttachmentDraft?(attachmentDraftKey(for: selectedID), stagedAttachments.map(\.reference))
         return staged
     }
 
@@ -1406,7 +1468,7 @@ final class HostAgentWorkspace: ObservableObject {
     func unstageAttachment(_ id: UUID) {
         guard let index = stagedAttachments.firstIndex(where: { $0.id == id }) else { return }
         let removed = stagedAttachments.remove(at: index)
-        saveAttachmentDraft?(selectedID, stagedAttachments.map(\.reference))
+        saveAttachmentDraft?(attachmentDraftKey(for: selectedID), stagedAttachments.map(\.reference))
         #if FLOE_UNIFIED_MAC
         HostAgentDatabase.discardComposerImage(removed.url, id: removed.id, owner: attachmentOwnerID,
                                               runtimeDirectory: personalTaskLeaseBase)
@@ -1418,11 +1480,19 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func restoreStagedAttachments(for conversationID: UUID?) {
-        guard let references = loadAttachmentDraft?(conversationID) else { return }
+        guard let references = loadAttachmentDraft?(attachmentDraftKey(for: conversationID)) else { return }
         stagedAttachments = references.prefix(Self.maximumStagedAttachmentCount).compactMap { draftAttachment($0, id: $0.id) }
         if stagedAttachments.count != references.count {
             notice = String(localized: "mac.workspace.attachmentUnavailable")
         }
+    }
+
+    private func attachmentDraftKey(for conversationID: UUID?) -> UUID? {
+        #if FLOE_UNIFIED_MAC
+        conversationID ?? draftTaskID
+        #else
+        conversationID
+        #endif
     }
 
     private func draftAttachment(_ reference: AttachmentRef, id: UUID) -> HostAgentAttachmentDraft? {
@@ -1756,13 +1826,18 @@ final class HostAgentWorkspace: ObservableObject {
         return String(words.joined(separator: " ").prefix(48))
     }
 
+    /// `queuedAttachments` carries the durable refs of a queued row being
+    /// launched: they reach the session request directly, so draining the
+    /// queue for one task never touches (or leaks through) the visible
+    /// task's staged composer strip.
     private func beginSend(_ text: String, runtime: FloeMacSelfRuntime,
-                           provider: FloeMacSelfProviderBinding,
-                           workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "",
-                           acceptedPlan: PlanConfirmationSnapshot? = nil, resumingGoal: Bool = false,
-                           continuingFromHistory: Bool = false,
-                           queued: PendingUserInput? = nil, queuedGoal: ConversationGoal? = nil,
-                           onAdmitted: (() -> Void)? = nil) -> Bool {
+                            provider: FloeMacSelfProviderBinding,
+                            workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "",
+                            acceptedPlan: PlanConfirmationSnapshot? = nil, resumingGoal: Bool = false,
+                            continuingFromHistory: Bool = false,
+                            queued: PendingUserInput? = nil, queuedGoal: ConversationGoal? = nil,
+                            queuedAttachments: [HostAgentAttachmentDraft] = [],
+                            onAdmitted: (() -> Void)? = nil) -> Bool {
         #if FLOE_UNIFIED_MAC
         let auxRoutes = auxiliaryRoutes(for: provider)
         let titleHelper = auxiliaryText(for: provider)
@@ -1780,6 +1855,7 @@ final class HostAgentWorkspace: ObservableObject {
         #endif
         let originSelection = historySelection
         guard (queued != nil ? liveRuns[taskID] == nil : !isSending), !isTerminating, !changingTasks.contains(taskID) else { return false }
+        let attachmentDraftID = attachmentDraftKey(for: currentID)
         let currentGoal = queuedGoal ?? (mode == .goal && criterion.isEmpty && goal?.conversationID == currentID
             && goal?.status.isTerminal == false ? goal : nil)
         var criteria: [String] = []
@@ -1803,13 +1879,19 @@ final class HostAgentWorkspace: ObservableObject {
         // ordinary personal conversation gets its own durable safe-files
         // root instead (below), so nothing here blocks the send.
         guard let release = admit() else { return false }
+        #if !FLOE_UNIFIED_MAC
         if currentID == nil { newDraftRunID = taskID }
+        #endif
         liveRuns[taskID] = LiveRun(prompt: acceptedPlan == nil ? text : nil, mode: mode, modelID: provider.model.id)
         if selectedID == currentID {
             notice = nil
             rejectedPrompt = nil
+            #if FLOE_UNIFIED_MAC
+            showsModelSettingsForFailure = false
+            #endif
         }
-        let drafts = continuingFromHistory || resumingGoal || acceptedPlan != nil || queued != nil ? [] : stagedAttachments
+        let drafts = continuingFromHistory || resumingGoal || acceptedPlan != nil ? []
+            : (queued != nil ? queuedAttachments : stagedAttachments)
         // Bind delegation to the same durable run as plan execution, queued
         // input, or a manually started round.
         let delegationRunID: UUID? = mode == .agent || mode == .goal
@@ -1824,7 +1906,9 @@ final class HostAgentWorkspace: ObservableObject {
             var admitted = false
             var finishedNormally = false
             defer {
+                #if !FLOE_UNIFIED_MAC
                 if newDraftRunID == taskID { newDraftRunID = nil }
+                #endif
                 liveSnapshotVersions.removeValue(forKey: taskID)
                 liveRuns.removeValue(forKey: taskID)
                 #if FLOE_UNIFIED_MAC
@@ -1998,7 +2082,6 @@ final class HostAgentWorkspace: ObservableObject {
                 let events = handle.events()
                 var hasOriginSelection: Bool { selectedID == currentID && historySelection == originSelection }
                 #if FLOE_UNIFIED_MAC
-                if currentID == nil, cachedDraftTaskID == taskID { clearDraftTaskID() }
                 if let queued, let store = try? await runtime.runningInputStore() {
                     do { try await store.markConsumed(id: queued.id, runID: handle.identity.runID) }
                     catch { if selectedID == taskID { notice = String(localized: "mac.agent.queueUnavailable") } }
@@ -2008,8 +2091,8 @@ final class HostAgentWorkspace: ObservableObject {
                 if currentID == nil, hasOriginSelection { draftMode = nil; draftApprovalMode = nil }
                 #endif
                 if !drafts.isEmpty,
-                   loadAttachmentDraft.map({ $0(currentID).map(\.id) == drafts.map(\.id) }) ?? true {
-                    saveAttachmentDraft?(currentID, [])
+                   loadAttachmentDraft.map({ $0(attachmentDraftID).map(\.id) == drafts.map(\.id) }) ?? true {
+                    saveAttachmentDraft?(attachmentDraftID, [])
                     if hasOriginSelection, stagedAttachments == drafts { stagedAttachments = [] }
                 }
                 onAdmitted?()
@@ -2029,7 +2112,11 @@ final class HostAgentWorkspace: ObservableObject {
                     admittedDraftID = handle.identity.conversationID
                     #endif
                 }
+                #if FLOE_UNIFIED_MAC
+                if currentID == nil, cachedDraftTaskID == taskID { clearDraftTaskID() }
+                #else
                 if newDraftRunID == taskID { newDraftRunID = nil }
+                #endif
                 #if FLOE_UNIFIED_MAC
                 if selectedID == taskID {
                     selectedApprovalMode = approvalMode
@@ -2042,7 +2129,17 @@ final class HostAgentWorkspace: ObservableObject {
                 liveRuns[taskID]?.phase = initialPhase
                 try? await reloadConversations(using: runtime)
                 await updateLiveRun(handle)
+                var lastPaint = ContinuousClock.now
                 for await event in events {
+                    switch event {
+                    case .harness(.answerDelta), .harness(.reasoningDelta):
+                        guard visibleTaskID == taskID,
+                              lastPaint.duration(to: .now) >= .milliseconds(33) else { continue }
+                        lastPaint = .now
+                        await updateLiveRun(handle)
+                        continue
+                    default: break
+                    }
                     await updateLiveRun(handle)
                     let phase = await handle.phase()
                     if liveRuns[taskID]?.phase != phase { liveRuns[taskID]?.phase = phase }
@@ -2117,7 +2214,7 @@ final class HostAgentWorkspace: ObservableObject {
                     #if FLOE_UNIFIED_MAC
                     failedRunID = handle.identity.runID
                     #endif
-                    notice = String(localized: "host.chat.runFailed")
+                    if notice == nil { notice = String(localized: "host.chat.runFailed") }
                 }
             } catch {
                 // User input and provider errors can contain private material.
@@ -2154,6 +2251,63 @@ final class HostAgentWorkspace: ObservableObject {
         let access = try? await runtime.historyContinuationAccess(after: run.id, in: run.conversationID)
         guard historySelection == selection, selectedID == run.conversationID else { return }
         historyContinuation = access == nil ? nil : run
+        if run.state == "failed" { await loadProviderFailure(run, runtime: runtime, selection: selection) }
+    }
+
+    private func loadProviderFailure(_ run: RunRecord, runtime: FloeMacSelfRuntime, selection: UUID) async {
+        guard let events = try? await runtime.recentRunEvents(runID: run.id, limit: 25) else { return }
+        guard historySelection == selection, selectedID == run.conversationID else { return }
+        let decoder = JSONDecoder()
+        var failure: [String: String]?
+        for event in events.reversed() where event.kind == .error || event.kind == .status {
+            guard let fields = try? decoder.decode([String: String].self, from: Data(event.payloadJSON.utf8)) else { continue }
+            if event.kind == .error, fields["kind"].flatMap(AgentEvent.NormalizedError.Kind.init(rawValue:)) != nil {
+                failure = fields
+                break
+            }
+            if event.kind == .status, fields["kind"] == "providerAttempt" {
+                if fields["status"] == "completed" { return }
+                if ["failed", "exhausted"].contains(fields["status"] ?? "") {
+                    failure = fields
+                    break
+                }
+            }
+        }
+        guard let failure else { return }
+        let provider = accounts.first { $0.id == run.providerID }?.profile
+        let status = failure["httpStatus"].flatMap(Int.init)
+        let kind = (failure["errorKind"] ?? failure["kind"]).flatMap(AgentEvent.NormalizedError.Kind.init(rawValue:))
+        let reason = failure["reason"] ?? failure["message"] ?? ""
+        if let provider,
+           (kind == .auth && status == 400 && ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan
+            || ProviderConnectionProbe.isInactiveVolcenginePlan(provider: provider, status: status, body: reason)) {
+            notice = ProviderConnectionProbe.inactiveVolcenginePlanMessage
+        } else {
+            switch kind {
+            case .auth:
+                notice = MacPermissionsText.t("供应商拒绝了当前凭据或模型访问权限。请检查 API 密钥和模型权限。",
+                                              "The provider refused access. Check the API key and the model’s permissions.")
+            case .rateLimited:
+                notice = MacPermissionsText.t("供应商的额度或请求频率受限。请稍后重试，或切换模型。",
+                                              "The provider is rate limited or out of quota. Try again later or change models.")
+            case .contextOverflow:
+                notice = MacPermissionsText.t("请求超过了模型的上下文上限。请缩短消息，或选择支持更长上下文的模型。",
+                                              "The request exceeded the model’s context limit. Shorten the message or choose a model with a larger context window.")
+            case .malformed where status == 404:
+                notice = MacPermissionsText.t("供应商找不到模型或接口。请检查接口地址、协议和模型 ID。",
+                                              "The provider could not find the model or endpoint. Check the endpoint, protocol and model ID.")
+            case .network, .server:
+                notice = MacPermissionsText.t("未能连接模型或供应商暂时不可用。可从已保存的任务继续。",
+                                              "The model could not be reached or the provider is unavailable. You can continue from the saved task.")
+            case .malformed:
+                let reference = status.map { " (HTTP \($0))" } ?? ""
+                notice = MacPermissionsText.t("供应商未接受请求\(reference)。请检查模型配置或选择另一个模型。",
+                                              "The provider rejected the request\(reference). Check the model configuration or choose another model.")
+            default:
+                return
+            }
+        }
+        showsModelSettingsForFailure = true
     }
 
     func continueFromHistory(_ run: RunRecord) async {
@@ -2498,7 +2652,13 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
-    func enqueue(_ text: String, onAccepted: @escaping () -> Void) {
+    /// Queues text plus an optional exact set of staged attachments as one
+    /// durable message for the active run's conversation. Only the submitted
+    /// set is consumed from the composer strip after the store commit, so
+    /// files staged later or in parallel are never touched. Text stays
+    /// required (an attachment-only payload is not part of the shared
+    /// contract) and is normalized the same way as an idle send.
+    func enqueue(_ text: String, attachments: [HostAgentAttachmentDraft] = [], onAccepted: @escaping () -> Void) {
         guard canSteer, let run = visibleRun, let id = selectedID, let handle = run.handle,
               let modelID = run.modelID, let runtime, let release = admit() else { return }
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2507,8 +2667,15 @@ final class HostAgentWorkspace: ObservableObject {
             notice = String(localized: "mac.agent.queueUnavailable")
             return
         }
+        let submitted = attachments
+        if submitted.contains(where: { $0.kind == .image }), !modelAcceptsImages(modelID) {
+            release()
+            notice = String(localized: "mac.workspace.selectVisionModel")
+            return
+        }
         let input = PendingUserInput(conversationID: id, targetRunID: handle.identity.runID,
                                      content: text, mode: .queue, status: .queued, position: 0,
+                                     attachments: submitted.map(\.reference),
                                      selectedModelID: modelID, workspaceID: handle.identity.workspaceID,
                                      executionMode: run.mode.rawValue)
         liveRuns[id]?.steering = true
@@ -2520,6 +2687,7 @@ final class HostAgentWorkspace: ObservableObject {
             do {
                 let store = try await runtime.runningInputStore()
                 _ = try await store.enqueue(input)
+                consumeStaged(submitted, for: id)
                 onAccepted()
                 await refreshQueue(id)
                 // The original run may have finished during the store commit.
@@ -2528,6 +2696,47 @@ final class HostAgentWorkspace: ObservableObject {
             } catch {
                 if selectedID == id { notice = String(localized: "mac.agent.queueUnavailable") }
             }
+        }
+    }
+
+    /// True when the model bound to `modelID`, plus the configured
+    /// auxiliary vision route, can accept image attachments. Text-only
+    /// runs must refuse image guidance up front: the row is never created
+    /// (submit) or is kept queued (drain) with an honest notice, and the
+    /// staged files plus draft stay with the user.
+    private func modelAcceptsImages(_ modelID: UUID) -> Bool {
+        let modelVision = providers.first(where: { $0.model.id == modelID })?
+            .model.capabilities.contains(.vision) == true
+        return modelVision || selectedAuxiliary(.vision) != nil
+    }
+
+    /// Drops exactly the attachments a queued/steered submission consumed,
+    /// computed against the conversation's stored draft rather than the
+    /// live selection: the stored refs are filtered by the submitted ids,
+    /// re-verified through the security-scoped resolution, and persisted
+    /// back under the same conversation. The visible strip is mutated only
+    /// while it still shows that conversation's draft, and anything staged
+    /// after the submission keeps its identity.
+    private func consumeStaged(_ submitted: [HostAgentAttachmentDraft], for conversationID: UUID) {
+        guard !submitted.isEmpty else { return }
+        let key = attachmentDraftKey(for: conversationID)
+        let consumedIDs = Set(submitted.map(\.id))
+        let stored = loadAttachmentDraft?(key) ?? []
+        var remaining: [AttachmentRef] = []
+        var dropped = false
+        for reference in stored where !consumedIDs.contains(reference.id) {
+            if draftAttachment(reference, id: reference.id) != nil {
+                remaining.append(reference)
+            } else {
+                dropped = true
+            }
+        }
+        saveAttachmentDraft?(key, remaining)
+        if selectedID == conversationID {
+            stagedAttachments = remaining.compactMap { draftAttachment($0, id: $0.id) }
+        }
+        if dropped, selectedID == conversationID {
+            notice = String(localized: "mac.workspace.attachmentUnavailable")
         }
     }
 
@@ -2759,8 +2968,34 @@ final class HostAgentWorkspace: ObservableObject {
                     guard let mode = HostAgentMode(rawValue: input.executionMode),
                           let model = providers.first(where: { $0.model.id == input.selectedModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }),
                           let owner = try await runtime.workspaceForConversation(id), owner.id == input.workspaceID,
-                          !isTerminating, !changingTasks.contains(id), liveRuns[id] == nil,
-                          input.attachments.isEmpty else { throw CocoaError(.userCancelled) }
+                          !isTerminating, !changingTasks.contains(id), liveRuns[id] == nil else { throw CocoaError(.userCancelled) }
+                    // A queued guidance carrying an image the bound model
+                    // cannot accept stays queued with an honest notice; the
+                    // exact row is never launched and never dropped.
+                    if input.attachments.contains(where: { $0.kind == .image }),
+                       !model.model.capabilities.contains(.vision), selectedAuxiliary(.vision) == nil {
+                        try await store.restoreQueued(id: input.id)
+                        if selectedID == id { notice = String(localized: "mac.workspace.selectVisionModel") }
+                        break
+                    }
+                    // Restore the row's durable attachments through the same
+                    // verified security-scoped resolution the failed-prompt
+                    // recovery uses. They travel into the session request as
+                    // `queuedAttachments`, so the visible task's staged strip
+                    // is never mutated by a background drain.
+                    let queuedAttachments: [HostAgentAttachmentDraft]
+                    if input.attachments.isEmpty {
+                        queuedAttachments = []
+                    } else {
+                        let restored = input.attachments.prefix(Self.maximumStagedAttachmentCount)
+                            .compactMap { draftAttachment($0, id: $0.id) }
+                        guard restored.count == input.attachments.count else {
+                            try await store.restoreQueued(id: input.id)
+                            if selectedID == id { notice = String(localized: "mac.workspace.attachmentUnavailable") }
+                            break
+                        }
+                        queuedAttachments = restored
+                    }
                     let priorGoal: ConversationGoal?
                     if mode == .goal {
                         guard let sourceID = input.targetRunID,
@@ -2770,7 +3005,8 @@ final class HostAgentWorkspace: ObservableObject {
                         priorGoal = active
                     } else { priorGoal = nil }
                     guard beginSend(input.content, runtime: runtime, provider: model.binding(),
-                                    workspaceID: owner.id, mode: mode, queued: input, queuedGoal: priorGoal)
+                                    workspaceID: owner.id, mode: mode, queued: input, queuedGoal: priorGoal,
+                                    queuedAttachments: queuedAttachments)
                     else { throw CocoaError(.userCancelled) }
                 } catch {
                     try await store.restoreQueued(id: input.id)
@@ -2792,12 +3028,19 @@ final class HostAgentWorkspace: ObservableObject {
 
     var lastSteer: String? { visibleRun?.lastSteer }
 
-    func steer(_ text: String, onAccepted: @escaping () -> Void) {
+    /// Steers the active run with text plus an optional exact set of staged
+    /// attachments. Attachments travel through the same durable pending row
+    /// as queued messages (iPad `submitRunningInput` parity), so a rejected
+    /// or stale steer restores to the ordinary queue with its attachments
+    /// intact instead of dropping them; only a consumed steer consumes the
+    /// staged set. Text stays required by the shared contract.
+    func steer(_ text: String, attachments: [HostAgentAttachmentDraft] = [], onAccepted: @escaping () -> Void) {
         guard canSteer, let run = visibleRun, let handle = run.handle, let id = selectedID else { return }
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty, let release = admit() else { return }
         let runID = handle.identity.runID
         let inputID = UUID()
+        let submitted = attachments
         liveRuns[id]?.steering = true
         Task {
             defer {
@@ -2805,13 +3048,53 @@ final class HostAgentWorkspace: ObservableObject {
                 release()
             }
             do {
-                if try await handle.steer(text: content, inputID: inputID, expectedConversationID: id,
-                                          expectedRunID: runID, executionMode: run.mode.rawValue) {
+                if !submitted.isEmpty, let runtime {
+                    if submitted.contains(where: { $0.kind == .image }),
+                       let modelID = run.modelID, !modelAcceptsImages(modelID) {
+                        if selectedID == id { notice = String(localized: "mac.workspace.selectVisionModel") }
+                        return
+                    }
+                    // Commit the row (with attachments) before promotion so a
+                    // rejected steer remains an ordinary queued message, the
+                    // iPad lifecycle for a failed steer conversion.
+                    let store = try await runtime.runningInputStore()
+                    _ = try await store.enqueue(PendingUserInput(
+                        id: inputID, conversationID: id, targetRunID: runID,
+                        content: content, mode: .queue, status: .queued, position: 0,
+                        attachments: submitted.map(\.reference),
+                        selectedModelID: run.modelID, workspaceID: handle.identity.workspaceID,
+                        executionMode: run.mode.rawValue))
+                    if try await handle.steer(text: content, inputID: inputID, expectedConversationID: id,
+                                              expectedRunID: runID, executionMode: run.mode.rawValue) {
+                        consumeStaged(submitted, for: id)
+                        onAccepted()
+                        if liveRuns[id]?.handle?.identity.runID == runID { liveRuns[id]?.lastSteer = content }
+                        return
+                    }
+                    // Rejected: the session restored the row to the durable
+                    // queue. Confirm that exact durable state, then clear the
+                    // composer copy (text and the consumed attachments) so
+                    // the user cannot submit the same message twice, and
+                    // surface queued feedback instead of an error.
+                    if let row = try await store.input(id: inputID), row.status == .queued {
+                        consumeStaged(submitted, for: id)
+                        onAccepted()
+                        if selectedID == id {
+                            notice = MacComposerInputText.t("消息已加入队列。", "Message added to the queue.")
+                        }
+                        if liveRuns[id] == nil, let receipt = await handle.waitForTerminal(),
+                           receipt.confirmed, receipt.outcome == .completed { await startNextQueued(id) }
+                    } else if selectedID == id {
+                        notice = String(localized: "mac.agent.steerNotAccepted")
+                    }
+                    await refreshQueue(id)
+                    return
+                } else if try await handle.steer(text: content, inputID: inputID, expectedConversationID: id,
+                                                 expectedRunID: runID, executionMode: run.mode.rawValue) {
                     onAccepted()
                     if liveRuns[id]?.handle?.identity.runID == runID { liveRuns[id]?.lastSteer = content }
                     return
-                }
-                if let runtime {
+                } else if let runtime {
                     let store = try await runtime.runningInputStore()
                     if try await store.input(id: inputID)?.status == .queued { try await store.cancel(id: inputID) }
                     await refreshQueue(id)
@@ -2823,7 +3106,7 @@ final class HostAgentWorkspace: ObservableObject {
     #endif
 
     func stop() {
-        guard let taskID = selectedID ?? newDraftRunID else { return }
+        guard let taskID = visibleTaskID else { return }
         stopTask(taskID)
     }
 
@@ -3185,7 +3468,7 @@ final class HostAgentWorkspace: ObservableObject {
         guard isReady, !isTerminating, let release = admit() else { throw CancellationError() }
         defer { release() }
         var config = try HostProviderAccount.configured(name: nil, endpoint: endpoint, protocolKind: protocolKind,
-            apiKey: key, presetID: presetID?.rawValue, allowsPlainHTTP: allowsPlainHTTP)
+            apiKey: key, presetID: presetID?.rawValue, allowsPlainHTTP: allowsPlainHTTP, catalog: modelProviderCatalog)
         config.profile.nonSecretHeaders = savedHeaders(for: providerID, endpoint: config.profile.baseURL)
         let credentials = ProviderCredentials(apiKey: config.apiKey.isEmpty ? nil : config.apiKey)
         try await ProviderConnectionProbe.testConnection(provider: config.profile, credentials: credentials,
@@ -3371,6 +3654,13 @@ final class HostAgentWorkspace: ObservableObject {
             guard saved.accounts.count == 1, saved.accounts.first?.apiKey == "synthetic-D",
                   saved.accounts.first?.models.first?.id == second.id, saved.accounts.first?.name == "Renamed",
                   saved.selectedModelID == second.id,
+                  fixture.addProvider(name: "Alternate", endpoint: "https://example.invalid/v1",
+                    protocolKind: .openAIChatCompletions, modelID: "alternate", key: "synthetic-alternate"),
+                  let alternate = fixture.accounts.last, let alternateModel = alternate.models.first,
+                  fixture.selectedModelID == second.id, fixture.selectComposerModel(alternateModel.id),
+                  try fixture.configuration()?.model.id == alternateModel.id,
+                  try fixture.loadProviderStore().selectedModelID == second.id,
+                  fixture.removeProvider(id: alternate.id),
                   fixture.addProvider(name: "Studio", endpoint: ProviderPreset.volcengineArk.defaultBaseURL.absoluteString,
                     protocolKind: .openAIChatCompletions, modelID: "test-image", key: "synthetic-media",
                     presetID: ProviderTemplateID.volcengineArk.rawValue, role: .image),
@@ -4395,7 +4685,7 @@ extension HostAgentWorkspace {
     /// Decline cancels the whole question request for this exact run; the
     /// parked wait (if any) receives the cancelled tool receipt.
     func declineQuestion(requestID: String) async {
-        guard let id = selectedID ?? newDraftRunID, let question = pendingQuestion,
+        guard let id = visibleTaskID, let question = pendingQuestion,
               question.conversationID == id, question.requestID == requestID else { return }
         guard let handle = liveRuns[id]?.handle, handle.identity.runID == question.runID else { return }
         _ = await handle.cancelQuestion(requestID: requestID)

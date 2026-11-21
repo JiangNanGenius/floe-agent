@@ -38,6 +38,7 @@ actor FloeMacSelfSession {
     /// The bound provider's model id, persisted on steer rows so a recovered
     /// queued follow-up relaunches with the user's original model choice.
     private let steerModelID: UUID?
+    private let steerSupportsImages: Bool
     /// Exact durable attachments the prepared user turn must still carry when
     /// the run is re-checked immediately before dispatch.
     private let preparedAttachments: [AttachmentRef]
@@ -88,6 +89,7 @@ actor FloeMacSelfSession {
         preparedAttachments: [AttachmentRef],
         runningInputStore: any RunningInputStore,
         steerModelID: UUID?,
+        steerSupportsImages: Bool = false,
         verifyPreparedInput: @escaping @Sendable (PersistedMessage) throws -> Void,
         verifyWorkspaceLease: (@Sendable () async throws -> Void)? = nil,
         questionCenter: FloeMacSelfQuestionCenter? = nil,
@@ -114,6 +116,7 @@ actor FloeMacSelfSession {
         self.preparedAttachments = preparedAttachments
         self.runningInputStore = runningInputStore
         self.steerModelID = steerModelID
+        self.steerSupportsImages = steerSupportsImages
         self.verifyPreparedInput = verifyPreparedInput
         self.verifyWorkspaceLease = verifyWorkspaceLease
         self.questionCenter = questionCenter
@@ -535,11 +538,13 @@ actor FloeMacSelfSession {
         // Mirror the iPad promotion before touching the runtime. A nil result
         // means the row lost its queued state concurrently: re-read it and
         // answer from durable truth instead of risking a double submission.
+        let promoted: PendingUserInput
         do {
-            let promoted = try await runningInputStore.beginSteerPromotion(
+            if let row = try await runningInputStore.beginSteerPromotion(
                 id: inputID, expectedRunID: identity.runID
-            )
-            if promoted == nil {
+            ) {
+                promoted = row
+            } else {
                 guard let reread = try await runningInputStore.input(id: inputID) else {
                     // The row vanished between read and promotion; refuse
                     // rather than steer without a durable pending row.
@@ -560,13 +565,36 @@ actor FloeMacSelfSession {
             )
         }
 
+        let attachments = promoted.attachments
+        var images: [ConversationImagePart] = []
+        var attachmentText: [String] = []
+        if !attachments.isEmpty {
+            guard promoted.conversationID == identity.conversationID, promoted.targetRunID == identity.runID,
+                  promoted.workspaceID == identity.workspaceID, promoted.selectedModelID == steerModelID,
+                  promoted.content == trimmed, attachments.count <= FloeMacSelfRequestValidator.maximumAttachments,
+                  attachments.allSatisfy({ $0.storage == .securityScopedBookmark }) else {
+                try await runningInputStore.restoreQueued(id: inputID)
+                return false
+            }
+            let supportsImages = steerSupportsImages
+            do {
+                (images, attachmentText) = try await Task.detached(priority: .userInitiated) {
+                    try FloeMacSelfRuntime.guidanceAttachments(attachments, supportsImages: supportsImages)
+                }.value
+            } catch {
+                try await runningInputStore.restoreQueued(id: inputID)
+                return false
+            }
+        }
+
         // No suspension between this final check and the runtime hand-off.
-        guard fence.validateSteerDecision(token), !runFinished, !tornDown else {
+        guard !Task.isCancelled, fence.validateSteerDecision(token), !runFinished, !tornDown else {
             try? await runningInputStore.restoreQueued(id: inputID)
             return false
         }
         let acceptance = await service.steer(
-            RuntimeSteerInput(id: inputID, content: trimmed, createdAt: Date()),
+            RuntimeSteerInput(id: inputID, content: trimmed, images: images, attachments: attachments,
+                              createdAt: promoted.createdAt, attachmentText: attachmentText),
             expectedRunID: identity.runID
         )
         switch acceptance {
