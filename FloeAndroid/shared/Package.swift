@@ -867,6 +867,7 @@ let package = Package(
         // C07 authored archive/staging/journal/Notes-compatibility suites.
         .testTarget(name: "FloeAndroidDataExchangeTests", dependencies: [
             "FloeAndroidDataExchange", "FloeNotes", "FloeCore", "ZIPFoundation",
+            "FloeModels", "FloePersistence", "GRDB",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidToolResultsTests", dependencies: [

@@ -44,6 +44,7 @@ import com.floe.android.feature.conversation.FloeConversationPaneHost
 import com.floe.android.feature.executiontarget.ExecutionTargetSheet
 import com.floe.android.feature.toolresults.LocalToolResultDetailSource
 import com.floe.android.feature.taskcontinuity.TaskContinuityBanner
+import com.floe.android.feature.taskcontinuity.TaskContinuityPauseReasonUi
 import com.floe.android.feature.taskcontinuity.TaskContinuityPresentation
 import com.floe.android.feature.taskcontinuity.TaskContinuitySheet
 import com.floe.android.host.RuntimeHost
@@ -346,6 +347,18 @@ private fun ConversationDestination(
     var continuitySheetVisible by rememberSaveable(conversationId) { mutableStateOf(false) }
     val targetState by runtimeHost.executionTargets.state.collectAsState()
     val continuityState by runtimeHost.taskContinuity.state.collectAsState()
+    var shownResumeReview by rememberSaveable(conversationId) { mutableStateOf<String?>(null) }
+    val resumeReview = continuityState.pause?.takeIf { pause ->
+        pause.taskID.equals(conversationId, ignoreCase = true) &&
+            pause.rootEpoch == continuityState.rootEpoch && pause.isActionable &&
+            (pause.unknownOutcomeCount > 0 || pause.reason == TaskContinuityPauseReasonUi.PERMISSION_REVOKED)
+    }?.markerID
+    LaunchedEffect(temporary, resumeReview, targetSheetVisible) {
+        if (temporary == null && !targetSheetVisible && resumeReview != null && resumeReview != shownResumeReview) {
+            shownResumeReview = resumeReview
+            continuitySheetVisible = true
+        }
+    }
     LaunchedEffect(conversationId, temporary) {
         if (temporary == null) runtimeHost.executionTargets.load(conversationId)
     }

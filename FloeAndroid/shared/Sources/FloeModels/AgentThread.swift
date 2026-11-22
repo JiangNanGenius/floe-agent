@@ -15,6 +15,7 @@ public struct MessagePart: Sendable, Codable, Hashable, Identifiable {
         case reasoning
         case image
         case file
+        case interactive
     }
 
     public var id: UUID

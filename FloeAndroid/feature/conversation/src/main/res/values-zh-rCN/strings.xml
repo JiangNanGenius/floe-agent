@@ -408,6 +408,15 @@
     <string name="run_output_truncated">部分输出可能未列出</string>
     <string name="run_output_refresh">重新检查</string>
     <string name="run_output_preview_unsupported">此文件不支持应用内预览，可保存副本后用其他应用打开。</string>
+    <!-- 本轮经验证的文件变更（仅回执展示，绝不读取文件系统） -->
+    <string name="run_file_changes_header_one">本轮更改了 1 个文件</string>
+    <string name="run_file_changes_header_many">本轮更改了 %1$d 个文件</string>
+    <string name="run_file_change_added">新增</string>
+    <string name="run_file_change_edited">修改</string>
+    <string name="run_file_change_moved">移动</string>
+    <string name="run_file_change_deleted">删除</string>
+    <string name="run_file_change_saved">已保存</string>
+    <string name="run_file_change_delivered">已生成</string>
     <!-- G07.3A 当前对话可见内容查找（⇄ ThreadSearchBar/ThreadSearchModel） -->
     <string name="thread_search_placeholder">在对话中查找</string>
     <string name="thread_search_done">完成</string>
@@ -584,4 +593,7 @@
     <string name="approval_schedule_thursday">星期四</string>
     <string name="approval_schedule_friday">星期五</string>
     <string name="approval_schedule_saturday">星期六</string>
+    <string name="run_notice_linux_preparing">正在等待 Linux 环境准备完成。</string>
+    <string name="run_notice_linux_preparation_interrupted">Linux 环境准备已中断。请检查本地环境，再继续任务。</string>
+    <string name="run_notice_execution_target_changed">执行环境已变化。请检查后继续，已完成的工作已保留。</string>
 </resources>

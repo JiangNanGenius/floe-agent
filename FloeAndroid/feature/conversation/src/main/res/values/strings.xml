@@ -410,6 +410,15 @@
     <string name="run_output_truncated">Some outputs may not be listed</string>
     <string name="run_output_refresh">Check again</string>
     <string name="run_output_preview_unsupported">No in-App preview for this file. Save a copy to open it elsewhere.</string>
+    <!-- Per-run verified workspace file changes (receipt display only; never a filesystem read) -->
+    <string name="run_file_changes_header_one">Changed 1 file this run</string>
+    <string name="run_file_changes_header_many">Changed %1$d files this run</string>
+    <string name="run_file_change_added">Added</string>
+    <string name="run_file_change_edited">Modified</string>
+    <string name="run_file_change_moved">Moved</string>
+    <string name="run_file_change_deleted">Deleted</string>
+    <string name="run_file_change_saved">Saved</string>
+    <string name="run_file_change_delivered">Produced</string>
     <!-- G07.3A current-thread visible search (⇄ ThreadSearchBar/ThreadSearchModel) -->
     <string name="thread_search_placeholder">Find in chat</string>
     <string name="thread_search_done">Done</string>
@@ -586,4 +595,7 @@
     <string name="approval_schedule_thursday">Thursday</string>
     <string name="approval_schedule_friday">Friday</string>
     <string name="approval_schedule_saturday">Saturday</string>
+    <string name="run_notice_linux_preparing">Waiting for Linux preparation to finish.</string>
+    <string name="run_notice_linux_preparation_interrupted">Linux preparation stopped. Check the local environment and continue this task.</string>
+    <string name="run_notice_execution_target_changed">The execution environment changed. Review it before continuing. Completed work is preserved.</string>
 </resources>

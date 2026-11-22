@@ -133,6 +133,11 @@ public struct C01LinuxEnvironmentMailboxHost: C01LinuxEnvironmentHosting {
         await submit(action: "status", environmentID: environmentID)
     }
 
+    /// Read the actual app setup phase without contacting the guest.
+    func preparationPhase() async -> C01LinuxEnvironmentSnapshot.Phase {
+        await submit(action: "preparation", environmentID: nil, timeoutMillis: 2_000).phase
+    }
+
     public func start(environmentID: String?, cancellation: CancellationToken) async -> C01LinuxEnvironmentSnapshot {
         if cancellation.isCancelled {
             return C01LinuxEnvironmentSnapshot(phase: .refused, environmentID: environmentID,
@@ -160,7 +165,8 @@ public struct C01LinuxEnvironmentMailboxHost: C01LinuxEnvironmentHosting {
         return await submit(action: "stop", environmentID: environmentID)
     }
 
-    private func submit(action: String, environmentID: String?) async -> C01LinuxEnvironmentSnapshot {
+    private func submit(action: String, environmentID: String?,
+                        timeoutMillis: Int = 30_000) async -> C01LinuxEnvironmentSnapshot {
         let currentEpoch = epoch()
         guard currentEpoch > 0 else {
             return C01LinuxEnvironmentSnapshot(
@@ -177,7 +183,7 @@ public struct C01LinuxEnvironmentMailboxHost: C01LinuxEnvironmentHosting {
         }
         do {
             let reply = try await LinuxShellMailbox.shared.submit(
-                operation: Self.operation, payload: data, timeoutMillis: 30_000)
+                operation: Self.operation, payload: data, timeoutMillis: timeoutMillis, expectedEpoch: currentEpoch)
             guard reply.count <= Self.maximumReplyBytes,
                   let object = try JSONSerialization.jsonObject(with: reply) as? [String: Any],
                   let rawPhase = object["phase"] as? String,

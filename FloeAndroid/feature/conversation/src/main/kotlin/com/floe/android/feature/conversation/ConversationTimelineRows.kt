@@ -152,6 +152,7 @@ fun ConversationTimelineRow(
             SystemNoticeRow(row.message, holder, modifier)
         is TimelineRowUi.StepGroup -> StepGroupRow(row, holder, modifier)
         is TimelineRowUi.RunOutputGroup -> RunOutputGroupRow(row, holder, modifier)
+        is TimelineRowUi.RunFileChanges -> RunFileChangesRow(row, holder, modifier)
         is TimelineRowUi.Terminal -> TerminalRow(row.event, modifier)
         is TimelineRowUi.MissingFinal -> MissingFinalRow(modifier)
         TimelineRowUi.LiveReasoning -> {
@@ -684,13 +685,19 @@ internal fun isInternalQueueRefreshNotice(event: RunEventUi): Boolean =
 @Composable
 private fun NoticeRow(event: RunEventUi, modifier: Modifier) {
     if (isInternalQueueRefreshNotice(event)) return
+    val message = when (event.statusReason) {
+        "waitingForLinuxPreparation" -> stringResource(R.string.run_notice_linux_preparing)
+        "linuxPreparationInterrupted" -> stringResource(R.string.run_notice_linux_preparation_interrupted)
+        "resumeRefusedExecutionTargetChanged" -> stringResource(R.string.run_notice_execution_target_changed)
+        else -> event.message.orEmpty()
+    }
     Row(
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconGlyph(FloeIcons.InfoCircle, Floe.colors.secondaryLabel, 15.dp)
-        FloeText(event.message.orEmpty(), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+        FloeText(message, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
     }
 }
 

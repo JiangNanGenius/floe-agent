@@ -98,6 +98,7 @@ public actor DatabaseManager {
         V52AndroidCodeClosure.register(into: &migrator)
         V53AndroidSystemConditions.register(into: &migrator)
         V54ExplicitExecutionMode.register(into: &migrator)
+        V55ConversationContinuity.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

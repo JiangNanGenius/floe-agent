@@ -857,6 +857,7 @@ public actor FacadeRunDomain {
     /// run and a Stop can never clobber a resume that already committed.
     internal var resumingDependencyRuns: Set<UUID> = []
     internal var stoppingDependencyRuns: Set<UUID> = []
+    internal var dependencyRunsWaitingForLinux: Set<UUID> = []
 
     public init(components: RunDomainComponents) {
         self.epoch = components.context.epoch

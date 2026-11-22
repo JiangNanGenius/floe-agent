@@ -481,6 +481,97 @@ extension FacadeRunDomain {
 
 extension FacadeRunDomain {
 
+    /// Join an already-running Android installation only for a run with a
+    /// saved local target. Hold no guest grants while waiting for maintenance.
+    /// Returning true means the original target still owns this launch and
+    /// the real install has supplied the prerequisites for workspace proof.
+    func awaitLocalLinuxPreparation(runID: UUID, target: C02ExecutionTarget,
+                                    park: RunDependencyParkMarker? = nil) async throws -> Bool {
+        let liveEpoch = epoch
+        guard let targets = components.executionTargets?.domain,
+              LinuxReadinessIngress.liveAcceptedEpoch() == liveEpoch,
+              RuntimeFacadeLinuxBindings.shared.boundNativeEpoch == liveEpoch else { return false }
+        let launch = owners[runID]
+        guard park != nil || launch?.conversationID == target.taskID else { return false }
+        let host = C01LinuxEnvironmentMailboxHost(epoch: { liveEpoch })
+        var phase = await host.preparationPhase()
+        guard park != nil || phase == .pending || phase == .installing else { return false }
+
+        func verifyLaunch() async throws {
+            if let park, await durableParkMarker(runID: runID) != park {
+                throw RunDomainError(.sessionFenced, .epochFenced)
+            }
+            guard !Task.isCancelled,
+                  !retirementFenced, globalFence == nil, deleteGuards[target.taskID] == nil,
+                  LinuxReadinessIngress.liveAcceptedEpoch() == liveEpoch else {
+                throw RunDomainError(.sessionFenced, .epochFenced)
+            }
+            if park != nil {
+                guard owners[runID] == nil, !stoppingDependencyRuns.contains(runID),
+                      !hasOtherLiveConversationRun(conversationID: target.taskID, excluding: runID) else {
+                    throw RunDomainError(.sessionFenced, .epochFenced)
+                }
+            } else {
+                guard let owner = owners[runID], owner.launchToken == launch?.launchToken,
+                      !owner.cancelRequested, fenceIsValid(owner.launchToken) else {
+                    throw RunDomainError(.sessionFenced, .epochFenced)
+                }
+            }
+        }
+
+        try await verifyLaunch()
+        func notice(_ code: String, _ text: String) async {
+            _ = try? await durable.runs.appendEvent(runID: runID, kind: .notice,
+                payloadJSON: Self.jsonString(["reason": code, "message": text]))
+        }
+        await notice("waitingForLinuxPreparation", "Waiting for the Linux environment to finish preparing.")
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(600))
+        var installedAt: ContinuousClock.Instant?
+        while clock.now < deadline {
+            try await verifyLaunch()
+            let current: C02ExecutionTarget?
+            do {
+                current = try await targets.executionTarget(taskID: target.taskID)
+            } catch {
+                throw RunDomainError(.persistenceUnavailable, .storeReadFailed)
+            }
+            try await verifyLaunch()
+            guard current == target else {
+                await noteResumeRefusedExecutionTargetChanged(runID: runID)
+                throw RunDomainError(.capabilityNotUsable, .environmentRoleUnresolvable)
+            }
+            if phase == .installed || phase == .ready {
+                if Self.linuxPreflightPrerequisitesAreLive(LinuxReadinessIngress.shared.derivedFields()) {
+                    return true
+                }
+                let firstInstalled = installedAt ?? clock.now
+                installedAt = firstInstalled
+                if firstInstalled.duration(to: clock.now) >= .seconds(30) { break }
+            } else if phase != .installing && phase != .pending {
+                break
+            }
+            try? await Task.sleep(for: .seconds(1))
+            phase = await host.preparationPhase()
+        }
+        try await verifyLaunch()
+        await noteLinuxPreparationInterrupted(runID: runID)
+        throw RunDomainError(.capabilityNotUsable, .environmentRoleUnresolvable)
+    }
+
+    func noteLinuxPreparationInterrupted(runID: UUID) async {
+        _ = try? await durable.runs.appendEvent(runID: runID, kind: .notice,
+            payloadJSON: Self.jsonString([
+                "reason": "linuxPreparationInterrupted",
+                "message": "Linux preparation stopped or could not be verified. Check the local environment and continue this task.",
+            ]))
+    }
+
+    static func linuxPreflightPrerequisitesAreLive(_ fields: LinuxShellQualificationFields) -> Bool {
+        fields.runtimeUidBoundaryVerified && fields.engineConnected &&
+            fields.mailboxEpochBound && fields.rootfsQualified && fields.singleWorkloadContractAcknowledged
+    }
+
     /// G03-R3 FIRST-USE await (Main amendment FIRST_USE_HOST_OPERATION_CONTRACT
     /// v1). Trusted INTERNAL host work over the ORIGINAL `LinuxShellMailbox`
     /// (no new Core ABI, no model route, no parallel mailbox): operation
@@ -513,9 +604,7 @@ extension FacadeRunDomain {
               let epoch = LinuxReadinessIngress.liveAcceptedEpoch(),
               bindings.boundNativeEpoch == epoch else { return }
         let before = LinuxReadinessIngress.shared.derivedFields()
-        guard before.runtimeUidBoundaryVerified, before.engineConnected,
-              before.mailboxEpochBound, before.rootfsQualified,
-              before.singleWorkloadContractAcknowledged else { return }
+        guard Self.linuxPreflightPrerequisitesAreLive(before) else { return }
         if before.workspaceMappingSynced && before.leaseAuthorityQualified,
            let targets = components.executionTargets,
            (try? await targets.domain.hasUsableLocalEnvironment(taskID: conversationID)) == true {
@@ -644,7 +733,12 @@ extension FacadeRunDomain {
         } else {
             savedExecutionTarget = nil
         }
+        var joinedLinuxPreparation = false
         if !temporary, !isNotes, savedExecutionTarget?.kind != .ssh {
+            if let target = savedExecutionTarget, target.kind == .localLinux,
+               !Self.linuxPreflightPrerequisitesAreLive(LinuxReadinessIngress.shared.derivedFields()) {
+                joinedLinuxPreparation = try await awaitLocalLinuxPreparation(runID: runID, target: target)
+            }
             await linuxWorkspaceFirstUsePreflight(runID: runID,
                                                   conversationID: conversationID,
                                                   environmentID: savedExecutionTarget?.kind == .localLinux
@@ -668,6 +762,16 @@ extension FacadeRunDomain {
             routeAdmission = savedTargetReadFailure.map {
                 LinuxRouteAdmission.unavailable($0)
             } ?? .notAttempted
+        }
+        if joinedLinuxPreparation {
+            if let resolved = routeAdmission.target, resolved.target != savedExecutionTarget {
+                await noteResumeRefusedExecutionTargetChanged(runID: runID)
+                throw RunDomainError(.capabilityNotUsable, .environmentRoleUnresolvable)
+            }
+            guard routeAdmission.target != nil, RuntimeFacadeLinuxBindings.shared.isCapabilityQualified else {
+                await noteLinuxPreparationInterrupted(runID: runID)
+                throw RunDomainError(.capabilityNotUsable, .environmentRoleUnresolvable)
+            }
         }
         let resolvedExecutionTarget = routeAdmission.target
         if let resolved = resolvedExecutionTarget,
