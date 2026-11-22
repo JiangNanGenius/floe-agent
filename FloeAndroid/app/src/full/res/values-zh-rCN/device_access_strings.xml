@@ -29,9 +29,9 @@
     <string name="device_access_active_waiting">等待你</string>
     <string name="device_access_active_taken_over">已接管</string>
     <string name="device_access_active_stopping">正在停止</string>
-    <string name="device_access_stop_task">停止</string>
+    <string name="device_access_stop_task">停止任务</string>
     <string name="device_access_take_over">接管</string>
-    <string name="device_access_take_over_hint">接管后会阻止新动作，任务保留供你查看。</string>
+    <string name="device_access_take_over_hint">接管会暂停设备操作，准备好后可交还控制。</string>
 
     <string name="device_access_screen_section">屏幕内容</string>
     <string name="device_access_screen_hint">选择当前任务何时可以查看屏幕。不会持续录制。</string>

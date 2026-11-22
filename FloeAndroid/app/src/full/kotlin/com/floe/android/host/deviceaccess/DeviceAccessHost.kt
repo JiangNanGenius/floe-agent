@@ -132,6 +132,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -880,7 +881,8 @@ internal class DeviceAccessHost(
         onReleaseSensitiveGuard = ::releaseSensitiveGuard,
         onFloatingControlsChange = ::setFloatingControls,
         onStopActiveTask = { stopActiveTask(takeOver = false) },
-        onTakeOverActiveTask = { stopActiveTask(takeOver = true) },
+        onTakeOverActiveTask = { controlOwner()?.let { onAutomationControl(it, PhoneAutomationControls.Action.PAUSE) } },
+        onReturnActiveTask = { controlOwner()?.let { onAutomationControl(it, PhoneAutomationControls.Action.RESUME) } },
         onAllowedPackagesChange = ::setAllowedPackages,
         onFileRootsChange = ::setFileRoots,
         onAddAppDataRoot = ::addAppDataRoot,
@@ -1239,6 +1241,7 @@ internal class DeviceAccessHost(
         adbUiStatus = null
         armedBackend = null
         readbackOwner = null
+        phonePause.retireHandback()
         rootGrants.clear()
         phoneBindings.clear()
         // The phone/root session owning the screen ceiling is gone; RAM-only
@@ -2654,6 +2657,7 @@ internal class DeviceAccessHost(
             if (explicitResumeOwner == ended) explicitResumeOwner = null
             if (armedOwner == ended) armedOwner = null
             if (readbackOwner == ended) readbackOwner = null
+            phonePause.retireHandback(ended)
             if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION && armedOwner == null) {
                 armedBackend = null
             }
@@ -2708,7 +2712,7 @@ internal class DeviceAccessHost(
                 phase = if (phonePause.isPaused(it.owner)) DeviceAccessTaskPhaseUi.WAITING_FOR_USER else it.phase,
             )
         }
-        val control = if (ownership != null && phonePause.isPaused(ownership.owner)) DeviceAccessTaskControlUi.OFF
+        val control = if (ownership != null && phonePause.isPaused(ownership.owner)) DeviceAccessTaskControlUi.PAUSED
             else ownership?.control ?: DeviceAccessTaskControlUi.OFF
         val roots = cachedRoots
         val writableSelected = hasWritableSelection()
@@ -2981,7 +2985,7 @@ internal class DeviceAccessHost(
         // resume this exact task, never a foreign retained pause.
         val paused = phonePause.snapshot?.takeIf { it.owner == owner }
         if (pauseStateInvalid || paused != null) {
-            val cleared = if (paused != null) phonePause.resume(owner, paused.id, ::clearPersistedPause)
+            val cleared = if (paused != null) phonePause.resume(owner, paused.id, persistClear = ::clearPersistedPause)
                 else clearPersistedPause()
             if (!cleared) { resumeFailed(); return }
             pauseStateInvalid = false
@@ -3201,7 +3205,9 @@ internal class DeviceAccessHost(
     }
 
     private fun controlOwner(): PhoneControlOwner? = armingOwner ?: when {
-        armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION -> armedOwner
+        armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION -> armedOwner ?: automatedOwner.get()?.takeIf {
+            phonePause.isPaused(it) || explicitResumeOwner == it
+        }
         else -> phoneStatus.activeOwner ?: armedOwner ?: automatedOwner.get()
     }
 
@@ -3288,6 +3294,7 @@ internal class DeviceAccessHost(
         }
         when (action) {
             PhoneAutomationControls.Action.PAUSE -> {
+                if (phonePause.isPaused(owner)) return
                 phoneControlRevision.bump(owner)
                 explicitResumeOwner = null
                 val pause = phonePause.pause(owner, System.currentTimeMillis())
@@ -3296,17 +3303,22 @@ internal class DeviceAccessHost(
                 OwnedExternalViewLaunch.clearForOwner(owner.taskID.toString(), owner.runID.toString())
                 // Fences live gestures/observations but DOES NOT cancel the
                 // Agent run or its independent background operations.
-                phoneClient?.takeover()
+                val adb = adbUiBackend?.takeIf { armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION }
+                if (adb != null) {
+                    // Detach the old ADB session before its asynchronous cleanup.
+                    scope.launch(io, start = CoroutineStart.UNDISPATCHED) { adb.stop(owner) }
+                } else {
+                    phoneClient?.takeover()
+                }
                 publish()
             }
             PhoneAutomationControls.Action.RESUME -> {
                 val pause = phonePause.snapshot?.takeIf { it.owner == owner } ?: return
-                if (!phonePause.resume(owner, pause.id, ::clearPersistedPause)) { resumeFailed(); return }
+                if (!phonePause.resume(owner, pause.id, persistClear = ::clearPersistedPause)) { resumeFailed(); return }
                 explicitResumeOwner = owner
                 publish()
                 resumePausedQuestion(pause)
             }
-            PhoneAutomationControls.Action.TAKE_OVER -> stopActiveTask(takeOver = true, expectedOwner = owner)
         }
     }
 
@@ -3324,7 +3336,7 @@ internal class DeviceAccessHost(
         binding.matches(host.nativeRootEpoch(), phoneControlRevision.current(owner),
             host.conversations.deviceStopStreamStamp(owner.taskID.toString(), owner.runID.toString()), closed)
 
-    private fun onOverlayTakeover(owner: PhoneControlOwner, binding: OverlayTakeoverBinding) {
+    private fun onOverlayTakeover(owner: PhoneControlOwner, binding: OverlayTakeoverBinding, stopTask: Boolean) {
         if (!overlayTakeoverIsCurrent(owner, binding)) {
             // A stale tap cannot stop a newly resumed run. Refresh the
             // presentation so its next tap is bound to the current owner.
@@ -3333,8 +3345,12 @@ internal class DeviceAccessHost(
                 android.widget.Toast.LENGTH_SHORT).show()
             return
         }
-        stopActiveTask(takeOver = true, expectedOwner = owner,
-            userStopEpoch = binding.epoch, overlayBinding = binding)
+        if (stopTask) {
+            stopActiveTask(takeOver = false, expectedOwner = owner,
+                userStopEpoch = binding.epoch, overlayBinding = binding)
+        } else {
+            onAutomationControl(owner, PhoneAutomationControls.Action.PAUSE)
+        }
     }
 
     /** A real user Continue settles only the matching durable pause question
@@ -3493,6 +3509,7 @@ internal class DeviceAccessHost(
             armedBackend = null
         }
         if (readbackOwner == owner) readbackOwner = null
+        phonePause.retireHandback(owner)
         recentOwner = owner
         publish()
         val stoppingOwner = stop.owner
@@ -3513,7 +3530,7 @@ internal class DeviceAccessHost(
                 }
                 if (stillThisStop()) {
                     phonePause.snapshot?.takeIf { it.owner == stoppingOwner }?.let {
-                        phonePause.resume(stoppingOwner, it.id, ::clearPersistedPause)
+                        phonePause.resume(stoppingOwner, it.id, reread = false, persistClear = ::clearPersistedPause)
                     }
                 }
                 if (stillThisStop()) pump?.cancelInFlight(stoppingOwner)
@@ -4723,7 +4740,7 @@ internal class DeviceAccessHost(
 
     /** Admission remains tied to the real platform claim; persisted user consent only
      * replaces the repetitive per-run settings gesture, never canonical tool approval. */
-    private suspend fun preparePhoneAutomation(call: PlatformToolCall): PlatformToolOutcome? = automationMutex.withLock {
+    private suspend fun preparePhoneAutomation(call: PlatformToolCall, requireAdb: Boolean = false): PlatformToolOutcome? = automationMutex.withLock {
         val owner = ownerOf(call)
         if (pauseStateInvalid) return@withLock PlatformToolOutcome.Failure("device_pause_state_unavailable")
         // A stopped owner cannot auto-resume through a pause answer, a status
@@ -4750,7 +4767,11 @@ internal class DeviceAccessHost(
         if (!PlatformToolsNativeLive.isLive(call.claim) || PlatformToolsNativeLive.shouldStop(call.claim))
             return@withLock PlatformToolOutcome.Failure("cancelled")
         if (settings.allowedPackages.isEmpty()) return@withLock null
+        if (requireAdb || (explicitResumeOwner == owner && armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION)) {
+            return@withLock prepareAdbAutomationLocked(call, owner)
+        }
         if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION &&
+            armedOwner == owner &&
             adbUiBackend?.isArmed(owner, call.epoch) == true
         ) {
             // Never silently switch an armed ADB observation base to a newly
@@ -4932,6 +4953,7 @@ internal class DeviceAccessHost(
         }
         if (settings.allowedPackages.isEmpty()) return null
         if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION &&
+            armedOwner == owner &&
             backend.isArmed(owner, call.epoch)
         ) {
             return null
@@ -5159,9 +5181,7 @@ internal class DeviceAccessHost(
                     "The verified ADB structured UI backend is not ready; start it in Settings > Device",
                 )
             }
-            automationMutex.withLock {
-                prepareAdbAutomationLocked(call, owner)
-            }?.let { return it }
+            preparePhoneAutomation(call, requireAdb = true)?.let { return it }
             if (armedBackend != PhoneControlBackend.ADB_UI_AUTOMATION ||
                 adbUiBackend?.isArmed(owner, call.epoch) != true
             ) {
@@ -5188,6 +5208,9 @@ internal class DeviceAccessHost(
             includeInvisible = call.arguments.optBoolean("includeInvisible", false),
             textBudgetChars = PhoneControlLimits.DEFAULT_TEXT_BUDGET_CHARS,
         )
+        val handbackID = phonePause.handbackID(owner)
+        val observationRevision = phoneControlRevision.current(owner)
+        val observationTargetRevision = targetScopeRevision.get()
         bindPhoneCall(call)
         try {
             val result = withTimeout(20_000) {
@@ -5211,12 +5234,10 @@ internal class DeviceAccessHost(
                     )
                 }
             }
-            if (requestedSource != DeviceObserveSource.ADB) {
-                adbReadFallback(call, ownerOf(call), principal, request, source, result)?.let {
-                    return it
-                }
-            }
-            return when (result) {
+            val fallback = if (requestedSource != DeviceObserveSource.ADB) {
+                adbReadFallback(call, owner, principal, request, source, result)
+            } else null
+            val outcome = fallback ?: when (result) {
                 is PhoneControlResult.Ok -> {
                     if (isOwnerStopped(ownerOf(call)) || phonePause.isPaused(ownerOf(call)) ||
                         armedOwner != ownerOf(call)
@@ -5231,6 +5252,13 @@ internal class DeviceAccessHost(
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
                 is PhoneControlResult.Failed -> failedOutcome(result)
             }
+            if (handbackID != null && outcome is PlatformToolOutcome.Success &&
+                phoneControlRevision.current(owner) == observationRevision &&
+                targetScopeRevision.get() == observationTargetRevision && observationTargetRevision % 2L == 0L
+            ) {
+                phonePause.observedAfterHandback(owner, handbackID)
+            }
+            return outcome
         } catch (_: Throwable) {
             return PlatformToolOutcome.Failure("device_timeout")
         } finally {
@@ -5387,6 +5415,12 @@ internal class DeviceAccessHost(
         }
         preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = true)?.let { return it }
+        if (phonePause.handbackID(owner) != null) {
+            return PlatformToolOutcome.Failure(
+                "device_observation_required",
+                "Control was handed back. Call device.observe without an observationId before the next action.",
+            )
+        }
         val principal = phonePrincipal(call)
             ?: return PlatformToolOutcome.Failure("device_arm_required")
         val dispatch = when (val request = DeviceActArguments.request(call.arguments)) {
