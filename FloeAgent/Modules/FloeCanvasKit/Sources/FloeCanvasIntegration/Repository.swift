@@ -392,6 +392,7 @@ public struct CanvasRepositoryEngine: Sendable {
         case .removeStroke: return "remove stroke"
         case .editPage: return "edit page"
         case .updateNodeSource: return "update node source"
+        case .updateNodeOwnership: return "update node ownership"
         case .updateNodeRotation: return "update node rotation"
         case .updateNodeStyle: return "update node style"
         case .updateNodeMetadata: return "update node metadata"

@@ -7,9 +7,18 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct MacImageWorkbenchView: View {
+    #if FLOE_MAC_HOST_SMOKE
+    static var smokeSaveToTaskFrame: CGRect?
+    #endif
     @ObservedObject var images: MacImageGeneration
     let openSettings: () -> Void
     var attachToTask: ((URL) -> Bool)?
+    /// Coordinator route that publishes the file through the existing pinned
+    /// file import and returns to that task. Nil hides the button.
+    var saveToTask: ((URL) async -> Bool)? = nil
+    /// Canvas route: adds the generated file to the active canvas. Nil hides
+    /// the button.
+    var addToCanvas: ((URL) -> Void)? = nil
     var initialReference: URL? = nil
     @State private var prompt = ""
     @State private var providerOverride: MacMediaProviderSelection?
@@ -151,6 +160,26 @@ struct MacImageWorkbenchView: View {
                             HStack {
                                 Button("mac.images.reusePrompt") { prompt = item.prompt }.disabled(images.isGenerating)
                                 Spacer()
+                                if let addToCanvas {
+                                    Button(MacCanvasText.addToCanvas) {
+                                        addToCanvas(images.imageURL(for: item))
+                                    }
+                                    .accessibilityIdentifier("mac.creative.addToCanvas")
+                                    .disabled(preview == nil)
+                                }
+                                if let saveToTask {
+                                    Button(MacCanvasText.saveToTask) {
+                                        let url = images.imageURL(for: item)
+                                        Task { @MainActor in
+                                            if await !saveToTask(url) { attachmentFailed = true }
+                                        }
+                                    }
+                                    .accessibilityIdentifier("mac.creative.saveToTask")
+                                    #if FLOE_MAC_HOST_SMOKE
+                                    .background(MacWorkbenchButtonFrameReader { Self.smokeSaveToTaskFrame = $0 })
+                                    #endif
+                                    .disabled(preview == nil)
+                                }
                                 if let attachToTask {
                                     Button("mac.images.attachToTask") {
                                         attachmentFailed = !attachToTask(images.imageURL(for: item))

@@ -192,6 +192,8 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
     /// Accepted-plan execution launch (or known-Goal round) only: the durable
     /// Goal to bind in the same transaction as the run.
     public let expectedGoal: FloeMacSelfExpectedGoal?
+    /// Automatic Goal continuation is authorized by one exact prior completed round.
+    public let automaticGoalPredecessor: UUID?
     public let startedAt: Date
 
     public init(
@@ -213,6 +215,7 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         goalBudgets: GoalBudgets? = nil,
         reusingUserMessageID: UUID? = nil,
         expectedGoal: FloeMacSelfExpectedGoal? = nil,
+        automaticGoalPredecessor: UUID? = nil,
         startedAt: Date = Date()
     ) {
         self.conversationID = conversationID
@@ -233,6 +236,7 @@ public struct FloeMacSelfSessionRequest: Sendable, Hashable {
         self.goalBudgets = goalBudgets
         self.reusingUserMessageID = reusingUserMessageID
         self.expectedGoal = expectedGoal
+        self.automaticGoalPredecessor = automaticGoalPredecessor
         self.startedAt = startedAt
     }
 }

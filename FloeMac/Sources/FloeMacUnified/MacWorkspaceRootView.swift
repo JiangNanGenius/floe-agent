@@ -32,7 +32,7 @@ struct MacWorkspaceRootView: View {
     let openToolbox: (String) -> Void
     let settingsContent: () -> AnyView
     let imageContent: (((URL) -> Bool)?) -> AnyView
-    let creativeContent: () -> AnyView
+    let creativeContent: (((URL) async -> Bool)?) -> AnyView
     var remembersFileRoot = true
     @ObservedObject var draftStore: MacWorkspaceDraftStore
     @ObservedObject var browserWorkbench: MacBrowserWorkbenchController
@@ -54,6 +54,8 @@ struct MacWorkspaceRootView: View {
     @State private var requestedConversation: UUID?
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
     @State private var imageReturnDestination: MacWorkspaceDestination = .space(.toolbox)
+    @State private var creativeReturnDestination: MacWorkspaceDestination?
+    @State private var creativeTaskBinding: (owner: UUID, workspace: UUID)?
     @State private var browserReturnDestination: MacWorkspaceDestination?
     @State private var browserOwner: UUID?
     @State private var restoredInitialDestination = false
@@ -166,8 +168,29 @@ struct MacWorkspaceRootView: View {
         }
         .modifier(BrowserWorkbenchNavigation(browser: browserWorkbench, openURL: openInWorkbenchBrowser,
                                              show: showWorkbenchBrowser, returnToTask: returnFromWorkbenchBrowser))
-        .onChange(of: destination) { _, newDestination in
+        .onChange(of: browserWorkbench.taskPresentRequest?.nonce) { _, _ in
+            guard let request = browserWorkbench.taskPresentRequest,
+                  destination == .conversation(request.owner), workspace.selectedID == request.owner else { return }
+            browserReturnDestination = destination
+            browserOwner = request.owner
+            destination = .browser
+        }
+        .onChange(of: destination) { previous, newDestination in
             draftStore.flush()
+            if newDestination == .creative {
+                creativeReturnDestination = previous
+                let cameFromTask = switch previous {
+                case .conversation(let id): id == workspace.selectedID
+                case .newTask: workspace.selectedID == nil
+                default: false
+                }
+                creativeTaskBinding = cameFromTask
+                    ? workspace.fileWorkspaceForCurrentTask.map { (workspace.attachmentOwnerID, $0.id) }
+                    : nil
+            } else if previous == .creative {
+                creativeReturnDestination = nil
+                creativeTaskBinding = nil
+            }
             if newDestination != searchResultTarget.map({ .conversation($0.conversation) }) { searchResultTarget = nil }
             conversationFindRequest = nil
             fileFindRequest = nil
@@ -897,6 +920,14 @@ struct MacWorkspaceRootView: View {
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("workspace.detail.back")
             }
+            if destination == .creative, let back = creativeReturnDestination {
+                Button(action: { destination = back }) {
+                    Label("mac.workspace.back", systemImage: "chevron.left")
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("workspace.creative.return")
+            }
             if let page = activeSpacePage {
                 Picker("space.title", selection: Binding(get: { page }, set: { destination = .space($0) })) {
                     Text("mac.workspace.spaceFiles").tag(MacSpacePage.files)
@@ -980,6 +1011,12 @@ struct MacWorkspaceRootView: View {
                         .frame(minHeight: FloeTheme.minimumTarget).contentShape(Rectangle())
                 }
                 .accessibilityIdentifier("workspace.toolbox.images")
+            }
+            if showsSpaceFiles {
+                Button(workspaceText("画布", "Canvas"), systemImage: "rectangle.and.pencil.and.ellipsis") {
+                    destination = .creative
+                }
+                .accessibilityIdentifier("workspace.space.canvas")
             }
             if workspace.isSending {
                 if showsTask {
@@ -1170,7 +1207,7 @@ struct MacWorkspaceRootView: View {
             MacWorkspaceToolboxView(findRequest: toolboxFindRequest, openToolbox: openToolbox)
         case .space(.files): EmptyView()
         case .creative:
-            creativeContent()
+            creativeContent(saveCreativeResultToTask)
                 #if FLOE_MAC_HOST_SMOKE
                 .onAppear { workspace.smokeCreativeMounted = true }
                 .onDisappear { workspace.smokeCreativeMounted = false }
@@ -1198,6 +1235,21 @@ struct MacWorkspaceRootView: View {
             imageContent { url in attachGeneratedImage(url) }
         default:
             imageContent(nil)
+        }
+    }
+
+    private var saveCreativeResultToTask: ((URL) async -> Bool)? {
+        guard let target = creativeTaskBinding else { return nil }
+        return { source in
+            guard destination == .creative, creativeTaskBinding?.owner == target.owner,
+                  creativeTaskBinding?.workspace == target.workspace else { return false }
+            let saved = await workspace.saveGeneratedMedia(source, owner: target.owner, workspaceID: target.workspace)
+            if saved, destination == .creative, workspace.attachmentOwnerID == target.owner,
+               let back = creativeReturnDestination {
+                destination = back
+                showInspector = true
+            }
+            return saved
         }
     }
 
@@ -1325,14 +1377,16 @@ struct MacWorkspaceRootView: View {
     private func openInWorkbenchBrowser(_ url: URL) {
         guard MacBrowserAddress.allows(url) else { return }
         let owner = destination == .browser ? browserOwner : rememberBrowserReturnDestination()
-        browserWorkbench.session(for: owner, restorePage: false).open(url)
+        if let owner { browserWorkbench.openTaskURL(url, owner: owner) }
+        else { browserWorkbench.generalBrowser().open(url) }
         destination = .browser
     }
 
     private func showWorkbenchBrowser() {
         guard destination != .browser else { return }
         let owner = rememberBrowserReturnDestination()
-        _ = browserWorkbench.session(for: owner)
+        if let owner { _ = browserWorkbench.taskSession(for: owner) }
+        else { _ = browserWorkbench.generalBrowser() }
         destination = .browser
     }
 

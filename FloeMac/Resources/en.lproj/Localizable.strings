@@ -392,11 +392,16 @@
 "mac.agent.createFileApproval" = "Create this file?";
 "mac.agent.publishOutputApproval" = "Save this file as a task output?";
 "mac.agent.replaceTextApproval" = "Edit this file?";
+"mac.agent.writeFileApproval" = "Overwrite this file?";
+"mac.agent.appendFileApproval" = "Append to this file?";
+"mac.agent.applyPatchApproval" = "Apply this patch?";
+"mac.agent.createDirectoryApproval" = "Create this folder?";
 "mac.agent.reviewReplacement" = "Review the original and replacement text";
 "mac.agent.originalText" = "Original text";
 "mac.agent.replacementText" = "Replacement";
 "mac.agent.removeText" = "Remove this text";
 "mac.agent.reviewFileContents" = "Review file contents";
+"mac.agent.reviewPatch" = "Review the patch";
 "mac.agent.deny" = "Decline";
 "mac.agent.allowOnce" = "Allow Once";
 "mac.agent.approvalFailed" = "The operation could not be approved. Review the request and try again.";
@@ -624,6 +629,7 @@
 "mac.permissions.project" = "Project";
 "mac.permissions.task" = "Task";
 "mac.permissions.create" = "Create file";
+"mac.permissions.createFolder" = "Create folder";
 "mac.permissions.edit" = "Edit text";
 "mac.permissions.revoke" = "Revoke";
 "mac.permissions.loadFailed" = "Couldn’t load saved permissions.";

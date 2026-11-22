@@ -69,6 +69,8 @@ enum BrowserDownloadError: Error, LocalizedError {
 
 @MainActor
 final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelegate {
+    typealias StagedFileCommit = @MainActor (URL) throws -> (byteCount: Int, sha256: String)
+
     @MainActor
     private final class Job {
         let id: UUID
@@ -78,6 +80,8 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
         let stagingURL: URL
         let maxBytes: Int
         let overwrite: Bool
+        let cancellation: CancellationToken
+        let commitStagedFile: StagedFileCommit?
         var continuation: CheckedContinuation<BrowserDownloadReceipt, Error>?
         var download: WKDownload?
         var observation: NSKeyValueObservation?
@@ -97,7 +101,9 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
             relativePath: String,
             stagingURL: URL,
             maxBytes: Int,
-            overwrite: Bool
+            overwrite: Bool,
+            cancellation: CancellationToken,
+            commitStagedFile: StagedFileCommit?
         ) {
             self.id = id
             self.displayName = displayName
@@ -106,6 +112,8 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
             self.stagingURL = stagingURL
             self.maxBytes = maxBytes
             self.overwrite = overwrite
+            self.cancellation = cancellation
+            self.commitStagedFile = commitStagedFile
         }
     }
 
@@ -123,7 +131,8 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
         suggestedFilename: String,
         maxBytes: Int,
         overwrite: Bool,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        commitStagedFile: StagedFileCommit? = nil
     ) async throws -> BrowserDownloadReceipt {
         guard startingJobID == nil, !jobs.values.contains(where: { $0.download == nil && !$0.finished }) else {
             throw BrowserDownloadError.anotherDownloadIsStarting
@@ -142,7 +151,9 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
             relativePath: relativePath,
             stagingURL: stagingURL,
             maxBytes: max(1, min(maxBytes, 64 * 1_024 * 1_024)),
-            overwrite: overwrite
+            overwrite: overwrite,
+            cancellation: cancellation,
+            commitStagedFile: commitStagedFile
         )
         jobs[id] = job
         startingJobID = id
@@ -267,28 +278,36 @@ final class BrowserDownloadService: NSObject, ObservableObject, WKDownloadDelega
         job.state = .finishing
         publish()
         do {
+            try job.cancellation.throwIfCancelled()
             try Self.validate(
                 stagedFile: job.stagingURL,
                 declaredMime: job.responseMime,
                 maxBytes: job.maxBytes
             )
-            let receipt = try AtomicFileCommitter.commit(
-                stagedFile: job.stagingURL,
-                to: job.destinationURL,
-                policy: FileCommitPolicy(
-                    conflict: job.overwrite ? .replaceAtomically(consent: true) : .failIfExists,
-                    maxBytes: job.maxBytes
+            let mime = try Self.detectedMime(stagedFile: job.stagingURL) ?? "application/octet-stream"
+            let evidence: (byteCount: Int, sha256: String)
+            if let commit = job.commitStagedFile {
+                evidence = try commit(job.stagingURL)
+            } else {
+                let receipt = try AtomicFileCommitter.commit(
+                    stagedFile: job.stagingURL,
+                    to: job.destinationURL,
+                    policy: FileCommitPolicy(
+                        conflict: job.overwrite ? .replaceAtomically(consent: true) : .failIfExists,
+                        maxBytes: job.maxBytes,
+                        checkCancellation: { [cancellation = job.cancellation] in try cancellation.throwIfCancelled() }
+                    )
                 )
-            )
-            let mime = try Self.detectedMime(stagedFile: receipt.url) ?? "application/octet-stream"
+                evidence = (receipt.byteCount, receipt.sha256)
+            }
             let host = job.finalURL?.host
             complete(job, result: .success(BrowserDownloadReceipt(
                 id: job.id,
-                destinationURL: receipt.url,
+                destinationURL: job.destinationURL,
                 relativePath: job.relativePath,
                 mimeType: mime,
-                byteCount: receipt.byteCount,
-                sha256: receipt.sha256,
+                byteCount: evidence.byteCount,
+                sha256: evidence.sha256,
                 suggestedFilename: job.displayName,
                 finalHost: host
             )))

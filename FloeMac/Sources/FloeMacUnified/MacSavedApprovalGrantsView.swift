@@ -24,7 +24,14 @@ struct MacSavedApprovalGrantsView: View {
                         let project = workspace.workspaces.first { $0.id == grant.workspaceID }?.name
                         let owner = grant.conversationID.flatMap { id in workspace.conversations.first { $0.id == id }?.title }
                         let scope = grant.conversationID == nil ? String(localized: "mac.permissions.project") : String(localized: "mac.permissions.task")
-                        let operation = grant.toolName == "workspace.createFile" ? String(localized: "mac.permissions.create") : String(localized: "mac.permissions.edit")
+                        let operation = switch grant.toolName {
+                        case MacAgentWorkspaceTools.createFileToolName:
+                            String(localized: "mac.permissions.create")
+                        case MacAgentWorkspaceTools.createDirectoryToolName:
+                            String(localized: "mac.permissions.createFolder")
+                        default:
+                            String(localized: "mac.permissions.edit")
+                        }
                         Text(verbatim: ([operation, scope, project, owner].compactMap { $0 }).joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary)
                     }

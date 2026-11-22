@@ -269,20 +269,38 @@ struct HostAgentWorkspaceView: View {
                     .padding(.horizontal, 12)
                 }
                 if let run = workspace.continuableRun {
-                    Button {
-                        Task { await workspace.continueFromHistory(run) }
-                    } label: {
-                        Label(LocalizedStringKey(workspace.resumesOriginalRun ? "mac.agent.continueTask" : "mac.agent.continueHistory"),
-                              systemImage: "play")
-                            .padding(.horizontal, 6)
-                            .frame(minHeight: FloeTheme.minimumTarget)
-                            .contentShape(Rectangle())
+                    VStack(alignment: .leading, spacing: 3) {
+                        if workspace.needsInterruptedRunReview {
+                            Label(MacPermissionsText.t("待核对", "Needs review"), systemImage: "exclamationmark.circle")
+                                .font(.callout.weight(.semibold))
+                                .accessibilityIdentifier("mac.agent.run.reviewRequired")
+                            Text(MacPermissionsText.t(
+                                "上次回合的结果仍待核对。请查看执行记录和工作区文件。",
+                                "Review the previous round’s execution records and workspace files."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if let summary = workspace.restoredApprovalSummary {
+                            Text(MacPermissionsText.t("已保存的审批请求", "Saved approval request")).font(.callout.weight(.semibold))
+                            Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Button {
+                            Task { await workspace.continueFromHistory(run) }
+                        } label: {
+                            if workspace.needsInterruptedRunReview {
+                                Label(MacPermissionsText.t("开始新的核对回合", "Start a separate review"), systemImage: "doc.text.magnifyingglass")
+                            } else if workspace.restoredApprovalSummary != nil {
+                                Label(MacPermissionsText.t("继续审批", "Resume approval"), systemImage: "checkmark.shield")
+                            } else {
+                                Label(LocalizedStringKey(workspace.resumesOriginalRun ? "mac.agent.continueTask" : "mac.agent.continueHistory"),
+                                      systemImage: "play")
+                            }
+                        }
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("mac.agent.run.continue")
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { frame in Self.smokeHistoryContinueFrame = frame })
+                        #endif
                     }
-                    .buttonStyle(.borderless)
-                    .accessibilityIdentifier("mac.agent.run.continue")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(MacWorkbenchButtonFrameReader { frame in Self.smokeHistoryContinueFrame = frame })
-                    #endif
                     .padding(.horizontal, 16)
                 }
                 if let failed = workspace.failedUserMessage,

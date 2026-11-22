@@ -393,11 +393,16 @@
 "mac.agent.createFileApproval" = "创建这个文件？";
 "mac.agent.publishOutputApproval" = "将这个文件保存为任务产出？";
 "mac.agent.replaceTextApproval" = "修改这个文件？";
+"mac.agent.writeFileApproval" = "覆盖这个文件？";
+"mac.agent.appendFileApproval" = "追加到这个文件？";
+"mac.agent.applyPatchApproval" = "应用这个补丁？";
+"mac.agent.createDirectoryApproval" = "创建这个文件夹？";
 "mac.agent.reviewReplacement" = "查看原文和替换文字";
 "mac.agent.originalText" = "原文";
 "mac.agent.replacementText" = "替换为";
 "mac.agent.removeText" = "移除这段文字";
 "mac.agent.reviewFileContents" = "查看文件内容";
+"mac.agent.reviewPatch" = "查看补丁";
 "mac.agent.deny" = "拒绝";
 "mac.agent.allowOnce" = "允许一次";
 "mac.agent.approvalFailed" = "无法提交审批，请查看请求后重试。";
@@ -625,6 +630,7 @@
 "mac.permissions.project" = "项目";
 "mac.permissions.task" = "任务";
 "mac.permissions.create" = "创建文件";
+"mac.permissions.createFolder" = "创建文件夹";
 "mac.permissions.edit" = "修改文本";
 "mac.permissions.revoke" = "撤销";
 "mac.permissions.loadFailed" = "未能载入已保存的授权。";

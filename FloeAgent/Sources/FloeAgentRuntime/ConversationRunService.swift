@@ -276,6 +276,8 @@ public actor ConversationRunService {
     /// batch settles, so parallel calls keep their own real durations.
     private var toolCompletedAt: [String: ContinuousClock.Instant] = [:]
     private var toolNames: [String: String] = [:]
+    private let recordsToolDecisionEvents: Bool
+    private var approvalReasons: [String: String] = [:]
     private var finishedToolExecutions: [String: ToolResult.Status] = [:]
     /// Prevents the legacy Markdown fallback from overwriting a structured
     /// plan submitted during this run.
@@ -417,6 +419,7 @@ public actor ConversationRunService {
         resourceAccessCleanup: (@Sendable () -> Void)? = nil
     ) {
         self.runID = runID
+        self.recordsToolDecisionEvents = configuration.recordsToolDecisionEvents
         self.conversationID = configuration.conversationID
         self.executionConfined = executionConfined
         self.primaryModel = configuration.model
@@ -545,6 +548,11 @@ public actor ConversationRunService {
         }
         forwarder.onApprovalDecisionRecorded = { [weak self] receipt in
             self?.eventChannel.yield(.approvalResolved(callID: receipt.callID))
+        }
+        if configuration.recordsToolDecisionEvents {
+            forwarder.onToolDecision = { [weak self] call, decision, reason in
+                await self?.recordToolDecision(call, decision: decision, reason: reason) ?? false
+            }
         }
     }
 
@@ -778,6 +786,11 @@ public actor ConversationRunService {
             }
         }
         var restored = checkpoint
+        if let waiting = checkpoint.undispatchedApproval {
+            // Keep the original durable tool-request row. Reopening the
+            // approval must still attribute the result to its exact tool.
+            toolNames[waiting.toolCall.id] = waiting.toolCall.toolName
+        }
         if let resumption, !restored.messages.contains(where: { $0.id == resumption.id }) {
             restored.messages.append(ConversationMessage(
                 id: resumption.id,
@@ -1263,6 +1276,9 @@ public actor ConversationRunService {
         isReviewingApproval = snapshot.isEvaluating
         eventChannel.yield(.approvalReviewChanged(snapshot))
         if !snapshot.isEvaluating, let outcome = snapshot.outcomeSummary {
+            if recordsToolDecisionEvents, let callID = snapshot.callID {
+                approvalReasons[callID] = outcome
+            }
             let payload = Self.jsonPayload([
                 "tool": snapshot.toolName,
                 "callID": snapshot.callID ?? "",
@@ -1340,6 +1356,7 @@ public actor ConversationRunService {
             resourceAccessCleanup = nil
         }
         if case .waitingApproval(let waiting) = state {
+            if recordsToolDecisionEvents { approvalReasons[waiting.toolCall.id] = waiting.reason }
             eventChannel.yield(.approvalRequested(ApprovalRequestSnapshot(
                 toolCall: waiting.toolCall,
                 reason: waiting.reason,
@@ -1395,6 +1412,24 @@ public actor ConversationRunService {
         default:
             break
         }
+    }
+
+    private func recordToolDecision(_ call: ToolCall, decision: String, reason: String?) async -> Bool {
+        let label: String = switch decision {
+        case "humanAllowed": FloeL10n.isChinese ? "人工批准" : "Approved by you"
+        case "humanDenied": FloeL10n.isChinese ? "人工拒绝" : "Declined by you"
+        case "policyAllowed": FloeL10n.isChinese ? "按任务权限自动批准" : "Approved by task permissions"
+        default: FloeL10n.isChinese ? "被权限策略拒绝" : "Declined by task permissions"
+        }
+        let original = approvalReasons.removeValue(forKey: call.id)
+        let detail = reason ?? original
+        let safe = detail.map { String(SecretRedactor.redact($0, secret: secretForRedaction).prefix(1_000)) }
+        return await appendEventReliably(runID: runID,
+            kind: decision == "policyAllowed" ? .autoApproved : .approval,
+            payloadJSON: Self.jsonPayload([
+                "tool": call.toolName, "callID": call.id, "decision": decision,
+                "outcome": safe.map { label + " · " + $0 } ?? label
+            ]), boundary: "toolDecision", completionCritical: false)
     }
 
     /// Per-call real dispatch point: every pre-dispatch gate (approval,
@@ -1583,6 +1618,7 @@ public actor ConversationRunService {
             )
             let durationMs = timing.durationMs
             let finishedToolName = toolNames.removeValue(forKey: result.callID) ?? ""
+            approvalReasons.removeValue(forKey: result.callID)
             if finishedToolName == TaskCreateGoalTool.name, result.status == .ok,
                !temporaryReadOnly, conversationMode != .plan {
                 // Read native durable ownership, never a model/tool-output
@@ -2960,6 +2996,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
     var onBackgroundApproval: (@Sendable (AgentState.WaitingApproval?) async -> Void)?
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
+    var onToolDecision: (@Sendable (ToolCall, String, String?) async -> Bool)?
     var onToolDispatch: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
     var onToolFinish: (@Sendable (ToolCall, ToolResult.Status, ToolTimingStamp) async -> Void)?
     var onNativeDiagnostic: (@Sendable (String, TaskDiagnosticProgress) async -> Void)?
@@ -3059,5 +3096,10 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
         didRecordApprovalDecision receipt: ApprovalDecisionReceipt
     ) async {
         await onApprovalDecisionRecorded?(receipt)
+    }
+
+    func agentRuntime(_ runtime: FloeAgentRuntime, didDecideToolCall call: ToolCall,
+                      decision: String, reason: String?) async -> Bool {
+        await onToolDecision?(call, decision, reason) ?? false
     }
 }

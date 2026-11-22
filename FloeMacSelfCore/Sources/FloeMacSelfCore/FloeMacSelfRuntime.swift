@@ -54,17 +54,29 @@ private struct FloeMacSelfStores: Sendable {
 }
 
 public enum FloeMacSelfContinuation: Sendable {
-    case checkpoint(ConversationToolAccess)
+    case checkpoint(ConversationToolAccess, approval: AgentState.WaitingApproval?)
     case history(ConversationToolAccess)
+    case review
 
     public var toolAccess: ConversationToolAccess {
         switch self {
-        case .checkpoint(let access), .history(let access): access
+        case .checkpoint(let access, _), .history(let access): access
+        case .review: .chat
         }
     }
 
     public var resumesOriginalRun: Bool {
         if case .checkpoint = self { return true }
+        return false
+    }
+
+    public var pendingApproval: AgentState.WaitingApproval? {
+        if case .checkpoint(_, let approval) = self { return approval }
+        return nil
+    }
+
+    public var needsReview: Bool {
+        if case .review = self { return true }
         return false
     }
 }
@@ -80,6 +92,7 @@ public actor FloeMacSelfRuntime {
         let admission: FloeMacSelfAdmissionRecord
         let prepared: PreparedRun
         let access: ConversationToolAccess
+        let workspaceRootIdentity: String?
     }
     public nonisolated let databaseURL: URL
     public nonisolated let owner: FloeMacSelfHostIdentity
@@ -525,6 +538,17 @@ public actor FloeMacSelfRuntime {
                 claims.release(conversationID: resolvedConversationID, runID: runID)
             }
         }
+        if let predecessor = request.automaticGoalPredecessor {
+            guard request.mode == .goal, request.conversationID != nil, !resumingCheckpoint,
+                  request.reusingUserMessageID == nil, let expectedGoalBinding,
+                  let latest = try await stores.runs.recentRuns(conversationID: resolvedConversationID, limit: 1).first,
+                  latest.id == predecessor, latest.goalID == expectedGoalBinding.id, latest.state == "completed",
+                  let prior = try await admissions.record(conversationID: resolvedConversationID),
+                  prior.runID == predecessor, prior.phase == .settledConfirmed, prior.stopRequestedAt == nil,
+                  let goal = try await stores.intelligence.goal(id: expectedGoalBinding.id),
+                  goal.status == .active, goal.revision == expectedGoalBinding.revision,
+                  !Self.goalBudgetExhausted(goal) else { throw Self.goalControlConflict() }
+        }
 
         let recovery: CheckpointCandidate?
         if resumingCheckpoint {
@@ -535,7 +559,9 @@ public actor FloeMacSelfRuntime {
                   candidate.prepared.run.goal.utf8.elementsEqual(canonicalGoal.utf8),
                   candidate.prepared.run.providerID == resolvedProvider.provider.id,
                   candidate.prepared.run.modelID == resolvedProvider.model.id,
-                  candidate.prepared.workspace.id == (resolvedTools.boundary?.workspaceID ?? request.workspaceID) else {
+                  candidate.prepared.workspace.id == (resolvedTools.boundary?.workspaceID ?? request.workspaceID),
+                  candidate.workspaceRootIdentity == nil
+                    || candidate.workspaceRootIdentity == FloeMacSelfWorkspaceLease.recoveryIdentity(for: resolvedTools.boundary?.workspaceRootURL) else {
                 throw FloeMacSelfCoreError.invalidRequest("The original model, mode or workspace is unavailable for continuation.")
             }
             recovery = candidate
@@ -738,6 +764,7 @@ public actor FloeMacSelfRuntime {
                 let workspaceStore = stores.workspaces
                 let privateTaskRootBase = options.privateTaskRootBaseURL
                 let conversationID = prepared.conversation.id
+                let savedRootIdentity = recovery?.workspaceRootIdentity
                 verifyWorkspaceLease = {
                     guard let durable = try await workspaceStore.workspace(id: boundary.workspaceID) else {
                         throw FloeMacSelfCoreError.invalidTaskBoundary(
@@ -747,11 +774,15 @@ public actor FloeMacSelfRuntime {
                     guard try await workspaceStore.workspaceID(conversationID: conversationID) == boundary.workspaceID else {
                         throw FloeMacSelfCoreError.invalidTaskBoundary("The task's workspace changed before dispatch.")
                     }
-                    _ = try FloeMacSelfWorkspaceLease.verifiedRoot(
+                    let root = try FloeMacSelfWorkspaceLease.verifiedRoot(
                         workspace: durable,
                         boundaryRoot: boundary.workspaceRootURL,
                         privateTaskRootBase: privateTaskRootBase
                     )
+                    if let oldRoot = savedRootIdentity,
+                       FloeMacSelfWorkspaceLease.recoveryIdentity(for: root) != oldRoot {
+                        throw FloeMacSelfCoreError.invalidTaskBoundary("The saved workspace directory has changed.")
+                    }
                 }
             } else {
                 verifyWorkspaceLease = nil
@@ -809,9 +840,10 @@ public actor FloeMacSelfRuntime {
             let questionCenter = try self.userQuestionCenter()
             let questionEligible = request.allowsUserQuestions && resolvedProvider.model.capabilities.contains(.tools)
             var launchStatusPayloads: [String] = []
-            if questionEligible, recovery == nil {
+            if recovery == nil {
                 let inputMode = request.mode == .chat && !request.chatFastMode ? "agent" : request.mode.rawValue
-                let owner = QuestionInputOwner(questionWorkspaceID: prepared.workspace.id, inputMode: inputMode)
+                let owner = QuestionInputOwner(questionWorkspaceID: prepared.workspace.id, inputMode: inputMode,
+                    workspaceRootIdentity: FloeMacSelfWorkspaceLease.recoveryIdentity(for: resolvedWorkspaceRoot))
                 let payload = try JSONEncoder().encode(owner)
                 launchStatusPayloads.append(String(decoding: payload, as: UTF8.self))
             }
@@ -918,6 +950,8 @@ public actor FloeMacSelfRuntime {
                 // questions and checkpoint repair resumes an interrupted ask.
                 userQuestionRecovery: questionCenter.coordinator
             )
+            configuration.supportsColdApprovalRecovery = true
+            configuration.recordsToolDecisionEvents = true
 
             if let childSubagentRuntime, await childSubagentRuntime.isBound(runID) {
                 // Per-(run, conversation) child lifecycle wiring: settle
@@ -1018,7 +1052,9 @@ public actor FloeMacSelfRuntime {
                 receiptWorkspace: resolvedWorkspaceRoot.map {
                     (id: prepared.workspace.id, root: $0)
                 },
-                workspaceArtifactTools: availableToolNames.intersection(["image.generate", "video.generate", "video.status", "video.cancel"]),
+                workspaceArtifactTools: availableToolNames.intersection([
+                    "image.generate", "video.generate", "video.status", "video.cancel", "browser.download"
+                ]),
                 conversationHistory: conversationHistory,
                 currentUserImages: needsVision ? [] : currentUserImages,
                 runContext: runContext
@@ -1261,19 +1297,130 @@ public actor FloeMacSelfRuntime {
         return try await routeGoalContinuation(goal, stores: stores)
     }
 
+    /// Review the settled, current Goal round using the iPad review contract.
+    /// The caller may arm a new round only with the returned, committed revision.
+    public func reviewCompletedGoalRound(runID: UUID, conversationID: UUID,
+                                         provider binding: FloeMacSelfProviderBinding,
+                                         mayContinue: @Sendable () async -> Bool) async throws -> ConversationGoal? {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let reservation = UUID()
+        guard claims.claim(conversationID: conversationID, runID: reservation) else { return nil }
+        activeAdmissions.insert(reservation)
+        defer {
+            claims.release(conversationID: conversationID, runID: reservation)
+            activeAdmissions.remove(reservation)
+        }
+        guard await mayContinue(), !Task.isCancelled,
+              let admission = try await admissionRecord(conversationID: conversationID),
+              admission.runID == runID, admission.phase == .settledConfirmed, admission.stopRequestedAt == nil,
+              let run = try await stores.runs.recentRuns(conversationID: conversationID, limit: 1).first,
+              run.id == runID, run.state == "completed", run.endedAt != nil,
+              let goalID = run.goalID, var goal = try await stores.intelligence.goal(id: goalID),
+              goal.conversationID == conversationID, goal.status == .verifying,
+              !(goal.acceptanceCriteria.allSatisfy(\.isSatisfied)
+                && goal.steps.allSatisfy({ $0.status == .completed || $0.status == .skipped })) else { return nil }
+        let events = try await stores.runs.events(runID: runID)
+        guard try GoalRunDefinitionFingerprint.matchesAdmission(goal, events: events),
+              let terminal = events.last, terminal.kind == .terminal,
+              let rawStop = FloeMacSelfDurableRunProbe.jsonObject(terminal.payloadJSON)?["stopReason"] as? String,
+              let stop = AgentEvent.StopReason(rawValue: rawStop), stop != .cancelled,
+              run.providerID == binding.provider.id, run.modelID == binding.model.id else { return nil }
+        let provider = try FloeMacSelfCapabilityResolver.resolveProvider(binding)
+        let newEvidence = GoalEvidenceReviewContract.currentRoundEvidence(goal: goal, runID: runID, events: events)
+        let current = Array(newEvidence.suffix(24))
+        var review = GoalEvidenceReviewContract.Result()
+        let wallRemaining = goal.budgets.maxWallClockSeconds.map {
+            $0 - Date().timeIntervalSince(goal.progress.startedAt ?? run.startedAt)
+        }
+        let callsRemain = goal.budgets.maxModelCalls.map { goal.progress.modelCallCount < $0 } ?? true
+        var revision = goal.revision ?? 1
+        if !current.isEmpty, callsRemain, wallRemaining.map({ $0 > 0 }) ?? true, await mayContinue(), !Task.isCancelled {
+            // Reserve the one auxiliary model call in the same durable budget.
+            // User Pause or an edit can supersede this revision during review.
+            let used = goal.progress.modelCallCount.addingReportingOverflow(1)
+            guard !used.overflow else { return nil }
+            goal.progress.modelCallCount = used.partialValue
+            goal.updatedAt = Date()
+            guard try await stores.intelligence.saveGoalIfRevisionMatches(goal, expectedRevision: revision) else { return nil }
+            revision += 1
+            goal.revision = revision
+            let allNew = Set(newEvidence.map(\.id))
+            let evidence = Array(goal.evidence.filter { !allNew.contains($0.id) }.suffix(24)) + current
+            let currentIDs = Set(current.map(\.id))
+            let input = try GoalEvidenceReviewContract.input(goal: goal, evidence: evidence, currentEvidenceIDs: currentIDs,
+                                                             includeStoppingConditions: true)
+            let request = ProviderStreamRequest(provider: provider.provider, model: provider.model, contentMessages: [
+                .init(role: "system", text: GoalEvidenceReviewContract.instructionsIncludingStops),
+                .init(role: "user", text: input)
+            ])
+            var output = ""
+            do {
+                for try await event in provider.adapter.stream(request: request, credentials: provider.credentials) {
+                    try Task.checkCancellation()
+                    if case .textDelta(let delta) = event {
+                        output += delta.text
+                        if output.utf8.count > 16_384 { break }
+                    }
+                }
+                review = GoalEvidenceReviewContract.parse(output, goal: goal, evidence: evidence, currentEvidenceIDs: currentIDs,
+                                                          includeStoppingConditions: true)
+            } catch is CancellationError {
+                return nil
+            } catch {
+                // A failed review consumes its attempt but cannot certify progress.
+            }
+        }
+        guard await mayContinue(), !Task.isCancelled else { return nil }
+        try ensureAdmissionStillAllowed()
+        let verdict = GoalEvidenceReviewContract.applyVerifiedProgress(review, to: &goal)
+        goal.status = .active
+        if let blocked = review.blockingCondition {
+            goal.status = .blocked
+            goal.progress.repeatedBlockerKey = "user-condition:" + blocked
+            goal.progress.repeatedBlockerCount = 3
+        } else if verdict?.mayComplete == true {
+            goal.status = .completed
+        } else if let verdict, !verdict.blockers.isEmpty, verdict.blockers.allSatisfy({
+            if case .userConfirmationRequired = $0 { return true }
+            return false
+        }) {
+            goal.status = .verifying
+        } else if let stopped = review.stoppingCondition {
+            goal.status = .paused
+            goal.progress.repeatedBlockerKey = "stop-condition:" + stopped
+        } else if Self.goalBudgetExhausted(goal) {
+            goal.status = .budgetLimited
+        } else if !review.isValid {
+            goal.recordBlocker(key: current.isEmpty ? "no-inspectable-evidence" : "evidence-review-rejected")
+            if goal.status == .active { goal.status = .verifying }
+        }
+        goal.updatedAt = Date()
+        guard try await stores.intelligence.saveGoalIfRevisionMatches(goal, expectedRevision: revision),
+              goal.status == .active, review.isValid, stop == .endTurn || stop == .stopSequence,
+              await mayContinue(), !Task.isCancelled,
+              let saved = try await stores.intelligence.goal(id: goal.id), saved.status == .active,
+              saved.revision == revision + 1, !Self.goalBudgetExhausted(saved) else { return nil }
+        return saved
+    }
+
     private func routeGoalContinuation(_ goal: ConversationGoal,
                                        stores: FloeMacSelfStores) async throws -> FloeMacSelfGoalContinuation {
         let conversationID = goal.conversationID
         guard try await stores.intelligence.goals(conversationID: conversationID)
             .first(where: { !$0.status.isTerminal })?.id == goal.id else { throw Self.goalControlConflict() }
-        guard [.active, .paused, .interrupted, .blocked, .waitingUser].contains(goal.status),
+        let needsMoreGoalWork = !goal.acceptanceCriteria.allSatisfy(\.isSatisfied)
+            || goal.steps.contains { $0.status != .completed && $0.status != .skipped }
+        guard [.active, .paused, .interrupted, .blocked, .waitingUser].contains(goal.status)
+                || (goal.status == .verifying && needsMoreGoalWork),
               !Self.goalBudgetExhausted(goal) else {
             throw FloeMacSelfCoreError.invalidRequest(Self.goalBlockedReason(goal) ?? "Review the Goal results or budget before continuing.")
         }
         let latest = try await stores.runs.recentRuns(conversationID: conversationID, limit: 1).first
         let admission = try await admissionRecord(conversationID: conversationID)
-        if let latest, latest.goalID == goal.id,
-           ["failed", "interrupted", "checkpointed", "waitingUserQuestion"].contains(latest.state) {
+        if let latest, latest.goalID == goal.id, admission?.phase != .retiredForReview,
+           (["failed", "interrupted", "checkpointed"] + FloeMacSelfRunState.coldCheckpointStates).contains(latest.state) {
             guard let candidate = try await checkpointCandidate(runID: latest.id, conversationID: conversationID,
                                                                 goalID: goal.id, allowWaitingForAnswer: false) else {
                 throw FloeMacSelfCoreError.invalidRequest("Review the saved Goal round before continuing.")
@@ -1324,6 +1471,7 @@ public actor FloeMacSelfRuntime {
                 "continue cannot redefine the confirmed Goal criteria or budgets"
             )
         }
+        guard request.automaticGoalPredecessor == nil else { throw Self.goalControlConflict() }
         guard request.attachments.isEmpty else {
             throw FloeMacSelfCoreError.invalidRequest(
                 "continue does not inject attachments into the Goal turn"
@@ -2729,17 +2877,43 @@ public actor FloeMacSelfRuntime {
     }
 
     public func continuation(after runID: UUID, in conversationID: UUID) async throws -> FloeMacSelfContinuation? {
+        let stores = try requireStores()
+        guard let run = try await stores.runs.recentRuns(conversationID: conversationID, limit: 1).first,
+              run.id == runID else { return nil }
         if let candidate = try await checkpointCandidate(runID: runID, conversationID: conversationID,
-                                                         allowWaitingForAnswer: true) {
-            return .checkpoint(candidate.access)
+                                                         goalID: run.goalID, allowWaitingForAnswer: true) {
+            return run.goalID == nil ? .checkpoint(candidate.access, approval: candidate.checkpoint.undispatchedApproval) : nil
+        }
+        if run.state != "completed", sessions[runID] == nil,
+           let admission = try await admissionRecord(conversationID: conversationID), admission.runID == runID,
+           admission.phase == .retiredForReview || admission.permitsExplicitReview(owner: owner) {
+            return .review
+        }
+        if let checkpoint = try await stores.checkpoints.load(runID: runID), checkpoint.hasUnknownToolOutcome,
+           let admission = try await admissionRecord(conversationID: conversationID), admission.runID == runID,
+           admission.phase == .settledConfirmed {
+            return .review
         }
         return try await historyContinuationAccess(after: runID, in: conversationID).map(FloeMacSelfContinuation.history)
     }
 
-    /// A confirmed stop can resume a proved checkpoint. For an unconfirmed
-    /// interruption after process loss, the only eligible boundary is the
-    /// exact durable user-question wait. Running commands, children and
-    /// missing tool receipts do not prove that the old work ended.
+    public func retireForSeparateReview(runID: UUID, conversationID: UUID) async throws {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        guard claims.owner(conversationID: conversationID) == nil, sessions[runID] == nil,
+              try await continuation(after: runID, in: conversationID)?.needsReview == true,
+              let run = try await stores.runs.recentRuns(conversationID: conversationID, limit: 1).first,
+              run.id == runID,
+              let previous = try await admissionRecord(conversationID: conversationID), previous.runID == runID else {
+            throw FloeMacSelfCoreError.admissionConflict(conversationID)
+        }
+        guard previous.phase.isUnresolved else { return }
+        try await requireAdmissions().retireForReview(previous: previous, runState: run.state, owner: owner)
+    }
+
+    /// Restore known provider or user waits, or a confirmed recoverable
+    /// checkpoint. Dispatch without durable evidence requires separate review.
     private func checkpointCandidate(runID: UUID, conversationID: UUID, goalID: UUID? = nil,
                                      allowWaitingForAnswer: Bool) async throws -> CheckpointCandidate? {
         let stores = try requireStores()
@@ -2754,11 +2928,12 @@ public actor FloeMacSelfRuntime {
         let interruptedResume = oldHost && admission.detail == "checkpointResume"
         let confirmed = ["failed", "interrupted", "checkpointed"].contains(run.state)
             && (admission.phase == .settledConfirmed || interruptedResume)
-        let lostQuestionWait = oldHost && run.state == "waitingUserQuestion"
-            && (admission.phase == .starting || interruptedResume)
-        guard confirmed || lostQuestionWait,
+        let cold = admission.permitsColdRecovery(runState: run.state, owner: owner)
+        let lostQuestionWait = cold && run.state == "waitingUserQuestion"
+        guard confirmed || cold,
               let checkpoint = try await stores.checkpoints.load(runID: runID),
               checkpoint.runID == runID, checkpoint.conversationID == conversationID,
+              !checkpoint.hasUnknownToolOutcome,
               checkpoint.goalID == nil || checkpoint.goalID == goalID, checkpoint.parentRunID == nil,
               checkpoint.activeChildRunIDs?.isEmpty != false,
               checkpoint.runtimeWaits?.contains(where: { $0.receipt == nil }) != true,
@@ -2775,7 +2950,22 @@ public actor FloeMacSelfRuntime {
         let lifecycle = checkpoint.toolLifecycleEntries ?? []
         guard Set(lifecycle.map(\.callID)).count == lifecycle.count else { return nil }
         let committed = Set(checkpoint.pendingToolResults.map(\.callID))
+        guard committed.count == checkpoint.pendingToolResults.count,
+              Set(checkpoint.pendingToolCalls.map(\.id)).count == checkpoint.pendingToolCalls.count,
+              try await !SQLiteChildRunStore(database: database).children(parentRunID: runID).contains(where: {
+                  !$0.state.isTerminal || $0.state == .interrupted
+              }) else { return nil }
         let outstanding = checkpoint.pendingToolCalls.filter { !committed.contains($0.id) }
+        if cold, run.state == "streamingModel" {
+            guard case .preparing = checkpoint.state, outstanding.isEmpty,
+                  let envelope = checkpoint.providerDispatchEnvelope, checkpoint.providerDispatchRequest != nil,
+                  envelope.providerID == run.providerID, envelope.modelID == run.modelID,
+                  envelope.conversationMode == mode.rawValue else { return nil }
+        }
+        if cold, run.state == "waitingApproval" {
+            guard checkpoint.undispatchedApproval != nil,
+                  !outstanding.contains(where: { $0.toolName == UserAskTool.name }) else { return nil }
+        }
         let questionCenter = try userQuestionCenter()
         if !allowWaitingForAnswer,
            try await questionCenter.pendingSnapshot(runID: runID)?.hasBlockingPending == true { return nil }
@@ -2785,7 +2975,8 @@ public actor FloeMacSelfRuntime {
                 guard let question = try await questionCenter.store.snapshot(runID: runID, toolCallID: call.id),
                       question.conversationID == conversationID, !question.isEphemeral,
                       allowWaitingForAnswer || !question.hasBlockingPending else { return nil }
-            } else if lostQuestionWait || (entry.phase == .dispatched && entry.isSideEffecting != false) {
+            } else if lostQuestionWait || entry.phase == .resultCommitted
+                        || (entry.phase == .dispatched && (entry.isSideEffecting != false || run.state == "waitingApproval")) {
                 return nil
             }
         }
@@ -2798,6 +2989,12 @@ public actor FloeMacSelfRuntime {
               let inputID = checkpoint.messages.last(where: { $0.role == "user" && $0.content == run.goal })?.id,
               let message = try await stores.conversations.message(id: inputID, conversationID: conversationID),
               message.runID == runID, message.role == "user", message.content == run.goal else { return nil }
+        if cold && !lostQuestionWait && frozenOwner.workspaceRootIdentity == nil { return nil }
+        if let savedRoot = frozenOwner.workspaceRootIdentity, savedRoot != "unbound" {
+            guard let root = try? FloeMacSelfWorkspaceLease.resolveRoot(
+                workspace: workspace, privateTaskRootBase: options.privateTaskRootBaseURL
+            ), FloeMacSelfWorkspaceLease.recoveryIdentity(for: root) == savedRoot else { return nil }
+        }
         var attachments: [AttachmentRef] = []
         for id in message.parts.compactMap(\.attachmentID) {
             guard let attachment = try await stores.conversations.attachment(id: id),
@@ -2810,7 +3007,8 @@ public actor FloeMacSelfRuntime {
         restored.approvals = []
         return CheckpointCandidate(checkpoint: restored, admission: admission,
             prepared: PreparedRun(conversation: conversation, workspace: workspace, run: run, userMessage: message,
-                                  attachments: attachments, createdConversation: false), access: access)
+                                  attachments: attachments, createdConversation: false), access: access,
+            workspaceRootIdentity: frozenOwner.workspaceRootIdentity)
     }
 
     /// A history continuation starts a separate turn. Never adopt a live call,
@@ -2878,6 +3076,7 @@ public actor FloeMacSelfRuntime {
     private struct QuestionInputOwner: Codable {
         let questionWorkspaceID: UUID
         let inputMode: String
+        let workspaceRootIdentity: String?
     }
 
     /// Acknowledge each answer only after its stable ID exists in the same queue

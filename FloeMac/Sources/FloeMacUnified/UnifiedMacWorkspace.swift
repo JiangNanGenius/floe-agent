@@ -127,6 +127,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                 admitWork: admitWork
             )
             self.browser = browser
+            workspace.makeTaskBrowserTools = { [weak browser] owner, root in
+                browser?.taskTools.makeToolBundle(conversationID: owner, workspaceRoot: root) ?? []
+            }
+            workspace.endTaskBrowserRun = { [weak browser] run in browser?.taskTools.finishRun(run) }
             let temporary = MacTemporaryChatModel()
             temporaryChat = temporary
             let host = NSHostingController(rootView: MacWorkspaceRootView(
@@ -141,12 +145,13 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                     }
                     return AnyView(ContentUnavailableView("mac.images.unavailable", systemImage: "photo"))
                 },
-                creativeContent: {
+                creativeContent: { saveToTask in
                     guard let library, let videos, let images else {
                         return AnyView(ContentUnavailableView("mac.creative.error", systemImage: "externaldrive.badge.exclamationmark"))
                     }
                     return AnyView(MacCreativeWorkbenchView(library: library, images: images, videos: videos,
-                                                            imageSettings: openImageSettings, videoSettings: openVideoSettings))
+                                                            imageSettings: openImageSettings, videoSettings: openVideoSettings,
+                                                            saveToTask: saveToTask))
                 },
                 remembersFileRoot: testSupport == nil, draftStore: drafts, browserWorkbench: browser, temporaryChat: temporary
             ))

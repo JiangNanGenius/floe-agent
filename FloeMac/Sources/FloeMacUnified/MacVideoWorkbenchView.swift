@@ -18,8 +18,17 @@ import UniformTypeIdentifiers
 // and resolves through the shared `FloeL10n` language state.
 
 struct MacVideoWorkbenchView: View {
+    #if FLOE_MAC_HOST_SMOKE
+    static var smokeAddToCanvasFrame: CGRect?
+    #endif
     @ObservedObject var videos: MacVideoGeneration
     let openSettings: () -> Void
+    /// Coordinator route that publishes the file through the existing pinned
+    /// file import and returns to that task. Nil hides the button.
+    var saveToTask: ((URL) async -> Bool)? = nil
+    /// Canvas route: adds the generated file to the active canvas. Nil hides
+    /// the button.
+    var addToCanvas: ((URL) -> Void)? = nil
     var initialReference: URL? = nil
 
     @State private var prompt = ""
@@ -33,6 +42,7 @@ struct MacVideoWorkbenchView: View {
     @State private var watermark: Bool?
     @State private var referenceImageURL: URL?
     @State private var exportFailed = false
+    @State private var routeFailed = false
 
     private var selection: MacVideoGeneration.JobItem? {
         videos.history.first(where: { $0.id == selectedID }) ?? videos.history.first
@@ -116,6 +126,21 @@ struct MacVideoWorkbenchView: View {
                                         Button("mac.videos.resume") { videos.resume(item.id) }
                                     }
                                 }
+                                if let addToCanvas, let url = videos.videoURL(for: item) {
+                                    Button(MacCanvasText.addToCanvas) { addToCanvas(url) }
+                                        .accessibilityIdentifier("mac.creative.addToCanvas")
+                                        #if FLOE_MAC_HOST_SMOKE
+                                        .background(MacWorkbenchButtonFrameReader { Self.smokeAddToCanvasFrame = $0 })
+                                        #endif
+                                }
+                                if let saveToTask, let url = videos.videoURL(for: item) {
+                                    Button(MacCanvasText.saveToTask) {
+                                        Task { @MainActor in
+                                            if await !saveToTask(url) { routeFailed = true }
+                                        }
+                                    }
+                                    .accessibilityIdentifier("mac.creative.saveToTask")
+                                }
                                 Button(MacVideoStrings.saveAs) { export(item) }
                                     .disabled(videos.videoURL(for: item) == nil)
                             }
@@ -141,6 +166,9 @@ struct MacVideoWorkbenchView: View {
         .onChange(of: supportsReferenceImage) { _, supported in if !supported { referenceImageURL = nil } }
         .onDisappear { stopPlayback() }
         .alert(MacVideoStrings.exportFailed, isPresented: $exportFailed) {
+            Button("OK", role: .cancel) {}
+        }
+        .alert(MacCanvasText.routeFailed, isPresented: $routeFailed) {
             Button("OK", role: .cancel) {}
         }
     }

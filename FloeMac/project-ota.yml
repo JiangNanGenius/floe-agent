@@ -6,6 +6,10 @@ include:
 name: FloeMacOTA
 
 packages:
+  FloeCanvasKit:
+    path: ../FloeAgent/Modules/FloeCanvasKit
+  FloeCanvasTemplates:
+    path: ../FloeAgent/Modules/FloeCanvasTemplates
   # Published Bridge 1.1.6 pins Sparkle 2.10.1 at this exact revision.
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
@@ -27,10 +31,14 @@ targets:
       - path: Sources/FloeMacHost/HostAgentWorkspaceView.swift
       - path: Sources/FloeMacUnified
       - path: ../FloeAgent/Sources/FloeWorkspace/CanvasBackupPackage.swift
+      - path: ../FloeAgent/FloeApp/CreativeCanvas/CanvasFrameworkProjection.swift
+      - path: ../FloeAgent/FloeApp/CreativeCanvas/CanvasFrameworkLegacyRepository.swift
       - path: ../FloeAgent/Sources/FloeWorkspace/WorkspaceTextPolicy.swift
+      - path: ../FloeAgent/Sources/FloeWorkspace/WorkspaceTextMutationContract.swift
       - path: ../FloeAgent/FloeApp/Settings/UsageStatisticsView.swift
       - path: ../FloeAgent/FloeApp/Providers/ProviderCatalogAddView.swift
       - path: ../FloeAgent/FloeApp/Browser/BrowserDownloadService.swift
+      - path: ../FloeAgent/FloeApp/Browser/BrowserTaskControlContract.swift
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
@@ -112,6 +120,12 @@ targets:
         # Xcode embeds the binary SwiftPM framework automatically. A second
         # explicit copy tries to embed the nonexistent Sparkle-product.
         embed: false
+      - package: FloeCanvasKit
+        product: FloeCanvasCore
+      - package: FloeCanvasKit
+        product: FloeCanvasIntegration
+      - package: FloeCanvasTemplates
+        product: FloeCanvasTemplates
     preBuildScripts:
       - name: Validate explicit OTA candidate inputs
         basedOnDependencyAnalysis: false

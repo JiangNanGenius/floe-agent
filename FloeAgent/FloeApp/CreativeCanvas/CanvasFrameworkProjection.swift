@@ -1,15 +1,51 @@
 // SPDX-License-Identifier: MPL-2.0
-#if canImport(UIKit)
+#if canImport(UIKit) || FLOE_UNIFIED_MAC
 import Foundation
 import FloeCore
 import FloeCanvasCore
 import FloeCanvasIntegration
+
+#if canImport(UIKit)
+typealias CanvasFrameworkProjectionRecord = PersonalContentRecord
+typealias CanvasFrameworkProjectionError = PersonalContentError
+#else
+struct CanvasFrameworkProjectionRecord {
+    let relativePath: String
+}
+
+enum CanvasFrameworkProjectionError: Error, LocalizedError {
+    case invalidProject, changedDocument
+
+    var errorDescription: String? {
+        FloeL10n.isChinese ? "画布资料不完整或已发生变化。" : "The canvas is incomplete or has changed."
+    }
+}
+#endif
 
 /// The established canvas is the editing surface. Its document is a projection
 /// of the original, never a replacement for the kit's richer document model.
 enum CanvasFrameworkProjection {
     static let frameworkStateKey = "floe.framework.project"
     static let frameworkNodeKind = "floe.framework.node"
+    private static let legacyNodeExtrasKey = "floe.framework.nodeExtras.v1"
+
+    private struct LegacyNodeExtras: Codable {
+        var generationJobID: UUID?
+        var sourceURLs: [URL]
+        var shape: FloeCore.CanvasShapeKind?
+    }
+
+    static func sourceText(_ content: CanvasContent) -> String? {
+        switch content {
+        case .text(let text), .markdown(let text, _), .code(_, let text), .formula(let text, _): text
+        case .richText(let document): document.runs.map(\.text).joined()
+        case .table(let header, let rows): ([header] + rows).map { $0.joined(separator: "\t") }.joined(separator: "\n")
+        case .web(let url, let title): (title ?? "") + "\n" + url.absoluteString
+        case .unknown(let kind, let payload) where kind == CanvasFrameworkProjection.frameworkNodeKind:
+            if case .object(let values) = payload, case .string(let text) = values["text"] { text } else { nil }
+        default: nil
+        }
+    }
 
     static func snapshot(_ project: FloeCore.CanvasProject) throws -> CanvasSnapshot {
         var state = project
@@ -21,11 +57,11 @@ enum CanvasFrameworkProjection {
             metadata: [frameworkStateKey: String(decoding: try JSONEncoder().encode(state), as: UTF8.self)])
     }
 
-    static func project(_ snapshot: CanvasSnapshot, record: PersonalContentRecord) throws -> FloeCore.CanvasProject {
+    static func project(_ snapshot: CanvasSnapshot, record: CanvasFrameworkProjectionRecord) throws -> FloeCore.CanvasProject {
         var result: FloeCore.CanvasProject
         if let raw = snapshot.metadata[frameworkStateKey], let data = raw.data(using: .utf8) {
             result = try JSONDecoder().decode(FloeCore.CanvasProject.self, from: data)
-            guard result.id == snapshot.id else { throw PersonalContentError.invalidProject }
+            guard result.id == snapshot.id else { throw CanvasFrameworkProjectionError.invalidProject }
         } else {
             result = .init(id: snapshot.id, name: snapshot.name, documents: [], selectedDocumentID: snapshot.selectedPageID)
         }
@@ -57,8 +93,8 @@ enum CanvasFrameworkProjection {
     }
 
     static func batch(project: FloeCore.CanvasProject, original: CanvasSnapshot,
-                      record: PersonalContentRecord) throws -> CanvasDocumentBatch {
-        guard project.id == original.id else { throw PersonalContentError.changedDocument }
+                      record: CanvasFrameworkProjectionRecord) throws -> CanvasDocumentBatch {
+        guard project.id == original.id else { throw CanvasFrameworkProjectionError.changedDocument }
         let baseline = try self.project(original, record: record)
         let beforePages = Dictionary(uniqueKeysWithValues: original.pages.map { ($0.id, $0) })
         let projectedPages = Dictionary(uniqueKeysWithValues: baseline.documents.map { ($0.id, $0) })
@@ -83,6 +119,14 @@ enum CanvasFrameworkProjection {
             let projectedNodes = Dictionary(uniqueKeysWithValues: projected.nodes.map { ($0.id, $0) })
             let nodeIDs = Set(document.nodes.map(\.id))
             var edits: [CanvasEditOperation] = []
+            var afterEdits: [CanvasDocumentOperation] = []
+            var deferredLocks: [CanvasEditOperation] = []
+            let existingGroupIDs = Set(old.groups.map(\.id))
+            let newGroupIDs = Set(document.nodes.compactMap(\.groupID)).subtracting(existingGroupIDs)
+            for groupID in newGroupIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                let name = document.nodes.first(where: { $0.id == groupID })?.text ?? ""
+                operations.append(.createGroup(pageID: document.id, group: .init(id: groupID, name: name)))
+            }
             let connections = Dictionary(uniqueKeysWithValues: document.connections.map { ($0.id, $0) })
             for connection in old.connections where connections[connection.id] == nil
                 && nodeIDs.contains(connection.sourceNodeID) && nodeIDs.contains(connection.destinationNodeID) {
@@ -91,7 +135,16 @@ enum CanvasFrameworkProjection {
             for node in old.nodes where !nodeIDs.contains(node.id) { edits.append(.removeNode(nodeID: node.id)) }
             for value in document.nodes {
                 guard let oldNode = oldNodes[value.id], let oldProjection = projectedNodes[value.id] else {
-                    edits.append(.insertNode(try nativeNode(value))); continue
+                    var inserted = try nativeNode(value)
+                    if value.groupID != nil && value.isLocked {
+                        inserted.isLocked = false
+                        deferredLocks.append(.setLocked(nodeID: value.id, isLocked: true))
+                    }
+                    edits.append(.insertNode(inserted))
+                    if value.groupID != nil {
+                        afterEdits.append(.updateNodeOwnership(nodeID: value.id, groupID: value.groupID, createdByRunID: value.createdByRunID))
+                    }
+                    continue
                 }
                 if value == oldProjection { continue }
                 if oldNode.isLocked && !value.isLocked { edits.append(.setLocked(nodeID: value.id, isLocked: false)) }
@@ -101,18 +154,34 @@ enum CanvasFrameworkProjection {
                 if value.title != oldProjection.title { edits.append(.updateTitle(nodeID: value.id, title: value.title)) }
                 if value.position != oldProjection.position { edits.append(.move(nodeID: value.id, center: .init(x: value.x, y: value.y))) }
                 if value.size != oldProjection.size { edits.append(.resize(nodeID: value.id, size: .init(width: value.width, height: value.height))) }
-                if !oldNode.isLocked && value.isLocked { edits.append(.setLocked(nodeID: value.id, isLocked: true)) }
-                if value.rotation != oldProjection.rotation { operations.append(.updateNodeRotation(nodeID: value.id, rotationDegrees: value.rotation)) }
-                if value.zIndex != oldProjection.zIndex { operations.append(.updateNodeStyle(nodeID: value.id, zIndex: value.zIndex)) }
+                if !oldNode.isLocked && value.isLocked { deferredLocks.append(.setLocked(nodeID: value.id, isLocked: true)) }
+                if value.rotation != oldProjection.rotation { afterEdits.append(.updateNodeRotation(nodeID: value.id, rotationDegrees: value.rotation)) }
+                if value.zIndex != oldProjection.zIndex { afterEdits.append(.updateNodeStyle(nodeID: value.id, zIndex: value.zIndex)) }
+                if value.groupID != oldProjection.groupID || value.createdByRunID != oldProjection.createdByRunID {
+                    afterEdits.append(.updateNodeOwnership(nodeID: value.id, groupID: value.groupID, createdByRunID: value.createdByRunID))
+                }
                 let changed = value.metadata.filter { oldProjection.metadata[$0.key] != $0.value }
                 let removed = oldProjection.metadata.keys.filter { value.metadata[$0] == nil }
                 if !changed.isEmpty || !removed.isEmpty {
-                    operations.append(.updateNodeMetadata(nodeID: value.id, values: changed, removingKeys: Array(removed)))
+                    afterEdits.append(.updateNodeMetadata(nodeID: value.id, values: changed, removingKeys: Array(removed)))
                 }
                 // Native child/media edits are retained in full. A geometry
                 // gesture never re-encodes or flattens existing rich content.
-                if value.asset != oldProjection.asset || value.scene3D != oldProjection.scene3D || value.kind != oldProjection.kind {
+                let extrasChanged = value.generationJobID != oldProjection.generationJobID ||
+                    value.sourceURLs != oldProjection.sourceURLs || value.shape != oldProjection.shape
+                let opaque: Bool = { if case .unknown(let kind, _) = oldNode.content { return kind == frameworkNodeKind }; return false }()
+                if value.asset != oldProjection.asset || value.scene3D != oldProjection.scene3D || value.kind != oldProjection.kind || (opaque && extrasChanged) {
                     edits.append(.updateContent(nodeID: value.id, content: try preservedFrameworkContent(value)))
+                } else if extrasChanged {
+                    // A native rich node must keep its native content; retain
+                    // legacy-only fields in a namespaced sidecar instead.
+                    let extras = LegacyNodeExtras(generationJobID: value.generationJobID, sourceURLs: value.sourceURLs, shape: value.shape)
+                    let raw = String(decoding: try JSONEncoder().encode(extras), as: UTF8.self)
+                    afterEdits.append(.updateNodeMetadata(nodeID: value.id, values: [legacyNodeExtrasKey: raw], removingKeys: []))
+                    if value.shape != oldProjection.shape, case .shape(_, let text) = oldNode.content,
+                       let shape = value.shape.flatMap({ FloeCanvasCore.CanvasShapeKind(rawValue: $0.rawValue) }) {
+                        edits.append(.updateContent(nodeID: value.id, content: .shape(kind: shape, text: value.text != oldProjection.text ? value.text : text)))
+                    }
                 }
             }
             let oldConnections = Dictionary(uniqueKeysWithValues: old.connections.map { ($0.id, $0) })
@@ -125,7 +194,9 @@ enum CanvasFrameworkProjection {
                 } else { edits.append(.insertConnection(connection)) }
             }
             if document.pencilDrawingData != old.pencilDrawingData { edits.append(.setPencilDrawingData(document.pencilDrawingData)) }
-            if !edits.isEmpty { operations.insert(.editPage(.init(pageID: document.id, operations: edits)), at: 0) }
+            if !edits.isEmpty { operations.append(.editPage(.init(pageID: document.id, operations: edits))) }
+            operations.append(contentsOf: afterEdits)
+            if !deferredLocks.isEmpty { operations.append(.editPage(.init(pageID: document.id, operations: deferredLocks))) }
             let oldStrokes = Dictionary(uniqueKeysWithValues: old.strokes.map { ($0.id, $0) })
             let strokes = Dictionary(uniqueKeysWithValues: document.strokes.map { ($0.id, $0) })
             for stroke in old.strokes where strokes[stroke.id] == nil { operations.append(.removeStroke(strokeID: stroke.id)) }
@@ -149,7 +220,7 @@ enum CanvasFrameworkProjection {
         return .init(operations: operations)
     }
 
-    static func node(_ value: CanvasNodeSnapshot, record: PersonalContentRecord) throws -> FloeCore.CanvasNode {
+    static func node(_ value: CanvasNodeSnapshot, record: CanvasFrameworkProjectionRecord) throws -> FloeCore.CanvasNode {
         if case .unknown(let kind, let payload) = value.content, kind == frameworkNodeKind {
             var original = try JSONDecoder().decode(FloeCore.CanvasNode.self, from: JSONFidelity.serialize(payload))
             original.id = value.id; original.position = .init(x: value.frame.center.x, y: value.frame.center.y)
@@ -159,15 +230,24 @@ enum CanvasFrameworkProjection {
             original.metadata = value.metadata; original.createdByRunID = value.createdByRunID
             return original
         }
+        var metadata = value.metadata
+        let extras: LegacyNodeExtras?
+        if let raw = metadata.removeValue(forKey: legacyNodeExtrasKey) {
+            guard let data = raw.data(using: .utf8) else { throw CanvasFrameworkProjectionError.invalidProject }
+            extras = try JSONDecoder().decode(LegacyNodeExtras.self, from: data)
+        } else { extras = nil }
         var result = FloeCore.CanvasNode(id: value.id, kind: .card, title: value.title,
-            text: CanvasHostSources.text(value.content) ?? value.title ?? "",
+            text: sourceText(value.content) ?? value.title ?? "",
             position: .init(x: value.frame.center.x, y: value.frame.center.y),
             size: .init(width: value.frame.size.width, height: value.frame.size.height),
             rotation: value.rotationDegrees, zIndex: value.zIndex, isLocked: value.isLocked,
-            groupID: value.groupID, createdByRunID: value.createdByRunID, metadata: value.metadata)
+            groupID: value.groupID, createdByRunID: value.createdByRunID, metadata: metadata)
         switch value.content {
         case .text: result.kind = .text
-        case .shape(let kind, _): result.kind = .shape; result.shape = .init(rawValue: kind.rawValue) ?? .roundedRectangle
+        case .shape(let kind, let text):
+            result.kind = .shape
+            result.shape = .init(rawValue: kind.rawValue) ?? .roundedRectangle
+            result.text = text
         case .media(let locator):
             result.kind = locator.mimeType?.hasPrefix("video/") == true ? .video : locator.mimeType?.hasPrefix("audio/") == true ? .audio : .image
             result.asset = asset(locator, record: record)
@@ -179,10 +259,15 @@ enum CanvasFrameworkProjection {
         }
         if value.kind == .legacyGroup { result.kind = .group }
         if value.kind == .generationTask, CanvasFlowCardBinding(metadata: value.metadata) == nil { result.kind = .generationTask }
+        if let extras {
+            result.generationJobID = extras.generationJobID
+            result.sourceURLs = extras.sourceURLs
+            result.shape = extras.shape
+        }
         return result
     }
 
-    private static func asset(_ locator: CanvasAssetLocator, record: PersonalContentRecord) -> CanvasAssetReference {
+    private static func asset(_ locator: CanvasAssetLocator, record: CanvasFrameworkProjectionRecord) -> CanvasAssetReference {
         let path = locator.relativePath.map { "PersonalContent/" + record.relativePath + "/Assets/" + $0 }
         return .init(id: locator.id, contentHash: locator.contentHash, localRelativePath: path,
                      mimeType: locator.mimeType, byteCount: locator.byteCount)
@@ -227,7 +312,7 @@ enum CanvasFrameworkProjection {
     static func editedContent(_ content: CanvasContent, text: String) throws -> CanvasContent {
         switch content {
         case .unknown(let kind, let payload) where kind == frameworkNodeKind:
-            guard case .object(var original) = payload else { throw PersonalContentError.invalidProject }
+            guard case .object(var original) = payload else { throw CanvasFrameworkProjectionError.invalidProject }
             original["text"] = .string(text)
             return .unknown(kind: kind, payload: .object(original))
         case .unknown, .editor, .media, .pdf:

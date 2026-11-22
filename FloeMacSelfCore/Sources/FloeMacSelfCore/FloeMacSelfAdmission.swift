@@ -14,6 +14,8 @@
 //   settledConfirmed   -> a strict durable terminal probe passed.
 //   settledUnconfirmed -> the session ended without a strict terminal proof;
 //                         automatic retry stays blocked.
+//   retiredForReview   -> the user retired an old activation for a separate
+//                         review. Its effects remain unverified.
 //
 // Every transition is a compare-and-set on (conversation_id, run_id, epoch)
 // inside one short writer transaction. The upstream launch transaction is
@@ -31,10 +33,11 @@ public enum FloeMacSelfAdmissionPhase: String, Sendable, Hashable, CaseIterable 
     case starting
     case settledConfirmed
     case settledUnconfirmed
+    case retiredForReview
 
     public var isUnresolved: Bool {
         switch self {
-        case .settledConfirmed: return false
+        case .settledConfirmed, .retiredForReview: return false
         case .admitting, .prepared, .starting, .settledUnconfirmed: return true
         }
     }
@@ -86,6 +89,19 @@ public struct FloeMacSelfAdmissionRecord: Sendable, Hashable {
         self.previousPhase = previousPhase
         self.detail = detail
     }
+
+    func permitsColdRecovery(runState: String, owner: FloeMacSelfHostIdentity) -> Bool {
+        guard ownerHostInstanceID != nil, ownerHostInstanceID != owner.hostInstanceID,
+              stopRequestedAt == nil,
+              FloeMacSelfRunState.coldCheckpointStates.contains(runState) else { return false }
+        return phase == .starting || detail == "checkpointResume"
+    }
+
+    func permitsExplicitReview(owner: FloeMacSelfHostIdentity) -> Bool {
+        guard phase.isUnresolved else { return false }
+        return (ownerHostInstanceID != nil && ownerHostInstanceID != owner.hostInstanceID)
+            || (phase == .settledUnconfirmed && detail == "processReleasedUnconfirmed")
+    }
 }
 
 enum FloeMacSelfDispatchAdmission: Sendable, Hashable {
@@ -97,6 +113,7 @@ enum FloeMacSelfDispatchAdmission: Sendable, Hashable {
 }
 
 enum FloeMacSelfRunState {
+    static let coldCheckpointStates = ["streamingModel", "waitingApproval", "waitingUserQuestion"]
     static let terminalStates: [String] = [
         "completed", "failed", "checkpointed", "interrupted", "cancelled", "canceled"
     ]
@@ -295,6 +312,10 @@ enum FloeMacSelfDurableRunProbe {
                 reason: "terminal_record_missing",
                 endedAt: endedAt
             )
+        }
+        if (markerPayload["reason"] as? String) == "retiredForReview" {
+            return unconfirmed(conversationID: conversationID, runID: runID, state: state,
+                               reason: "effectsUnverified", endedAt: endedAt)
         }
 
         var outcome: FloeMacSelfTerminalOutcome
@@ -588,7 +609,7 @@ actor FloeMacSelfAdmissionStore {
                     runID: existing.runID,
                     expectedUserMessageID: nil
                 )
-                guard previousReceipt.confirmed else {
+                guard previousReceipt.confirmed || existing.phase == .retiredForReview else {
                     throw FloeMacSelfCoreError.admissionUnknown(conversationID)
                 }
                 guard try !Self.hasNonTerminalRun(db: db, conversationID: conversationID) else {
@@ -668,11 +689,9 @@ actor FloeMacSelfAdmissionStore {
             let runID = previous.runID
             let oldHost = previous.ownerHostInstanceID != nil && previous.ownerHostInstanceID != owner.hostInstanceID
             let interruptedReservation = oldHost && previous.detail == "checkpointResume"
-            let canReclaimQuestion = runState == "waitingUserQuestion" && oldHost
-                && (previous.phase == .starting || interruptedReservation)
             let canReclaimTerminal = ["failed", "interrupted", "checkpointed"].contains(runState)
                 && (previous.phase == .settledConfirmed || interruptedReservation)
-            guard canReclaimQuestion || canReclaimTerminal,
+            guard previous.permitsColdRecovery(runState: runState, owner: owner) || canReclaimTerminal,
                   try Self.fetchRecord(db: db, conversationID: conversationID) == previous,
                   previous.stopRequestedAt == nil,
                   try String.fetchOne(db, sql: "SELECT state FROM runs WHERE id = ? AND conversation_id = ?",
@@ -692,6 +711,43 @@ actor FloeMacSelfAdmissionStore {
                 throw FloeMacSelfCoreError.admissionConflict(conversationID)
             }
             return admitted
+        }
+    }
+
+    /// Explicitly retires the exact old owner. Preserve the original run,
+    /// messages, checkpoint, and tool results for the user's review.
+    func retireForReview(previous: FloeMacSelfAdmissionRecord, runState: String,
+                         owner: FloeMacSelfHostIdentity) async throws {
+        try verifyAuthority()
+        let now = Date()
+        let conversationID = previous.conversationID
+        let runID = previous.runID
+        try await database.writer { db in
+            guard previous.permitsExplicitReview(owner: owner), runState != "completed",
+                  try Self.fetchRecord(db: db, conversationID: conversationID) == previous,
+                  try !Self.hasNonTerminalRun(db: db, conversationID: conversationID, excluding: runID) else {
+                throw FloeMacSelfCoreError.admissionConflict(conversationID)
+            }
+            let timestamp = FloeMacSelfISO8601.string(now)
+            try db.execute(sql: """
+                UPDATE runs SET state = 'interrupted', ended_at = COALESCE(ended_at, ?)
+                WHERE id = ? AND conversation_id = ? AND state = ?
+                """, arguments: [timestamp, runID.uuidString, conversationID.uuidString, runState])
+            guard db.changesCount == 1 else { throw FloeMacSelfCoreError.admissionConflict(conversationID) }
+            let payload = try FloeMacSelfDurableRunProbe.jsonString([
+                "state": "interrupted", "reason": "retiredForReview"
+            ])
+            try db.execute(sql: """
+                INSERT INTO run_events (id, run_id, sequence, kind, payload_json, created_at)
+                SELECT ?, ?, COALESCE(MAX(sequence), 0) + 1, 'status', ?, ?
+                FROM run_events WHERE run_id = ?
+                """, arguments: [UUID().uuidString, runID.uuidString, payload, timestamp, runID.uuidString])
+            try db.execute(sql: """
+                UPDATE floe_mac_self_admission
+                SET phase = 'retiredForReview', epoch = epoch + 1, updated_at = ?, detail = 'effectsUnverified'
+                WHERE conversation_id = ? AND run_id = ? AND epoch = ?
+                """, arguments: [now.timeIntervalSince1970, conversationID.uuidString, runID.uuidString, previous.epoch])
+            guard db.changesCount == 1 else { throw FloeMacSelfCoreError.admissionConflict(conversationID) }
         }
     }
 
@@ -1093,7 +1149,7 @@ actor FloeMacSelfAdmissionStore {
             )
             return try rows
                 .map(Self.record(from:))
-                .filter { $0.phase != .settledConfirmed }
+                .filter { $0.phase.isUnresolved }
         }
     }
 

@@ -6,7 +6,7 @@ import FloeTools
 
 
 enum WorkspaceFileChangeEvidence {
-    enum Change: String { case created, modified, unchanged, saved }
+    typealias Change = WorkspaceTextMutationContract.Change
 
     enum Baseline {
         case missing, existing(String), verifiedSHA256(String), unavailable
@@ -44,15 +44,7 @@ enum WorkspaceFileChangeEvidence {
     /// Keep paths readable by the existing redactor. JSON also preserves names
     /// containing spaces, newlines or strings that look like summary fields.
     static func paths(_ path: String?, from: String? = nil, kind: String? = nil, change: Change? = nil) -> String {
-        guard let path else { return " paths={}" }
-        var fields = ["path": path]
-        fields["from"] = from
-        fields["kind"] = kind
-        fields["change"] = change?.rawValue
-        guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]) else {
-            return " paths={}"
-        }
-        return " paths=" + String(decoding: data, as: UTF8.self)
+        WorkspaceTextMutationContract.paths(path, from: from, kind: kind, change: change)
     }
 
     static func networkPath(_ route: NetworkWorkspaceMountRegistry.Route) -> String? {
@@ -135,7 +127,7 @@ enum WorkspaceFileChangeEvidence {
     /// must not turn a saved mutation into a retryable write failure.
     static func savedOutput(_ summary: String, path: String?, change: Change,
                             artifactBuilder: () throws -> [ToolArtifactReference]) -> ToolExecutionOutput {
-        let receipt = summary + paths(path) + " change=\(change.rawValue) saved=true"
+        let receipt = WorkspaceTextMutationContract.savedReceipt(summary, path: path, change: change)
         do {
             let artifacts = try artifactBuilder()
             return WorkspaceToolSupport.output(receipt + " preview=\(artifacts.isEmpty ? "unavailable" : "available")", artifacts: artifacts)

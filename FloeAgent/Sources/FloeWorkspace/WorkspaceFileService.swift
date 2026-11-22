@@ -623,48 +623,20 @@ public struct WorkspaceFileService: Sendable {
         let hunks = try Self.parseUnifiedDiff(patch)
         let originalData = try Data(floeContentsOf: url)
         let original = try WorkspaceTextEdit.decode(originalData)
-        var lines = original.components(separatedBy: "\n")
-
-        var applied = 0
-        var added = 0
-        var removed = 0
-        // Adjust subsequent hunk positions by the net growth of earlier ones.
-        var lineDelta = 0
-        for hunk in hunks {
-            try cancellation?.throwIfCancelled()
-            let (zeroBased, startUnderflow) = hunk.oldStart.subtractingReportingOverflow(1)
-            let (startIndex, startOverflow) = zeroBased.addingReportingOverflow(lineDelta)
-            let (endIndex, endOverflow) = startIndex.addingReportingOverflow(hunk.oldLines.count)
-            guard !startUnderflow, !startOverflow, !endOverflow,
-                  startIndex >= 0, endIndex <= lines.count else {
-                throw WorkspaceToolError.invalidPatch(
-                    "hunk @@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@ is out of range"
-                )
+        let application: WorkspaceTextMutationContract.Application
+        do {
+            application = try WorkspaceTextMutationContract.apply(hunks: hunks, to: original) {
+                try cancellation?.throwIfCancelled()
             }
-            let window = Array(lines[startIndex..<endIndex])
-            guard window == hunk.oldLines else {
-                throw WorkspaceToolError.invalidPatch(
-                    "context mismatch near line \(hunk.oldStart); file contents do not match the patch"
-                )
-            }
-            lines.replaceSubrange(startIndex..<endIndex, with: hunk.newLines)
-            let delta = hunk.newLines.count - hunk.oldLines.count
-            let (nextDelta, deltaOverflow) = lineDelta.addingReportingOverflow(delta)
-            guard !deltaOverflow else {
-                throw WorkspaceToolError.invalidPatch("hunk line delta overflow")
-            }
-            lineDelta = nextDelta
-            applied += 1
-            added += hunk.addedCount
-            removed += hunk.removedCount
+        } catch let error as WorkspaceTextMutationContract.ContractError {
+            throw WorkspaceToolError.invalidPatch(error.reason)
         }
-
-        let patched = lines.joined(separator: "\n")
+        let patched = application.text
         let outcome = try performWrite(url, path: path, content: patched)
         let patchOutcome = PatchOutcome(
-            hunksApplied: applied,
-            linesAdded: added,
-            linesRemoved: removed,
+            hunksApplied: application.hunksApplied,
+            linesAdded: application.linesAdded,
+            linesRemoved: application.linesRemoved,
             sha256: outcome.sha256
         )
         return (patchOutcome, !originalData.elementsEqual(patched.utf8), receiptPath(path, resolved: url))
@@ -1055,145 +1027,21 @@ public struct WorkspaceFileService: Sendable {
 
     // MARK: - Unified diff parsing / generation
 
-    struct DiffHunk: Sendable, Equatable {
-        var oldStart: Int
-        var oldCount: Int
-        var newStart: Int
-        var newCount: Int
-        /// Lines expected in the file (context + removals, in order).
-        var oldLines: [String]
-        /// Replacement lines (context + additions, in order).
-        var newLines: [String]
-        var addedCount: Int
-        var removedCount: Int
-        /// Raw body lines for re-emission (diff generation only).
-        var body: [String]
-    }
+    // The parsed-hunk shape and the single-file unified-diff parser live in
+    // the shared `WorkspaceTextMutationContract` so the Mac pinned-descriptor
+    // tool lane applies patches with byte-identical semantics; the historical
+    // nested name is kept so diff generation and existing tests stay stable.
+    typealias DiffHunk = WorkspaceTextMutationContract.Hunk
 
     /// Parses a unified diff into hunks for one file. Multi-file patches
     /// (more than one `--- `/`+++ ` pair, or `diff --git` headers) throw
     /// `.invalidPatch`.
     static func parseUnifiedDiff(_ patch: String) throws -> [DiffHunk] {
-        let lines = patch.components(separatedBy: "\n")
-        var hunks: [DiffHunk] = []
-        var index = 0
-        var sawFileHeader = 0
-
-        while index < lines.count {
-            let line = lines[index]
-            if line.hasPrefix("diff --git") {
-                throw WorkspaceToolError.invalidPatch(
-                    "multi-file patches are not supported; apply one file per call"
-                )
-            }
-            if line.hasPrefix("--- ") {
-                sawFileHeader += 1
-                if sawFileHeader > 1 {
-                    throw WorkspaceToolError.invalidPatch(
-                        "multi-file patches are not supported; apply one file per call"
-                    )
-                }
-                index += 1
-                if index < lines.count, lines[index].hasPrefix("+++ ") {
-                    index += 1
-                }
-                continue
-            }
-            if line.hasPrefix("@@") {
-                let (hunk, consumed) = try parseHunk(Array(lines[index...]))
-                hunks.append(hunk)
-                index += consumed
-                continue
-            }
-            index += 1
+        do {
+            return try WorkspaceTextMutationContract.parseUnifiedDiff(patch)
+        } catch let error as WorkspaceTextMutationContract.ContractError {
+            throw WorkspaceToolError.invalidPatch(error.reason)
         }
-        guard !hunks.isEmpty else {
-            throw WorkspaceToolError.invalidPatch("no hunks found")
-        }
-        return hunks
-    }
-
-    private static func parseHunk(_ lines: [String]) throws -> (DiffHunk, Int) {
-        guard let header = lines.first else {
-            throw WorkspaceToolError.invalidPatch("truncated hunk")
-        }
-        // @@ -oldStart,oldCount +newStart,newCount @@
-        let pattern = #"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(
-                  in: header, range: NSRange(header.startIndex..., in: header)
-              ),
-              let oldStartRange = Range(match.range(at: 1), in: header),
-              let newStartRange = Range(match.range(at: 3), in: header),
-              let oldStart = Int(header[oldStartRange]),
-              let newStart = Int(header[newStartRange])
-        else {
-            throw WorkspaceToolError.invalidPatch("malformed hunk header: \(header)")
-        }
-        let oldCount = match.range(at: 2).location != NSNotFound
-            ? Range(match.range(at: 2), in: header).flatMap { Int(header[$0]) } ?? 1
-            : 1
-        let newCount = match.range(at: 4).location != NSNotFound
-            ? Range(match.range(at: 4), in: header).flatMap { Int(header[$0]) } ?? 1
-            : 1
-
-        var oldLines: [String] = []
-        var newLines: [String] = []
-        var added = 0
-        var removed = 0
-        var consumed = 1
-        var seenOld = 0
-        var seenNew = 0
-        var bodyIndex = 1
-        while bodyIndex < lines.count, seenOld < oldCount || seenNew < newCount {
-            let line = lines[bodyIndex]
-            if line.hasPrefix(#"\ "#) {
-                // "\ No newline at end of file" marker: skip.
-                bodyIndex += 1
-                consumed += 1
-                continue
-            }
-            guard let marker = line.first, marker == " " || marker == "-" || marker == "+" else {
-                break
-            }
-            let content = String(line.dropFirst())
-            switch marker {
-            case " ":
-                oldLines.append(content)
-                newLines.append(content)
-                seenOld += 1
-                seenNew += 1
-            case "-":
-                oldLines.append(content)
-                removed += 1
-                seenOld += 1
-            default: // "+"
-                newLines.append(content)
-                added += 1
-                seenNew += 1
-            }
-            bodyIndex += 1
-            consumed += 1
-        }
-        guard seenOld == oldCount, seenNew == newCount else {
-            throw WorkspaceToolError.invalidPatch(
-                "hunk truncated: expected -\(oldCount)/+\(newCount) lines, saw -\(seenOld)/+\(seenNew)"
-            )
-        }
-        return (
-            DiffHunk(
-                oldStart: oldStart,
-                oldCount: oldCount,
-                newStart: newStart,
-                newCount: newCount,
-                oldLines: oldLines,
-                newLines: newLines,
-                addedCount: added,
-                removedCount: removed,
-                body: []
-            ),
-            consumed
-        )
     }
 
     /// Myers-free diff: computes hunks by longest-common-subsequence over

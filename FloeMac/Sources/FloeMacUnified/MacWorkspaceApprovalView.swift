@@ -58,14 +58,27 @@ struct MacWorkspaceApprovalView: View {
         }
         if approval.toolName == DelegateTool.name { return String(localized: "mac.child.approve") }
         if approval.toolName == WorkspaceOutputPublication.name { return String(localized: "mac.agent.publishOutputApproval") }
+        if MacTaskBrowserApproval.applies(to: approval.toolCall) {
+            return MacPermissionsText.t("操作任务内浏览器", "Use the task browser")
+        }
         if let action = MacTaskActionPreview(approval.toolCall) { return action.title }
+        switch approval.toolName {
+        case MacAgentWorkspaceTools.createFileToolName: return String(localized: "mac.agent.createFileApproval")
+        case MacAgentWorkspaceTools.replaceTextToolName: return String(localized: "mac.agent.replaceTextApproval")
+        case MacAgentWorkspaceTools.writeFileToolName: return String(localized: "mac.agent.writeFileApproval")
+        case MacAgentWorkspaceTools.appendFileToolName: return String(localized: "mac.agent.appendFileApproval")
+        case MacAgentWorkspaceTools.applyPatchToolName: return String(localized: "mac.agent.applyPatchApproval")
+        case MacAgentWorkspaceTools.createDirectoryToolName: return String(localized: "mac.agent.createDirectoryApproval")
+        default: break
+        }
         if approval.previousText != nil { return String(localized: "mac.agent.replaceTextApproval") }
         if approval.path != nil { return String(localized: "mac.agent.createFileApproval") }
         return String(localized: "mac.agent.approvalRequired")
     }
 
     @ViewBuilder private var fileEvidence: some View {
-        if approval.canAllow, approval.path != nil, MacAgentWorkspaceTools.writeToolNames.contains(approval.toolName) {
+        if approval.canAllow, approval.path != nil, MacAgentWorkspaceTools.writeToolNames.contains(approval.toolName),
+           approval.toolName != MacAgentWorkspaceTools.createDirectoryToolName {
             Picker("mac.permissions.remember", selection: selectedScope) {
                 Text("mac.permissions.once").tag(nil as FloeMacFileGrantScope?)
                 Text("mac.permissions.taskFile").tag(Optional(FloeMacFileGrantScope.task))
@@ -76,6 +89,8 @@ struct MacWorkspaceApprovalView: View {
             ScrollView { preview(detail) }.frame(maxHeight: 135)
         } else if let action = MacTaskActionPreview(approval.toolCall) {
             ScrollView { preview(action.detail) }.frame(maxHeight: 135)
+        } else if MacTaskBrowserApproval.applies(to: approval.toolCall), let text = approval.text {
+            Text(verbatim: text).font(.callout).lineLimit(2)
         } else if approval.toolName == DelegateTool.name, let task = approval.text {
             Text(verbatim: task).font(.callout).lineLimit(6).textSelection(.enabled)
             DisclosureGroup("mac.child.details") {
@@ -97,6 +112,12 @@ struct MacWorkspaceApprovalView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 135)
+            }
+        } else if approval.toolName == MacAgentWorkspaceTools.applyPatchToolName,
+                  let patch = approval.text, !patch.isEmpty {
+            DisclosureGroup("mac.agent.reviewPatch") {
+                ScrollView { preview(patch) }
+                    .frame(maxHeight: 135)
             }
         } else if let text = approval.text, !text.isEmpty {
             DisclosureGroup("mac.agent.reviewFileContents") {

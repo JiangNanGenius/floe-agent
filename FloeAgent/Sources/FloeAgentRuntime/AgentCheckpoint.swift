@@ -344,6 +344,28 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// Trusted task.wait identities/deadlines/receipts. Optional for older checkpoints.
     public var runtimeWaits: [AgentWaitRecord]?
 
+    public var hasUnknownToolOutcome: Bool {
+        let ledger = HarnessExecutionLedger(records: executionLedgerEntries ?? [])
+        return ledger.entries.contains { $0.outcomeUnknown || $0.isUnknownOutcomeOverflowSentinel }
+            || pendingToolResults.contains(where: \.outcomeUnknown)
+            || (replayedToolPairs?.contains { $0.result.outcomeUnknown } ?? false)
+    }
+
+    /// A saved human decision boundary can reopen only its exact,
+    /// undispatched call, with fresh authorization.
+    public var undispatchedApproval: AgentState.WaitingApproval? {
+        guard case .waitingApproval(let waiting) = state,
+              providerDispatchEnvelope == nil, providerDispatchRequest == nil,
+              pendingToolCalls.filter({ $0.id == waiting.toolCall.id }) == [waiting.toolCall],
+              pendingToolResults.allSatisfy({ $0.callID != waiting.toolCall.id }),
+              sensitiveToolCallIDs?.contains(waiting.toolCall.id) != true,
+              let entries = toolLifecycleEntries else { return nil }
+        let owners = entries.filter { $0.callID == waiting.toolCall.id }
+        guard owners.count == 1, owners.first?.phase == .recorded,
+              owners.first?.toolName == waiting.toolCall.toolName else { return nil }
+        return waiting
+    }
+
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.

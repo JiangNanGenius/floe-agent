@@ -1,26 +1,77 @@
 // SPDX-License-Identifier: MPL-2.0
-#if canImport(UIKit)
+#if canImport(UIKit) || FLOE_UNIFIED_MAC
 import Foundation
 import FloeCore
 import FloeCanvasCore
 import FloeCanvasIntegration
 import FloeCanvasTemplates
 
-/// Existing canvases retain their original JSON file and its CAS writer. The
-/// complete kit state/history is an additive payload in that SAME commit.
-final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable {
+/// The iPad document state carried inside a .floecanvas backup.
+/// Both hosts reconcile restore identity and media remaps through the same engine.
+struct CanvasFrameworkBackupState: Codable, Sendable {
     static let pendingEditorForkKey = "floe.framework.editorForkPending"
-    let root: URL
-    let record: PersonalContentRecord
-    let originalURL: URL
-    private struct State: Codable {
-        var schemaVersion = 1
-        var snapshot: CanvasSnapshot
-        var history: CanvasHistoryState
-        var receipts: [CanvasCommitReceipt]
-        /// Read-only pre-fork evidence; it never participates in active undo
-        /// or receipt lookup under the new document identity.
-        var priorIdentityState: Data? = nil
+    var schemaVersion = 1
+    var snapshot: CanvasSnapshot
+    var history: CanvasHistoryState
+    var receipts: [CanvasCommitReceipt]
+    /// Read-only pre-fork evidence; it never participates in active undo
+    /// or receipt lookup under the new document identity.
+    var priorIdentityState: Data? = nil
+
+    /// Retain one immediate pre-copy state, never a recursively embedded
+    /// chain of earlier copies. Source files and backup archives stay intact.
+    private static func identityEvidence(_ state: CanvasFrameworkBackupState) throws -> Data {
+        var evidence = state
+        evidence.priorIdentityState = nil
+        return try JSONEncoder().encode(evidence)
+    }
+
+    /// Establish the native canvas engine as the initial authority while
+    /// retaining the original file as the storage carrier. This is used only
+    /// before atomically publishing a new or imported project.
+    static func seedFrameworkState(_ project: FloeCore.CanvasProject) throws -> FloeCore.CanvasProject {
+        if let bytes = project.canvasKitState {
+            let state = try JSONDecoder().decode(CanvasFrameworkBackupState.self, from: bytes)
+            guard state.schemaVersion == 1, state.snapshot.id == project.id,
+                  state.snapshot.revision <= project.revision else { throw CanvasFrameworkProjectionError.invalidProject }
+            return project
+        }
+        let snapshot = try CanvasFrameworkProjection.snapshot(project)
+        var seeded = project
+        seeded.canvasKitState = try JSONEncoder().encode(CanvasFrameworkBackupState(snapshot: snapshot, history: .init(), receipts: []))
+        return seeded
+    }
+
+    /// A backup restore rewrites the canvas identity and resource paths, but
+    /// intentionally keeps node IDs so carried CAD drafts still address them.
+    /// Reconcile those changes through the native engine without forking nodes.
+    static func reconcileRestoredProject(_ project: FloeCore.CanvasProject) throws -> FloeCore.CanvasProject {
+        guard let bytes = project.canvasKitState else { return try seedFrameworkState(project) }
+        var state = try JSONDecoder().decode(CanvasFrameworkBackupState.self, from: bytes)
+        guard state.schemaVersion == 1, state.snapshot.revision <= project.revision else {
+            throw CanvasFrameworkProjectionError.invalidProject
+        }
+        let evidence = try identityEvidence(state)
+        var baseline = try CanvasFrameworkProjection.project(state.snapshot, record: identityRecord(project))
+        baseline.id = project.id
+        baseline.workspaceID = project.workspaceID
+        baseline.canvasKitState = nil
+        state.snapshot.id = project.id
+        state.snapshot.metadata[CanvasFrameworkProjection.frameworkStateKey] = String(
+            decoding: try JSONEncoder().encode(baseline), as: UTF8.self)
+        state.snapshot.metadata[TemplateOwnership.metadataKey] = String(decoding: try JSONEncoder().encode(
+            TemplateOwnership(kind: project.workspaceID == nil ? .canvas : .workspace,
+                              ownerID: project.workspaceID ?? project.id, directoryID: project.id)), as: UTF8.self)
+        let batch = try CanvasFrameworkProjection.batch(project: project, original: state.snapshot, record: identityRecord(project))
+        state.snapshot = try CanvasDocumentEditEngine.apply(batch, to: state.snapshot).snapshot
+        state.snapshot.revision = project.revision
+        state.snapshot.updatedAt = project.updatedAt
+        state.history = .init()
+        state.receipts = []
+        state.priorIdentityState = evidence
+        var result = project
+        result.canvasKitState = try JSONEncoder().encode(state)
+        return result
     }
 
     /// Copy/identity-changing save uses the existing identity mapper, never
@@ -31,8 +82,9 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
             var result = source; result.id = newID; result.workspaceID = workspaceID; result.name = name
             return result
         }
-        var state = try JSONDecoder().decode(State.self, from: bytes)
-        guard state.schemaVersion == 1, state.snapshot.id == source.id else { throw PersonalContentError.invalidProject }
+        var state = try JSONDecoder().decode(CanvasFrameworkBackupState.self, from: bytes)
+        guard state.schemaVersion == 1, state.snapshot.id == source.id else { throw CanvasFrameworkProjectionError.invalidProject }
+        let evidence = try identityEvidence(state)
         if state.snapshot.revision < source.revision {
             let record = identityRecord(source)
             let batch = try CanvasFrameworkProjection.batch(project: source, original: state.snapshot, record: record)
@@ -101,24 +153,81 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
         snapshot.name = name; snapshot.createdAt = framework.createdAt; snapshot.updatedAt = framework.updatedAt
         snapshot.metadata[CanvasFrameworkProjection.frameworkStateKey] = String(decoding: try JSONEncoder().encode(framework), as: UTF8.self)
         var result = try CanvasFrameworkProjection.project(snapshot, record: identityRecord(framework))
-        result.canvasKitState = try JSONEncoder().encode(State(snapshot: snapshot, history: .init(), receipts: [], priorIdentityState: bytes))
+        result.canvasKitState = try JSONEncoder().encode(CanvasFrameworkBackupState(snapshot: snapshot, history: .init(), receipts: [], priorIdentityState: evidence))
         return result
     }
 
     /// Called after the existing CAD package fork rewrites its source paths.
     static func reconcileForkedProject(_ project: FloeCore.CanvasProject) throws -> FloeCore.CanvasProject {
         guard let bytes = project.canvasKitState else { return project }
-        var state = try JSONDecoder().decode(State.self, from: bytes)
+        var state = try JSONDecoder().decode(CanvasFrameworkBackupState.self, from: bytes)
         let batch = try CanvasFrameworkProjection.batch(project: project, original: state.snapshot, record: identityRecord(project))
         state.snapshot = try CanvasDocumentEditEngine.apply(batch, to: state.snapshot).snapshot
         state.snapshot.revision = project.revision
         var result = project; result.canvasKitState = try JSONEncoder().encode(state)
         return result
     }
-    private static func identityRecord(_ project: FloeCore.CanvasProject) -> PersonalContentRecord {
-        .init(id: project.id, kind: .canvas, title: project.name, createdAt: project.createdAt, modifiedAt: project.updatedAt,
-              folders: [], relativePath: ".CanvasExtensions/" + project.id.uuidString + ".floeproject")
+
+    /// Applies a local board edit through the same native transaction engine
+    /// as the iPad editor. Rich nodes, stroke data and history stay in the
+    /// decoded state. The host publishes this result with its project write.
+    static func commitEdit(from previous: FloeCore.CanvasProject,
+                           to proposed: FloeCore.CanvasProject) throws -> FloeCore.CanvasProject {
+        guard previous.id == proposed.id, previous.revision < proposed.revision,
+              let bytes = try seedFrameworkState(previous).canvasKitState else {
+            throw CanvasFrameworkProjectionError.changedDocument
+        }
+        var state = try JSONDecoder().decode(CanvasFrameworkBackupState.self, from: bytes)
+        let context = identityRecord(previous)
+        if state.snapshot.revision < previous.revision {
+            let older = try CanvasFrameworkProjection.batch(project: previous, original: state.snapshot, record: context)
+            state.snapshot = try CanvasDocumentEditEngine.apply(older, to: state.snapshot).snapshot
+            state.snapshot.revision = previous.revision
+        }
+        let batch = try CanvasFrameworkProjection.batch(project: proposed, original: state.snapshot, record: context)
+        var engine = CanvasRepositoryEngine(snapshot: state.snapshot,
+            existingReceipts: Dictionary(state.receipts.map { ($0.requestID, $0) },
+                uniquingKeysWith: { first, _ in first }), historyState: state.history)
+        _ = try engine.commitDocument(batch, canvasID: previous.id, expectedRevision: previous.revision, requestID: UUID())
+        state.snapshot = engine.snapshotForPersistence()
+        state.snapshot.revision = proposed.revision
+        state.snapshot.updatedAt = proposed.updatedAt
+        state.history = engine.historyForPersistence()
+        state.receipts = Array(engine.receiptsForPersistence().values)
+        var result = proposed
+        result.canvasKitState = try JSONEncoder().encode(state)
+        return result
     }
+    private static func identityRecord(_ project: FloeCore.CanvasProject) -> CanvasFrameworkProjectionRecord {
+        let path = ".CanvasExtensions/" + project.id.uuidString + ".floeproject"
+        #if canImport(UIKit)
+        return .init(id: project.id, kind: .canvas, title: project.name, createdAt: project.createdAt,
+                     modifiedAt: project.updatedAt, folders: [], relativePath: path)
+        #else
+        return .init(relativePath: path)
+        #endif
+    }
+}
+
+#if canImport(UIKit)
+/// Existing canvases retain their original JSON file and its CAS writer. The
+/// complete kit state/history is an additive payload in that SAME commit.
+final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable {
+    static let pendingEditorForkKey = CanvasFrameworkBackupState.pendingEditorForkKey
+    let root: URL
+    let record: PersonalContentRecord
+    let originalURL: URL
+    private typealias State = CanvasFrameworkBackupState
+
+    static func forkProject(_ source: FloeCore.CanvasProject, newID: UUID,
+                            workspaceID: UUID?, name: String) throws -> FloeCore.CanvasProject {
+        try CanvasFrameworkBackupState.forkProject(source, newID: newID, workspaceID: workspaceID, name: name)
+    }
+
+    static func reconcileForkedProject(_ project: FloeCore.CanvasProject) throws -> FloeCore.CanvasProject {
+        try CanvasFrameworkBackupState.reconcileForkedProject(project)
+    }
+
     static func copyAuxiliaryAssets(from sourceID: UUID, to copyID: UUID) throws {
         let root = try PersonalContentLibrary.applicationRoot().appendingPathComponent(".CanvasExtensions", isDirectory: true)
         let source = root.appendingPathComponent(sourceID.uuidString + ".floeproject/Assets", isDirectory: true)
@@ -221,4 +330,5 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
         return .init(undoCount: state.undoStack.count, redoCount: state.redoStack.count)
     }
 }
+#endif
 #endif

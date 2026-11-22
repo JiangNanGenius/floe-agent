@@ -95,6 +95,8 @@ public protocol AgentEventSink: Sendable {
         _ runtime: FloeAgentRuntime,
         didRecordApprovalDecision receipt: ApprovalDecisionReceipt
     ) async
+    func agentRuntime(_ runtime: FloeAgentRuntime, didDecideToolCall call: ToolCall,
+                      decision: String, reason: String?) async -> Bool
     /// Fired at the real per-call dispatch point: every pre-dispatch gate
     /// (approval, budget, dedup, checkpoint) has passed and the executor is
     /// about to run this call. Telemetry uses it to attribute execution time
@@ -160,6 +162,8 @@ public extension AgentEventSink {
         _ runtime: FloeAgentRuntime,
         didRecordApprovalDecision receipt: ApprovalDecisionReceipt
     ) async {}
+    func agentRuntime(_ runtime: FloeAgentRuntime, didDecideToolCall call: ToolCall,
+                      decision: String, reason: String?) async -> Bool { false }
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
@@ -779,6 +783,8 @@ public actor FloeAgentRuntime {
         /// checkpoint metadata can name still-waiting requests. Nil keeps
         /// the historical recovery policy for runs without questions.
         public var userQuestionRecovery: (any UserQuestionRuntimeRecovery)?
+        public var supportsColdApprovalRecovery = false
+        public var recordsToolDecisionEvents = false
         /// Live presentation subset of the compiled/frozen task ceiling.
         /// Main-runtime only; nil preserves the historical catalog behavior.
         public var currentToolAvailability: (@Sendable () async -> Set<String>)?
@@ -1539,6 +1545,8 @@ public actor FloeAgentRuntime {
         case ("idle", "preparing"),
              ("preparing", "cancelling"),
              ("preparing", "checkpointed"),
+             ("preparing", "waitingApproval"),
+             ("preparing", "executingTool"),
              ("preparing", "streamingModel"),
              ("streamingModel", "executingTool"),
              ("streamingModel", "waitingApproval"),
@@ -2151,7 +2159,15 @@ public actor FloeAgentRuntime {
         if !runtimeWaitRecords.isEmpty {
             await transition(to: .preparing(.init(goal: messages.last(where: { $0.role == "user" })?.content ?? "", resumedFromCheckpoint: true)))
         }
-        await repairInterruptedToolPairs()
+        let approvalToReopen = configuration.supportsColdApprovalRecovery ? checkpoint.undispatchedApproval : nil
+        if let approvalToReopen {
+            let call = approvalToReopen.toolCall
+            guard resumptionInput == nil,
+                  toolLifecycleByCallID[call.id]?.executorContextFingerprint == executorContextFingerprint(for: call) else {
+                throw FloeError.validationFailed("The saved approval belongs to a different execution context.")
+            }
+        }
+        await repairInterruptedToolPairs(excluding: approvalToReopen?.toolCall.id)
         if !runtimeWaitRecords.isEmpty {
             // A wait receipt is NEW evidence after the saved provider boundary.
             // Replaying the old pre-wait request would omit that receipt.
@@ -2203,6 +2219,13 @@ public actor FloeAgentRuntime {
         )
         let goal = messages.last(where: { $0.role == "user" })?.content ?? ""
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal, resumedFromCheckpoint: true)))
+        if let approvalToReopen {
+            await executeToolBatch([approvalToReopen.toolCall], reopeningApproval: true)
+            guard modelTurnContinuationRequested, !cancellationToken.isCancelled else {
+                await quiesceCancellingRun()
+                return
+            }
+        }
         await runModelTurn()
         await quiesceCancellingRun()
     }
@@ -2212,9 +2235,9 @@ public actor FloeAgentRuntime {
     /// was dispatched but before its result was committed. Pair that orphaned
     /// call with an explicit unknown-outcome result so recovery is valid and
     /// the model verifies remote state instead of blindly repeating a write.
-    private func repairInterruptedToolPairs() async {
+    private func repairInterruptedToolPairs(excluding retainedCallID: String? = nil) async {
         var pairedIDs = Set(pendingToolResults.map(\.callID))
-        for call in pendingToolCalls where !pairedIDs.contains(call.id) {
+        for call in pendingToolCalls where call.id != retainedCallID && !pairedIDs.contains(call.id) {
             let lifecycle = toolLifecycleByCallID[call.id]
             if call.toolName == AgentWaitTool.name, runtimeWaitRecords[call.id] != nil {
                 let result = await recoverRuntimeWait(call: call)
@@ -4897,7 +4920,7 @@ public actor FloeAgentRuntime {
     }
 
     private func resolveToolCall(_ call: ToolCall, chargeParentBudget: Bool = true,
-                                 backgroundChildID: UUID? = nil) async -> ToolResolution {
+                                 backgroundChildID: UUID? = nil, reopeningApproval: Bool = false) async -> ToolResolution {
         await publishLiveness(
             phase: .resolvingTool,
             message: "Resolving tool authorization and safety policy for \(call.toolName)",
@@ -5016,7 +5039,7 @@ public actor FloeAgentRuntime {
         // authority on every SSH/bootstrap step. The catastrophic gate above
         // still evaluates every concrete command, including reused grants.
         let authorizationIdentity = descriptor.authorizationIdentity
-        if let reusableGrant = grants.last(where: {
+        if !reopeningApproval, let reusableGrant = grants.last(where: {
             !$0.scope.singleUse && !$0.isExpired()
                 && Self.scopePermits(
                     $0.scope,
@@ -5069,7 +5092,16 @@ public actor FloeAgentRuntime {
             }
         }
         logger.info("toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(policy.policyName) decision=\(decision.logLabel)")
+        let effectiveDecision: ApprovalDecision
         switch decision {
+        case .allow where reopeningApproval:
+            effectiveDecision = .escalateToHuman(reason: FloeL10n.isChinese
+                ? "此操作在应用关闭前尚未执行。请重新审批。"
+                : "This operation was still pending when the app closed. Review it again.")
+        default:
+            effectiveDecision = decision
+        }
+        switch effectiveDecision {
         case .allow(let scope, let expiresAt):
             return .approved(grant: ApprovalGrant(
                 scope: Self.bind(scope, to: authorizationIdentity),
@@ -5175,6 +5207,17 @@ public actor FloeAgentRuntime {
         // publish is attributed to this exact escalation.
         approvalGate = .publishing(callID: call.id)
         let waiting = AgentState.WaitingApproval(toolCall: call, reason: reason)
+        let savesColdBoundary = configuration.supportsColdApprovalRecovery && backgroundChildID == nil
+            && toolLifecycleByCallID[call.id]?.phase == .recorded
+        if savesColdBoundary {
+            // The visible card must have a durable, pre-dispatch counterpart.
+            // Never apply this to an approval nested inside a running tool.
+            let saved = try? await writeCheckpoint(stateOverride: .waitingApproval(waiting))
+            guard saved?.persisted == true, !cancellationToken.isCancelled, !Self.isTerminalState(state) else {
+                approvalGate = .idle
+                return .decision(.deny(reason: "The pending approval could not be saved."))
+            }
+        }
         if backgroundChildID != nil {
             pendingBackgroundApproval = waiting
             await sink?.agentRuntime(self, didChangeBackgroundApproval: waiting)
@@ -5214,6 +5257,14 @@ public actor FloeAgentRuntime {
         } else {
             guard case .waitingApproval = state else { return .cancelledWhileWaiting }
             settlingMainApprovals.insert(call.id)
+        }
+        if savesColdBoundary {
+            // Retire the undecided boundary before carrying a decision into
+            // the dispatch path. A crash after this write cannot restore the card.
+            let retired = try? await writeCheckpoint(stateOverride: .preparing(.init(goal: "")))
+            guard retired?.persisted == true, !cancellationToken.isCancelled, !Self.isTerminalState(state) else {
+                return .decision(.deny(reason: "The approval decision could not be saved."))
+            }
         }
         return .decision(humanDecision)
     }
@@ -6108,16 +6159,18 @@ public actor FloeAgentRuntime {
     /// Read-only calls run in parallel; side-effecting calls act as barriers
     /// and run serially (their approval already resolved during `resolve`).
     /// Every result is audited and resumed exactly once.
-    private func executeToolBatch(_ calls: [ToolCall]) async {
+    private func executeToolBatch(_ calls: [ToolCall], reopeningApproval: Bool = false) async {
         guard !calls.isEmpty else { return }
         // The provider response is complete once it yields this settled tool
         // batch. Later recovery checkpoints describe the ordered call/result
         // boundary, not the already-finished request that produced it.
-        await publishProviderAttempt(
-            status: .completed,
-            reason: "Provider completed with a settled tool batch",
-            error: nil
-        )
+        if !reopeningApproval {
+            await publishProviderAttempt(
+                status: .completed,
+                reason: "Provider completed with a settled tool batch",
+                error: nil
+            )
+        }
         clearCompletedProviderDispatch()
         guard Self.hasValidCallIDs(calls) else {
             await failRun(
@@ -6137,7 +6190,7 @@ public actor FloeAgentRuntime {
         // budget expires during resolution, every structured call must still
         // receive exactly one result.
         for call in calls {
-            pendingToolCalls.append(call)
+            if !reopeningApproval { pendingToolCalls.append(call) }
             setToolLifecycle(
                 call: call,
                 phase: .recorded,
@@ -6374,7 +6427,7 @@ public actor FloeAgentRuntime {
                 resultsByID[call.id] = planSubmissionResult(for: call)
                 continue
             }
-            switch await resolveToolCall(call) {
+            switch await resolveToolCall(call, chargeParentBudget: !reopeningApproval, reopeningApproval: reopeningApproval) {
             case .approved(let grant):
                 grants.append(grant)
                 approvedByID[call.id] = grant
@@ -6393,13 +6446,26 @@ public actor FloeAgentRuntime {
                     authorizationIdentity: grant.scope.toolAuthorizationIdentity,
                     isSideEffecting: approvedDescriptor?.isSideEffecting
                 )
+                if configuration.recordsToolDecisionEvents, approvedDescriptor?.isSideEffecting == true {
+                    _ = await sink?.agentRuntime(self, didDecideToolCall: call,
+                                                 decision: grant.policyName == "human" ? "humanAllowed" : "policyAllowed",
+                                                 reason: nil)
+                }
             case .denied(let reason, let decision):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
                 let recorded = await audit(toolCall: call, result: result, decision: decision)
+                let decisionSaved: Bool
+                if configuration.recordsToolDecisionEvents, candidateIsSideEffecting {
+                    decisionSaved = await sink?.agentRuntime(self, didDecideToolCall: call,
+                        decision: decision.hasPrefix("deny:human:") ? "humanDenied" : "policyDenied",
+                        reason: modelInputProjection?.redacted(reason) ?? reason) == true
+                } else {
+                    decisionSaved = false
+                }
                 // The card retires on this receipt only when the denial was
                 // genuinely persisted; a failed record emits nothing and the
                 // owning surface sweeps the card once the run moves on.
-                if recorded {
+                if recorded || decisionSaved {
                     await sink?.agentRuntime(
                         self,
                         didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
@@ -6656,6 +6722,10 @@ public actor FloeAgentRuntime {
             if let pendingIndex = pendingToolResults.indices.last {
                 pendingToolResults[pendingIndex].outputSummary += warning
             }
+        }
+        if reopeningApproval {
+            let results = Dictionary(uniqueKeysWithValues: pendingToolResults.map { ($0.callID, $0) })
+            pendingToolResults = pendingToolCalls.compactMap { results[$0.id] }
         }
         // Graduate the settled batch into the run-level replay history before
         // the settlement checkpoint so a resumed run keeps its tool evidence.

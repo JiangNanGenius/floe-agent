@@ -50,17 +50,7 @@ struct CanvasHostSources: CanvasSourceService {
         let text = fragments.joined(separator: "\n\n")
         return .init(sourceID: sourceID, revision: Int64(document.revision), text: String(text.prefix(64_000)), fragment: fragment)
     }
-    static func text(_ content: CanvasContent) -> String? {
-        switch content {
-        case .text(let text), .markdown(let text, _), .code(_, let text), .formula(let text, _): text
-        case .richText(let document): document.runs.map(\.text).joined()
-        case .table(let header, let rows): ([header] + rows).map { $0.joined(separator: "\t") }.joined(separator: "\n")
-        case .web(let url, let title): (title ?? "") + "\n" + url.absoluteString
-        case .unknown(let kind, let payload) where kind == CanvasFrameworkProjection.frameworkNodeKind:
-            if case .object(let values) = payload, case .string(let text) = values["text"] { text } else { nil }
-        default: nil
-        }
-    }
+    static func text(_ content: CanvasContent) -> String? { CanvasFrameworkProjection.sourceText(content) }
 }
 
 struct CanvasHostNavigation: Sendable {

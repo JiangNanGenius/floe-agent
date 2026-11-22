@@ -10,9 +10,20 @@
 // from durable storage immediately before dispatch.
 
 import Foundation
+import FloeCore
 import FloeModels
 
 enum FloeMacSelfWorkspaceLease {
+    static func recoveryIdentity(for root: URL?) -> String? {
+        guard let root else { return "unbound" }
+        let resolved = root.resolvingSymlinksInPath().standardizedFileURL
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: resolved.path),
+              attributes[.type] as? FileAttributeType == .typeDirectory,
+              let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else { return nil }
+        return FloeDigest.sha256Hex(Data("\(resolved.path)\n\(device)\n\(inode)".utf8))
+    }
+
     /// Resolves the exact root the durable workspace row authorizes and
     /// proves it equals the host-verified boundary root. Returns the verified
     /// resolved root on success; throws `invalidTaskBoundary` on any mismatch,
@@ -25,6 +36,16 @@ enum FloeMacSelfWorkspaceLease {
         let resolvedBoundary = boundaryRoot
             .resolvingSymlinksInPath()
             .standardizedFileURL
+        let persistedRoot = try resolveRoot(workspace: workspace, privateTaskRootBase: privateTaskRootBase)
+        guard persistedRoot == resolvedBoundary else {
+            throw FloeMacSelfCoreError.invalidTaskBoundary(
+                "the boundary root does not match the persisted workspace root"
+            )
+        }
+        return persistedRoot
+    }
+
+    static func resolveRoot(workspace: WorkspaceRecord, privateTaskRootBase: URL?) throws -> URL {
         let persistedRoot: URL
         switch workspace.kind {
         case .project:
@@ -66,11 +87,6 @@ enum FloeMacSelfWorkspaceLease {
               isDirectory.boolValue else {
             throw FloeMacSelfCoreError.invalidTaskBoundary(
                 "the persisted workspace root is not an existing directory"
-            )
-        }
-        guard persistedRoot == resolvedBoundary else {
-            throw FloeMacSelfCoreError.invalidTaskBoundary(
-                "the boundary root does not match the persisted workspace root"
             )
         }
         return persistedRoot

@@ -229,22 +229,33 @@ final class MacBrowserWorkbenchController: ObservableObject {
         let nonce: UUID
     }
 
-    /// Mirrors the iPad task-browser bound; older unused task sessions are
-    /// stopped and evicted past this count.
-    static let taskSessionLimit = 6
+    /// Raise-the-workbench routing for one task owner (model takeover or the
+    /// first user input). Equatable so the root view can `.onChange` on it;
+    /// the nonce makes a repeated request for the same owner observable.
+    struct TaskPresentRequest: Equatable {
+        let owner: UUID
+        let nonce: UUID
+    }
 
     private var generalSession: MacBrowserSession?
-    private var taskSessions: [UUID: MacBrowserSession] = [:]
-    private var taskRecency: [UUID] = []
     private let restoreStore: MacBrowserRestoreStore
-    private let survivingOwnerIDs: () -> Set<UUID>
     private var downloadObservation: AnyCancellable?
+    private var taskToolsObservation: AnyCancellable?
 
     /// User-invoked downloads for the workbench browser surface.
     let downloads: MacBrowserDownloadController
 
+    /// Task/session-bound model browser lane: owns every task-owned session,
+    /// the compiled `browser.*` tools and their per-run bundle. The workbench
+    /// surface renders the active tab of the exact session the tools drive.
+    let taskTools: MacTaskBrowserTools
+
     @Published private(set) var presentRequest: Request?
     @Published private(set) var returnRequest: UUID?
+    /// Raised when a model run hands this task's browser to the user (or the
+    /// user takes over): the root view routes the workbench to this owner and
+    /// the session enters user control. Never carries page data.
+    @Published private(set) var taskPresentRequest: TaskPresentRequest?
     #if FLOE_MAC_HOST_SMOKE
     /// Observable mirror of the workbench destination for UnifiedMacSmoke.
     @Published var isPresented = false
@@ -252,56 +263,64 @@ final class MacBrowserWorkbenchController: ObservableObject {
 
     init(storeDirectory: URL? = nil, survivingOwnerIDs: @escaping () -> Set<UUID> = { Set() },
          admitWork: @escaping HostAgentWorkspace.AdmitWork) {
-        self.survivingOwnerIDs = survivingOwnerIDs
-        self.restoreStore = MacBrowserRestoreStore(directory: storeDirectory)
+        let restoreStore = MacBrowserRestoreStore(directory: storeDirectory)
+        self.restoreStore = restoreStore
         self.downloads = MacBrowserDownloadController(admitWork: admitWork)
+        self.taskTools = MacTaskBrowserTools(
+            restore: .init(
+                record: { owner in restoreStore.record(for: owner) },
+                setRecord: { url, owner in
+                    restoreStore.setRecord(url, for: owner, survivingOwnerIDs: survivingOwnerIDs)
+                },
+                remove: { owner in restoreStore.remove(owner: owner) }
+            )
+        )
+        self.taskTools.downloads = downloads
+        // Wire the presentation hook only after every stored property is
+        // initialized; a weak self capture is not allowed in an escaping
+        // closure passed to the member initializer above.
+        self.taskTools.presentBrowser = { [weak self] owner in self?.presentTaskBrowser(owner: owner) }
         downloadObservation = downloads.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+        taskToolsObservation = taskTools.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
-    /// Session for an owner conversation; nil is the shared general session
-    /// used outside a saved task. Materializes lazily and recency-orders the
-    /// task sessions without ever reusing one task's session for another.
-    /// Materialization is always user-initiated (opening the browser), so a
-    /// new task session restores the persisted page URL here — never during
-    /// startup on its own.
-    func session(for owner: UUID?, restorePage: Bool = true) -> MacBrowserSession {
-        guard let owner else {
-            if let generalSession { return generalSession }
-            let session = MacBrowserSession()
-            generalSession = session
-            return session
-        }
-        if let existing = taskSessions[owner] {
-            touch(owner)
-            return existing
-        }
-        while taskRecency.count >= Self.taskSessionLimit, let evicted = taskRecency.first {
-            taskRecency.removeFirst()
-            let session = taskSessions.removeValue(forKey: evicted)
-            downloads.discard(owner: evicted)
-            session?.stop()
-        }
+    /// Raises the workbench browser for this owner (model takeover or first
+    /// user input); the root view consumes `taskPresentRequest`.
+    func presentTaskBrowser(owner: UUID) {
+        taskPresentRequest = TaskPresentRequest(owner: owner, nonce: UUID())
+    }
+
+    /// The task-owned session for this owner; materializes for a user-opened
+    /// browser and restores the last committed page (URL-only record).
+    @discardableResult
+    func taskSession(for owner: UUID?) -> MacTaskBrowserSession? {
+        guard let owner else { return nil }
+        return taskTools.ensureSession(for: owner)
+    }
+
+    /// Opens a chat-supplied http(s) link in this task's own browser session
+    /// (the same session model tools drive). Opening a link is a user action:
+    /// it takes control from a model run first, exactly like typing in the
+    /// address bar.
+    func openTaskURL(_ url: URL, owner: UUID?) {
+        guard let owner, MacBrowserAddress.allows(url) else { return }
+        let session = taskTools.ensureSession(for: owner)
+        session.userNavigate(to: url.absoluteString)
+    }
+
+    func generalBrowser() -> MacBrowserSession {
+        if let generalSession { return generalSession }
         let session = MacBrowserSession()
-        taskSessions[owner] = session
-        touch(owner)
-        attachPageCommitHook(session, owner: owner)
-        if restorePage, let restored = restoreStore.record(for: owner) {
-            session.open(restored)
-        }
+        generalSession = session
         return session
     }
 
-    /// The task-bound session for smoke and diagnostics; nil only for owners
-    /// that never presented.
-    func existingTaskSession(for owner: UUID) -> MacBrowserSession? { taskSessions[owner] }
-
     func discard(owner: UUID) {
-        taskRecency.removeAll { $0 == owner }
-        taskSessions.removeValue(forKey: owner)?.stop()
-        restoreStore.remove(owner: owner)
-        downloads.discard(owner: owner)
+        taskTools.retireSession(for: owner)
     }
 
     /// Show the browser workbench without changing the page.
@@ -321,15 +340,24 @@ final class MacBrowserWorkbenchController: ObservableObject {
     }
 
     /// Builds the fully wired workbench browser surface for the current
-    /// owner: isolated session, user-invoked download affordance and that
-    /// owner's live transfer state/result only. `MacWorkspaceRootView` only
-    /// swaps in this factory for its previous bare initializer call.
+    /// owner. A task owner renders the task-owned session (`MacTaskBrowserTools`)
+    /// — the exact WKWebView/tab session the compiled browser tools drive, with
+    /// tab strip, control-status banner and the per-owner download state; the
+    /// general (non-task) browser keeps the existing toolbox session surface.
+    /// `MacWorkspaceRootView` only swaps in this factory for its previous
+    /// bare initializer call.
     func makeWorkbenchView(
         owner: UUID?,
         onReturn: (() -> Void)? = nil,
         onOpenExternal: ((URL) -> Void)? = nil
     ) -> MacBrowserWorkbenchView {
-        let session = session(for: owner)
+        if let owner {
+            let task = taskTools.ensureSession(for: owner)
+            return makeTaskWorkbenchView(
+                task, owner: owner, onReturn: onReturn, onOpenExternal: onOpenExternal
+            )
+        }
+        let session = generalBrowser()
         return MacBrowserWorkbenchView(
             session: session,
             onReturn: onReturn,
@@ -339,23 +367,145 @@ final class MacBrowserWorkbenchController: ObservableObject {
             downloadError: downloads.error(for: owner),
             onDownload: { [weak self, weak session] in
                 guard let session else { return }
-                self?.downloads.startDownload(for: session, owner: owner, in: NSApp.keyWindow)
+                self?.downloads.startDownload(page: session.page, owner: owner, in: NSApp.keyWindow)
             },
             onCancelDownload: { [weak self] in self?.downloads.cancel($0) },
             onRevealDownload: { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
         )
     }
 
+    /// Task-owner surface: chrome snapshot + actions around the session's
+    /// active tab. User chrome actions pass through the session's user-input
+    /// gate, which hands control from a model run before the page changes.
+    private func makeTaskWorkbenchView(
+        _ task: MacTaskBrowserSession,
+        owner: UUID,
+        onReturn: (() -> Void)?,
+        onOpenExternal: ((URL) -> Void)?
+    ) -> MacBrowserWorkbenchView {
+        let state = ownerDownloadState(owner: owner, session: task)
+        let actions = MacTaskBrowserActions(
+            onSubmitAddress: { [weak task] in task?.userNavigate(to: $0) },
+            onGoBack: { [weak task] in task?.userGoBack() },
+            onGoForward: { [weak task] in task?.userGoForward() },
+            onReloadOrStop: { [weak task] in task?.userReloadOrStop() },
+            onActivateTab: { [weak task] in task?.userActivateTab($0) },
+            onCloseTab: { [weak task] in task?.userCloseTab($0) },
+            onReturnControl: { [weak task] in task?.endUserControl() }
+        )
+        return MacBrowserWorkbenchView(
+            session: generalBrowser(),
+            onReturn: onReturn,
+            onOpenExternal: onOpenExternal,
+            download: state.active,
+            savedDownload: state.saved,
+            downloadError: state.error,
+            onDownload: { [weak self, weak task] in
+                guard let task, let page = task.activeWebView else { return }
+                // A user-initiated page download is a human gesture: it takes
+                // control from a model run exactly like the address bar.
+                task.registerUserInput(reason: "You started using this browser")
+                self?.downloads.startDownload(page: page, owner: owner, in: NSApp.keyWindow)
+            },
+            onCancelDownload: { [weak self, weak task] id in
+                if self?.downloads.snapshot(for: owner)?.id == id {
+                    self?.downloads.cancel(id)
+                } else {
+                    task?.downloads.cancel(id)
+                }
+            },
+            onRevealDownload: { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
+            taskChrome: taskChrome(for: task),
+            taskPage: task.activeWebView,
+            taskActions: actions
+        )
+    }
+
+    /// Merges the user Save-panel transfer state with the task-owned model
+    /// download state for this owner; an active transfer wins over results.
+    private func ownerDownloadState(
+        owner: UUID?, session: MacTaskBrowserSession?
+    ) -> (active: MacBrowserDownloadSnapshot?, saved: MacBrowserSavedDownload?, error: String?) {
+        if let active = downloads.snapshot(for: owner) {
+            return (active, downloads.saved(for: owner), downloads.error(for: owner))
+        }
+        if let session {
+            if let progress = session.downloadProgress {
+                return (progress, nil, nil)
+            }
+            switch session.downloadOutcome {
+            case .saved(let saved):
+                return (nil, saved, nil)
+            case .error(let message):
+                return (nil, nil, message)
+            case nil:
+                break
+            }
+        }
+        return (nil, downloads.saved(for: owner), downloads.error(for: owner))
+    }
+
+    private func taskChrome(for session: MacTaskBrowserSession) -> MacTaskBrowserChrome {
+        let status: MacBrowserControlStatus
+        if session.isUserControlling {
+            let message: String
+            if case .needsUser(let reason) = session.surfaceState {
+                message = reason
+            } else {
+                message = "User takeover is active"
+            }
+            status = .userControlling(message: message)
+        } else if session.hasModelControlHolder {
+            status = .modelActive
+        } else {
+            status = .idle
+        }
+        return MacTaskBrowserChrome(
+            address: session.address,
+            canGoBack: session.canGoBack,
+            canGoForward: session.canGoForward,
+            isLoading: session.isLoading,
+            currentURL: session.activeWebView?.url,
+            tabs: session.tabs.map {
+                MacBrowserTabInfo(
+                    id: $0.id,
+                    title: $0.webView.title ?? "",
+                    isActive: $0.id == session.activeTabID,
+                    isLoading: $0.webView.isLoading
+                )
+            },
+            controlStatus: status,
+            modelActivityDetail: modelActivityLabel(session.lastModelActivity)
+        )
+    }
+
+    /// Publicly safe label of the last model action for the status strip:
+    /// a verb plus the target's visible label; never page text, typed
+    /// content, credentials or coordinates.
+    private func modelActivityLabel(_ activity: MacBrowserModelActivity?) -> String? {
+        guard let activity else { return nil }
+        let verb: String
+        switch activity.kind {
+        case .observing: verb = "Observing the page"
+        case .navigating: verb = "Navigating"
+        case .clicking: verb = "Clicking"
+        case .typing: verb = "Typing"
+        case .scrolling: verb = "Scrolling"
+        case .waiting: verb = "Waiting for the page"
+        case .downloading: verb = "Downloading"
+        }
+        return activity.detail.map { "\(verb) '\($0)'" } ?? verb
+    }
+
     func reset() {
         downloads.cancelAll()
+        taskTools.retireAllSessions()
         flushPageHistory()
         generalSession?.stop()
         generalSession = nil
-        for session in taskSessions.values { session.stop() }
-        taskSessions.removeAll()
-        taskRecency.removeAll()
         presentRequest = nil
         returnRequest = nil
+        taskPresentRequest = nil
         #if FLOE_MAC_HOST_SMOKE
         isPresented = false
         #endif
@@ -365,17 +515,4 @@ final class MacBrowserWorkbenchController: ObservableObject {
         restoreStore.flush()
     }
 
-    /// Persists the safe URL-only record whenever this task's browser commits
-    /// a page, so a later return (even after an app restart) can restore it.
-    private func attachPageCommitHook(_ session: MacBrowserSession, owner: UUID) {
-        session.onPageCommit = { [weak self, weak session] url in
-            guard let self, let session, taskSessions[owner] === session, let url else { return }
-            restoreStore.setRecord(url, for: owner, survivingOwnerIDs: survivingOwnerIDs)
-        }
-    }
-
-    private func touch(_ owner: UUID) {
-        taskRecency.removeAll { $0 == owner }
-        taskRecency.append(owner)
-    }
 }

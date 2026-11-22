@@ -53,9 +53,9 @@ final class MacBrowserDownloadController: ObservableObject {
         errorOwner == owner ? errorText : nil
     }
 
-    func startDownload(for session: MacBrowserSession, owner: UUID?, in window: NSWindow?) {
+    func startDownload(page: WKWebView, owner: UUID?, in window: NSWindow?) {
         guard transfer == nil, let window, window.attachedSheet == nil,
-              let url = session.page.url, MacBrowserAddress.allows(url), let release = try? admitWork() else { return }
+              let url = page.url, MacBrowserAddress.allows(url), let release = try? admitWork() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = Self.contentTypes
         panel.canCreateDirectories = true
@@ -72,14 +72,14 @@ final class MacBrowserDownloadController: ObservableObject {
         self.transfer = transfer
         discardResult(for: owner)
         let id = transfer.id
-        panel.beginSheetModal(for: window) { [weak self, weak panel, weak session] response in
+        panel.beginSheetModal(for: window) { [weak self, weak panel, weak page] response in
             guard let self, let transfer = self.transfer, transfer.id == id else { return }
             self.transfer?.panel = nil
-            guard response == .OK, !transfer.cancellation.isCancelled, let destination = panel?.url, let session else {
+            guard response == .OK, !transfer.cancellation.isCancelled, let destination = panel?.url, let page else {
                 self.finish(id)
                 return
             }
-            self.begin(transfer, url: url, session: session, destination: destination)
+            self.begin(transfer, url: url, page: page, destination: destination)
         }
     }
 
@@ -115,7 +115,7 @@ final class MacBrowserDownloadController: ObservableObject {
         }
     }
 
-    private func begin(_ transfer: Transfer, url: URL, session: MacBrowserSession, destination: URL) {
+    private func begin(_ transfer: Transfer, url: URL, page: WKWebView, destination: URL) {
         let overwrite = FileManager.default.fileExists(atPath: destination.path)
         let id = transfer.id
         let owner = transfer.owner
@@ -127,7 +127,7 @@ final class MacBrowserDownloadController: ObservableObject {
             defer { if scoped { destination.stopAccessingSecurityScopedResource() } }
             do {
                 let receipt = try await service.start(
-                    webView: session.page, request: URLRequest(url: url), destinationURL: destination,
+                    webView: page, request: URLRequest(url: url), destinationURL: destination,
                     relativePath: destination.lastPathComponent, suggestedFilename: destination.lastPathComponent,
                     maxBytes: Self.maxBytes, overwrite: overwrite, cancellation: cancellation
                 )
@@ -138,7 +138,7 @@ final class MacBrowserDownloadController: ObservableObject {
                 guard !cancellation.isCancelled else { return }
                 if case BrowserDownloadError.cancelled = error { return }
                 errorOwner = owner
-                errorText = Self.visibleError(error)
+                errorText = Self.visibleTaskError(error)
             }
         }
     }
@@ -162,7 +162,10 @@ final class MacBrowserDownloadController: ObservableObject {
     private static let maxBytes = 64 * 1_024 * 1_024
     private static let contentTypes: [UTType] = [.pdf, .png, .jpeg, .gif, .webP, .heic]
 
-    private static func visibleError(_ error: Error) -> String {
+    /// Shared by the user Save-panel transfer and the task-owned model
+    /// download lane (`MacTaskBrowserSession`), so both surfaces phrase the
+    /// same service failures identically.
+    static func visibleTaskError(_ error: Error) -> String {
         switch error as? BrowserDownloadError {
         case .unsupportedType(_)?, .signatureMismatch(_, _)?:
             String(localized: "mac.browser.download.unsupported")

@@ -16,6 +16,15 @@ enum MacWorkspaceArtifactEvent: Sendable, Equatable {
     case previewed(URL)
 }
 
+/// The same descriptor-pinned publication used when the user imports a file
+/// from Finder into the task inspector.
+enum MacWorkspaceFileImport {
+    static func save(_ source: URL, in root: URL) throws -> URL {
+        let name = try MacWorkspaceFolderSnapshot.importFile(source, into: root, in: root)
+        return root.appendingPathComponent(name)
+    }
+}
+
 /// How the inline preview/editor is arranged next to the file list.
 enum MacWorkspaceFilesLayout: Sendable {
     /// Pick side-by-side or stacked automatically from the available width.

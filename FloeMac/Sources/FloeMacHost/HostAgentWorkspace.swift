@@ -146,11 +146,16 @@ struct HostAgentApproval: Equatable {
     var toolName: String { toolCall.toolName }
     var canAllow: Bool {
         #if FLOE_UNIFIED_MAC
-        if MacNativeCommandPolicy.review(toolCall) != nil || MacTaskActionPreview(toolCall) != nil { return true }
+        if MacNativeCommandPolicy.review(toolCall) != nil || MacTaskActionPreview(toolCall) != nil
+            || MacTaskBrowserApproval.applies(to: toolCall) { return true }
         if toolName == WorkspaceOutputPublication.name,
            let args = try? JSONDecoder().decode(WorkspaceOutputPublication.Arguments.self, from: toolCall.argumentsJSON),
            let relative = try? MacAgentWorkspacePinSupport.standardizedRelativePath(args.path) {
             return relative != "." && (args.displayName.map(RunOutputFile.isValidDisplayName) ?? true)
+        }
+        if toolName == MacAgentWorkspaceTools.createDirectoryToolName, let path,
+           let relative = try? MacAgentWorkspacePinSupport.standardizedRelativePath(path) {
+            return relative != "."
         }
         #endif
         if toolName == DelegateTool.name { return text?.isEmpty == false }
@@ -165,6 +170,8 @@ struct HostAgentApproval: Equatable {
         switch toolName {
         case MacNativeShellTool.name: riskLabels = ["executesLocalCode", "writesFiles"]
         case MacDesktopControl.name: riskLabels = ["controlsGUI"]
+        case "browser.download": riskLabels = ["networkAccess", "writesFiles"]
+        case _ where MacTaskBrowserApproval.applies(to: toolCall): riskLabels = ["controlsGUI"]
         case DelegateTool.name: riskLabels = Set(DelegateTool.riskLabels.map(\.rawValue))
         case _ where conversationAction != nil: riskLabels = conversationAction?.riskLabels ?? []
         default: riskLabels = writesFiles ? ["writesFiles"] : []
@@ -179,6 +186,24 @@ struct HostAgentApproval: Equatable {
 }
 
 #if FLOE_UNIFIED_MAC
+enum MacTaskBrowserApproval {
+    static func applies(to call: ToolCall) -> Bool {
+        guard case .local = call.scope else { return false }
+        return ["browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.download",
+                "browser.takeover"].contains(call.toolName)
+    }
+
+    static func preview(_ call: ToolCall) -> (path: String?, text: String?)? {
+        guard applies(to: call) else { return nil }
+        struct Download: Decodable { let path: String; let url: URL }
+        if call.toolName == "browser.download",
+           let download = try? JSONDecoder().decode(Download.self, from: call.argumentsJSON) {
+            return (download.path, download.url.host())
+        }
+        return (nil, call.toolName)
+    }
+}
+
 private struct MacProjectApprovalContext {
     let grants: FloeMacSelfApprovalGrants
     let workspaceID: UUID
@@ -531,6 +556,8 @@ final class HostAgentWorkspace: ObservableObject {
     }
     weak var taskImages: MacImageGeneration?
     weak var taskVideos: MacVideoGeneration?
+    var makeTaskBrowserTools: ((UUID, URL) -> [AnyAgentTool])?
+    var endTaskBrowserRun: ((UUID) -> Void)?
     let webSearch: MacSearchSettings
     private let networkStatus = NetworkStatusMonitor()
     @Published private(set) var auxiliaryPreferences: ModelSelectionPreferences
@@ -636,7 +663,13 @@ final class HostAgentWorkspace: ObservableObject {
         return run
     }
     var resumesOriginalRun: Bool { historyContinuation?.action.resumesOriginalRun == true }
+    var restoredApprovalSummary: String? {
+        guard let approval = historyContinuation?.action.pendingApproval else { return nil }
+        return "\(approval.toolCall.toolName) · \(approval.reason)"
+    }
+    var needsInterruptedRunReview: Bool { historyContinuation?.action.needsReview == true }
     @Published private var changingGoals = Set<UUID>()
+    private var goalReviews: [UUID: Task<ConversationGoal?, Never>] = [:]
     @Published private(set) var settledQuestions: [UUID: [UserQuestionWaitingSnapshot]] = [:]
     /// Durable question card re-presented for a reopened task that has no
     /// live run (relaunch/reconnect). The durable store and coordinator remain
@@ -1786,6 +1819,33 @@ final class HostAgentWorkspace: ObservableObject {
         return presentationRecord(for: personalWorkspaceRecord(id: draftTaskID, title: ""))
     }
 
+    func saveGeneratedMedia(_ source: URL, owner: UUID, workspaceID: UUID) async -> Bool {
+        guard isReady, !isTerminating, !changingTasks.contains(owner), !hasPendingWorkspaceFileChanges,
+              owner == attachmentOwnerID, let record = fileWorkspaceForCurrentTask, record.id == workspaceID,
+              let type = UTType(filenameExtension: source.pathExtension),
+              type.conforms(to: .image) || type.conforms(to: .movie), let release = admit() else { return false }
+        changingTasks.insert(owner)
+        defer { changingTasks.remove(owner); release() }
+        let bookmark = record.rootBookmark
+        let publication = Task.detached(priority: .userInitiated) {
+            var stale = false
+            let root = try URL(resolvingBookmarkData: bookmark, options: [.withoutUI],
+                               relativeTo: nil, bookmarkDataIsStale: &stale)
+            guard !stale else { throw CocoaError(.fileWriteNoPermission) }
+            let accessing = root.startAccessingSecurityScopedResource()
+            defer { if accessing { root.stopAccessingSecurityScopedResource() } }
+            return try MacWorkspaceFileImport.save(source, in: root)
+        }
+        let saved = await withTaskCancellationHandler {
+            try? await publication.value
+        } onCancel: {
+            publication.cancel()
+        }
+        guard saved != nil else { return false }
+        workspaceRevision = UUID()
+        return true
+    }
+
     /// App-owned directory that aggregates every personal task folder
     /// (`<runtime directory>/PrivateTasks`). Space browsing only; pure
     /// location lookup, no I/O and no directory creation.
@@ -2005,6 +2065,7 @@ final class HostAgentWorkspace: ObservableObject {
                             acceptedPlan: PlanConfirmationSnapshot? = nil, resumingGoal: Bool = false,
                             continuingFromHistory: Bool = false, checkpointRunID: UUID? = nil,
                             queued: PendingUserInput? = nil, queuedGoal: ConversationGoal? = nil,
+                            automaticGoal: (predecessor: UUID, goal: ConversationGoal)? = nil,
                             queuedAttachments: [HostAgentAttachmentDraft] = [],
                             onAdmitted: (() -> Void)? = nil) -> Bool {
         #if FLOE_UNIFIED_MAC
@@ -2013,7 +2074,7 @@ final class HostAgentWorkspace: ObservableObject {
         #else
         let auxRoutes = FloeMacSelfAuxiliaryRoutes()
         #endif
-        let currentID = queued?.conversationID ?? selectedID
+        let currentID = automaticGoal?.goal.conversationID ?? queued?.conversationID ?? selectedID
         #if FLOE_UNIFIED_MAC
         // A draft keeps its persisted stable task UUID, so its personal
         // safe-files root is the same one the file panes showed before the
@@ -2023,9 +2084,10 @@ final class HostAgentWorkspace: ObservableObject {
         let taskID = currentID ?? UUID()
         #endif
         let originSelection = historySelection
-        guard (queued != nil ? liveRuns[taskID] == nil : !isSending), !isTerminating, !changingTasks.contains(taskID) else { return false }
+        guard (queued != nil || automaticGoal != nil ? liveRuns[taskID] == nil : !isSending),
+              !isTerminating, !changingTasks.contains(taskID) else { return false }
         let attachmentDraftID = attachmentDraftKey(for: currentID)
-        let currentGoal = queuedGoal ?? (mode == .goal && criterion.isEmpty && goal?.conversationID == currentID
+        let currentGoal = automaticGoal?.goal ?? queuedGoal ?? (mode == .goal && criterion.isEmpty && goal?.conversationID == currentID
             && goal?.status.isTerminal == false ? goal : nil)
         var criteria: [String] = []
         if mode == .goal, currentGoal == nil, acceptedPlan == nil, !resumingGoal {
@@ -2064,7 +2126,7 @@ final class HostAgentWorkspace: ObservableObject {
             showsModelSettingsForFailure = false
             #endif
         }
-        let drafts = continuingFromHistory || resumingGoal || acceptedPlan != nil ? []
+        let drafts = continuingFromHistory || resumingGoal || acceptedPlan != nil || automaticGoal != nil ? []
             : (queued != nil ? queuedAttachments : stagedAttachments)
         // Bind delegation to the same durable run as plan execution, queued
         // input, or a manually started round.
@@ -2079,6 +2141,9 @@ final class HostAgentWorkspace: ObservableObject {
         Task {
             var admitted = false
             var finishedNormally = false
+            #if FLOE_UNIFIED_MAC
+            var nextGoalRound: (predecessor: UUID, goal: ConversationGoal)?
+            #endif
             defer {
                 #if !FLOE_UNIFIED_MAC
                 if newDraftRunID == taskID { newDraftRunID = nil }
@@ -2100,6 +2165,9 @@ final class HostAgentWorkspace: ObservableObject {
                     Task {
                         await self.childSubagents.release(runID: delegationRunID)
                         release()
+                        #if FLOE_UNIFIED_MAC
+                        if let nextGoalRound { self.startAutomaticGoalRound(nextGoalRound, provider: provider, runtime: runtime) }
+                        #endif
                     }
                 } else {
                     release()
@@ -2171,7 +2239,8 @@ final class HostAgentWorkspace: ObservableObject {
                     tools = try MacAgentWorkspaceTools.binding(workspace: toolWorkspace,
                         privateTaskRootBase: personalTaskLeaseBase, runOutputArtifactRoot: runOutputArtifactRoot, readOnly: readOnly,
                         chatOnly: mode == .chat, delegationRegistry: delegationRegistry,
-                        search: webSearch.access, conversations: conversations, imageTools: images, videoTools: videoTools) { root, identities in
+                        search: webSearch.access, conversations: conversations, imageTools: images, videoTools: videoTools,
+                        browserTools: { root in self.makeTaskBrowserTools?(taskID, root) ?? [] }) { root, identities in
                         let context = MacProjectApprovalContext(grants: grants, workspaceID: toolWorkspace.id,
                             conversationID: taskID, root: root, identities: identities,
                             primaryIsOnDevice: provider.provider.id == ProviderProfile.onDeviceProviderID, networkStatus: self.networkStatus)
@@ -2243,7 +2312,8 @@ final class HostAgentWorkspace: ObservableObject {
                     verifyFinalAnswer: finalReview,
                     goalCriteria: goalCriteria,
                     reusingUserMessageID: acceptedExecution?.userMessageID,
-                    expectedGoal: expectedGoal
+                    expectedGoal: expectedGoal,
+                    automaticGoalPredecessor: automaticGoal?.predecessor
                 )
                 guard liveRuns[taskID]?.stopping == false else { return }
                 let handle: FloeMacSelfSessionHandle
@@ -2352,6 +2422,7 @@ final class HostAgentWorkspace: ObservableObject {
                 let terminal = await handle.waitForTerminal()
                 finishedNormally = terminal?.confirmed == true && terminal?.outcome == .completed && liveRuns[taskID]?.stopping != true
                 #if FLOE_UNIFIED_MAC
+                endTaskBrowserRun?(handle.identity.runID)
                 if finishedNormally, currentID == nil, let titleHelper, providers.contains(where: { $0.model.id == provider.model.id }) {
                     scheduleTaskTitle(taskID, prompt: text, helper: titleHelper, primary: provider, runtime: runtime)
                 }
@@ -2408,6 +2479,34 @@ final class HostAgentWorkspace: ObservableObject {
                 }
                 _ = try await handle.close()
                 #if FLOE_UNIFIED_MAC
+                if mode == .goal, finishedNormally, liveRuns[taskID]?.stopping != true {
+                    // The execution lease has retired. Review uses a separate
+                    // model request without exposing the old approval surface.
+                    liveRuns[taskID]?.handle = nil
+                    let roundID = handle.identity.runID
+                    let review = Task { [weak self] in
+                        try? await runtime.reviewCompletedGoalRound(runID: roundID, conversationID: taskID,
+                                                                   provider: provider) { [weak self] in
+                            await MainActor.run {
+                                self?.liveRuns[taskID]?.stopping == false && self?.isTerminating == false
+                            }
+                        }
+                    }
+                    goalReviews[taskID] = review
+                    if let next = await review.value, liveRuns[taskID]?.stopping == false {
+                        nextGoalRound = (roundID, next)
+                    }
+                    goalReviews.removeValue(forKey: taskID)
+                    if liveRuns[taskID]?.stopping == true {
+                        finishedNormally = false
+                        if let completed = try? await runtime.runRecord(runID: roundID),
+                           let saved = try? await runtime.goals(conversationID: taskID).first(where: { $0.id == completed.goalID }),
+                           saved.status == .active || saved.status == .verifying {
+                            _ = try? await runtime.setGoalPaused(conversationID: taskID, goalID: saved.id, expectedRevision: saved.revision ?? 1)
+                        }
+                    }
+                    if selectedID == taskID { await loadPlanning(conversationID: taskID, runtime: runtime) }
+                }
                 if selectedID == taskID, [.failed, .interrupted].contains(terminal.outcome),
                    let run = try await runtime.recentRuns(conversationID: taskID, limit: 1).first,
                    run.id == handle.identity.runID {
@@ -2451,8 +2550,7 @@ final class HostAgentWorkspace: ObservableObject {
 
     #if FLOE_UNIFIED_MAC
     private func loadHistoryContinuation(_ run: RunRecord, runtime: FloeMacSelfRuntime) async {
-        guard run.conversationID == selectedID,
-              ["failed", "interrupted", "checkpointed", "waitingUserQuestion"].contains(run.state) else { return }
+        guard run.conversationID == selectedID, run.state != "completed" else { return }
         let selection = historySelection
         let action = try? await runtime.continuation(after: run.id, in: run.conversationID)
         guard historySelection == selection, selectedID == run.conversationID else { return }
@@ -2540,7 +2638,15 @@ final class HostAgentWorkspace: ObservableObject {
                               mode: mode, continuingFromHistory: true, checkpointRunID: run.id)
                 return
             }
-            let prompt = MacPermissionsText.t(
+            if action.needsReview {
+                try await runtime.retireForSeparateReview(runID: run.id, conversationID: run.conversationID)
+                guard historySelection == selection, run == continuableRun else { return }
+            }
+            let prompt = action.needsReview
+                ? MacPermissionsText.t(
+                    "核对上一个中断回合。根据已保存的执行记录和工作区文件，说明哪些操作可以确认、哪些结果仍待核对。请先使用只读检查。",
+                    "Review the interrupted round. Use the saved execution records and workspace files to distinguish confirmed outcomes from those that still need review. Start with read-only checks.")
+                : MacPermissionsText.t(
                 "从此会话已保存的进度继续。先核对最后完成的步骤与工具结果，只处理剩余工作。结果不确定的操作先核实，无法核实时询问我。",
                 "Continue from the saved progress in this conversation. Check the last completed steps and tool results, then work on what remains. Verify any uncertain outcome and ask me if it cannot be verified.")
             _ = beginSend(prompt, runtime: runtime, provider: config.binding(), mode: mode, continuingFromHistory: true)
@@ -2559,8 +2665,12 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func canContinueGoal(_ candidate: ConversationGoal) -> Bool {
-        canChangeGoal(candidate) && !isSending && pendingQuestion == nil && pendingApproval == nil
-            && [.active, .paused, .interrupted, .blocked, .waitingUser].contains(candidate.status)
+        let incomplete = !candidate.acceptanceCriteria.allSatisfy(\.isSatisfied)
+            || candidate.steps.contains { $0.status != .completed && $0.status != .skipped }
+        return canChangeGoal(candidate) && !isSending && pendingQuestion == nil && pendingApproval == nil
+            && !needsInterruptedRunReview
+            && ([.active, .paused, .interrupted, .blocked, .waitingUser].contains(candidate.status)
+                || (candidate.status == .verifying && incomplete))
     }
 
     func canConfirmGoal(_ candidate: ConversationGoal) -> Bool {
@@ -2647,6 +2757,20 @@ final class HostAgentWorkspace: ObservableObject {
                 notice = String(localized: "host.chat.keychainUnavailable")
             }
         }
+    }
+
+    private func startAutomaticGoalRound(_ round: (predecessor: UUID, goal: ConversationGoal),
+                                         provider: FloeMacSelfProviderBinding, runtime: FloeMacSelfRuntime) {
+        let taskID = round.goal.conversationID
+        guard !isTerminating, !changingGoals.contains(taskID), queuedInputs[taskID]?.isEmpty != false,
+              liveRuns[taskID] == nil else { return }
+        let currentProvider = providers.first { $0.profile.id == provider.provider.id && $0.model.id == provider.model.id
+            && $0.profile.isEnabled && $0.model.isEnabled }?.binding()
+        guard let binding = currentProvider ?? (vault == nil ? provider : nil) else { return }
+        let prompt = MacPermissionsText.t(
+            "继续当前目标。核对前一轮的证据与尚未完成的验收条件，在授权范围内推进。请从实际产物取得新证据，并按照目标的停止条件结束。",
+            "Continue the active Goal. Check the previous round’s evidence and unfinished criteria, then make authorized progress. Verify the actual deliverable with new evidence and respect the Goal’s stopping conditions.")
+        _ = beginSend(prompt, runtime: runtime, provider: binding, mode: .goal, automaticGoal: round)
     }
     #endif
 
@@ -2792,22 +2916,22 @@ final class HostAgentWorkspace: ObservableObject {
         let preview: (path: String?, text: String?, previousText: String?)
         #if FLOE_UNIFIED_MAC
         let decoder = JSONDecoder()
-        switch call.toolName {
-        case MacAgentWorkspaceCreateFileTool.name:
-            let args = try? decoder.decode(MacAgentWorkspaceCreateFileTool.Arguments.self, from: call.argumentsJSON)
-            preview = (args?.path, args?.content, nil)
-        case MacAgentWorkspaceReplaceTextTool.name:
-            let args = try? decoder.decode(MacAgentWorkspaceReplaceTextTool.Arguments.self, from: call.argumentsJSON)
-            preview = (args?.path, args?.newText, args?.oldText)
-        case WorkspaceOutputPublication.name:
-            let args = try? decoder.decode(WorkspaceOutputPublication.Arguments.self, from: call.argumentsJSON)
-            preview = (args?.path, nil, nil)
-        case DelegateTool.name:
-            let args = try? decoder.decode(DelegateTool.Arguments.self, from: call.argumentsJSON)
-            let details = args.map { [$0.task, $0.context].compactMap { $0 }.joined(separator: "\n\n") }
-            preview = (nil, details, nil)
-        default:
-            preview = (nil, MacNativeCommandPolicy.preview(call) ?? MacTaskActionPreview(call)?.detail, nil)
+        if let mutation = MacAgentWorkspaceMutationPreview.preview(of: call) {
+            preview = mutation
+        } else if let browser = MacTaskBrowserApproval.preview(call) {
+            preview = (browser.path, browser.text, nil)
+        } else {
+            switch call.toolName {
+            case WorkspaceOutputPublication.name:
+                let args = try? decoder.decode(WorkspaceOutputPublication.Arguments.self, from: call.argumentsJSON)
+                preview = (args?.path, nil, nil)
+            case DelegateTool.name:
+                let args = try? decoder.decode(DelegateTool.Arguments.self, from: call.argumentsJSON)
+                let details = args.map { [$0.task, $0.context].compactMap { $0 }.joined(separator: "\n\n") }
+                preview = (nil, details, nil)
+            default:
+                preview = (nil, MacNativeCommandPolicy.preview(call) ?? MacTaskActionPreview(call)?.detail, nil)
+            }
         }
         #else
         preview = (nil, nil, nil)
@@ -3358,6 +3482,9 @@ final class HostAgentWorkspace: ObservableObject {
     func stopTask(_ taskID: UUID) {
         guard liveRuns[taskID]?.stopping == false else { return }
         liveRuns[taskID]?.stopping = true
+        #if FLOE_UNIFIED_MAC
+        goalReviews[taskID]?.cancel()
+        #endif
         if let handle = liveRuns[taskID]?.handle { cancelRun(handle, taskID: taskID) }
     }
 
@@ -4418,6 +4545,23 @@ final class HostAgentWorkspace: ObservableObject {
         selectedProviderID = providerID
         selectedModelID = modelID
         return composerProvider?.model.id == modelID
+    }
+
+    func latestRecoveryFixtureRun() async -> RunRecord? {
+        guard vault == nil, let runtime, let selectedID else { return nil }
+        return try? await runtime.recentRuns(conversationID: selectedID, limit: 1).first
+    }
+
+    func recoveryFixtureState() async -> [String: String] {
+        guard vault == nil, let runtime, let run = await latestRecoveryFixtureRun() else { return [:] }
+        let checkpoint = try? await runtime.recoveryPoint(runID: run.id)
+        let admission = try? await runtime.admissionRecord(conversationID: run.conversationID)
+        let route = try? await runtime.continuation(after: run.id, in: run.conversationID)
+        return ["run": run.state, "checkpoint": checkpoint?.state.name ?? "",
+                "approvalProof": String(checkpoint?.undispatchedApproval != nil),
+                "providerProof": String(checkpoint?.providerDispatchEnvelope != nil),
+                "admission": admission?.phase.rawValue ?? "",
+                "route": route?.needsReview == true ? "review" : route?.resumesOriginalRun == true ? "resume" : "none"]
     }
 
     func verifyProjectTaskWorkflowSmoke(
