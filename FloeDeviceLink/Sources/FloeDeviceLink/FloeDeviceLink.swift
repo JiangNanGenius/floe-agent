@@ -55,7 +55,7 @@ public struct FloeDeviceLinkAddress: Codable, Sendable, Equatable {
     }
 }
 
-public enum FloeDeviceLinkRelay: Sendable {
+public enum FloeDeviceLinkRelay: Sendable, Hashable {
     case publicIroh
     case disabled
     case custom(URL)
