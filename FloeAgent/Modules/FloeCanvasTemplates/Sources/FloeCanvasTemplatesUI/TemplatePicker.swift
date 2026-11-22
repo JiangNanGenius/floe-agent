@@ -35,6 +35,7 @@ public struct CanvasTemplatePicker: View {
     private let chinese: Bool
     private let personal: [CanvasTemplate]
     private let recent: [CanvasTemplate]
+    private let scenarios: [CanvasTemplate]
     private let onChoose: (CanvasTemplate?) -> Void
     private let onGoal: ((String, CanvasTemplate?) -> Void)?
     @State private var query = ""
@@ -42,9 +43,11 @@ public struct CanvasTemplatePicker: View {
     @State private var category: TemplateCategory?
     @State private var chosenTemplate: CanvasTemplate?
     public init(personal: [CanvasTemplate] = [], recent: [CanvasTemplate] = [],
+                scenarios: [CanvasTemplate] = BuiltInCanvasTemplates.all,
                 chinese: Bool = true, onGoal: ((String, CanvasTemplate?) -> Void)? = nil,
                 onChoose: @escaping (CanvasTemplate?) -> Void) {
         self.personal = personal; self.recent = recent
+        self.scenarios = scenarios
         self.chinese = chinese; self.onChoose = onChoose; self.onGoal = onGoal
     }
     public var body: some View {
@@ -65,7 +68,7 @@ public struct CanvasTemplatePicker: View {
                             }
                             Spacer()
                             Button(chinese ? "创建画布" : "Create canvas", systemImage: "arrow.right") {
-                                onGoal(goal.trimmingCharacters(in: .whitespacesAndNewlines), chosenTemplate ?? BuiltInCanvasTemplates.all.first)
+                                onGoal(goal.trimmingCharacters(in: .whitespacesAndNewlines), chosenTemplate ?? scenarios.first)
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -84,13 +87,13 @@ public struct CanvasTemplatePicker: View {
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         filterButton(chinese ? "全部" : "All", value: nil)
-                        ForEach(TemplateCategory.allCases, id: \.self) { value in
+                        ForEach(TemplateCategory.allCases.filter { availableCategories.contains($0) }, id: \.self) { value in
                             filterButton(categoryTitle(value), value: value)
                         }
                     }
                 }.scrollIndicators(.hidden)
                 if !recent.isEmpty { section(chinese ? "最近使用" : "Recent", recent) }
-                section(chinese ? "场景与流程" : "Scenarios and workflows", BuiltInCanvasTemplates.all)
+                if !scenarios.isEmpty { section(chinese ? "场景与流程" : "Scenarios and workflows", scenarios) }
                 if !personal.isEmpty { section(chinese ? "我的流程" : "My workflows", personal) }
             }.padding(24)
         }
@@ -98,6 +101,7 @@ public struct CanvasTemplatePicker: View {
         .navigationTitle(chinese ? "新建画布" : "New canvas")
         .background(Color.secondary.opacity(0.04))
     }
+    private var availableCategories: Set<TemplateCategory> { Set((scenarios + recent + personal).map(\.category)) }
     private func section(_ name: String, _ templates: [CanvasTemplate]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(name).font(.headline).foregroundStyle(.secondary)

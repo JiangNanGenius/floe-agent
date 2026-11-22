@@ -299,29 +299,7 @@ struct CreativeModeHubView: View {
     private var canvasList: some View {
         List {
             Section {
-                Button {
-                    createPrivateCanvas()
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "rectangle.and.pencil.and.ellipsis")
-                            .foregroundStyle(FloeTheme.primary)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("workspace.workspace_canvas_view.new_canvas")
-                                .foregroundStyle(.primary)
-                            Text(IDELanguageRunText.t("从目标、场景或空白开始", "Start with a goal, scenario, or blank canvas"))
-                                .font(FloeTheme.Typography.metadata)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(minHeight: FloeTheme.minimumTarget)
-                .accessibilityIdentifier("canvas.home.create")
+                FloeCanvasStartRow(open: createPrivateCanvas)
                 Button {
                     showsMaterialLibrary = true
                 } label: {
@@ -459,17 +437,9 @@ struct CreativeModeHubView: View {
 
     private func personalCanvasRow(_ record: PersonalContentRecord) -> some View {
         Button { mixedCanvasPresentation = record } label: {
-            HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 8).fill(FloeTheme.primary.opacity(0.12)).frame(width: 52, height: 38)
-                    .overlay { Image(systemName: "rectangle.and.pencil.and.ellipsis") }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(record.title).foregroundStyle(.primary)
-                    Text(record.modifiedAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
-            }.frame(minHeight: FloeTheme.minimumTarget)
+            FloeCanvasLibraryRow(title: record.title) {
+                Text(record.modifiedAt.formatted(date: .abbreviated, time: .shortened))
+            }
         }.buttonStyle(.plain)
             .contextMenu {
                 Menu(IDELanguageRunText.t("移入文件夹", "Move to folder"), systemImage: "folder") {
@@ -486,28 +456,15 @@ struct CreativeModeHubView: View {
             presentation = CanvasPresentation(id: summary.id, name: summary.name,
                 workspace: environment.workspaceCenter.projectWorkspaces.first { $0.id == summary.workspaceID })
         } label: {
-            HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(FloeTheme.primary.opacity(0.12))
-                    .frame(width: 52, height: 38)
-                    .overlay { Image(systemName: "rectangle.and.pencil.and.ellipsis") }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(summary.name).foregroundStyle(.primary)
-                    if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(summary.excerpt(matching: searchText)).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            FloeCanvasLibraryRow(title: summary.name, excerpt: searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                 ? nil : summary.excerpt(matching: searchText)) {
+                HStack(spacing: 6) {
+                    Text(summary.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                    if summary.syncEnabled { Label("workspace.workspace_canvas_view.sync", systemImage: "icloud") }
+                    if summary.pendingMediaJobs > 0 {
+                        Label(FloeL10n.plural("workspace.workspace_canvas_view.tasks", count: summary.pendingMediaJobs), systemImage: "hourglass")
                     }
-                    HStack(spacing: 6) {
-                        Text(summary.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                        if summary.syncEnabled { Label("workspace.workspace_canvas_view.sync", systemImage: "icloud") }
-                        if summary.pendingMediaJobs > 0 {
-                            Label(FloeL10n.plural("workspace.workspace_canvas_view.tasks", count: summary.pendingMediaJobs), systemImage: "hourglass")
-                        }
-                    }
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
             }
         }
         .buttonStyle(.plain)

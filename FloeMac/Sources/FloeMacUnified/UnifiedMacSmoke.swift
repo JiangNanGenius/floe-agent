@@ -373,6 +373,10 @@ final class UnifiedMacSmoke {
             finish(["expandedComposer": expanded, "attachmentPreview": preview, "details": settingsDiagnostics])
             return
         }
+        if CommandLine.arguments.contains("--task-permissions-only") {
+            await verifyTaskPermissionsInspector(model)
+            return
+        }
         if CommandLine.arguments.contains("--creative-only") {
             model.openAgentWorkspace()
             guard let agent = model.macWorkspace?.agent else { finish(["creative": false, "details": ["Agent did not open"]]); return }
@@ -871,6 +875,34 @@ final class UnifiedMacSmoke {
             try? await Task.sleep(for: .milliseconds(40))
         }
         return agent.isReady ? agent : nil
+    }
+
+    private func verifyTaskPermissionsInspector(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let content = visibleWorkbench?.contentView else {
+            finish(["opened": false]); return
+        }
+        let owner = agent.attachmentOwnerID
+        let deadline = ContinuousClock.now + .seconds(3)
+        while agent.smokeTaskPermissionsFrame == nil && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        refreshButtonFrames(in: content)
+        guard clickWorkbenchButton(ids: ["composer.approvalMode"], frame: agent.smokeTaskPermissionsFrame, screenshot: nil) else {
+            finish(["opened": false, "action": "composer approval"]); return
+        }
+        let opening = ContinuousClock.now + .seconds(3)
+        while !agent.smokeTaskPermissionsShown && ContinuousClock.now < opening { try? await Task.sleep(for: .milliseconds(40)) }
+        let alongsideTask = agent.smokeTaskPermissionsShown && agent.windowShowsTask && agent.attachmentOwnerID == owner
+        capture(content, extension: "permissions-inspector.png")
+        refreshButtonFrames(in: content)
+        let close = clickWorkbenchButton(ids: ["task.permissions.close"], frame: agent.smokeTaskPermissionsCloseFrame, screenshot: nil)
+        let closing = ContinuousClock.now + .seconds(3)
+        while agent.smokeTaskPermissionsShown && ContinuousClock.now < closing { try? await Task.sleep(for: .milliseconds(40)) }
+        agent.composerMode = .chat
+        let chat = ContinuousClock.now + .seconds(2)
+        while agent.smokeTaskPermissionsFrame != nil && ContinuousClock.now < chat { try? await Task.sleep(for: .milliseconds(40)) }
+        finish(["opened": alongsideTask, "closed": close && !agent.smokeTaskPermissionsShown,
+                "sameDraft": agent.attachmentOwnerID == owner, "chatHidesApproval": agent.smokeTaskPermissionsFrame == nil])
     }
 
     private func exerciseWorkspaceAuthoring(_ model: BridgeAppModel, endpoint: URL) async {
@@ -2057,8 +2089,46 @@ final class UnifiedMacSmoke {
             else { return false }
             let mounted = ContinuousClock.now + .seconds(3)
             while !agent.smokeCreativeMounted && ContinuousClock.now < mounted { try await Task.sleep(for: .milliseconds(40)) }
-            guard agent.smokeCreativeMounted, let view = visibleWorkbench?.contentView else { return false }
+            guard agent.smokeCreativeMounted, !library.smokeCanvasEditorOpen,
+                  let window = visibleWorkbench, let view = window.contentView, let canvas = library.selectedID else { return false }
+            capture(view, extension: "creative-library.png")
+            refreshButtonFrames(in: view)
+            guard clickWorkbenchButton(ids: ["canvas.home.create"], frame: library.smokeCanvasCreateFrame, screenshot: nil) else {
+                settingsDiagnostics.append("The creative library did not offer the shared New Canvas action.")
+                return false
+            }
+            let sheetDeadline = ContinuousClock.now + .seconds(3)
+            while window.attachedSheet == nil && ContinuousClock.now < sheetDeadline { try await Task.sleep(for: .milliseconds(40)) }
+            guard let pickerSheet = window.attachedSheet, let picker = pickerSheet.contentView else {
+                settingsDiagnostics.append("The shared canvas template picker did not open."); return false
+            }
+            capture(picker, extension: "creative-template-picker.png")
+            pickerSheet.makeKey()
+            refreshButtonFrames(in: picker)
+            guard let cancel = library.smokeCanvasTemplateCloseFrame, !cancel.isEmpty,
+                  clickWindowLocation(NSPoint(x: cancel.midX, y: cancel.midY), in: pickerSheet) else {
+                settingsDiagnostics.append("The template picker’s cancel button was unavailable.")
+                window.endSheet(pickerSheet)
+                return false
+            }
+            let cancelDeadline = ContinuousClock.now + .seconds(3)
+            while window.attachedSheet != nil && ContinuousClock.now < cancelDeadline { try await Task.sleep(for: .milliseconds(40)) }
+            guard window.attachedSheet == nil else {
+                settingsDiagnostics.append("The template picker did not return to the canvas library.")
+                window.endSheet(pickerSheet)
+                return false
+            }
+            window.makeKeyAndOrderFront(nil)
+            guard await openFixtureCanvas(canvas, library: library, view: view) else {
+                settingsDiagnostics.append("The creative library did not open the selected canvas.")
+                return false
+            }
             capture(view, extension: "creative.png")
+            refreshButtonFrames(in: view)
+            guard clickWorkbenchButton(ids: ["canvas.editor.library"], frame: library.smokeCanvasLibraryBackFrame, screenshot: nil) else { return false }
+            let libraryDeadline = ContinuousClock.now + .seconds(3)
+            while library.smokeCanvasEditorOpen && ContinuousClock.now < libraryDeadline { try await Task.sleep(for: .milliseconds(40)) }
+            guard !library.smokeCanvasEditorOpen, await openFixtureCanvas(canvas, library: library, view: view) else { return false }
             for (index, tab) in [(1, "image"), (2, "video")] {
                 view.layoutSubtreeIfNeeded()
                 refreshButtonFrames(in: view)
@@ -2184,6 +2254,15 @@ final class UnifiedMacSmoke {
             settingsDiagnostics.append("Creative fixture: " + error.localizedDescription)
             return false
         }
+    }
+
+    private func openFixtureCanvas(_ id: UUID, library: MacCreativeLibrary, view: NSView) async -> Bool {
+        refreshButtonFrames(in: view)
+        guard clickWorkbenchButton(ids: ["canvas.home.open." + id.uuidString],
+                                   frame: library.smokeCanvasFrames[id], screenshot: nil) else { return false }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !library.smokeCanvasEditorOpen && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
+        return library.smokeCanvasEditorOpen && library.selectedID == id
     }
 
     private func verifyMixedCanvas(library: MacCreativeLibrary, image: URL, video: URL) async throws -> Bool {
@@ -3197,8 +3276,9 @@ final class UnifiedMacSmoke {
         guard browserOpenedFromMessageLink else { return failed("the clicked Markdown link did not open the browser") }
         guard await waitUntil({ browser.taskTools.session(for: owner)?.activeWebView?.title == "Floe browser fixture" }),
               let session = browser.taskTools.session(for: owner), let page = session.activeWebView,
-              page.url == url, page.window === window else {
-            return failed("page did not load in the owning task window")
+              page.url == url, page.window === window, agent.windowShowsTask,
+              page.bounds.width < content.bounds.width * 0.7 else {
+            return failed("page did not load alongside the owning task")
         }
         capture(content, extension: "browser-task.png")
         let other = browser.taskTools.ensureSession(for: UUID())
@@ -3247,9 +3327,12 @@ final class UnifiedMacSmoke {
             return failed("using the browser did not take control of the same model page")
         }
         guard await waitUntil({ pressChromeButton("workspace.browser.returnControl", anchor: "workspace.browser.returnControlAnchor") }),
-              await waitUntil({ !session.isUserControlling }), session.activeWebView === page else {
-            return failed("the browser did not return control on the same page")
+              await waitUntil({ !session.isUserControlling && !browser.isPresented }),
+              session.activeWebView === page, agent.windowShowsTask else {
+            return failed("the browser did not return control and close the inspector")
         }
+        browser.present()
+        guard await waitUntil({ browser.isPresented && page.window === window }) else { return failed("the inspector did not reopen its task page") }
         browserReturnButtonPressed = pressChromeButton("workspace.browser.backToTask", anchor: "workspace.browser.returnAnchor")
         guard browserReturnButtonPressed else { return failed("could not press the return button") }
         guard await waitUntil({ !browser.isPresented && agent.windowShowsTask }), agent.selectedID == owner,

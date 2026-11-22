@@ -281,74 +281,20 @@ private struct BrowserTabStrip: View {
     @ObservedObject var session: BrowserTaskSession
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(session.tabs) { tab in
-                    BrowserTabChip(session: session, tab: tab)
-                }
-                Button {
-                    session.registerUserInput(reason: "You opened a tab")
-                    _ = session.createTab()
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(IDELanguageRunText.t("新建标签页", "New tab"))
-                .accessibilityIdentifier("browser.newTab")
-            }
-            .padding(.horizontal, 8)
-        }
-        .frame(height: 44)
-    }
-}
-
-private struct BrowserTabChip: View {
-    @ObservedObject var session: BrowserTaskSession
-    let tab: BrowserTaskSession.Tab
-
-    private var active: Bool { tab.id == session.activeTabID }
-    private var title: String {
-        let value = tab.webView.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !value.isEmpty { return value }
-        if let host = tab.webView.url?.host, !host.isEmpty { return host }
-        return IDELanguageRunText.t("新标签页", "New tab")
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Button {
-                session.registerUserInput(reason: "You closed a tab")
-                session.close(tab.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(IDELanguageRunText.t("关闭标签页", "Close tab"))
-            Button {
-                session.registerUserInput(reason: "You switched tabs")
-                session.activate(tab.id)
-            } label: {
-                Text(title)
-                    .font(.subheadline)
-                    .lineLimit(1)
-                    .foregroundStyle(active ? .primary : .secondary)
-                    .padding(.trailing, 16)
-                    .frame(minWidth: 80, maxWidth: 180, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(active ? .isSelected : [])
-        }
-        .background(active ? Color(uiColor: .systemBackground) : .clear,
-                    in: UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10))
-        .accessibilityElement(children: .contain)
+        FloeBrowserTabStrip(tabs: session.tabs.map { tab in
+            let title = tab.webView.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .init(id: tab.id, title: title.isEmpty ? (tab.webView.url?.host ?? "") : title,
+                         active: tab.id == session.activeTabID)
+        }, onOpen: {
+            session.registerUserInput(reason: "You opened a tab")
+            _ = session.createTab()
+        }, onSelect: { id in
+            session.registerUserInput(reason: "You switched tabs")
+            session.activate(id)
+        }, onClose: { id in
+            session.registerUserInput(reason: "You closed a tab")
+            session.close(id)
+        })
     }
 }
 

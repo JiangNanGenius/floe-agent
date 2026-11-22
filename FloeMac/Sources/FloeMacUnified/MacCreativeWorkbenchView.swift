@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import AppKit
+import FloeCanvasTemplates
+import FloeCanvasTemplatesUI
 import FloeCore
 import ImageIO
 import SwiftUI
@@ -16,14 +18,20 @@ struct MacCreativeWorkbenchView: View {
     var saveToTask: ((URL) async -> Bool)? = nil
     private enum Page: String { case canvas, image, video }
     private enum Editor: Identifiable {
-        case create, rename, text(UUID?)
+        case rename, text(UUID?)
         var id: String { String(describing: self) }
+    }
+    private struct MediaToPlace {
+        let url: URL
+        let kind: CanvasNodeKind
     }
     @State private var page: Page = .canvas
     @State private var reference: URL?
     @State private var editor: Editor?
     @State private var draft = ""
-    @State private var showLibrary = false
+    @State private var editingCanvas = false
+    @State private var showsCanvasStart = false
+    @State private var mediaToPlace: MediaToPlace?
     @State private var trashID: UUID?
     @State private var query = ""
     @State private var dragID: UUID?
@@ -36,7 +44,8 @@ struct MacCreativeWorkbenchView: View {
             Divider()
             switch page {
             case .canvas:
-                VStack(spacing: 0) { boards }
+                if editingCanvas, library.selected != nil {
+                    VStack(spacing: 0) { boards }
                     .dropDestination(for: URL.self) { urls, _ in
                         guard library.selected != nil, !library.isTransferring else { return false }
                         var added = false
@@ -51,6 +60,13 @@ struct MacCreativeWorkbenchView: View {
                         }
                         return added
                     }
+                    #if FLOE_MAC_HOST_SMOKE
+                    .onAppear { library.smokeCanvasEditorOpen = true }
+                    .onDisappear { library.smokeCanvasEditorOpen = false }
+                    #endif
+                } else {
+                    canvasLibrary
+                }
             case .image:
                 MacImageWorkbenchView(images: images, openSettings: imageSettings, attachToTask: nil,
                     saveToTask: saveToTask,
@@ -68,7 +84,10 @@ struct MacCreativeWorkbenchView: View {
             set: { if !$0 { trashID = nil } }), presenting: trashID) { id in
             Button("mac.creative.trash", role: .destructive) {
                 guard library.selectedID == id else { return }
-                Task { do { try await library.trashSelected() } catch { library.error = error.localizedDescription } }
+                Task {
+                    do { try await library.trashSelected(); editingCanvas = false }
+                    catch { library.error = error.localizedDescription }
+                }
             }
             Button("mac.creative.cancel", role: .cancel) {}
         }
@@ -84,7 +103,6 @@ struct MacCreativeWorkbenchView: View {
                     Button("mac.creative.save") {
                         perform {
                             switch edit {
-                            case .create: try library.create(name: draft)
                             case .rename: try library.rename(draft)
                             case .text(let id):
                                 if let id { try library.setText(draft, id: id) } else { try library.addText(draft) }
@@ -94,6 +112,28 @@ struct MacCreativeWorkbenchView: View {
                     }.keyboardShortcut(.defaultAction).disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.padding(20)
+        }
+        .sheet(isPresented: $showsCanvasStart) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text(FloeL10n.isChinese ? "新建画布" : "New Canvas").font(.headline)
+                    Spacer()
+                    Button("mac.creative.cancel") { showsCanvasStart = false }.keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("canvas.start.cancel")
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { library.smokeCanvasTemplateCloseFrame = $0 })
+                        #endif
+                }
+                .padding(12)
+                Divider()
+                CanvasTemplatePicker(scenarios: BuiltInCanvasTemplates.all.filter { [.research, .ideas].contains($0.category) },
+                                     chinese: FloeL10n.isChinese, onGoal: { goal, template in
+                    createCanvas(template: template, goal: goal)
+                }) { template in
+                    createCanvas(template: template, goal: nil)
+                }
+            }
+            .frame(minWidth: 560, idealWidth: 700, minHeight: 430, idealHeight: 560)
         }
         .alert("mac.creative.error", isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) {
             Button("OK") { library.error = nil }
@@ -117,7 +157,7 @@ struct MacCreativeWorkbenchView: View {
     }
 
     private func editTitle(_ edit: Editor) -> LocalizedStringKey {
-        switch edit { case .create: "mac.creative.new"; case .rename: "mac.creative.rename"; case .text: "mac.creative.text" }
+        switch edit { case .rename: "mac.creative.rename"; case .text: "mac.creative.text" }
     }
 
     @ViewBuilder private var boards: some View {
@@ -134,69 +174,89 @@ struct MacCreativeWorkbenchView: View {
             } else {
                 boardCanvas(document)
             }
-        } else {
-            ContentUnavailableView {
-                Label("mac.creative.canvas", systemImage: "rectangle.on.rectangle")
-            } actions: {
-                Button("mac.creative.new") { present(.create) }.buttonStyle(.borderedProminent)
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var canvasLibrary: some View {
+        let visible = library.projects.filter {
+            query.isEmpty || $0.name.localizedStandardContains(query)
+                || $0.documents.contains { page in page.nodes.contains { $0.text.localizedStandardContains(query) } }
+        }
+        return VStack(spacing: 0) {
+            HStack {
+                TextField("mac.creative.find", text: $query)
+                Button("mac.creative.importCanvas", systemImage: "square.and.arrow.down") { transfer(export: false) }
+                if library.isTransferring { ProgressView().controlSize(.small) }
+            }.padding(12)
+            Divider()
+            List {
+                if mediaToPlace != nil {
+                    Section {
+                        Text(FloeL10n.isChinese ? "选择画布来放置生成结果。" : "Choose a canvas for the generated result.")
+                        Button("mac.creative.cancel") { mediaToPlace = nil }
+                    }
+                }
+                Section(FloeL10n.isChinese ? "快速开始" : "Quick Start") {
+                    FloeCanvasStartRow { showsCanvasStart = true }
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { library.smokeCanvasCreateFrame = $0 })
+                        #endif
+                }
+                Section(FloeL10n.isChinese ? "画布" : "Canvases") {
+                    ForEach(visible) { project in
+                        Button { openCanvas(project.id) } label: {
+                            FloeCanvasLibraryRow(title: project.name) {
+                                Text(project.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("canvas.home.open." + project.id.uuidString)
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { library.smokeCanvasFrames[project.id] = $0 })
+                        #endif
+                    }
+                    if visible.isEmpty {
+                        Text(query.isEmpty ? (FloeL10n.isChinese ? "这里还没有画布" : "No canvases yet")
+                             : (FloeL10n.isChinese ? "没有匹配的画布" : "No matching canvases"))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }.listStyle(.inset)
+        }.disabled(library.isTransferring)
     }
 
     // MARK: - Board toolbar
 
     private var boardToolbar: some View {
         HStack {
-            canvasPicker
+            Button {
+                editingCanvas = false
+                connect.cancel()
+            } label: {
+                Label(FloeL10n.isChinese ? "画布列表" : "Canvases", systemImage: "chevron.left")
+            }
+            .accessibilityIdentifier("canvas.editor.library")
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { library.smokeCanvasLibraryBackFrame = $0 })
+            #endif
+            Text(library.selected?.name ?? "").lineLimit(1)
             if library.selected != nil {
                 pagePickerInline
                 Button { present(.text(nil)) } label: { Label("mac.creative.text", systemImage: "textformat") }
                 mediaMenu
                 undoButton
                 preservedBadge
+                Menu {
+                    Button("mac.creative.rename") { present(.rename, library.selected?.name ?? "") }
+                    Button("mac.creative.export") { transfer(export: true) }
+                    Button("mac.creative.trash", role: .destructive) { trashID = library.selectedID }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }.accessibilityLabel(FloeL10n.isChinese ? "画布操作" : "Canvas Actions")
             }
             Spacer(minLength: 0)
             if library.isTransferring { ProgressView().controlSize(.small) }
         }.disabled(library.isTransferring).padding(.horizontal, 16).padding(.vertical, 8)
-    }
-
-    private var canvasPicker: some View {
-        Button { query = ""; showLibrary.toggle() } label: {
-            Label(library.selected?.name ?? String(localized: "mac.creative.canvas"), systemImage: "rectangle.on.rectangle")
-                .lineLimit(1)
-        }.popover(isPresented: $showLibrary, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("mac.creative.find", text: $query)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 3) {
-                        ForEach(library.projects.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { project in
-                            Button {
-                                library.selectedID = project.id
-                                showLibrary = false
-                            } label: {
-                                HStack {
-                                    Image(systemName: project.id == library.selectedID ? "checkmark" : "rectangle")
-                                    Text(verbatim: project.name).lineLimit(1)
-                                    if MacCanvasBackupProjection.hasOpaqueContent(project) {
-                                        Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                }.padding(4).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                        }
-                    }
-                }.frame(maxHeight: 185)
-                Divider()
-                Button("mac.creative.new") { showLibrary = false; present(.create) }
-                Button("mac.creative.importCanvas") { showLibrary = false; transfer(export: false) }
-                if library.selected != nil {
-                    Button("mac.creative.rename") { showLibrary = false; present(.rename, library.selected?.name ?? "") }
-                    Button("mac.creative.export") { showLibrary = false; transfer(export: true) }
-                    Button("mac.creative.trash", role: .destructive) { showLibrary = false; trashID = library.selectedID }
-
-                }
-            }.padding(12).frame(width: 250)
-        }
     }
 
     @ViewBuilder private var pagePickerInline: some View {
@@ -539,16 +599,34 @@ struct MacCreativeWorkbenchView: View {
     }
     private func add(_ file: URL, kind: CanvasNodeKind, title: String) { perform { try library.addMedia(file, kind: kind, title: title) } }
 
-    /// Routes a generated media file onto the selected canvas, creating a
-    /// board when none is selected, and shows the result.
     private func routeToCanvas(_ url: URL, kind: CanvasNodeKind) {
-        perform {
-            if library.selected == nil {
-                try library.create(name: url.deletingPathExtension().lastPathComponent)
-            }
-            try library.addMedia(url, kind: kind, title: url.deletingPathExtension().lastPathComponent)
+        mediaToPlace = MediaToPlace(url: url, kind: kind)
+        if editingCanvas, let id = library.selectedID { openCanvas(id) }
+        else {
+            query = ""
+            page = .canvas
         }
+    }
+
+    private func createCanvas(template: CanvasTemplate?, goal: String?) {
+        perform {
+            try library.create(template: template, goal: goal, chinese: FloeL10n.isChinese)
+            showsCanvasStart = false
+            if let id = library.selectedID { openCanvas(id) }
+        }
+    }
+
+    private func openCanvas(_ id: UUID) {
+        if library.selectedID != id { library.selectedID = id }
+        connect.cancel()
+        editingCanvas = true
         page = .canvas
+        if let media = mediaToPlace {
+            perform {
+                try library.addMedia(media.url, kind: media.kind, title: media.url.deletingPathExtension().lastPathComponent)
+                mediaToPlace = nil
+            }
+        }
     }
 
     private func transfer(export: Bool) {
@@ -562,7 +640,10 @@ struct MacCreativeWorkbenchView: View {
         Task {
             do {
                 if export { try await library.exportSelected(to: url) }
-                else { try await library.importCanvas(from: url) }
+                else {
+                    try await library.importCanvas(from: url)
+                    if let id = library.selectedID { openCanvas(id) }
+                }
             } catch { library.error = error.localizedDescription }
         }
     }

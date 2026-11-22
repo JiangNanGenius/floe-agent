@@ -20,6 +20,7 @@ struct HostAgentWorkspaceView: View {
     var openModelSettings: (() -> Void)? = nil
     var openPermissionSettings: (() -> Void)? = nil
     var openFiles: (() -> Void)? = nil
+    var openTaskPermissions: (() -> Void)? = nil
     var openImageWorkbench: (() -> Void)? = nil
     var findRequest: UUID? = nil
     var findConversationID: UUID? = nil
@@ -52,10 +53,6 @@ struct HostAgentWorkspaceView: View {
     @State private var textImportAttachmentID: UUID?
     @State private var showTextImportError = false
     @State private var textImportFoundNoText = false
-    #if FLOE_UNIFIED_MAC
-    @State private var confirmsTaskFullAccess = false
-    @State private var approvalSelection: UUID?
-    #endif
     @State private var criterion = ""
     @State private var goalToEdit: ConversationGoal?
     @State private var goalForConfirmation: ConversationGoal?
@@ -69,6 +66,7 @@ struct HostAgentWorkspaceView: View {
     init(workspace: HostAgentWorkspace, workspaceDraft: Binding<String>? = nil,
          captureDraftCommit: (() -> (() -> Void))? = nil,
          openModelSettings: (() -> Void)? = nil, openPermissionSettings: (() -> Void)? = nil, openFiles: (() -> Void)? = nil,
+         openTaskPermissions: (() -> Void)? = nil,
          openImageWorkbench: (() -> Void)? = nil, findRequest: UUID? = nil,
          findConversationID: UUID? = nil, requestedMessageID: UUID? = nil,
          didHandleSearchResult: ((UUID, UUID) -> Void)? = nil) {
@@ -78,6 +76,7 @@ struct HostAgentWorkspaceView: View {
         self.openModelSettings = openModelSettings
         self.openPermissionSettings = openPermissionSettings
         self.openFiles = openFiles
+        self.openTaskPermissions = openTaskPermissions
         self.openImageWorkbench = openImageWorkbench
         self.didHandleSearchResult = didHandleSearchResult
         self.requestedMessageID = requestedMessageID
@@ -632,10 +631,12 @@ struct HostAgentWorkspaceView: View {
                 ComposerContextLayout {
                     modelControl(openSettings: openModelSettings).disabled(workspace.isSending)
                     if let provider = workspace.composerProvider { reasoningMenu(provider.model) }
-                    composerWorkspace
+                    if mode != .chat { composerWorkspace }
                     modeControl.disabled(workspace.isSending)
                     if workspace.isSending { runningInputControl }
-                    permissionControl.disabled(workspace.isStopping || workspace.isResolvingApproval || (workspace.isSending && workspace.runPhase == nil))
+                    if mode != .chat {
+                        permissionControl.disabled(workspace.isStopping || workspace.isResolvingApproval || (workspace.isSending && workspace.runPhase == nil))
+                    }
                 }
                 .disabled(workspace.isTerminating || workspace.isAcceptingPlan)
             }
@@ -1050,40 +1051,18 @@ struct HostAgentWorkspaceView: View {
         #endif
     }
 
-    /// Permission chip for the current task or the next-task draft, aligned
-    /// with the iPad composer chip: choosing a mode updates the task through
-    /// the workspace, which authenticates this Mac's user before enabling
-    /// full access. Genuine save failures surface through the workspace
-    /// notice; a dismissed authentication stays silent.
     private var permissionControl: some View {
-        Menu {
-            ForEach(TaskApprovalMode.allCases, id: \.self) { choice in
-                Button {
-                    if choice == .fullAccess && choice != workspace.taskApprovalMode {
-                        approvalSelection = workspace.draftSelectionID
-                        confirmsTaskFullAccess = true
-                    } else { Task { await workspace.setApprovalMode(choice, asDefault: false) } }
-                } label: {
-                    if workspace.taskApprovalMode == choice {
-                        Label(choice.macPermissionsTitle, systemImage: "checkmark")
-                    } else {
-                        Text(choice.macPermissionsTitle)
-                    }
-                }
-            }
-        } label: {
-            FloeThreadComposerChip(title: Text(workspace.taskApprovalMode.macPermissionsTitle),
+        Button { openTaskPermissions?() } label: {
+            FloeThreadComposerChip(title: Text(FloeTaskApprovalSection.title(workspace.taskApprovalMode)),
                                    systemImage: "lock.shield")
         }
-        .confirmMacFullAccess(isPresented: $confirmsTaskFullAccess, asDefault: false) {
-            guard approvalSelection == workspace.draftSelectionID else { return }
-            Task { await workspace.setApprovalMode(.fullAccess, asDefault: false) }
-        }
-        .menuStyle(.button)
         .buttonStyle(ComposerButtonStyle())
-        .menuIndicator(.hidden)
-        .disabled(workspace.savingApprovalMode)
+        .disabled(openTaskPermissions == nil || workspace.savingApprovalMode)
         .accessibilityIdentifier("composer.approvalMode")
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { workspace.smokeTaskPermissionsFrame = $0 })
+        .onDisappear { workspace.smokeTaskPermissionsFrame = nil }
+        #endif
         .accessibilityLabel(MacPermissionsText.t("审批模式", "Approval mode"))
         .help(MacPermissionsText.t("选择此任务的审批模式", "Choose the approval mode for this task"))
     }

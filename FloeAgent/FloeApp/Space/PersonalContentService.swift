@@ -39,24 +39,9 @@ actor PersonalContentService {
     func library() throws -> PersonalContentLibrary { try storage.get() }
 
     func createCanvas(template: CanvasTemplate?, chinese: Bool, goal: String? = nil) async throws -> PersonalContentRecord {
-        let id = UUID()
-        let title = template?.title.value(chinese: chinese) ?? (chinese ? "未命名画布" : "Untitled canvas")
-        let brief = goal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard brief.utf8.count <= 128_000 else { throw PersonalContentError.invalidProject }
-        let snapshot: CanvasSnapshot
-        if let template {
-            snapshot = try CanvasTemplateEngine.instantiate(template, name: title,
-                inputs: brief.isEmpty ? [:] : ["brief": .text(brief)], newCanvasID: id).snapshot
-        } else {
-            var page = CanvasPageSnapshot(name: chinese ? "画布" : "Canvas")
-            if !brief.isEmpty {
-                page.nodes = [CanvasNodeSnapshot(title: chinese ? "创作目标" : "Goal", content: .text(brief),
-                    frame: .init(center: .zero, size: .init(width: 320, height: 200)))]
-            }
-            snapshot = CanvasSnapshot(id: id, name: title, pages: [page])
-        }
+        let snapshot = try CanvasTemplateEngine.startingSnapshot(template: template, chinese: chinese, goal: goal)
         let library = try library()
-        return try await library.create(kind: .canvas, title: title, id: id) { directory, id in
+        return try await library.create(kind: .canvas, title: snapshot.name, id: snapshot.id) { directory, id in
             let repository = try FileCanvasRepository(root: directory.appendingPathComponent("Canvas"))
             try await repository.create(canvasID: id, snapshot: snapshot, requestID: UUID())
         }

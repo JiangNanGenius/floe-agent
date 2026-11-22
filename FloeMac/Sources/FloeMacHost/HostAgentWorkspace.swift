@@ -404,6 +404,9 @@ final class HostAgentWorkspace: ObservableObject {
     var smokeSpaceFrame: CGRect?
     var smokeSpacePickerFrame: CGRect?
     var smokeInspectorShown = false
+    var smokeTaskPermissionsShown = false
+    var smokeTaskPermissionsFrame: CGRect?
+    var smokeTaskPermissionsCloseFrame: CGRect?
     var smokeFilesTakeDetail = false
     #endif
     @Published var allowsWorkspaceWrites: Bool { didSet { preferences.set(allowsWorkspaceWrites, forKey: "floe.mac.workspace.allowWrites") } }

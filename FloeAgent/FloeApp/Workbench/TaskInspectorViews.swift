@@ -1430,19 +1430,8 @@ struct TaskPermissionsInspectorView: View {
     var body: some View {
         Form {
             if policy != nil {
-                Section("home.draft_task_permissions_sheet.approval_mode") {
-                    Picker("workbench.task_inspector_views.this_task", selection: approvalModeBinding) {
-                        Text("settings.agent_permissions_view.ask").tag(TaskApprovalMode.ask.rawValue)
-                        Text("settings.agent_permissions_view.auto_approve").tag(TaskApprovalMode.automatic.rawValue)
-                        Text("settings.agent_permissions_view.full_access")
-                            .tag(TaskApprovalMode.fullAccess.rawValue)
-                            .disabled(resolvedIsLocalModel)
-                    }
-                    .pickerStyle(.segmented)
-                    Text(modeExplanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                FloeTaskApprovalSection(mode: approvalModeBinding, allowsFullAccess: !resolvedIsLocalModel,
+                                        explanation: modeExplanation)
                 Section("workbench.task_inspector_views.task_settings") {
                     Picker("workbench.task_inspector_views.background_recovery", selection: binding(\.recoveryPolicy, fallback: .safePoint)) {
                         Text("workbench.task_inspector_views.auto_resume_from_safety_point").tag(TaskRecoveryPolicy.safePoint)
@@ -1477,15 +1466,15 @@ struct TaskPermissionsInspectorView: View {
         .task(id: conversationID) { await load() }
     }
 
-    private var approvalModeBinding: Binding<String> {
-        Binding<String>(
-            get: { policy?.resolvedApprovalMode.rawValue ?? TaskApprovalMode.ask.rawValue },
+    private var approvalModeBinding: Binding<TaskApprovalMode> {
+        Binding(
+            get: { policy?.resolvedApprovalMode ?? .ask },
             set: { value in
-                if value == TaskApprovalMode.fullAccess.rawValue {
+                if value == .fullAccess {
                     guard !resolvedIsLocalModel else { return }
                     Task { await authenticateFullAccess() }
                 } else {
-                    policy?.approvalMode = value
+                    policy?.approvalMode = value.rawValue
                     Task { await save() }
                 }
             }

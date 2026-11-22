@@ -16,6 +16,10 @@ private enum MacWorkspaceDestination: Hashable {
     case taskCenter, projectTasks(UUID), space(MacSpacePage), creative, images, browser, conversation(UUID)
 }
 
+private enum MacTaskInspector: Equatable {
+    case files, permissions, browser(UUID)
+}
+
 struct MacWorkspaceRootView: View {
     #if FLOE_MAC_HOST_SMOKE
     static var smokeTaskCenterFrame: CGRect?
@@ -57,9 +61,9 @@ struct MacWorkspaceRootView: View {
     @State private var creativeReturnDestination: MacWorkspaceDestination?
     @State private var creativeTaskBinding: (owner: UUID, workspace: UUID)?
     @State private var browserReturnDestination: MacWorkspaceDestination?
-    @State private var browserOwner: UUID?
     @State private var restoredInitialDestination = false
-    @State private var showInspector = false
+    @State private var inspector: MacTaskInspector?
+    @State private var browserExpanded = false
     @State private var compactDetail = false
     @State private var inspectorWidth: CGFloat = 340
     @GestureState private var dividerTranslation: CGFloat = 0
@@ -170,10 +174,8 @@ struct MacWorkspaceRootView: View {
                                              show: showWorkbenchBrowser, returnToTask: returnFromWorkbenchBrowser))
         .onChange(of: browserWorkbench.taskPresentRequest?.nonce) { _, _ in
             guard let request = browserWorkbench.taskPresentRequest,
-                  destination == .conversation(request.owner), workspace.selectedID == request.owner else { return }
-            browserReturnDestination = destination
-            browserOwner = request.owner
-            destination = .browser
+                  visibleTaskOwner == request.owner else { return }
+            inspector = .browser(request.owner)
         }
         .onChange(of: destination) { previous, newDestination in
             draftStore.flush()
@@ -200,10 +202,10 @@ struct MacWorkspaceRootView: View {
             else { requestedConversation = nil }
             #if FLOE_MAC_HOST_SMOKE
             workspace.smokeSpacePage = activeSpacePage
-            browserWorkbench.isPresented = newDestination == .browser
             #endif
             if newDestination == nil { destination = .taskCenter }
-            if !showsTask { showInspector = false }
+            if !showsTask { inspector = nil }
+            if case .browser(let owner) = inspector, owner != visibleTaskOwner { inspector = nil }
             guard remembersFileRoot else { return }
             if case .conversation(let id) = newDestination { lastConversation = id.uuidString }
             if case .newTask = newDestination { lastConversation = "" }
@@ -211,6 +213,10 @@ struct MacWorkspaceRootView: View {
         .onChange(of: showsTask, initial: true) { _, active in
             workspace.windowShowsTask = active
         }
+        .onChange(of: inspector) { _, _ in browserExpanded = false }
+        #if FLOE_MAC_HOST_SMOKE
+        .onChange(of: browserVisible, initial: true) { _, shown in browserWorkbench.isPresented = shown }
+        #endif
         .onChange(of: preferredFileRoot, initial: true) { _, root in
             if !workspace.hasPendingWorkspaceFileChanges { displayedFileRoot = root }
         }
@@ -275,25 +281,25 @@ struct MacWorkspaceRootView: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let compact = width < 760
-            let fullFiles = showsSpaceFiles || (showsTask && showInspector && compact)
-            let split = filesVisible && !fullFiles
-            let fileWidth = fullFiles ? width : (split ? clampedInspectorWidth(inspectorWidth - dividerTranslation, in: width) : 0)
+            let fullPanel = showsSpaceFiles || (showsTaskInspector && (compact || browserExpanded))
+            let split = showsTaskInspector && !fullPanel
+            let panelWidth = fullPanel ? width : (split ? clampedInspectorWidth(inspectorWidth - dividerTranslation, in: width) : 0)
             VStack(spacing: 0) {
                 // The native window controls stay at the leading edge when the split collapses.
                 header(leadingWindowInset: max(0, 84 - geometry.frame(in: .named("floe.workbench.window")).minX))
                 Divider()
                 HStack(spacing: 0) {
                     detail
-                        .frame(width: max(0, width - fileWidth - (split ? 6 : 0)))
+                        .frame(width: max(0, width - panelWidth - (split ? 6 : 0)))
                         .frame(maxHeight: .infinity)
                         .clipped()
-                        .opacity(fullFiles ? 0 : 1)
-                        .disabled(fullFiles)
-                        .allowsHitTesting(!fullFiles)
-                        .accessibilityHidden(fullFiles)
+                        .opacity(fullPanel ? 0 : 1)
+                        .disabled(fullPanel)
+                        .allowsHitTesting(!fullPanel)
+                        .accessibilityHidden(fullPanel)
                     if split { inspectorDivider(in: width) }
-                    filesPane
-                        .frame(width: fileWidth)
+                    inspectorPane
+                        .frame(width: panelWidth)
                         .frame(maxHeight: .infinity)
                         .clipped()
                 }
@@ -303,13 +309,32 @@ struct MacWorkspaceRootView: View {
             .onChange(of: compact, initial: true) { _, isCompact in compactDetail = isCompact }
         }
         #if FLOE_MAC_HOST_SMOKE
-        .onChange(of: showInspector, initial: true) { _, shown in
+        .onChange(of: inspector == .files, initial: true) { _, shown in
             workspace.smokeInspectorShown = shown
+        }
+        .onChange(of: inspector == .permissions, initial: true) { _, shown in
+            workspace.smokeTaskPermissionsShown = shown
         }
         .onChange(of: filesTakeDetail && showsTask, initial: true) { _, presented in
             workspace.smokeFilesTakeDetail = presented
         }
         #endif
+    }
+
+    private var inspectorPane: some View {
+        ZStack {
+            filesPane
+            if showsTask, let inspector {
+                switch inspector {
+                case .files: EmptyView()
+                case .browser(let owner):
+                    browserDetail(owner: owner, close: closeInspector)
+                case .permissions:
+                    MacTaskPermissionsInspector(workspace: workspace, close: closeInspector)
+                        .id(workspace.draftSelectionID)
+                }
+            }
+        }
     }
 
     private func clampedInspectorWidth(_ requested: CGFloat, in width: CGFloat) -> CGFloat {
@@ -841,8 +866,14 @@ struct MacWorkspaceRootView: View {
     }
 
     private var showsSpaceFiles: Bool { activeSpacePage == .files }
-    private var filesVisible: Bool { showsSpaceFiles || showInspector }
-    private var filesTakeDetail: Bool { showsSpaceFiles || (showsTask && showInspector && compactDetail) }
+    private var filesVisible: Bool { showsSpaceFiles || (showsTask && inspector == .files) }
+    private var filesTakeDetail: Bool { showsSpaceFiles || (inspector == .files && inspectorTakesDetail) }
+    private var showsTaskInspector: Bool { showsTask && inspector != nil }
+    private var inspectorTakesDetail: Bool { showsTaskInspector && (compactDetail || browserExpanded) }
+    private var browserVisible: Bool {
+        if showsTask, case .browser = inspector { return true }
+        return destination == .browser
+    }
 
     private var showsTask: Bool {
         switch destination {
@@ -854,6 +885,14 @@ struct MacWorkspaceRootView: View {
     private var destinationConversationID: UUID? {
         if case .conversation(let id) = destination { return id }
         return nil
+    }
+
+    private var visibleTaskOwner: UUID? {
+        switch destination {
+        case .conversation(let id) where id == workspace.selectedID: id
+        case .newTask where workspace.selectedID == nil: workspace.attachmentOwnerID
+        default: nil
+        }
     }
 
     private func taskDraft(for id: UUID) -> Binding<String> {
@@ -907,10 +946,10 @@ struct MacWorkspaceRootView: View {
             if leadingWindowInset > 0 {
                 sidebarToggle(show: true)
             }
-            if destination == .images || (showsTask && filesTakeDetail) {
+            if destination == .images || inspectorTakesDetail {
                 Button {
                     if destination == .images { destination = imageReturnDestination }
-                    else { toggleInspector() }
+                    else { closeInspector() }
                 } label: {
                     Label(LocalizedStringKey(showsTask ? "mac.workspace.backToTask" : "mac.workspace.back"),
                           systemImage: "chevron.left")
@@ -1072,15 +1111,17 @@ struct MacWorkspaceRootView: View {
                     .help(label)
                 }
             }
-            if showsTask && !filesTakeDetail {
+            if showsTask && !inspectorTakesDetail {
                 Menu {
-                    Button("mac.workspace.files", systemImage: "folder") { showInspector = true }
+                    Button("mac.workspace.files", systemImage: "folder") { inspector = .files }
                         .accessibilityIdentifier("workspace.files.open")
                     Button(workspaceText("浏览器", "Browser"), systemImage: "safari", action: showWorkbenchBrowser)
                         .accessibilityIdentifier("workspace.browser.open")
-                    if showInspector {
+                    Button(workspaceText("权限", "Permissions"), systemImage: "lock.shield") { inspector = .permissions }
+                        .accessibilityIdentifier("workspace.permissions.open")
+                    if showsTaskInspector {
                         Divider()
-                        Button(workspaceText("隐藏检查器", "Hide Inspector"), systemImage: "sidebar.trailing", action: toggleInspector)
+                        Button(workspaceText("隐藏检查器", "Hide Inspector"), systemImage: "sidebar.trailing", action: closeInspector)
                     }
                 } label: {
                     FloeWorkbenchControlIcon(systemImage: "sidebar.trailing")
@@ -1094,7 +1135,7 @@ struct MacWorkspaceRootView: View {
                 .accessibilityLabel(workspaceText("任务检查器", "Task Inspector"))
                 .accessibilityIdentifier("workspace.inspector.menu")
             }
-            if case .conversation = destination, !filesTakeDetail {
+            if case .conversation = destination, !inspectorTakesDetail {
                 Button(action: findInActiveView) {
                     FloeWorkbenchControlIcon(systemImage: "magnifyingglass")
                         .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
@@ -1163,7 +1204,7 @@ struct MacWorkspaceRootView: View {
                     HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft(for: draftOwner),
                                            captureDraftCommit: { draftStore.captureSendCommit(for: draftOwner) },
                                            openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
-                                           openFiles: { showInspector = true },
+                                           openFiles: { inspector = .files }, openTaskPermissions: { inspector = .permissions },
                                            openImageWorkbench: openImageWorkbench,
                                            findRequest: conversationFindRequest,
                                            findConversationID: destinationConversationID,
@@ -1202,7 +1243,7 @@ struct MacWorkspaceRootView: View {
                                      destination = .conversation(id)
                                  })
         case .browser:
-            browserDetail
+            browserDetail(owner: nil, close: returnFromWorkbenchBrowser)
         case .space(.toolbox):
             MacWorkspaceToolboxView(findRequest: toolboxFindRequest, openToolbox: openToolbox)
         case .space(.files): EmptyView()
@@ -1247,25 +1288,25 @@ struct MacWorkspaceRootView: View {
             if saved, destination == .creative, workspace.attachmentOwnerID == target.owner,
                let back = creativeReturnDestination {
                 destination = back
-                showInspector = true
+                inspector = .files
             }
             return saved
         }
     }
 
-    private var browserDetail: some View {
-        let onReturn: (() -> Void)? = browserReturnDestination == nil ? nil : { [self] in
-            returnFromWorkbenchBrowser()
-        }
+    private func browserDetail(owner: UUID?, close: @escaping () -> Void) -> some View {
         // The page representable returns the session's existing WKWebView, so
         // the owner identity forces a remount when the binding changes; this
         // is what keeps a task's page from lingering under another owner.
+        let toggleExpansion: (() -> Void)? = owner != nil && !compactDetail ? { browserExpanded.toggle() } : nil
         return browserWorkbench.makeWorkbenchView(
-            owner: browserOwner,
-            onReturn: onReturn,
-            onOpenExternal: { NSWorkspace.shared.open($0) }
+            owner: owner,
+            onReturn: close,
+            onOpenExternal: { NSWorkspace.shared.open($0) },
+            expanded: browserExpanded,
+            onToggleExpansion: toggleExpansion
         )
-        .id(browserOwner)
+        .id(owner)
     }
 
     private func startNewTask() {
@@ -1276,7 +1317,7 @@ struct MacWorkspaceRootView: View {
         guard workspace.selectNewDraft(in: projectID, recovering: draftID) else { return }
         requestedConversation = nil
         if let projectID { expandedWorkspaceIDs.insert(projectID) }
-        showInspector = false
+        inspector = nil
         destination = .newTask(projectID)
     }
 
@@ -1376,49 +1417,37 @@ struct MacWorkspaceRootView: View {
     /// because the chat openURL action discards them first.
     private func openInWorkbenchBrowser(_ url: URL) {
         guard MacBrowserAddress.allows(url) else { return }
-        let owner = destination == .browser ? browserOwner : rememberBrowserReturnDestination()
-        if let owner { browserWorkbench.openTaskURL(url, owner: owner) }
-        else { browserWorkbench.generalBrowser().open(url) }
-        destination = .browser
-    }
-
-    private func showWorkbenchBrowser() {
-        guard destination != .browser else { return }
-        let owner = rememberBrowserReturnDestination()
-        if let owner { _ = browserWorkbench.taskSession(for: owner) }
-        else { _ = browserWorkbench.generalBrowser() }
-        destination = .browser
-    }
-
-    /// Bind the browser to the visible task on every open and remember where
-    /// to return. Saved tasks bind to the conversation; an unsent New Task
-    /// binds to its stable draft identity (the same owner the composer
-    /// attachments use) so it keeps its own page across trips; anything else
-    /// uses the general session with no remembered return.
-    @discardableResult
-    private func rememberBrowserReturnDestination() -> UUID? {
-        switch destination {
-        case .conversation(let id) where id == workspace.selectedID:
-            browserReturnDestination = destination
-            browserOwner = id
-            return id
-        case .newTask:
-            browserReturnDestination = destination
-            let owner = workspace.attachmentOwnerID
-            browserOwner = owner
-            return owner
-        default:
-            browserReturnDestination = nil
-            browserOwner = nil
-            return nil
+        if let owner = visibleTaskOwner {
+            browserWorkbench.openTaskURL(url, owner: owner)
+            inspector = .browser(owner)
+        } else if !showsTask {
+            browserWorkbench.generalBrowser().open(url)
+            showGeneralBrowser()
         }
     }
 
+    private func showWorkbenchBrowser() {
+        if let owner = visibleTaskOwner {
+            browserWorkbench.taskSession(for: owner)
+            inspector = .browser(owner)
+        } else if !showsTask {
+            showGeneralBrowser()
+        }
+    }
+
+    private func showGeneralBrowser() {
+        guard destination != .browser else { return }
+        browserReturnDestination = destination
+        destination = .browser
+    }
+
     private func returnFromWorkbenchBrowser() {
-        let target = browserReturnDestination ?? .taskCenter
-        browserReturnDestination = nil
-        browserOwner = nil
-        destination = target
+        if case .browser = inspector {
+            closeInspector()
+        } else if destination == .browser {
+            destination = browserReturnDestination ?? .taskCenter
+            browserReturnDestination = nil
+        }
     }
 
     private func attachGeneratedImage(_ url: URL) -> Bool {
@@ -1459,8 +1488,13 @@ struct MacWorkspaceRootView: View {
 
     private func toggleInspector() {
         guard showsTask else { return }
-        showInspector.toggle()
-        if !showInspector { fileFindRequest = nil }
+        if inspector == .files { closeInspector() }
+        else { inspector = .files }
+    }
+
+    private func closeInspector() {
+        inspector = nil
+        fileFindRequest = nil
     }
 
     private func findInActiveView() {
@@ -1517,9 +1551,9 @@ struct MacWorkspaceRootView: View {
                 case .delete:
                     draftStore.clear(for: id)
                     browserWorkbench.discard(owner: id)
+                    if inspector == .browser(id) { closeInspector() }
                     if browserReturnDestination == .conversation(id) {
                         browserReturnDestination = nil
-                        browserOwner = nil
                     }
                     fallthrough
                 case .archive(true):

@@ -4,6 +4,62 @@ import AppKit
 import FloeModels
 import SwiftUI
 
+struct MacTaskPermissionsInspector: View {
+    @ObservedObject var workspace: HostAgentWorkspace
+    let close: () -> Void
+    @State private var confirmsFullAccess = false
+    @State private var confirmedOwner: UUID?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(MacPermissionsText.t("权限", "Permissions")).font(.headline)
+                Spacer()
+                Button(action: close) { Image(systemName: "sidebar.trailing") }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(MacPermissionsText.t("隐藏检查器", "Hide Inspector"))
+                    .accessibilityIdentifier("task.permissions.close")
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { workspace.smokeTaskPermissionsCloseFrame = $0 })
+                    #endif
+            }
+            .padding(12)
+            Divider()
+            Form {
+                FloeTaskApprovalSection(mode: selection, allowsFullAccess: true, explanation: explanation)
+                    .disabled(workspace.savingApprovalMode || workspace.isStopping || workspace.isResolvingApproval)
+                if workspace.savingApprovalMode { ProgressView() }
+            }
+            .formStyle(.grouped)
+        }
+        .accessibilityIdentifier("task.permissions.inspector")
+        .confirmMacFullAccess(isPresented: $confirmsFullAccess, asDefault: false) {
+            guard confirmedOwner == workspace.draftSelectionID else { return }
+            Task { await workspace.setApprovalMode(.fullAccess, asDefault: false) }
+        }
+    }
+
+    private var selection: Binding<TaskApprovalMode> {
+        Binding(get: { workspace.taskApprovalMode }, set: { mode in
+            guard mode != workspace.taskApprovalMode else { return }
+            if mode == .fullAccess {
+                confirmedOwner = workspace.draftSelectionID
+                confirmsFullAccess = true
+            } else {
+                Task { await workspace.setApprovalMode(mode, asDefault: false) }
+            }
+        })
+    }
+
+    private var explanation: String {
+        switch workspace.taskApprovalMode {
+        case .ask: MacPermissionsText.t("读取直接运行，执行操作前询问。", "Reads run directly. Actions ask for approval.")
+        case .automatic: MacPermissionsText.t("常规工作区操作可自动批准，其他操作会请求确认。", "Routine workspace actions can be approved automatically. Other actions ask for confirmation.")
+        case .fullAccess: MacPermissionsText.t("可以使用当前 Mac 账户有权访问的文件。", "The task can use files available to the current Mac account.")
+        }
+    }
+}
+
 /// Mac permissions settings, aligned with the iPad `AgentPermissionsView`:
 /// the default approval mode for new tasks, the auto-approval reviewer
 /// model, an honest full-access explanation, the preserved workspace write

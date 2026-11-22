@@ -42,6 +42,7 @@ targets:
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
+      - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchFeatureControls.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadTranscriptViewport.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadTranscriptRows.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadTimeline.swift
@@ -126,6 +127,8 @@ targets:
         product: FloeCanvasIntegration
       - package: FloeCanvasTemplates
         product: FloeCanvasTemplates
+      - package: FloeCanvasTemplates
+        product: FloeCanvasTemplatesUI
     preBuildScripts:
       - name: Validate explicit OTA candidate inputs
         basedOnDependencyAnalysis: false

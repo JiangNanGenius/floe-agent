@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import Combine
+import FloeCanvasTemplates
 import FloeCore
 import Foundation
 import UniformTypeIdentifiers
@@ -10,6 +11,11 @@ final class MacCreativeLibrary: ObservableObject {
     #if FLOE_MAC_HOST_SMOKE
     var smokeTabFrame: CGRect?
     var smokeTab = ""
+    var smokeCanvasFrames: [UUID: CGRect] = [:]
+    var smokeCanvasCreateFrame: CGRect?
+    var smokeCanvasTemplateCloseFrame: CGRect?
+    var smokeCanvasEditorOpen = false
+    var smokeCanvasLibraryBackFrame: CGRect?
     #endif
     let directory: URL
     @Published private(set) var projects: [CanvasProject] = []
@@ -84,6 +90,13 @@ final class MacCreativeLibrary: ObservableObject {
         // native engine is the editing authority from the first revision.
         let project = try CanvasFrameworkBackupState.seedFrameworkState(
             CanvasProject(id: UUID(), name: title, documents: [document], selectedDocumentID: document.id))
+        try save(project)
+        selectedID = project.id
+    }
+
+    func create(template: CanvasTemplate?, goal: String?, chinese: Bool) throws {
+        let snapshot = try CanvasTemplateEngine.startingSnapshot(template: template, chinese: chinese, goal: goal)
+        let project = try CanvasFrameworkBackupState.project(from: snapshot)
         try save(project)
         selectedID = project.id
     }

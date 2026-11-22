@@ -281,6 +281,11 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         activate(id)
     }
 
+    func userCreateTab() {
+        userDidInteract()
+        createTab()
+    }
+
     func userCloseTab(_ id: UUID) {
         userDidInteract()
         close(id)

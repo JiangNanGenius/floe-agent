@@ -306,26 +306,26 @@ public struct MacTaskBrowserActions {
     public var onGoBack: () -> Void
     public var onGoForward: () -> Void
     public var onReloadOrStop: () -> Void
-    public var onActivateTab: (UUID) -> Void
-    public var onCloseTab: (UUID) -> Void
     /// The user hands control back after a takeover; the page stays put and
     /// the next model acquisition starts a new epoch.
     public var onReturnControl: () -> Void
+    public var expanded: Bool
+    public var onToggleExpansion: (() -> Void)?
 
     public init(onSubmitAddress: @escaping (String) -> Void,
                 onGoBack: @escaping () -> Void,
                 onGoForward: @escaping () -> Void,
                 onReloadOrStop: @escaping () -> Void,
-                onActivateTab: @escaping (UUID) -> Void,
-                onCloseTab: @escaping (UUID) -> Void,
-                onReturnControl: @escaping () -> Void) {
+                onReturnControl: @escaping () -> Void,
+                expanded: Bool = false,
+                onToggleExpansion: (() -> Void)? = nil) {
         self.onSubmitAddress = onSubmitAddress
         self.onGoBack = onGoBack
         self.onGoForward = onGoForward
         self.onReloadOrStop = onReloadOrStop
-        self.onActivateTab = onActivateTab
-        self.onCloseTab = onCloseTab
         self.onReturnControl = onReturnControl
+        self.expanded = expanded
+        self.onToggleExpansion = onToggleExpansion
     }
 }
 
@@ -353,6 +353,7 @@ public struct MacBrowserWorkbenchView: View {
     public var taskChrome: MacTaskBrowserChrome?
     public var taskPage: WKWebView?
     public var taskActions: MacTaskBrowserActions?
+    public var taskTabStrip: AnyView?
     @Environment(\.locale) private var locale
 
     public init(session: MacBrowserSession, onReturn: (() -> Void)? = nil,
@@ -365,7 +366,8 @@ public struct MacBrowserWorkbenchView: View {
                 onRevealDownload: ((URL) -> Void)? = nil,
                 taskChrome: MacTaskBrowserChrome? = nil,
                 taskPage: WKWebView? = nil,
-                taskActions: MacTaskBrowserActions? = nil) {
+                taskActions: MacTaskBrowserActions? = nil,
+                taskTabStrip: AnyView? = nil) {
         self.session = session
         self.onReturn = onReturn
         self.onOpenExternal = onOpenExternal
@@ -378,14 +380,16 @@ public struct MacBrowserWorkbenchView: View {
         self.taskChrome = taskChrome
         self.taskPage = taskPage
         self.taskActions = taskActions
+        self.taskTabStrip = taskTabStrip
     }
 
     public var body: some View {
         if let taskChrome, let taskActions {
             MacTaskBrowserSurface(
                 chrome: taskChrome,
-                page: taskPage ?? session.page,
+                page: taskPage,
                 actions: taskActions,
+                tabStrip: taskTabStrip,
                 onReturn: onReturn,
                 onOpenExternal: onOpenExternal,
                 download: download,
@@ -468,8 +472,9 @@ public struct MacBrowserWorkbenchView: View {
 /// snapshot values; all state changes flow back through `actions`.
 struct MacTaskBrowserSurface: View {
     let chrome: MacTaskBrowserChrome
-    let page: WKWebView
+    let page: WKWebView?
     let actions: MacTaskBrowserActions
+    let tabStrip: AnyView?
     var onReturn: (() -> Void)?
     var onOpenExternal: ((URL) -> Void)?
     var download: MacBrowserDownloadSnapshot?
@@ -483,12 +488,13 @@ struct MacTaskBrowserSurface: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if let onReturn {
                     Button(action: onReturn) {
-                        Label(MacToolboxText.backToTask(locale), systemImage: "chevron.left")
+                        Label(MacToolboxText.t("隐藏检查器", "Hide Inspector", locale), systemImage: "sidebar.trailing")
+                            .labelStyle(.iconOnly)
                     }
-                    .buttonStyle(.bordered)
+                    .help(MacToolboxText.t("隐藏检查器", "Hide Inspector", locale))
                     .accessibilityIdentifier("workspace.browser.backToTask")
                     #if DEBUG
                     .background(BrowserChromeDebugAnchor(identifier: "workspace.browser.returnAnchor"))
@@ -507,9 +513,7 @@ struct MacTaskBrowserSurface: View {
                 .accessibilityLabel(chrome.isLoading
                     ? MacToolboxText.t("停止", "Stop", locale)
                     : MacToolboxText.t("重新加载", "Reload", locale))
-                TextField(MacToolboxText.t("输入网址", "Enter a website address", locale), text: $addressDraft)
-                    .textContentType(.URL)
-                    .onSubmit { actions.onSubmitAddress(addressDraft) }
+                Spacer(minLength: 0)
                 if onDownload != nil {
                     Button {
                         onDownload?()
@@ -535,14 +539,23 @@ struct MacTaskBrowserSurface: View {
                     .help(MacToolboxText.openInSystemBrowser(locale))
                     .accessibilityIdentifier("workspace.browser.openExternal")
                 }
+                if let toggle = actions.onToggleExpansion {
+                    Button(action: toggle) {
+                        Image(systemName: actions.expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    }
+                    .help(MacToolboxText.t("展开或收起浏览器", "Expand or Shrink Browser", locale))
+                    .accessibilityLabel(MacToolboxText.t("展开或收起浏览器", "Expand or Shrink Browser", locale))
+                    .accessibilityIdentifier("workspace.browser.expand")
+                }
             }
-            .padding(12)
-            MacTaskBrowserTabStrip(
-                tabs: chrome.tabs,
-                onActivate: actions.onActivateTab,
-                onClose: actions.onCloseTab,
-                locale: locale
-            )
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            TextField(MacToolboxText.t("输入网址", "Enter a website address", locale), text: $addressDraft)
+                .textContentType(.URL)
+                .onSubmit { actions.onSubmitAddress(addressDraft) }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+            if let tabStrip { tabStrip }
             MacTaskBrowserControlBanner(
                 status: chrome.controlStatus,
                 modelActivityDetail: chrome.modelActivityDetail,
@@ -565,7 +578,8 @@ struct MacTaskBrowserSurface: View {
                 MacBrowserDownloadErrorRow(message: downloadError)
             }
             Divider()
-            MacBrowserPageView(page: page)
+            if let page { MacBrowserPageView(page: page) }
+            else { Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .onAppear { addressDraft = chrome.address }
         .onChange(of: chrome.address) { _, newValue in
@@ -574,61 +588,6 @@ struct MacTaskBrowserSurface: View {
             if !chrome.isLoading { addressDraft = newValue }
         }
         .id(chrome.tabs.map(\.id))
-    }
-}
-
-/// Horizontal strip of the task session's tabs. Activation is presentation
-/// only; an in-flight model action keeps its own captured tab.
-struct MacTaskBrowserTabStrip: View {
-    let tabs: [MacBrowserTabInfo]
-    let onActivate: (UUID) -> Void
-    let onClose: (UUID) -> Void
-    let locale: Locale
-
-    var body: some View {
-        if !tabs.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(tabs) { tab in
-                        HStack(spacing: 6) {
-                            if tab.isLoading {
-                                ProgressView()
-                                    .controlSize(.mini)
-                            }
-                            Text(tab.title.isEmpty
-                                 ? MacToolboxText.t("新标签页", "New Tab", locale)
-                                 : String(tab.title.prefix(28)))
-                                .lineLimit(1)
-                                .font(.callout)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(tab.isActive ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(tab.isActive ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1)
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture { onActivate(tab.id) }
-                        .accessibilityIdentifier("workspace.browser.tab.\(tab.id.uuidString)")
-                        Button {
-                            onClose(tab.id)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.caption2)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("workspace.browser.tabClose.\(tab.id.uuidString)")
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-            }
-            .accessibilityIdentifier("workspace.browser.tabStrip")
-        }
     }
 }
 

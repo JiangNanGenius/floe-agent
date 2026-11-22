@@ -3,6 +3,23 @@ import FloeCanvasCore
 import FloeCanvasFlow
 
 public enum CanvasTemplateEngine {
+    public static func startingSnapshot(
+        canvasID: UUID = UUID(), template: CanvasTemplate?, chinese: Bool, goal: String? = nil
+    ) throws -> CanvasSnapshot {
+        let title = template?.title.value(chinese: chinese) ?? (chinese ? "未命名画布" : "Untitled canvas")
+        let brief = goal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard brief.utf8.count <= 128_000 else { throw TemplateError.invalid("canvas goal exceeds the text limit") }
+        if let template {
+            return try instantiate(template, name: title, inputs: brief.isEmpty ? [:] : ["brief": .text(brief)],
+                                   newCanvasID: canvasID).snapshot
+        }
+        var page = CanvasPageSnapshot(name: chinese ? "画布" : "Canvas")
+        if !brief.isEmpty {
+            page.nodes = [CanvasNodeSnapshot(title: chinese ? "创作目标" : "Goal", content: .text(brief),
+                frame: .init(center: .zero, size: .init(width: 320, height: 200)))]
+        }
+        return CanvasSnapshot(id: canvasID, name: title, pages: [page])
+    }
     public static let maxArchiveBytes = 16 * 1024 * 1024
     public static let provenanceKey = "floe.template.provenance"
     public static let sourcePrefix = "template-node:"

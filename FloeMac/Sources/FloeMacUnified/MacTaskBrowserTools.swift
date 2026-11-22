@@ -65,8 +65,9 @@ final class MacTaskBrowserTools: ObservableObject {
     @discardableResult
     func ensureSession(for owner: UUID) -> MacTaskBrowserSession {
         let session = makeSession(for: owner)
-        if session.tabs.isEmpty, let restored = restore.record(owner) {
-            session.restorePage(restored)
+        if session.tabs.isEmpty {
+            if let restored = restore.record(owner) { session.restorePage(restored) }
+            else { session.createTab() }
         }
         return session
     }

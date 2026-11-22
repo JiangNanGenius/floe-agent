@@ -349,12 +349,15 @@ final class MacBrowserWorkbenchController: ObservableObject {
     func makeWorkbenchView(
         owner: UUID?,
         onReturn: (() -> Void)? = nil,
-        onOpenExternal: ((URL) -> Void)? = nil
+        onOpenExternal: ((URL) -> Void)? = nil,
+        expanded: Bool = false,
+        onToggleExpansion: (() -> Void)? = nil
     ) -> MacBrowserWorkbenchView {
         if let owner {
             let task = taskTools.ensureSession(for: owner)
             return makeTaskWorkbenchView(
-                task, owner: owner, onReturn: onReturn, onOpenExternal: onOpenExternal
+                task, owner: owner, onReturn: onReturn, onOpenExternal: onOpenExternal,
+                expanded: expanded, onToggleExpansion: onToggleExpansion
             )
         }
         let session = generalBrowser()
@@ -381,7 +384,9 @@ final class MacBrowserWorkbenchController: ObservableObject {
         _ task: MacTaskBrowserSession,
         owner: UUID,
         onReturn: (() -> Void)?,
-        onOpenExternal: ((URL) -> Void)?
+        onOpenExternal: ((URL) -> Void)?,
+        expanded: Bool,
+        onToggleExpansion: (() -> Void)?
     ) -> MacBrowserWorkbenchView {
         let state = ownerDownloadState(owner: owner, session: task)
         let actions = MacTaskBrowserActions(
@@ -389,10 +394,20 @@ final class MacBrowserWorkbenchController: ObservableObject {
             onGoBack: { [weak task] in task?.userGoBack() },
             onGoForward: { [weak task] in task?.userGoForward() },
             onReloadOrStop: { [weak task] in task?.userReloadOrStop() },
-            onActivateTab: { [weak task] in task?.userActivateTab($0) },
-            onCloseTab: { [weak task] in task?.userCloseTab($0) },
-            onReturnControl: { [weak task] in task?.endUserControl() }
+            onReturnControl: { [weak task] in
+                task?.endUserControl()
+                onReturn?()
+            },
+            expanded: expanded,
+            onToggleExpansion: onToggleExpansion
         )
+        let tabStrip = FloeBrowserTabStrip(tabs: task.tabs.map { tab in
+            let title = tab.webView.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .init(id: tab.id, title: title.isEmpty ? (tab.webView.url?.host ?? "") : title,
+                         active: tab.id == task.activeTabID)
+        }, onOpen: { [weak task] in task?.userCreateTab() },
+           onSelect: { [weak task] in task?.userActivateTab($0) },
+           onClose: { [weak task] in task?.userCloseTab($0) })
         return MacBrowserWorkbenchView(
             session: generalBrowser(),
             onReturn: onReturn,
@@ -417,7 +432,8 @@ final class MacBrowserWorkbenchController: ObservableObject {
             onRevealDownload: { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
             taskChrome: taskChrome(for: task),
             taskPage: task.activeWebView,
-            taskActions: actions
+            taskActions: actions,
+            taskTabStrip: AnyView(tabStrip)
         )
     }
 

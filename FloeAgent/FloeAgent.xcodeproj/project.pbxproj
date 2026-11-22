@@ -41,6 +41,7 @@
 		0345EE7FD2A1716DCBA1497B /* QueuedInputModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A7927DFB2DAAF5F971DCF5A /* QueuedInputModeTests.swift */; };
 		034FF014EB65283BCF6DD706 /* DependencyWaitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B976F65D3ADEEA233FB58C84 /* DependencyWaitTests.swift */; };
 		03612EEB1CF70764429F9DD7 /* CADAssociativeAxisFormatFloorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08044CA3837E5CC0D3F27501 /* CADAssociativeAxisFormatFloorTests.swift */; };
+		0374D113E969F07A497DFE0F /* BrowserTaskControlContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7347B491D889DF91CB28A6D9 /* BrowserTaskControlContract.swift */; };
 		03FAE90208E6F87FB24623F6 /* MediaV2ColorInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D4A50ECF6386455230B25E /* MediaV2ColorInspector.swift */; };
 		040DD25E7BD291843977008E /* LocalSpeechSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB07EF7DFEB61409E1DA1F2 /* LocalSpeechSettingsView.swift */; };
 		041043EACB7C1ACDF81A4E4D /* GameBuildToolReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1A137DE48B6F79747B1D4E /* GameBuildToolReadiness.swift */; };
@@ -171,6 +172,7 @@
 		1017244E3D626B85D2F7AF36 /* MusicMicrophoneTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19B501809F53B978CE9F314 /* MusicMicrophoneTransportTests.swift */; };
 		101DB06766C2D650188B5374 /* SourceControlRemotePanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60A66F6350D203278984EC9 /* SourceControlRemotePanels.swift */; };
 		1025E15EE1084740B1DB0D0A /* ApprovalCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B2CC51635FB2F20F5C41CA1 /* ApprovalCardView.swift */; };
+		1030844E0230C4F4F177F365 /* FloeWorkbenchFeatureControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 772A8A08B35AF1991D1C5087 /* FloeWorkbenchFeatureControls.swift */; };
 		104C298F2B272C169EDBED7B /* FontDesignAIAppContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB343901E2934AA9BAEA259D /* FontDesignAIAppContractTests.swift */; };
 		106B38B4BB1594B43D8C5B62 /* OfficeDocumentConversionAppQualificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 711344CF6BAFAEDA8F6EF212 /* OfficeDocumentConversionAppQualificationTests.swift */; };
 		107D9B448A471CEDBE9E0FF6 /* PrivacySecurityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */; };
@@ -3607,6 +3609,7 @@
 		72FC6B82909ECEDD0B595C12 /* FloeFontKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeFontKit; path = Modules/FloeFontKit; sourceTree = SOURCE_ROOT; };
 		7323AE6BFD02576069105FF1 /* EDATechnicalManufacturingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EDATechnicalManufacturingTests.swift; sourceTree = "<group>"; };
 		734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProtocolTests.swift; sourceTree = "<group>"; };
+		7347B491D889DF91CB28A6D9 /* BrowserTaskControlContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserTaskControlContract.swift; sourceTree = "<group>"; };
 		73D91D3F2EB6459D9A97FD38 /* CADMeshOperationFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADMeshOperationFlowUITests.swift; sourceTree = "<group>"; };
 		73DFAEDB946E98188CAB234D /* ArchiveBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveBrowserView.swift; sourceTree = "<group>"; };
 		743E91597A58B4BF09086BDF /* FileRepositoryGarbageCollectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRepositoryGarbageCollectionTests.swift; sourceTree = "<group>"; };
@@ -3634,6 +3637,7 @@
 		7717DA306D84D0D348202E29 /* ConversationVoiceTurnDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationVoiceTurnDriver.swift; sourceTree = "<group>"; };
 		771AE6555C2121BC3F978CAC /* CADBasicMachiningResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADBasicMachiningResources.swift; sourceTree = "<group>"; };
 		771B5828BD3CCAC1AA0F5E59 /* ElectronicsBusEntryContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElectronicsBusEntryContractTests.swift; sourceTree = "<group>"; };
+		772A8A08B35AF1991D1C5087 /* FloeWorkbenchFeatureControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeWorkbenchFeatureControls.swift; sourceTree = "<group>"; };
 		7769AB149B629E31CE323E87 /* SkillHubMediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubMediaView.swift; sourceTree = "<group>"; };
 		779BE3B410D17BC39DCDF655 /* ToolboxUSBSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolboxUSBSetupView.swift; sourceTree = "<group>"; };
 		77A17EEB92A309F8B4A0C490 /* ApplicationSettingPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationSettingPolicyTests.swift; sourceTree = "<group>"; };
@@ -7001,6 +7005,7 @@
 				AAFAAC48A25A2CC1220E3352 /* BrowserSettingsView.swift */,
 				38C4EED76A060BBEECB7AB37 /* BrowserStagedExportContract.swift */,
 				288A6B8AB8FCD6A3B84D07C6 /* BrowserStagedExportService.swift */,
+				7347B491D889DF91CB28A6D9 /* BrowserTaskControlContract.swift */,
 				6A13B095E4AD105E9BC9AEA5 /* BrowserTaskSessionStore.swift */,
 				1B80FCD68F0A3B45FD2E6F5E /* BrowserTools.swift */,
 				DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */,
@@ -8356,6 +8361,7 @@
 				FA35DA06CFE2EADBB045F1BA /* ComposerResponsiveRow.swift */,
 				9C41B8992C84C7B27CF73906 /* ComposerReturnField.swift */,
 				75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */,
+				772A8A08B35AF1991D1C5087 /* FloeWorkbenchFeatureControls.swift */,
 				7CA592446735B5E2575A56E1 /* FloeWorkbenchProjectRow.swift */,
 				E23E34163B4DC85E1B4BFF0B /* FoldableDisplaySupport.swift */,
 				EB38C0A73749F36D4220FE3F /* LayoutPreferences.swift */,
@@ -9455,6 +9461,7 @@
 				4AD1F589980C6E3F702AE5BA /* BrowserSettingsView.swift in Sources */,
 				045A7EE3E2FFFD48F9C36735 /* BrowserStagedExportContract.swift in Sources */,
 				D9041B4685C0CC02853BA855 /* BrowserStagedExportService.swift in Sources */,
+				0374D113E969F07A497DFE0F /* BrowserTaskControlContract.swift in Sources */,
 				875483B34EB0A4B81D4D46D6 /* BrowserTaskSessionStore.swift in Sources */,
 				64C796E307C77E2774D2761F /* BrowserTools.swift in Sources */,
 				FCC65E363F3009B85F3A5908 /* BrowserURLPolicy.swift in Sources */,
@@ -9686,6 +9693,7 @@
 				9CC17DEB2EAB22FAF8BECAE1 /* FloeSystemAlarmControlIntents.swift in Sources */,
 				6199EC80E8347A58A50C39B8 /* FloeTLSConfiguration.m in Sources */,
 				A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */,
+				1030844E0230C4F4F177F365 /* FloeWorkbenchFeatureControls.swift in Sources */,
 				7AE5572C28ED0FDD584FC243 /* FloeWorkbenchProjectRow.swift in Sources */,
 				1567528103BC8DF1A0AD938A /* FoldableDisplaySupport.swift in Sources */,
 				3869F61ED56351051C52B85C /* FontDesignAITools.swift in Sources */,

@@ -42,6 +42,14 @@ struct CanvasFrameworkBackupState: Codable, Sendable {
         return seeded
     }
 
+    static func project(from snapshot: CanvasSnapshot) throws -> FloeCore.CanvasProject {
+        let identity = FloeCore.CanvasProject(id: snapshot.id, name: snapshot.name,
+                                             documents: [], selectedDocumentID: snapshot.selectedPageID)
+        var project = try CanvasFrameworkProjection.project(snapshot, record: identityRecord(identity))
+        project.canvasKitState = try JSONEncoder().encode(CanvasFrameworkBackupState(snapshot: snapshot, history: .init(), receipts: []))
+        return project
+    }
+
     /// A backup restore rewrites the canvas identity and resource paths, but
     /// intentionally keeps node IDs so carried CAD drafts still address them.
     /// Reconcile those changes through the native engine without forking nodes.
