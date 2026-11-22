@@ -1,9 +1,11 @@
-<!-- docs-updated: 2026-11-22 -->
+<!-- docs-updated: 2026-11-23 -->
 # 当前版本与验证状态 / Current release and verification status
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
 最新内部 TestFlight、GitHub 和 Feather 已核验为 1.8.72（393）。 / Build 393 is verified for internal TestFlight, GitHub and Feather. [交付记录 / Delivery](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md)
+
+1.8.72（393）已提交 App Store 正式审核，Apple 显示「等待审核」。通过后手动发布。 / Apple shows build 393 as Waiting for Review, with manual release after approval. [审核记录 / Review](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md#app-store-正式审核)
 
 ## 2026-11-19 iOS 1.8.45（366）
 
