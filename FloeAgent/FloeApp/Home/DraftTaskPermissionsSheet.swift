@@ -15,19 +15,8 @@ struct DraftTaskPermissionsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("home.draft_task_permissions_sheet.approval_mode") {
-                    Picker("home.draft_task_permissions_sheet.new_task", selection: modeBinding) {
-                        Text("settings.agent_permissions_view.ask").tag(TaskApprovalMode.ask)
-                        Text("settings.agent_permissions_view.auto_approve").tag(TaskApprovalMode.automatic)
-                        Text("settings.agent_permissions_view.full_access")
-                            .tag(TaskApprovalMode.fullAccess)
-                            .disabled(isLocalModel)
-                    }
-                    .pickerStyle(.segmented)
-                    Text(explanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                FloeTaskApprovalSection(mode: modeBinding, allowsFullAccess: !isLocalModel,
+                                        explanation: explanation, isDraft: true)
                 if let errorMessage {
                     Text(errorMessage).foregroundStyle(.red)
                 }

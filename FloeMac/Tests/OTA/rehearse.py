@@ -33,7 +33,7 @@ def run(*command):
     subprocess.run(command, capture_output=True, text=True, check=True, timeout=20)
 
 
-def make_app(folder, bundle_id, root, feed_url, public_key, version, build):
+def make_app(folder, bundle_id, root, feed_url, public_key, version, build, automatic_checks=False):
     app = folder / "OTAFixture.app"
     contents = app / "Contents"
     (contents / "MacOS").mkdir(parents=True)
@@ -53,7 +53,7 @@ def make_app(folder, bundle_id, root, feed_url, public_key, version, build):
         "SUFeedURL": feed_url,
         "SUPublicEDKey": public_key,
         "SUVerifyUpdateBeforeExtraction": True,
-        "SUEnableAutomaticChecks": False,
+        "SUEnableAutomaticChecks": automatic_checks,
         "SUAutomaticallyUpdate": False,
         "SUAllowsAutomaticUpdates": False,
         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
@@ -85,6 +85,7 @@ def stop_fixture(events, app):
 
 
 def rehearse(name, valid):
+    automatic_checks = name == "scheduled"
     with tempfile.TemporaryDirectory(prefix="floe-ota-", dir="/private/tmp") as scratch:
         root = Path(scratch)
         download = root / "download"
@@ -105,7 +106,8 @@ def rehearse(name, valid):
             public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
             public_encoded = base64.b64encode(public).decode("ascii")
             identity = "org.floeagent.sparkle-fixture." + uuid.uuid4().hex
-            old = make_app(root / "Installed", identity, root, base + "/appcast.xml", public_encoded, "1.1.6", 9)
+            old = make_app(root / "Installed", identity, root, base + "/appcast.xml", public_encoded,
+                           "1.1.6", 9, automatic_checks=automatic_checks)
             new = make_app(root / "New", identity, root, base + "/appcast.xml", public_encoded, "1.2.0", 10)
             archive = download / "updated.dmg"
             run("hdiutil", "create", "-quiet", "-volname", "Floe OTA Fixture",
@@ -140,6 +142,7 @@ def rehearse(name, valid):
                     time.sleep(0.2)
                 observed = {"installationBuild": current_build(old), "events": events}
                 (evidence / (name + ".json")).write_text(json.dumps(observed, indent=2) + "\n")
+                assert ("checking" in events) != automatic_checks, observed
                 if valid:
                     assert observed["installationBuild"] == "10", observed
                     phases = ["found:10", "download", "deferred-for-job", "old-version-held-while-busy",
@@ -159,7 +162,7 @@ def rehearse(name, valid):
                 server_log.close()
 
 
-for case in (sys.argv[4:] or ["accepted", "wrong-signature"]):
-    assert case in ("accepted", "wrong-signature")
-    rehearse(case, valid=case == "accepted")
+for case in (sys.argv[4:] or ["accepted", "wrong-signature", "scheduled"]):
+    assert case in ("accepted", "wrong-signature", "scheduled")
+    rehearse(case, valid=case != "wrong-signature")
     print(case + " passed", flush=True)

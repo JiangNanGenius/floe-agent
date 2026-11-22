@@ -30,8 +30,7 @@ struct FloeMacBridgeApp: App {
                 MacWorkbenchCommands(workspace: workspace)
             }
             CommandGroup(after: .appSettings) {
-                Button("Check for Updates…") { model.updates.checkForUpdates() }
-                    .disabled(!model.updates.canCheckForUpdates)
+                CheckForUpdatesButton(updates: model.updates)
             }
             CommandGroup(after: .windowArrangement) {
                 Button(LocalizedStringKey(model.isAgentMode ? "host.menu.openAgent" : "host.bridge.switchToAgent")) { model.openAgentWorkspace() }
@@ -132,7 +131,7 @@ private struct BridgeMenuView: View {
         }
         #endif
         Button("Settings…") { model.openSettings(.bridge) }
-        Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
+        CheckForUpdatesButton(updates: updates)
         Divider()
         #if FLOE_UNIFIED_MAC
         Button("Quit Floe Agent") { model.quit() }
@@ -785,7 +784,7 @@ private struct UnifiedMacSettingsView: View {
         case .permissions:
             MacPermissionsSettingsView(workspace: workspace, bridge: model)
         case .bridge:
-            BridgeSettingsView(model: model)
+            BridgeSettingsView(model: model, showsUpdates: false)
         }
     }
 }
@@ -845,6 +844,7 @@ private struct HostAgentGeneralSettings: View {
             .pickerStyle(.segmented)
             .accessibilityIdentifier("settings.general.runningInput")
             Toggle("mac.settings.verifyAnswers", isOn: $workspace.verifyAgentAnswers)
+            BridgeUpdateSettingsView(updates: model.updates)
         }
         .formStyle(.grouped)
     }
@@ -865,7 +865,7 @@ private extension BridgeAppModel.SettingsPane {
 
     var searchTerms: String {
         switch self {
-        case .general: "通用 外观 默认模式 排队 引导 答案核验 General appearance mode queue steer verify"
+        case .general: "通用 外观 默认模式 排队 引导 答案核验 自动检查更新 General appearance mode queue steer verify software updates"
         case .models: "供应商 服务商 账户 模型 模型配置 密钥 连接 生图 绘图 图片 视频生成 图像 模型 Provider Accounts Models API key endpoints image video generation"
         case .auxiliary: "辅助模型 通用辅助 视觉 推理 审批模型 Auxiliary Models vision reasoning reviewer"
         case .usage: "用量统计 模型 供应商 任务 Usage Statistics Tokens Models Providers"
@@ -891,6 +891,7 @@ private extension BridgeAppModel.SettingsPane {
 
 private struct BridgeSettingsView: View {
     @ObservedObject var model: BridgeAppModel
+    var showsUpdates = true
     @State private var managesStorage = false
     var body: some View {
         VStack(spacing: 8) {
@@ -956,7 +957,7 @@ private struct BridgeSettingsView: View {
             Section("Mac Control") {
                 MacKimiCompanionRow()
             }
-            BridgeUpdateSettingsView(updates: model.updates)
+            if showsUpdates { BridgeUpdateSettingsView(updates: model.updates) }
             if let error = model.listenerError ?? model.error { Text(error).foregroundStyle(.red) }
         }.formStyle(.grouped).controlSize(.small)
     }
@@ -988,16 +989,31 @@ private struct BridgeSettingsView: View {
 #endif
 
 #if os(macOS)
+private struct CheckForUpdatesButton: View {
+    @ObservedObject var updates: BridgeUpdaterModel
+
+    var body: some View {
+        Button("Check for Updates…") { updates.checkForUpdates() }
+            .disabled(!updates.canCheckForUpdates)
+    }
+}
+
 private struct BridgeUpdateSettingsView: View {
     @ObservedObject var updates: BridgeUpdaterModel
     var body: some View {
         Section("Updates") {
             Toggle("Automatically check for updates", isOn: Binding(
                 get: { updates.automaticallyChecks }, set: { updates.automaticallyChecks = $0 }))
-            Toggle("Automatically download updates", isOn: Binding(
-                get: { updates.automaticallyDownloads }, set: { updates.automaticallyDownloads = $0 }))
-                .disabled(!updates.allowsAutomaticDownloads)
-            Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
+                .accessibilityIdentifier("settings.updates.automaticChecks")
+                #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { updates.smokeAutomaticChecksFrame = $0 })
+                .onDisappear { updates.smokeAutomaticChecksFrame = nil }
+                #endif
+            if updates.allowsAutomaticDownloads {
+                Toggle("Automatically download updates", isOn: Binding(
+                    get: { updates.automaticallyDownloads }, set: { updates.automaticallyDownloads = $0 }))
+            }
+            CheckForUpdatesButton(updates: updates)
             if updates.installation.waitingForIdle { Text("Updates will install when current work finishes.") }
             if updates.needsRestartAfterFailure {
                 Text("The update could not finish. Reopen Floe to resume work.").foregroundStyle(.secondary)

@@ -62,7 +62,7 @@ final class FixtureApp: NSObject, NSApplicationDelegate {
         self.updater = updater
         do {
             try updater.start()
-            updater.checkForUpdates()
+            if !updater.automaticallyChecksForUpdates { updater.checkForUpdates() }
         } catch {
             record("updater-start-error:" + error.localizedDescription)
         }

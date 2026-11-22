@@ -8,19 +8,27 @@ struct FloeTaskApprovalSection: View {
     @Binding var mode: TaskApprovalMode
     let allowsFullAccess: Bool
     let explanation: String
+    var isDraft = false
 
     var body: some View {
         Section(FloeL10n.isChinese ? "审批模式" : "Approval Mode") {
-            Picker(FloeL10n.isChinese ? "此任务" : "This Task", selection: $mode) {
-                ForEach(TaskApprovalMode.allCases, id: \.self) { choice in
-                    Text(Self.title(choice)).tag(choice)
-                        .disabled(choice == .fullAccess && !allowsFullAccess)
-                }
+            if isDraft {
+                modePicker(FloeL10n.isChinese ? "新任务" : "New Task").pickerStyle(.segmented)
+            } else {
+                modePicker(FloeL10n.isChinese ? "此任务" : "This Task").pickerStyle(.menu)
             }
-            .pickerStyle(.menu)
-            .accessibilityIdentifier("task.permissions.approval")
             Text(explanation).font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    private func modePicker(_ title: String) -> some View {
+        Picker(title, selection: $mode) {
+            ForEach(TaskApprovalMode.allCases, id: \.self) { choice in
+                Text(Self.title(choice)).tag(choice)
+                    .disabled(choice == .fullAccess && !allowsFullAccess)
+            }
+        }
+        .accessibilityIdentifier("task.permissions.approval")
     }
 
     static func title(_ mode: TaskApprovalMode) -> String {

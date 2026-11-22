@@ -50,7 +50,8 @@ class OTACandidateMetadataTests(unittest.TestCase):
         self.assertEqual(candidate['CFBundleDisplayName'], '$(PRODUCT_NAME)')
         self.assertEqual(candidate['CFBundleShortVersionString'], '$(FLOE_OTA_VERSION)')
         self.assertEqual(candidate['CFBundleVersion'], '$(FLOE_OTA_BUILD)')
-        for key in ('SUEnableAutomaticChecks', 'SUAutomaticallyUpdate', 'SUAllowsAutomaticUpdates'):
+        self.assertIs(candidate['SUEnableAutomaticChecks'], True)
+        for key in ('SUAutomaticallyUpdate', 'SUAllowsAutomaticUpdates'):
             self.assertIs(candidate[key], False)
         self.assertIs(candidate['SUVerifyUpdateBeforeExtraction'], True)
 

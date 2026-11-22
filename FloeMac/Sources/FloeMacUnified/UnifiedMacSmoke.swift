@@ -229,6 +229,9 @@ final class UnifiedMacSmoke {
                     refreshButtonFrames(in: body)
                     capture(body, extension: label + "-settings.png")
                     heights[label + "SheetWidth"] = body.bounds.width
+                    if label == "wide" {
+                        checks["wideUpdateSettings"] = model.updates.smokeAutomaticChecksFrame?.isEmpty == false
+                    }
                     let row = model.smokeSettingsFrames[.permissions]
                     heights[label + "SettingsRow"] = row?.height ?? 0
                     let pressed = clickSettingsPane(.permissions, model: model, in: sheet)
@@ -240,6 +243,12 @@ final class UnifiedMacSmoke {
                         } == true
                         try? await Task.sleep(for: .milliseconds(200))
                         checks["narrowBack"] = hit && clickSettingsPane(.general, model: model, in: sheet) && model.settingsPane == .general
+                        let updateDeadline = ContinuousClock.now + .seconds(2)
+                        while model.updates.smokeAutomaticChecksFrame == nil && ContinuousClock.now < updateDeadline {
+                            try? await Task.sleep(for: .milliseconds(40))
+                        }
+                        checks["narrowUpdateSettings"] = model.updates.smokeAutomaticChecksFrame?.isEmpty == false
+                        capture(body, extension: "narrow-general-settings.png")
                     }
                 } else { checks[label + "Settings"] = false }
                 model.closeSettingsWindow()
@@ -374,7 +383,7 @@ final class UnifiedMacSmoke {
             return
         }
         if CommandLine.arguments.contains("--task-permissions-only") {
-            await verifyTaskPermissionsInspector(model)
+            await verifyTaskPermissionsSheet(model)
             return
         }
         if CommandLine.arguments.contains("--creative-only") {
@@ -877,32 +886,40 @@ final class UnifiedMacSmoke {
         return agent.isReady ? agent : nil
     }
 
-    private func verifyTaskPermissionsInspector(_ model: BridgeAppModel) async {
-        guard let agent = await readyFixtureWorkbench(model), let content = visibleWorkbench?.contentView else {
-            finish(["opened": false]); return
+    private func verifyTaskPermissionsSheet(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let window = visibleWorkbench else {
+            finish(["ready": false]); return
         }
-        let owner = agent.attachmentOwnerID
-        let deadline = ContinuousClock.now + .seconds(3)
-        while agent.smokeTaskPermissionsFrame == nil && ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(40))
+        func openAndClose(_ screenshot: String) async -> Bool {
+            let owner = agent.attachmentOwnerID
+            let deadline = ContinuousClock.now + .seconds(3)
+            while agent.smokeTaskPermissionsFrame == nil && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            guard clickWorkbenchButton(ids: ["composer.approvalMode"], frame: agent.smokeTaskPermissionsFrame, screenshot: nil) else {
+                return false
+            }
+            let opening = ContinuousClock.now + .seconds(3)
+            while window.attachedSheet == nil && ContinuousClock.now < opening { try? await Task.sleep(for: .milliseconds(40)) }
+            guard let sheet = window.attachedSheet, sheet.sheetParent === window, let content = sheet.contentView else {
+                return false
+            }
+            capture(content, extension: screenshot)
+            let closed = await closeFixtureSheet(sheet, id: "task.permissions.done")
+            return closed && agent.windowShowsTask && agent.attachmentOwnerID == owner
         }
-        refreshButtonFrames(in: content)
-        guard clickWorkbenchButton(ids: ["composer.approvalMode"], frame: agent.smokeTaskPermissionsFrame, screenshot: nil) else {
-            finish(["opened": false, "action": "composer approval"]); return
+
+        let draftSheet = await openAndClose("draft-permissions-sheet.png")
+        var savedSheet = false
+        if await agent.verifyChatSmoke(), let id = agent.selectedID {
+            agent.composerMode = .agent
+            savedSheet = await openAndClose("saved-task-permissions-sheet.png") && agent.selectedID == id
         }
-        let opening = ContinuousClock.now + .seconds(3)
-        while !agent.smokeTaskPermissionsShown && ContinuousClock.now < opening { try? await Task.sleep(for: .milliseconds(40)) }
-        let alongsideTask = agent.smokeTaskPermissionsShown && agent.windowShowsTask && agent.attachmentOwnerID == owner
-        capture(content, extension: "permissions-inspector.png")
-        refreshButtonFrames(in: content)
-        let close = clickWorkbenchButton(ids: ["task.permissions.close"], frame: agent.smokeTaskPermissionsCloseFrame, screenshot: nil)
-        let closing = ContinuousClock.now + .seconds(3)
-        while agent.smokeTaskPermissionsShown && ContinuousClock.now < closing { try? await Task.sleep(for: .milliseconds(40)) }
         agent.composerMode = .chat
         let chat = ContinuousClock.now + .seconds(2)
         while agent.smokeTaskPermissionsFrame != nil && ContinuousClock.now < chat { try? await Task.sleep(for: .milliseconds(40)) }
-        finish(["opened": alongsideTask, "closed": close && !agent.smokeTaskPermissionsShown,
-                "sameDraft": agent.attachmentOwnerID == owner, "chatHidesApproval": agent.smokeTaskPermissionsFrame == nil])
+        finish(["draftSheet": draftSheet, "savedTaskSheet": savedSheet,
+                "chatHidesApproval": agent.smokeTaskPermissionsFrame == nil])
     }
 
     private func exerciseWorkspaceAuthoring(_ model: BridgeAppModel, endpoint: URL) async {

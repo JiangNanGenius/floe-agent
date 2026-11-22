@@ -4,38 +4,37 @@ import AppKit
 import FloeModels
 import SwiftUI
 
-struct MacTaskPermissionsInspector: View {
+struct MacTaskPermissionsSheet: View {
     @ObservedObject var workspace: HostAgentWorkspace
-    let close: () -> Void
+    let selectionID: UUID
+    let isDraft: Bool
+    @Environment(\.dismiss) private var dismiss
     @State private var confirmsFullAccess = false
-    @State private var confirmedOwner: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(MacPermissionsText.t("权限", "Permissions")).font(.headline)
+                Text(MacPermissionsText.t("任务权限", "Task Permissions")).font(.headline)
                 Spacer()
-                Button(action: close) { Image(systemName: "sidebar.trailing") }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(MacPermissionsText.t("隐藏检查器", "Hide Inspector"))
-                    .accessibilityIdentifier("task.permissions.close")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(MacWorkbenchButtonFrameReader { workspace.smokeTaskPermissionsCloseFrame = $0 })
-                    #endif
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("task.permissions.done")
             }
-            .padding(12)
+            .padding(.horizontal, 16)
+            .frame(minHeight: FloeTheme.minimumTarget + 4)
             Divider()
             Form {
-                FloeTaskApprovalSection(mode: selection, allowsFullAccess: true, explanation: explanation)
+                FloeTaskApprovalSection(mode: selection, allowsFullAccess: true, explanation: explanation, isDraft: isDraft)
                     .disabled(workspace.savingApprovalMode || workspace.isStopping || workspace.isResolvingApproval)
                 if workspace.savingApprovalMode { ProgressView() }
             }
             .formStyle(.grouped)
         }
-        .accessibilityIdentifier("task.permissions.inspector")
+        .frame(width: 480, height: 220)
+        .onExitCommand { dismiss() }
+        .accessibilityIdentifier("task.permissions.sheet")
         .confirmMacFullAccess(isPresented: $confirmsFullAccess, asDefault: false) {
-            guard confirmedOwner == workspace.draftSelectionID else { return }
-            Task { await workspace.setApprovalMode(.fullAccess, asDefault: false) }
+            apply(.fullAccess)
         }
     }
 
@@ -43,12 +42,18 @@ struct MacTaskPermissionsInspector: View {
         Binding(get: { workspace.taskApprovalMode }, set: { mode in
             guard mode != workspace.taskApprovalMode else { return }
             if mode == .fullAccess {
-                confirmedOwner = workspace.draftSelectionID
                 confirmsFullAccess = true
             } else {
-                Task { await workspace.setApprovalMode(mode, asDefault: false) }
+                apply(mode)
             }
         })
+    }
+
+    private func apply(_ mode: TaskApprovalMode) {
+        Task {
+            guard selectionID == workspace.draftSelectionID else { return }
+            await workspace.setApprovalMode(mode, asDefault: false)
+        }
     }
 
     private var explanation: String {

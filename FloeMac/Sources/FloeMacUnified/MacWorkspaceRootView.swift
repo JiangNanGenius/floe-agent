@@ -17,7 +17,12 @@ private enum MacWorkspaceDestination: Hashable {
 }
 
 private enum MacTaskInspector: Equatable {
-    case files, permissions, browser(UUID)
+    case files, browser(UUID)
+}
+
+private struct MacTaskPermissionsPresentation: Identifiable {
+    let id: UUID
+    let isDraft: Bool
 }
 
 struct MacWorkspaceRootView: View {
@@ -63,6 +68,7 @@ struct MacWorkspaceRootView: View {
     @State private var browserReturnDestination: MacWorkspaceDestination?
     @State private var restoredInitialDestination = false
     @State private var inspector: MacTaskInspector?
+    @State private var taskPermissions: MacTaskPermissionsPresentation?
     @State private var browserExpanded = false
     @State private var compactDetail = false
     @State private var inspectorWidth: CGFloat = 340
@@ -118,6 +124,12 @@ struct MacWorkspaceRootView: View {
         .coordinateSpace(name: "floe.workbench.window")
         .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $workspace.isSettingsPresented, content: settingsContent)
+        .sheet(item: $taskPermissions) { presentation in
+            MacTaskPermissionsSheet(workspace: workspace, selectionID: presentation.id, isDraft: presentation.isDraft)
+        }
+        .onChange(of: workspace.draftSelectionID) { _, selection in
+            if taskPermissions?.id != selection { taskPermissions = nil }
+        }
         .onChange(of: workspace.windowCommand?.id, initial: true) {
             guard let command = workspace.windowCommand else { return }
             workspace.windowCommand = nil
@@ -178,6 +190,7 @@ struct MacWorkspaceRootView: View {
             inspector = .browser(request.owner)
         }
         .onChange(of: destination) { previous, newDestination in
+            taskPermissions = nil
             draftStore.flush()
             if newDestination == .creative {
                 creativeReturnDestination = previous
@@ -312,9 +325,6 @@ struct MacWorkspaceRootView: View {
         .onChange(of: inspector == .files, initial: true) { _, shown in
             workspace.smokeInspectorShown = shown
         }
-        .onChange(of: inspector == .permissions, initial: true) { _, shown in
-            workspace.smokeTaskPermissionsShown = shown
-        }
         .onChange(of: filesTakeDetail && showsTask, initial: true) { _, presented in
             workspace.smokeFilesTakeDetail = presented
         }
@@ -329,9 +339,6 @@ struct MacWorkspaceRootView: View {
                 case .files: EmptyView()
                 case .browser(let owner):
                     browserDetail(owner: owner, close: closeInspector)
-                case .permissions:
-                    MacTaskPermissionsInspector(workspace: workspace, close: closeInspector)
-                        .id(workspace.draftSelectionID)
                 }
             }
         }
@@ -1117,8 +1124,6 @@ struct MacWorkspaceRootView: View {
                         .accessibilityIdentifier("workspace.files.open")
                     Button(workspaceText("浏览器", "Browser"), systemImage: "safari", action: showWorkbenchBrowser)
                         .accessibilityIdentifier("workspace.browser.open")
-                    Button(workspaceText("权限", "Permissions"), systemImage: "lock.shield") { inspector = .permissions }
-                        .accessibilityIdentifier("workspace.permissions.open")
                     if showsTaskInspector {
                         Divider()
                         Button(workspaceText("隐藏检查器", "Hide Inspector"), systemImage: "sidebar.trailing", action: closeInspector)
@@ -1204,7 +1209,9 @@ struct MacWorkspaceRootView: View {
                     HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft(for: draftOwner),
                                            captureDraftCommit: { draftStore.captureSendCommit(for: draftOwner) },
                                            openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
-                                           openFiles: { inspector = .files }, openTaskPermissions: { inspector = .permissions },
+                                           openFiles: { inspector = .files }, openTaskPermissions: {
+                                               taskPermissions = .init(id: workspace.draftSelectionID, isDraft: destinationConversationID == nil)
+                                           },
                                            openImageWorkbench: openImageWorkbench,
                                            findRequest: conversationFindRequest,
                                            findConversationID: destinationConversationID,

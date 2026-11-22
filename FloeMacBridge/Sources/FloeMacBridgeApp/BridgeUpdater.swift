@@ -9,7 +9,7 @@ import Sparkle
 @MainActor
 final class BridgeUpdaterDelegate: NSObject, SPUUpdaterDelegate {
     let installation: BridgeUpdateInstallation
-    var failed: (() -> Void)?
+    var setFailed: ((Bool) -> Void)?
     init(installation: BridgeUpdateInstallation) { self.installation = installation }
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
@@ -23,14 +23,20 @@ final class BridgeUpdaterDelegate: NSObject, SPUUpdaterDelegate {
         installation.postpone(handler); return true
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
-        installation.updaterDidFail(); failed?()
+        installation.updaterDidFail()
+        let error = error as NSError
+        let expected = error.domain == SUSparkleErrorDomain &&
+            (error.code == SUError.noUpdateError.rawValue || error.code == SUError.installationCanceledError.rawValue)
+        setFailed?(installation.activity.isAdmissionClosed || !expected)
     }
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor check: SPUUpdateCheck, error: Error?) {
         // A successful cycle may have handed off to an installer. It must not
         // reopen admission in the gap before the process actually terminates.
         if error != nil {
             installation.updaterDidFail()
-            if installation.activity.isAdmissionClosed { failed?() }
+            if installation.activity.isAdmissionClosed { setFailed?(true) }
+        } else if !installation.activity.isAdmissionClosed {
+            setFailed?(false)
         }
     }
 }
@@ -43,6 +49,9 @@ final class BridgeUpdaterModel: ObservableObject {
     private var observations: [NSKeyValueObservation] = []
     private var started = false
     @Published private(set) var failed = false
+    #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+    var smokeAutomaticChecksFrame: CGRect?
+    #endif
 
     init(activity: BridgeUpdateActivity) {
         let installation = BridgeUpdateInstallation(activity: activity)
@@ -50,7 +59,7 @@ final class BridgeUpdaterModel: ObservableObject {
         self.delegate = BridgeUpdaterDelegate(installation: installation)
         controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: delegate, userDriverDelegate: nil)
         installation.stateChanged = { [weak self] in self?.objectWillChange.send() }
-        delegate.failed = { [weak self] in self?.failed = true }
+        delegate.setFailed = { [weak self] in self?.failed = $0 }
         let updater = controller.updater
         func observe<Value>(_ keyPath: KeyPath<SPUUpdater, Value>) -> NSKeyValueObservation {
             updater.observe(keyPath, options: [.new]) { [weak self] _, _ in

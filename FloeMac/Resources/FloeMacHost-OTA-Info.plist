@@ -29,7 +29,7 @@
 <!-- The updater retains the public Bridge feed and public update key. -->
 <key>SUFeedURL</key><string>https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/appcast.xml</string>
 <key>SUPublicEDKey</key><string>QIFJI+XvAj+Y8aPn8OMgKd68FM9/DDmTo7WznatP3Ts=</string>
-<key>SUEnableAutomaticChecks</key><false/>
+<key>SUEnableAutomaticChecks</key><true/>
 <key>SUAutomaticallyUpdate</key><false/>
 <key>SUAllowsAutomaticUpdates</key><false/>
 <key>SUVerifyUpdateBeforeExtraction</key><true/>
