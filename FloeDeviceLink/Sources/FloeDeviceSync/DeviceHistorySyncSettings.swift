@@ -28,9 +28,7 @@ public struct DeviceHistorySyncSettings: View {
             DeviceHistoryPeerSettings(center: center, peerID: peer.id, title: peer.name)
         }
         #else
-        pairingForm.navigationDestination(for: DeviceHistoryPeerRoute.self) { peer in
-            DeviceHistoryPeerSettings(center: center, peerID: peer.id, title: peer.name)
-        }
+        pairingForm
         #endif
     }
 
@@ -77,7 +75,9 @@ public struct DeviceHistorySyncSettings: View {
                             peerLabel(peer)
                         }
                         #else
-                        NavigationLink(value: DeviceHistoryPeerRoute(id: peer.id, name: peer.name)) {
+                        NavigationLink {
+                            DeviceHistoryPeerSettings(center: center, peerID: peer.id, title: peer.name)
+                        } label: {
                             peerLabel(peer)
                         }
                         #endif
@@ -193,11 +193,6 @@ public struct DeviceHistorySyncSettings: View {
         .frame(width: 520, height: 430)
         #endif
     }
-}
-
-private struct DeviceHistoryPeerRoute: Hashable {
-    let id: String
-    let name: String
 }
 
 private struct DeviceHistoryPeerSettings: View {
