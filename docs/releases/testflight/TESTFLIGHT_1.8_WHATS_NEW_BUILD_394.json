@@ -1,0 +1,4 @@
+{
+  "en-US": "Open Settings → Sync and turn on Sync Conversations with Mac. Use Pairing and Sharing to pair with Floe for Mac. Share one conversation, then fetch and sync the conversation on the other device. Try again to confirm that no messages are duplicated. Turn off Mac sync and confirm that iCloud settings keep their previous values.",
+  "zh-Hans": "打开「设置 → 同步」，启用「与 Mac 同步会话」。在「配对与共享」里与 Mac 版 Floe 配对。选择一条会话共享，再在另一台设备获取并同步。重复同步后确认消息没有重复。关闭 Mac 同步并检查 iCloud 的设置值。"
+}
