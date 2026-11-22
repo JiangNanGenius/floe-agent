@@ -563959,55 +563959,55 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这个设备的 Linux 运行环境是较早的已验证版本。升级会保留工作区和已有文件，并保留旧运行盘以便恢复；但新环境是全新的系统，请在升级后重新安装旧 Linux 里安装过的软件（apt、pip、npm 等）。当前版本可能还需要先下载。升级期间 Linux 会停止，完成后需要重新启动相关任务。也可以本次继续使用当前版本。"
+            "value": "升级可能需要下载新版 Linux。工作区、已有文件和旧运行盘会保留。等待启动的命令会在升级完成后继续，额外安装的软件可能需要重新安装。也可以本次继续使用当前版本。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This device runs an earlier verified Linux environment. Upgrading keeps your workspace and files and preserves the old runtime disk for recovery, but the new environment is a fresh system: software installed inside Linux (apt, pip, npm and similar) must be reinstalled afterwards. The current version may need to download first. Linux stays stopped during the upgrade, and related tasks must start again afterwards. You can also keep the current version for this start."
+            "value": "The upgrade may need to download a newer version of Linux. Your workspace, files and previous Linux disk are kept. Commands waiting to start resume when the upgrade finishes. You may need to reinstall additional software. You can also keep the current version for this start."
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "這個裝置的 Linux 執行環境是較早的已驗證版本。升級會保留工作區和已有檔案，並保留舊執行盤以便恢復；但新環境是全新的系統，請在升級後重新安裝舊 Linux 裡安裝過的軟體（apt、pip、npm 等）。當前版本可能還需要先下載。升級期間 Linux 會停止，完成後需要重新啟動相關任務。也可以本次繼續使用當前版本。"
+            "value": "升級可能需要下載新版 Linux。工作區、現有檔案和舊的執行磁碟都會保留。等待啟動的指令會在升級完成後繼續，額外安裝的軟體可能需要重新安裝。也可以本次繼續使用目前版本。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "このデバイスは、以前に検証されたLinux環境を実行しています。 アップグレードすると、ワークスペースとファイルが保持され、古いランタイムディスクが復元のために保存されますが、新しい環境は新しいシステムです。Linux 内にインストールされているソフトウェア（apt、pip、npm など）は、後で再インストールする必要があります。 現在のバージョンは、まずダウンロードが必要になる場合があります。 Linuxはアップグレード中は停止したままで、関連するタスクはその後再び開始しなければなりません。 この開始では、現在のバージョンを保持することもできます。"
+            "value": "アップグレードには新しい Linux のダウンロードが必要な場合があります。ワークスペース、ファイル、以前の Linux ディスクは保持されます。起動待ちのコマンドはアップグレード後に再開します。追加でインストールしたソフトウェアは、再インストールが必要な場合があります。今回は現在のバージョンを使い続けることもできます。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "이 장치는 이전에 검증된 Linux 환경을 실행합니다. 업그레이드하면 작업 공간과 파일이 유지되고 복구를 위해 기존 런타임 디스크가 보존되지만, 새로운 환경은 새로운 시스템입니다: Linux 내부에 설치된 소프트웨어(apt, pip, npm 등)는 이후에 다시 설치해야 합니다. 현재 버전은 먼저 다운로드해야 할 수 있습니다. Linux는 업그레이드 중에 정지된 상태를 유지하며, 관련 작업은 이후에 다시 시작해야 합니다. 이 시작을 위해 현재 버전을 유지하실 수도 있습니다."
+            "value": "업그레이드하려면 새 버전의 Linux를 다운로드해야 할 수 있습니다. 작업 공간, 파일, 이전 Linux 디스크는 보존됩니다. 실행을 기다리는 명령은 업그레이드가 끝나면 계속됩니다. 추가로 설치한 소프트웨어는 다시 설치해야 할 수 있습니다. 이번에는 현재 버전을 계속 사용할 수도 있습니다."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cet appareil exécute un environnement Linux vérifié précédemment. La mise à niveau conserve votre espace de travail et vos fichiers et préserve l'ancien disque d'exécution pour la récupération, mais le nouvel environnement est un nouveau système : les logiciels installés à l'intérieur de Linux (apt, pip, npm et similaires) doivent être réinstallés par la suite. La version actuelle devra peut-être d'abord être téléchargée. Linux reste arrêté pendant la mise à niveau, et les tâches connexes doivent recommencer par la suite. Vous pouvez également conserver la version actuelle pour ce début."
+            "value": "La mise à niveau peut nécessiter le téléchargement d’une nouvelle version de Linux. Votre espace de travail, vos fichiers et l’ancien disque Linux sont conservés. Les commandes en attente démarrent à la fin de la mise à niveau. Vous devrez peut-être réinstaller les logiciels ajoutés. Vous pouvez aussi garder la version actuelle pour ce démarrage."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dieses Gerät führt eine zuvor verifizierte Linux-Umgebung aus. Das Upgrade behält Ihren Arbeitsbereich und Ihre Dateien und bewahrt die alte Laufzeitfestplatte für die Wiederherstellung, aber die neue Umgebung ist ein neues System: Die in Linux installierte Software (apt, pip, npm und ähnliches) muss anschließend neu installiert werden. Möglicherweise muss zuerst die aktuelle Version heruntergeladen werden. Linux bleibt während des Upgrades angehalten, und verwandte Aufgaben müssen danach erneut gestartet werden. Sie können auch die aktuelle Version für diesen Start behalten."
+            "value": "Für das Upgrade muss möglicherweise eine neuere Linux-Version heruntergeladen werden. Ihr Arbeitsbereich, Ihre Dateien und das bisherige Linux-Laufwerk bleiben erhalten. Wartende Befehle werden nach dem Upgrade fortgesetzt. Zusätzlich installierte Software muss eventuell erneut installiert werden. Für diesen Start können Sie auch die aktuelle Version verwenden."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Este dispositivo ejecuta un entorno Linux verificado anteriormente. La actualización mantiene su espacio de trabajo y archivos y conserva el antiguo disco de tiempo de ejecución para su recuperación, pero el nuevo entorno es un nuevo sistema: el software instalado dentro de Linux (apt, pip, npm y similar) debe reinstalarse después. Es posible que la versión actual debe descargarse primero. Linux permanece detenido durante la actualización, y las tareas relacionadas deben comenzar de nuevo después. También puedes mantener la versión actual para este inicio."
+            "value": "La actualización puede requerir la descarga de una versión más reciente de Linux. Se conservan tu espacio de trabajo, tus archivos y el disco Linux anterior. Los comandos en espera se reanudan al finalizar la actualización. Puede que tengas que volver a instalar el software que añadiste. También puedes mantener la versión actual para este inicio."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Este dispositivo executa um ambiente Linux verificado anteriormente. A atualização mantém seu espaço de trabalho e arquivos e preserva o disco de tempo de execução antigo para recuperação, mas o novo ambiente é um novo sistema: o software instalado dentro do Linux (apt, pip, npm e similar) deve ser reinstalado depois. A versão atual pode precisar ser baixada primeiro. O Linux permanece parado durante a atualização, e as tarefas relacionadas devem começar novamente depois. Você também pode manter a versão atual para este início."
+            "value": "A atualização pode precisar baixar uma versão mais recente do Linux. Seu espaço de trabalho, seus arquivos e o disco Linux anterior são mantidos. Os comandos que aguardam para iniciar são retomados ao final da atualização. Pode ser necessário reinstalar os programas adicionados. Você também pode manter a versão atual nesta inicialização."
           }
         }
       }

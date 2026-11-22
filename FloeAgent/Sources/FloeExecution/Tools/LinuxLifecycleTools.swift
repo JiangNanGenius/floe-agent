@@ -99,14 +99,17 @@ enum LinuxLifecycleToolSupport {
     /// Runs a lifecycle call and converts its typed errors into honest
     /// nonzero-result outputs, so a refusal never looks like a tool crash.
     static func run(
+        allowDeferredStartup: Bool = false,
         call: () async throws -> LinuxGuestLifecycleReceipt
-    ) async -> ToolExecutionOutput {
+    ) async throws -> ToolExecutionOutput {
         do {
             let receipt = try await call()
             return ToolExecutionOutput(
                 digesting: LinuxLifecycleRendering.success(receipt),
                 exitStatus: 0
             )
+        } catch let pending as LinuxGuestImageUpgradePending where allowDeferredStartup {
+            throw ToolPreDispatchRetry(expectedLinuxImageID: pending.currentImageID)
         } catch FloeError.cancelled {
             return ToolExecutionOutput(digesting: "status=cancelled", exitStatus: 130)
         } catch let error as LinuxGuestLifecycleError {
@@ -156,7 +159,9 @@ public struct StartLinuxGuestLifecycleTool: AgentTool {
             )
         }
         let config = LinuxGuestLifecycleConfig(vcpus: args.vcpus, memoryMB: args.memoryMB)
-        return await LinuxLifecycleToolSupport.run {
+        // An explicit shape can configure the guest before the cold start.
+        // Only the default startup is safe to retry after yielding its lease.
+        return try await LinuxLifecycleToolSupport.run(allowDeferredStartup: args.vcpus == nil && args.memoryMB == nil) {
             try await lifecycle.start(
                 environmentID: environmentID,
                 config: config,
@@ -213,7 +218,7 @@ public struct LinuxGuestStatusLifecycleTool: AgentTool {
                 exitStatus: 127
             )
         }
-        return await LinuxLifecycleToolSupport.run {
+        return try await LinuxLifecycleToolSupport.run {
             try await lifecycle.status(environmentID: environmentID)
         }
     }
@@ -249,7 +254,7 @@ public struct StopLinuxGuestLifecycleTool: AgentTool {
                 exitStatus: 127
             )
         }
-        return await LinuxLifecycleToolSupport.run {
+        return try await LinuxLifecycleToolSupport.run {
             try await lifecycle.stop(
                 environmentID: environmentID,
                 cancellation: context.cancellation
@@ -295,7 +300,7 @@ public struct SoftRestartLinuxGuestLifecycleTool: AgentTool {
         let operationKey = context.toolIdempotencyKey.isEmpty
             ? context.toolCallID
             : context.toolIdempotencyKey
-        return await LinuxLifecycleToolSupport.run {
+        return try await LinuxLifecycleToolSupport.run {
             try await lifecycle.softRestart(
                 environmentID: environmentID,
                 config: config,
@@ -338,7 +343,7 @@ public struct HardRestartLinuxGuestLifecycleTool: AgentTool {
             )
         }
         let config = LinuxGuestLifecycleConfig(vcpus: args.vcpus, memoryMB: args.memoryMB)
-        return await LinuxLifecycleToolSupport.run {
+        return try await LinuxLifecycleToolSupport.run {
             try await lifecycle.hardRestart(
                 environmentID: environmentID,
                 config: config,

@@ -1,4 +1,6 @@
 import Foundation
+import FloeCore
+import FloeModels
 
 /// Dependency/data environment resolved for one execution. This is not a process sandbox.
 public struct ToolEnvironment: Sendable {
@@ -17,6 +19,45 @@ public struct ToolEnvironmentLease: Sendable {
     public var finish: @Sendable () async -> Void
     public init(context: ToolContext, finish: @escaping @Sendable () async -> Void = {}) {
         self.context = context; self.finish = finish
+    }
+}
+
+/// The live run's pin. Native routing publishes a new value only after the
+/// saved binding was committed against a verified retaining Linux rebuild.
+public final class LiveTaskExecutionBinding: @unchecked Sendable {
+    private let lock = NSLock()
+    private var binding: TaskExecutionBinding
+
+    public init(_ binding: TaskExecutionBinding) { self.binding = binding }
+
+    public var current: TaskExecutionBinding { lock.withLock { binding } }
+
+    /// A concurrent call can read the new SQLite pin before its owner has
+    /// published it here. The physical guard still has to verify that disk.
+    public func canUse(_ saved: TaskExecutionBinding) -> Bool {
+        lock.withLock {
+            binding == saved || Self.isRetainedRebuild(from: binding, to: saved)
+                || Self.isRetainedRebuild(from: saved, to: binding)
+        }
+    }
+
+    @discardableResult
+    public func adopt(_ committed: TaskExecutionBinding) -> Bool {
+        lock.withLock {
+            if binding == committed { return true }
+            guard Self.isRetainedRebuild(from: binding, to: committed) else { return false }
+            binding = committed
+            return true
+        }
+    }
+
+    private static func isRetainedRebuild(from binding: TaskExecutionBinding, to next: TaskExecutionBinding) -> Bool {
+        var target = binding.target
+        target.runtimeGeneration = next.target.runtimeGeneration
+        return binding.target.backend == .linuxVM && target == next.target
+            && next.target != binding.target && next.conversationID == binding.conversationID
+            && LinuxResidentRuntimeGeneration.recoveryID(from: target.runtimeGeneration) != nil
+            && binding.generation < Int64.max && next.generation == binding.generation + 1
     }
 }
 

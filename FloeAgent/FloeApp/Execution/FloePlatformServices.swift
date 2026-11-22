@@ -69,10 +69,7 @@ final class LinuxImageUpgradeConsentCenter: ObservableObject {
     }
 
     var promptMessage: String {
-        IDELanguageRunText.t(
-            "这个设备的 Linux 运行环境是较早的已验证版本。升级会保留工作区和已有文件，并保留旧运行盘以便恢复；但新环境是全新的系统，请在升级后重新安装旧 Linux 里安装过的软件（apt、pip、npm 等）。当前版本可能还需要先下载。升级期间 Linux 会停止，完成后需要重新启动相关任务。也可以本次继续使用当前版本。",
-            "This device runs an earlier verified Linux environment. Upgrading keeps your workspace and files and preserves the old runtime disk for recovery, but the new environment is a fresh system: software installed inside Linux (apt, pip, npm and similar) must be reinstalled afterwards. The current version may need to download first. Linux stays stopped during the upgrade, and related tasks must start again afterwards. You can also keep the current version for this start."
-        )
+        String(localized: "app.bilingual.954a70b10c3e1c63")
     }
 
     var upgradeTitle: String {
@@ -1002,7 +999,7 @@ final class FloePlatformServices: @unchecked Sendable {
         // A Settings-owned rebuild already has a user decision. Do not ask
         // again or initiate another rebuild; the caller must release any
         // execution lease before waiting for that attempt.
-        if await EnvironmentPackageJobs.shared.attemptEpoch(id: Self.residentRecoveryJobID) != nil {
+        if await isLinuxRuntimeUpgradePending() {
             return .upgrade
         }
         guard await linuxUpgradePromptIsAvailable() else {
@@ -1012,7 +1009,7 @@ final class FloePlatformServices: @unchecked Sendable {
         }
         let choice = await LinuxImageUpgradeConsentCenter.shared.request(context)
         guard choice == .upgrade, !Task.isCancelled else { return .useInstalled }
-        if await EnvironmentPackageJobs.shared.attemptEpoch(id: Self.residentRecoveryJobID) != nil {
+        if await isLinuxRuntimeUpgradePending() {
             return .upgrade
         }
         // A delayed confirmation (or a concurrent Settings upgrade) must not
@@ -1063,15 +1060,39 @@ final class FloePlatformServices: @unchecked Sendable {
             id: Self.residentRecoveryJobID, cancellation: nil)
     }
 
-    /// The caller has released its execution lease and has proof that its
-    /// command never reached the guest. Join the existing attempt only; never
-    /// manufacture or cancel an upgrade on its behalf.
-    func waitForPendingLinuxUpgrade(expectedImageID: String, cancellation: CancellationToken) async throws {
+    @MainActor
+    private func isLinuxRuntimeUpgradePending() -> Bool {
+        lock.withLock { linuxRuntimeUpgradeTask != nil }
+            || EnvironmentPackageJobs.shared.attemptEpoch(id: Self.residentRecoveryJobID) != nil
+    }
+
+    /// Join an authorized upgrade outside the execution lease. The run owns
+    /// its progress and cancellation, while the service owns the rebuild.
+    @MainActor
+    func waitForLinuxRuntimeUpgrade(
+        expectedImageID: String? = nil,
+        runID: UUID?,
+        environmentID: String?,
+        cancellation: CancellationToken
+    ) async throws {
+        try cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        guard expectedImageID != nil || isLinuxRuntimeUpgradePending() else { return }
+        let jobs = EnvironmentPackageJobs.shared
+        let waitToken = cancellation.derived()
+        let activity = TaskRuntimePreparationCenter.shared.begin(
+            runID: runID,
+            imageID: expectedImageID ?? LinuxGuestImageDistributionCatalog.defaultImageID,
+            environmentID: environmentID,
+            waitToken: waitToken,
+            jobID: Self.residentRecoveryJobID
+        )
+        defer { TaskRuntimePreparationCenter.shared.end(activity?.id) }
         while true {
-            try cancellation.throwIfCancelled()
+            try waitToken.throwIfCancelled()
             try Task.checkCancellation()
-            if try await EnvironmentPackageJobs.shared.waitForExistingShared(
-                id: Self.residentRecoveryJobID, cancellation: cancellation) { break }
+            if try await jobs.waitForExistingShared(
+                id: Self.residentRecoveryJobID, cancellation: waitToken, activityID: activity?.id) { break }
             // The prompt-owned Task may not yet have registered its shared
             // attempt. Poll without holding a lease and keep user cancellation
             // responsive; never cancel that task from this waiter.
@@ -1079,13 +1100,14 @@ final class FloePlatformServices: @unchecked Sendable {
             guard launching else { break }
             try await Task.sleep(for: .milliseconds(25))
         }
-        try cancellation.throwIfCancelled()
+        try waitToken.throwIfCancelled()
         try Task.checkCancellation()
+        guard let expectedImageID else { return }
         let current = try? await linuxResidentImageSource.imageID(requireExistingDisk: true)
+        try waitToken.throwIfCancelled()
+        try Task.checkCancellation()
         guard current == expectedImageID else {
-            let message = await MainActor.run {
-                EnvironmentPackageJobs.shared.messages[Self.residentRecoveryJobID]
-            }
+            let message = jobs.messages[Self.residentRecoveryJobID]
             throw FloeError.validationFailed(message ?? String(localized: "execution.runtime_rebuild.cancelled_wait"))
         }
     }

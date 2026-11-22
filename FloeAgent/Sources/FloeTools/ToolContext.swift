@@ -89,6 +89,8 @@ public struct ToolContext: Sendable {
     /// layer from this identifier; nil means the default project container.
     public var environmentID: String?
     public var executionBindingGeneration: Int64?
+    /// In-process pin shared with the current runtime's future calls and checkpoints.
+    public var liveExecutionBinding: LiveTaskExecutionBinding?
     public var conversationID: UUID?
     public var environment: ToolEnvironment?
     /// Durable provider call identifier. Remote/durable tools use it as an

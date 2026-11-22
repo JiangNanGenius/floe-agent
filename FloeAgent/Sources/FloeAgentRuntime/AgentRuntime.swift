@@ -887,6 +887,10 @@ public actor FloeAgentRuntime {
     public let runID: UUID
 
     private let configuration: Configuration
+    private let liveExecutionBinding: LiveTaskExecutionBinding?
+    private var executionBinding: TaskExecutionBinding? {
+        liveExecutionBinding?.current ?? configuration.executionBinding
+    }
     private let adapter: any ProviderAdapter
     private let policy: any ApprovalPolicy
     private let gate: CatastrophicActionGate?
@@ -1253,6 +1257,9 @@ public actor FloeAgentRuntime {
         peerBus: SubagentPeerBus = .shared
     ) {
         self.configuration = configuration
+        self.liveExecutionBinding = configuration.executionBinding.flatMap {
+            $0.target.backend == .linuxVM ? LiveTaskExecutionBinding($0) : nil
+        }
         // Every runtime that writes the same canonical durable root must
         // observe the same bounded index and the same deletion fence. A
         // temporary conversation deliberately gets its own nil-root store.
@@ -2020,7 +2027,7 @@ public actor FloeAgentRuntime {
             throw FloeError.validationFailed("Unsupported checkpoint format v\(checkpoint.formatVersion)")
         }
         if let pin = checkpoint.executionBinding {
-            guard pin == configuration.executionBinding else {
+            guard pin == executionBinding else {
                 throw FloeError.validationFailed("The saved task environment is unavailable or has changed; reconnect before continuing")
             }
         }
@@ -4847,6 +4854,7 @@ public actor FloeAgentRuntime {
     /// own iteration budget already accounts for them, and charging the
     /// parent again would double-count one logical step.
     private func applyToolAccess(to context: inout ToolContext, call: ToolCall) {
+        context.liveExecutionBinding = liveExecutionBinding
         context.readsInstructionsOnly = configuration.toolAccess != .task
         context.readsCurrentRunResultsOnly = configuration.toolAccess != .task
         context.recallsDurableMemoryOnly = configuration.toolAccess == .chat
@@ -5628,7 +5636,7 @@ public actor FloeAgentRuntime {
             cancellation: effectiveCancellation,
             childBudget: childBudget,
             environmentID: effectiveEnvironmentID,
-            executionBindingGeneration: configuration.executionBinding?.generation,
+            executionBindingGeneration: executionBinding?.generation,
             conversationID: configuration.conversationID,
             childExecution: handoff,
             runtimeAuthority: runtimeAuthority,
@@ -7733,7 +7741,7 @@ public actor FloeAgentRuntime {
                 cancellation: cancellationToken,
                 childBudget: childBudget,
                 environmentID: configuration.environmentID,
-                executionBindingGeneration: configuration.executionBinding?.generation,
+                executionBindingGeneration: executionBinding?.generation,
                 conversationID: configuration.conversationID,
                 childExecution: handoff,
                 callOrigin: makeCallOrigin(for: call, handoff: handoff),
@@ -8033,7 +8041,7 @@ public actor FloeAgentRuntime {
             cancellation: cancellationToken,
             childBudget: childBudget,
             environmentID: configuration.environmentID,
-            executionBindingGeneration: configuration.executionBinding?.generation,
+            executionBindingGeneration: executionBinding?.generation,
             conversationID: configuration.conversationID,
             childExecution: handoff,
             temporaryReadOnly: configuration.temporaryReadOnly,
@@ -8929,7 +8937,7 @@ public actor FloeAgentRuntime {
             approvals: capturedGrants,
             idempotencyKeys: capturedIdempotencyKeys,
             conversationMode: configuration.conversationMode,
-            executionBinding: configuration.executionBinding,
+            executionBinding: executionBinding,
             contextCompaction: capturedContextCompaction,
             parentIterationCount: iterationSnapshot.parent,
             totalIterationCount: iterationSnapshot.total,

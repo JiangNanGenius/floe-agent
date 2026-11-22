@@ -82,11 +82,12 @@ public struct TaskExecutionBindingStore: Sendable {
     }
 
     /// Native acceptance for the same environment after a retaining rebuild.
-    /// The caller holds the current native generation guard and idle migration
-    /// fence. Both confirmed and verified same-location resumption use this CAS.
+    /// The caller holds the current native generation guard and either an idle
+    /// migration fence or the tracked lease of the exact waiting run.
     /// Exact old pins/checkpoints and the visible notice commit atomically.
     public func acceptResidentRebuild(_ expected: TaskExecutionBinding, target: TaskExecutionTarget,
-                                      committedRecoveryID: UUID, notice: String) async throws -> TaskExecutionBinding {
+                                      committedRecoveryID: UUID, notice: String,
+                                      waitingRunID: UUID? = nil) async throws -> TaskExecutionBinding {
         var identity = expected.target
         identity.runtimeGeneration = target.runtimeGeneration
         guard expected.target.backend == .linuxVM, target.backend == .linuxVM,
@@ -99,7 +100,22 @@ public struct TaskExecutionBindingStore: Sendable {
         return try await database.writer { db in
             guard let current = try Self.decode(TaskExecutionBinding.self, String.fetchOne(db,
                 sql: "SELECT body_json FROM task_execution_bindings WHERE conversation_id=?",
-                arguments: [expected.conversationID.uuidString])), current == expected else {
+                arguments: [expected.conversationID.uuidString])) else {
+                throw FloeError.notFound("Task binding")
+            }
+            if let waitingRunID {
+                let runPin = try Self.decode(TaskExecutionBinding.self, String.fetchOne(db, sql: """
+                    SELECT execution_binding_json FROM runs
+                    WHERE id=? AND conversation_id=? AND \(Self.rebindableRunFilter)
+                    """, arguments: [waitingRunID.uuidString, expected.conversationID.uuidString]))
+                // Two waiting calls from the same run may both observe the
+                // old pin. Only the first commits the exact verified upgrade.
+                if runPin == current, current.target == target, current.generation == expected.generation + 1 {
+                    return current
+                }
+                guard runPin == expected else { throw FloeError.validationFailed("The waiting task environment changed") }
+            }
+            guard current == expected else {
                 throw FloeError.validationFailed("The task environment changed; confirm it again")
             }
             let active = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_environment_migrations WHERE conversation_id=? AND phase NOT IN ('completed','cancelled')",
@@ -136,7 +152,7 @@ public struct TaskExecutionBindingStore: Sendable {
                 arguments: [receipt.id.uuidString, expected.conversationID.uuidString, notice, PersistenceCodec.encode(receipt.updatedAt)])
             try db.execute(sql: "UPDATE conversations SET updated_at=? WHERE id=?",
                 arguments: [PersistenceCodec.encode(receipt.updatedAt), expected.conversationID.uuidString])
-            return next
+            return try TaskExecutionBinding.decoded(body)
         }
     }
 

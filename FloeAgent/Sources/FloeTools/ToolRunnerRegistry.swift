@@ -137,6 +137,8 @@ public struct AnyAgentTool: Sendable {
             } catch let retry as ToolPreDispatchRetry {
                 await lease.finish()
                 guard !retried, try await routing.waitForPreDispatchRetry(routedContext, reason: retry) else { throw retry }
+                try routedContext.cancellation.throwIfCancelled()
+                try Task.checkCancellation()
                 retried = true
             } catch {
                 await lease.finish()

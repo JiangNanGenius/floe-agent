@@ -1154,20 +1154,24 @@ final class AppEnvironment: ObservableObject {
         )
         self.environmentExecutions = environmentExecutions
         let executionPins = SQLiteRunStore(database: database)
+        let targetBindings = TaskExecutionBindingStore(database: database)
         ToolEnvironmentRouting.shared.configureRetry { context, retry in
-            try await FloePlatformServices.shared.waitForPendingLinuxUpgrade(
-                expectedImageID: retry.expectedLinuxImageID, cancellation: context.cancellation)
+            try await FloePlatformServices.shared.waitForLinuxRuntimeUpgrade(
+                expectedImageID: retry.expectedLinuxImageID,
+                runID: context.childExecution?.identity.parentRunID ?? context.runID,
+                environmentID: context.environmentID, cancellation: context.cancellation)
             return true
         }
         ToolEnvironmentRouting.shared.configure { original in
             var context = original
+            let backend = context.executionToolName.map { CapabilityExecutionRouter.decision(for: $0).backend }
+            let runID = context.childExecution?.identity.parentRunID ?? context.runID
             var savedPin: TaskExecutionBinding?
-            if let name = context.executionToolName,
-               CapabilityExecutionRouter.decision(for: name).backend != .nativeApple,
-               let run = try await executionPins.run(id: context.childExecution?.identity.parentRunID ?? context.runID) {
+            if let backend, backend != .nativeApple, let run = try await executionPins.run(id: runID) {
                 if let pin = run.executionBinding {
                     guard context.environmentID == pin.target.environmentID,
-                          context.executionBindingGeneration == nil || context.executionBindingGeneration == pin.generation else {
+                          context.executionBindingGeneration == nil || context.executionBindingGeneration == pin.generation
+                            || context.liveExecutionBinding?.canUse(pin) == true else {
                         throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
                     }
                     // Service-restored jobs carry their persisted environment
@@ -1175,15 +1179,33 @@ final class AppEnvironment: ObservableObject {
                     // this exact run pin, never model arguments or defaults.
                     context.executionBindingGeneration = pin.generation
                     savedPin = pin
-                } else if context.environmentID == nil,
-                          CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest {
+                } else if context.environmentID == nil, backend == .linuxGuest {
                     throw FloeError.validationFailed("The selected execution environment is unavailable. Reconnect or explicitly choose another location; no fallback was started.")
                 }
             }
             // Join an already-authorized Settings upgrade before acquiring a
             // lease: maintenance must drain all leases before rebuilding.
             // Native, remote and unrelated environments do not wait.
-            let backend = context.executionToolName.map { CapabilityExecutionRouter.decision(for: $0).backend }
+            let pin = savedPin
+            let live = context.liveExecutionBinding
+            let tracksLinuxRebuild = backend == .linuxGuest && context.scope == .local
+                && pin.map({ live?.canUse($0) == true }) == true
+            let acquire: @Sendable (ToolContext) async throws -> ToolEnvironmentLease = { attempt in
+                let lease = try await environmentExecutions.acquire(attempt)
+                guard backend == .linuxGuest else { return lease }
+                do {
+                    try attempt.cancellation.throwIfCancelled()
+                    guard let physical = try await ResidentRuntimeBindingFence.acquire(context: lease.context, pin: pin,
+                        registry: environmentRegistry, waitingRunBindings: targetBindings) else { return lease }
+                    var admitted = lease.context
+                    if tracksLinuxRebuild { admitted.executionBindingGeneration = live?.current.generation }
+                    return ToolEnvironmentLease(context: admitted) {
+                        // Release the physical guard before publishing this lease idle.
+                        physical.finish()
+                        await lease.finish()
+                    }
+                } catch { await lease.finish(); throw error }
+            }
             var useRecoveryAdmission = false
             var selectedBefore: ContainerRecord?
             var pinBefore: TaskExecutionBinding?
@@ -1193,34 +1215,39 @@ final class AppEnvironment: ObservableObject {
                     await environmentRegistry.record(id: id)
                 } else { nil }
                 if selectedBefore?.effectiveExecutionBackend == .linuxVM || context.environmentID == nil {
-                    let runID = context.childExecution?.identity.parentRunID ?? context.runID
                     pinBefore = try await executionPins.run(id: runID)?.executionBinding
-                    if context.executionToolName != nil, pinBefore != savedPin {
+                    if backend != nil, pinBefore != pin,
+                       !(tracksLinuxRebuild && pinBefore.map({ live?.canUse($0) == true }) == true) {
                         throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
                     }
                     useRecoveryAdmission = true
                 }
             }
-            let lease: ToolEnvironmentLease
             if useRecoveryAdmission {
                 let originalContext = context
                 let originalPin = pinBefore
                 let originalSelection = selectedBefore
-                let runID = context.childExecution?.identity.parentRunID ?? context.runID
-                lease = try await EnvironmentPackageJobs.shared.acquireOutsideSharedMaintenance(
+                return try await EnvironmentPackageJobs.shared.acquireOutsideSharedMaintenance(
                     id: FloePlatformServices.residentRecoveryJobID,
                     cancellation: context.cancellation,
+                    waitForMaintenance: {
+                        try await FloePlatformServices.shared.waitForLinuxRuntimeUpgrade(
+                            runID: runID, environmentID: originalContext.environmentID,
+                            cancellation: originalContext.cancellation)
+                    },
                     validate: {
                         try originalContext.cancellation.throwIfCancelled()
                         try Task.checkCancellation()
                         let currentPin = try await executionPins.run(id: runID)?.executionBinding
-                        guard currentPin == originalPin else {
+                        guard currentPin == originalPin || (tracksLinuxRebuild
+                            && currentPin.map({ live?.canUse($0) == true }) == true) else {
                             throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
                         }
                         if let originalSelection {
                             guard let selectedAfter = await environmentRegistry.record(id: originalSelection.id),
                                   selectedAfter.effectiveExecutionBackend == originalSelection.effectiveExecutionBackend,
-                                  selectedAfter.runtimeGeneration == originalSelection.runtimeGeneration else {
+                                  selectedAfter.runtimeGeneration == originalSelection.runtimeGeneration
+                                    || (tracksLinuxRebuild && LinuxResidentRuntimeGeneration.recoveryID(from: selectedAfter.runtimeGeneration) != nil) else {
                                 throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
                             }
                         }
@@ -1229,22 +1256,10 @@ final class AppEnvironment: ObservableObject {
                         // racing the fence. Do not cancel the user's run.
                         var attemptContext = originalContext
                         attemptContext.cancellation = originalContext.cancellation.derived()
-                        return try await environmentExecutions.acquire(attemptContext)
+                        return try await acquire(attemptContext)
                     }, release: { await $0.finish() })
-            } else {
-                lease = try await environmentExecutions.acquire(context)
             }
-            guard let name = context.executionToolName,
-                  CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest else { return lease }
-            do {
-                guard let physical = try await ResidentRuntimeBindingFence.acquire(context: lease.context, pin: savedPin, registry: environmentRegistry) else { return lease }
-                return ToolEnvironmentLease(context: lease.context) {
-                    // Drop SH before the coordinator publishes this tracked
-                    // execution idle; maintenance cannot observe a false gap.
-                    physical.finish()
-                    await lease.finish()
-                }
-            } catch { await lease.finish(); throw error }
+            return try await acquire(context)
         }
 
         // Linux guest backend: one TinyEMU-backed service for the whole app,
@@ -1531,7 +1546,6 @@ final class AppEnvironment: ObservableObject {
         // Only a trusted macBridge lease routes to the same-Mac shell; every
         // other environment keeps the Linux guest backend.
         let defaultShellBackend = MacBridgeExecutionRouter(defaultBackend: linuxShellBackend)
-        let targetBindings = TaskExecutionBindingStore(database: database)
         let remoteResolver: SSHShellTargetResolver = { id in
             guard let record = await environmentRegistry.record(id: id), record.state == .active,
                   !record.requiresRebuild else {

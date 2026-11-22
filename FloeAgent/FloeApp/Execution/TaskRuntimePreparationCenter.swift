@@ -16,7 +16,7 @@ final class TaskRuntimePreparationCenter: ObservableObject {
     struct Activity: Identifiable, Sendable {
         let id: UUID
         let runID: UUID
-        let imageID: String
+        let jobID: String
         let environmentID: String?
         /// Monotonic per-center generation. A banner for a run always shows
         /// the newest activity and an `end` removes only its exact activity,
@@ -30,6 +30,8 @@ final class TaskRuntimePreparationCenter: ObservableObject {
         /// `EnvironmentPackageJobs` once the attempt exists. The banner shows
         /// job phases/bytes only for this exact attempt, never for a newer one.
         var attemptEpoch: UUID?
+
+        var isUpgrade: Bool { jobID == FloePlatformServices.residentRecoveryJobID }
     }
 
     @Published private(set) var activities: [Activity] = []
@@ -46,14 +48,15 @@ final class TaskRuntimePreparationCenter: ObservableObject {
         runID: UUID?,
         imageID: String,
         environmentID: String?,
-        waitToken: CancellationToken
+        waitToken: CancellationToken,
+        jobID: String? = nil
     ) -> Activity? {
         guard let runID, !waitToken.isCancelled else { return nil }
         nextGeneration &+= 1
         let activity = Activity(
             id: UUID(),
             runID: runID,
-            imageID: imageID,
+            jobID: jobID ?? (LinuxImageInstallModel.jobPrefix + imageID),
             environmentID: environmentID,
             generation: nextGeneration,
             waitToken: waitToken,
@@ -106,12 +109,13 @@ struct TaskRuntimePreparationBanner: View {
 
     var body: some View {
         if let activity = currentActivity {
-            let jobID = LinuxImageInstallModel.jobPrefix + activity.imageID
+            let jobID = activity.jobID
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    ProgressView().controlSize(.small)
+                    if !activity.isUpgrade { ProgressView().controlSize(.small) }
                     Text(center.isCancelling(activity.id)
                          ? String(localized: "envmgr.cancelling")
+                         : activity.isUpgrade ? String(localized: "app.bilingual.a61ab7aa465dca3d")
                          : phaseText(for: activity, jobID: jobID))
                         .font(.subheadline)
                     Spacer()
@@ -126,7 +130,13 @@ struct TaskRuntimePreparationBanner: View {
                         .font(.subheadline)
                     }
                 }
-                if let transfer = liveTransfer(for: activity, jobID: jobID) {
+                if activity.isUpgrade {
+                    if isLiveAttempt(activity, jobID: jobID) && !center.isCancelling(activity.id) {
+                        LinuxRuntimeUpgradeProgress()
+                    } else {
+                        ProgressView(value: nil as Double?).progressViewStyle(.linear)
+                    }
+                } else if let transfer = liveTransfer(for: activity, jobID: jobID) {
                     if let total = transfer.totalBytes, total > 0 {
                         ProgressView(value: min(Double(transfer.receivedBytes) / Double(total), 1))
                         Text("\(Int(min(Double(transfer.receivedBytes) / Double(total), 1) * 100))% · \(size(transfer.receivedBytes)) / \(size(total))\(rate(transfer.bytesPerSecond))")
@@ -202,7 +212,7 @@ private struct RuntimePreparationDetails: View {
     @ObservedObject private var center = TaskRuntimePreparationCenter.shared
     @ObservedObject private var jobs = EnvironmentPackageJobs.shared
 
-    private var jobID: String { LinuxImageInstallModel.jobPrefix + activity.imageID }
+    private var jobID: String { activity.jobID }
 
     /// The sheet holds a value snapshot taken at presentation time; the live
     /// center entry is the authority for the attempt binding. Without this a

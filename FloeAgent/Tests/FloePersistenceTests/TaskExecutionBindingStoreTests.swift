@@ -124,6 +124,40 @@ struct TaskExecutionBindingStoreTests: Sendable {
         #expect(try await database.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE conversation_id=?", arguments: [conversation.uuidString]) } == 1)
     }
 
+    @Test("Concurrent waiting calls adopt one verified rebuild for their saved run")
+    func waitingRunAdoptsResidentUpgradeOnce() async throws {
+        let database = try await makeDatabase(), conversation = UUID(), run = UUID(), ended = UUID(), recovery = UUID()
+        try await insertConversation(database, id: conversation)
+        let original = makeBinding(conversation, target: .init(environmentID: "same-linux", backend: .linuxVM,
+            operatingSystem: "linux", architecture: "arm64"))
+        let store = TaskExecutionBindingStore(database: database)
+        _ = try await store.bindInitial(original)
+        try await insertRun(database, id: run, conversationID: conversation, state: "executingTool", binding: original)
+        try await insertRun(database, id: ended, conversationID: conversation, state: "cancelled", binding: original)
+        try await insertCheckpoint(database, runID: run, conversationID: conversation, body: "{\"kept\":true}")
+        var replacement = original.target
+        replacement.runtimeGeneration = LinuxResidentRuntimeGeneration.value(recoveryID: recovery)
+        let target = replacement
+        await #expect(throws: FloeError.self) {
+            _ = try await store.acceptResidentRebuild(original, target: target, committedRecoveryID: recovery,
+                notice: "Must not resume a cancelled run", waitingRunID: ended)
+        }
+        async let first = store.acceptResidentRebuild(original, target: target, committedRecoveryID: recovery,
+            notice: "Resumed after upgrade", waitingRunID: run)
+        async let joined = store.acceptResidentRebuild(original, target: target, committedRecoveryID: recovery,
+            notice: "Resumed after upgrade", waitingRunID: run)
+        let (next, same) = try await (first, joined)
+        #expect(next == same && next.generation == original.generation + 1)
+        let row = try await database.reader { db in
+            (try String.fetchOne(db, sql: "SELECT execution_binding_json FROM runs WHERE id=?", arguments: [run.uuidString]),
+             try String.fetchOne(db, sql: "SELECT body_json FROM checkpoints WHERE run_id=?", arguments: [run.uuidString]),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE conversation_id=?", arguments: [conversation.uuidString]))
+        }
+        #expect(try TaskExecutionBinding.decoded(#require(row.0)) == next)
+        #expect(try checkpointBinding(#require(row.1)) == next)
+        #expect(row.2 == 1)
+    }
+
     @Test("a malformed checkpoint rolls back confirmed same-ID publication and notice")
     func residentAcceptanceRollbackLeavesEveryOldPinAndNoReceipt() async throws {
         let database = try await makeDatabase(), conversation = UUID(), run = UUID(), recovery = UUID()

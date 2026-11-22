@@ -286,7 +286,8 @@ extension AppEnvironment {
 /// The caller first owns a tracked coordinator lease, so maintenance sees this
 /// admission until the returned physical guard has actually finished.
 enum ResidentRuntimeBindingFence {
-    static func acquire(context: ToolContext, pin: TaskExecutionBinding?, registry: EnvironmentRegistry) async throws -> LinuxResidentRecoveryGuard? {
+    static func acquire(context: ToolContext, pin: TaskExecutionBinding?, registry: EnvironmentRegistry,
+                        waitingRunBindings: TaskExecutionBindingStore? = nil) async throws -> LinuxResidentRecoveryGuard? {
         guard let id = context.environmentID,
               let record = await registry.record(id: id), record.effectiveExecutionBackend == .linuxVM else { return nil }
         guard let guests = FloePlatformServices.shared.linuxGuestController() else {
@@ -303,10 +304,34 @@ enum ResidentRuntimeBindingFence {
                 }
                 if LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(current.runtimeGeneration)
                     || LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(pin.target.runtimeGeneration) {
-                    guard current.runtimeGeneration == pin.target.runtimeGeneration else {
-                        throw FloeError.validationFailed(IDELanguageRunText.t(
-                            "Linux 环境已重建，请确认新的运行位置，或新建助手会话。旧资料已保留。",
-                            "Linux was rebuilt. Confirm the new task location or start a new assistant session. Previous data was kept."))
+                    let live = context.liveExecutionBinding
+                    if current.runtimeGeneration != pin.target.runtimeGeneration || (live != nil && live?.current != pin) {
+                        guard let live, let waitingRunBindings, let receipt = physical.receipt,
+                              context.scope == .local, context.conversationID == pin.conversationID,
+                              live.canUse(pin), receipt.preservedRelativePath != nil,
+                              receipt.runtimeGeneration == current.runtimeGeneration else {
+                            throw FloeError.validationFailed(IDELanguageRunText.t(
+                                "Linux 环境已重建，请确认新的运行位置，或新建助手会话。旧资料已保留。",
+                                "Linux was rebuilt. Confirm the new task location or start a new assistant session. Previous data was kept."))
+                        }
+                        var target = pin.target
+                        target.runtimeGeneration = receipt.runtimeGeneration
+                        try await TaskExecutionEnvironmentCenter.validateSavedTarget(target, registry: registry)
+                        try context.cancellation.throwIfCancelled()
+                        try Task.checkCancellation()
+                        let accepted: TaskExecutionBinding
+                        if target == pin.target {
+                            accepted = pin
+                        } else {
+                            accepted = try await waitingRunBindings.acceptResidentRebuild(pin, target: target,
+                                committedRecoveryID: receipt.recoveryID, notice: IDELanguageRunText.t(
+                                    "已接续此任务的 Linux 运行位置。工作文件与历史已保留，所需的软件可按需重新安装。",
+                                    "This task resumed in its saved Linux location. Workspace files and history were kept. Reinstall software if needed."),
+                                waitingRunID: context.childExecution?.identity.parentRunID ?? context.runID)
+                        }
+                        guard live.adopt(accepted) else {
+                            throw FloeError.validationFailed("The saved task environment changed")
+                        }
                     }
                 }
             } else if physical.receipt != nil {

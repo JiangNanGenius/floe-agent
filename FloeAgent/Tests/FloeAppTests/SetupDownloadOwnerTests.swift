@@ -502,6 +502,40 @@ struct SetupDownloadOwnerHooksTests {
         catch Failure.disk { }
     }
 
+    @Test("A chat waiting for the Settings upgrade displays the same attempt until it completes")
+    func chatWaitTracksResidentUpgrade() async throws {
+        let jobs = EnvironmentPackageJobs.shared
+        let center = TaskRuntimePreparationCenter.shared
+        let id = FloePlatformServices.residentRecoveryJobID
+        let runID = UUID()
+        let gate = TestGate()
+        let owner = Task { @MainActor in
+            try await jobs.runShared(id: id, title: "settings", cancellation: nil) { _, _ in
+                await gate.wait()
+                return "complete"
+            }
+        }
+        let token = CancellationToken()
+        let waiter = Task { @MainActor in
+            try await Self.waitForRecoveryReport { jobs.attemptEpoch(id: id) != nil }
+            try await FloePlatformServices.shared.waitForLinuxRuntimeUpgrade(
+                runID: runID, environmentID: "test-linux", cancellation: token)
+        }
+        defer {
+            waiter.cancel()
+            Task { await gate.open() }
+        }
+        try await Self.waitForRecoveryReport {
+            center.activities.contains { $0.runID == runID && $0.attemptEpoch != nil }
+        }
+        let activity = try #require(center.activities.first { $0.runID == runID })
+        #expect(activity.isUpgrade && activity.attemptEpoch == jobs.attemptEpoch(id: id))
+        await gate.open()
+        #expect(try await owner.value == "complete")
+        try await waiter.value
+        #expect(!center.activities.contains { $0.id == activity.id })
+    }
+
     @Test("Cancelling the settings owner still cancels an upgrade with passive waiters")
     func passiveRecoveryOwnerCancellation() async throws {
         let jobs = EnvironmentPackageJobs.shared

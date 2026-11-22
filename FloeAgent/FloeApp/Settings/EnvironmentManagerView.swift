@@ -421,10 +421,11 @@ private final class SharedJobAttempt {
     /// Join only the attempt already owned by another caller. Leaving this
     /// passive wait never cancels the underlying maintenance operation.
     @discardableResult
-    func waitForExistingShared(id: String, cancellation: CancellationToken?) async throws -> Bool {
+    func waitForExistingShared(id: String, cancellation: CancellationToken?, activityID: UUID? = nil) async throws -> Bool {
         try Task.checkCancellation()
         if cancellation?.isCancelled == true { throw CancellationError() }
         guard let attempt = sharedAttempts[id] else { return false }
+        TaskRuntimePreparationCenter.shared.bind(activityID, attemptEpoch: attempt.epoch)
         let waiterID = UUID()
         do {
             _ = try await withTaskCancellationHandler {
@@ -453,6 +454,7 @@ private final class SharedJobAttempt {
     func acquireOutsideSharedMaintenance<Lease: Sendable>(
         id: String,
         cancellation: CancellationToken,
+        waitForMaintenance: (@MainActor @Sendable () async throws -> Void)? = nil,
         validate: @Sendable () async throws -> Void,
         acquire: @Sendable () async throws -> Lease,
         release: @Sendable (Lease) async -> Void
@@ -460,16 +462,24 @@ private final class SharedJobAttempt {
         while true {
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
-            _ = try await waitForExistingShared(id: id, cancellation: cancellation)
+            if let waitForMaintenance {
+                try await waitForMaintenance()
+            } else {
+                _ = try await waitForExistingShared(id: id, cancellation: cancellation)
+            }
             try await validate()
             let lease: Lease
             do {
                 lease = try await acquire()
             } catch {
-                // Only this coordinator rejection means the maintenance
-                // admission fence won the race. Preserve every other error.
-                if case FloeError.validationFailed("Linux runtime maintenance is in progress") = error,
-                   attemptEpoch(id: id) != nil {
+                try cancellation.throwIfCancelled()
+                try Task.checkCancellation()
+                // Even a physical admission can race maintenance after the
+                // coordinator granted a lease. No tool has dispatched here.
+                let interruptedAdmission = (error as? FloeError) == .validationFailed("Linux runtime maintenance is in progress")
+                    || (error as? FloeError) == .cancelled || error is CancellationError
+                    || (error as? LinuxResidentRecoveryError) == .busy
+                if interruptedAdmission, attemptEpoch(id: id) != nil {
                     continue
                 }
                 throw error

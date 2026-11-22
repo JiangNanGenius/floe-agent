@@ -78,7 +78,8 @@ public struct ShellOpenTool: AgentTool {
             throw FloeError.validationFailed("A workspace root is required for shell sessions")
         }
         var processConfiguration: SkillProcessConfiguration?
-        if let skillID = args.skillID?.trimmingCharacters(in: .whitespacesAndNewlines), !skillID.isEmpty {
+        let skillID = args.skillID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !skillID.isEmpty {
             guard let configurationProvider, let dependencyGate, context.approvalGrantID != nil else {
                 throw FloeError.unauthorized
             }
@@ -93,20 +94,25 @@ public struct ShellOpenTool: AgentTool {
             processConfiguration = try await configurationProvider.processConfiguration(skillID: skillID, context: context)
             try processConfiguration?.validateOverrides(args.env ?? [:])
         }
-        let result = try await center.open(
-            command: args.command ?? "",
-            cwd: args.cwd ?? ".",
-            environment: args.env ?? [:],
-            columns: args.columns ?? 80,
-            rows: args.rows ?? 24,
-            runID: context.runID,
-            rootURL: root,
-            cancellation: context.cancellation,
-            toolEnvironment: context.environment,
-            clientSessionID: context.clientSessionID,
-            skillConfiguration: processConfiguration,
-            conversationID: context.conversationID
-        )
+        let result: ShellOpenResult
+        do {
+            result = try await center.open(
+                command: args.command ?? "",
+                cwd: args.cwd ?? ".",
+                environment: args.env ?? [:],
+                columns: args.columns ?? 80,
+                rows: args.rows ?? 24,
+                runID: context.runID,
+                rootURL: root,
+                cancellation: context.cancellation,
+                toolEnvironment: context.environment,
+                clientSessionID: context.clientSessionID,
+                skillConfiguration: processConfiguration,
+                conversationID: context.conversationID
+            )
+        } catch let pending as LinuxGuestImageUpgradePending where skillID.isEmpty {
+            throw ToolPreDispatchRetry(expectedLinuxImageID: pending.currentImageID)
+        }
         var text = "status=ok sessionID=\(result.sessionID) alive=\(result.alive)"
         if !result.initialOutput.isEmpty { text += "\noutput:\n\(result.initialOutput)" }
         return ToolExecutionOutput(digesting: text, exitStatus: 0)
