@@ -15,12 +15,7 @@ final class SyncSettingsUITests: XCTestCase {
         ]
         app.launch()
 
-        let settings = app.buttons["sidebar.settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 15))
-        settings.tap()
-        let sync = app.descendants(matching: .any).matching(identifier: "settings.section.sync").firstMatch
-        XCTAssertTrue(sync.waitForExistence(timeout: 8))
-        sync.tap()
+        openSyncSettings(app)
 
         let macSync = app.switches["settings.sync.device_history.enabled"]
         let iCloud = app.switches["settings.sync.master"]
@@ -120,6 +115,22 @@ final class SyncSettingsUITests: XCTestCase {
         turnOff(master)
         XCTAssertEqual(wait(forEnabled: false, element: configuration), .completed)
         XCTAssertEqual(wait(forValue: "disabled", element: syncNow), .completed)
+    }
+
+    @MainActor
+    private func openSyncSettings(_ app: XCUIApplication) {
+        let settings = app.buttons["sidebar.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 25))
+        settings.tap()
+        let categories = app.descendants(matching: .any).matching(identifier: "settings.sections").firstMatch
+        XCTAssertTrue(categories.waitForExistence(timeout: 12))
+        let sync = categories.descendants(matching: .any).matching(identifier: "settings.section.sync").firstMatch
+        for _ in 0..<4 {
+            if sync.exists && sync.isHittable { break }
+            categories.swipeUp(velocity: .fast)
+        }
+        XCTAssertTrue(sync.waitForExistence(timeout: 5))
+        sync.tap()
     }
 
     @MainActor
