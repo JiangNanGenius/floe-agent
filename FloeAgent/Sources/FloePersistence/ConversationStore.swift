@@ -717,6 +717,104 @@ public actor SQLiteConversationStore: ConversationStore {
         }
     }
 
+    /// Export a single committed task from a consistent database read. Local
+    /// permissions, attachments, and live run state stay with their owner.
+    public func deviceHistory(conversationID: UUID) async throws -> DeviceConversationHistory {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM conversations WHERE id = ?",
+                                             arguments: [conversationID.uuidString]) else {
+                throw DeviceConversationHistoryError.conversationUnavailable
+            }
+            let conversation = try Self.conversation(from: row)
+            guard conversation.isVisibleInOrdinaryList else {
+                throw DeviceConversationHistoryError.conversationUnavailable
+            }
+            let bodyBytes = try Int.fetchOne(db, sql: """
+                SELECT coalesce(sum(length(CAST(content AS BLOB))), 0)
+                FROM messages WHERE conversation_id = ? AND role IN ('user', 'assistant')
+                """, arguments: [conversationID.uuidString]) ?? 0
+            guard bodyBytes <= DeviceConversationHistory.maximumBytes else { throw DeviceConversationHistoryError.sizeLimit }
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM messages WHERE conversation_id = ? AND role IN ('user', 'assistant')
+                ORDER BY created_at, rowid LIMIT ?
+                """, arguments: [conversationID.uuidString, DeviceConversationHistory.maximumMessages + 1])
+            guard rows.count <= DeviceConversationHistory.maximumMessages else {
+                throw DeviceConversationHistoryError.sizeLimit
+            }
+            let ids = try rows.map(Self.messageID(from:))
+            let parts = try Self.fetchParts(messageIDs: ids, db: db)
+            let messages = try zip(rows, ids).map { row, id in
+                try Self.portableDeviceMessage(row, id: id, parts: parts[id, default: []])
+            }
+            return DeviceConversationHistory(id: conversationID, title: SecretRedactor.redact(conversation.title),
+                createdAt: conversation.createdAt, updatedAt: conversation.updatedAt, messages: messages)
+        }
+    }
+
+    /// Inserts only new history, using the usual native workspace ownership.
+    /// A differing existing message aborts the whole import. It cannot be
+    /// interpreted as an edit, delete, approval, or request to run the task.
+    public func importDeviceHistory(_ history: DeviceConversationHistory) async throws -> DeviceConversationImport {
+        try history.validate()
+        return try await database.writer { db in
+            let conversationID = history.id.uuidString
+            let existing = try Row.fetchOne(db, sql: "SELECT * FROM conversations WHERE id = ?", arguments: [conversationID])
+            if let existing {
+                let conversation = try Self.conversation(from: existing)
+                guard conversation.purpose == .ordinary, conversation.visibility == .normal,
+                      conversation.editorOwnership == nil else {
+                    throw DeviceConversationHistoryError.conversationUnavailable
+                }
+            } else {
+                try Self.writeConversation(.init(id: history.id, title: history.title, createdAt: history.createdAt,
+                    updatedAt: history.updatedAt, titleOrigin: .manual), in: db)
+                _ = try SQLiteWorkspaceStore.ensureWorkspace(conversationID: history.id, title: history.title, db: db)
+            }
+            var added = 0
+            for message in history.messages {
+                if let row = try Row.fetchOne(db, sql: "SELECT * FROM messages WHERE id = ?",
+                                              arguments: [message.id.uuidString]) {
+                    let parts = try Self.fetchParts(messageID: message.id, db: db)
+                    let current = try Self.portableDeviceMessage(row, id: message.id, parts: parts)
+                    guard (row["conversation_id"] as String) == conversationID,
+                          current == message else {
+                        throw DeviceConversationHistoryError.messageConflict(message.id)
+                    }
+                    continue
+                }
+                try db.execute(sql: """
+                    INSERT INTO messages (id, conversation_id, role, content, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, arguments: [message.id.uuidString, conversationID, message.role, message.content,
+                                      PersistenceCodec.encode(message.createdAt)])
+                for part in message.parts {
+                    try Self.insertPart(.init(id: part.id, messageID: message.id, partIndex: part.index,
+                        kind: .text, text: part.text, createdAt: part.createdAt), db: db)
+                }
+                added += 1
+            }
+            if added > 0 {
+                let updatedAt = PersistenceCodec.encode(history.updatedAt)
+                try db.execute(sql: "UPDATE conversations SET updated_at = MAX(updated_at, ?) WHERE id = ?",
+                               arguments: [updatedAt, conversationID])
+            }
+            return DeviceConversationImport(conversationID: history.id, addedMessages: added,
+                                            createdConversation: existing == nil)
+        }
+    }
+
+    private static func portableDeviceMessage(_ row: Row, id: UUID, parts: [MessagePart]) throws -> DeviceConversationHistory.Message {
+        guard UUID(uuidString: row["conversation_id"]) != nil else {
+            throw DeviceConversationHistoryError.invalidHistory
+        }
+        let safeParts: [DeviceConversationHistory.TextPart] = parts.compactMap {
+            guard $0.kind == .text, let text = $0.text else { return nil }
+            return .init(id: $0.id, index: $0.partIndex, text: SecretRedactor.redact(text), createdAt: $0.createdAt)
+        }
+        return .init(id: id, role: row["role"], content: SecretRedactor.redact(row["content"]),
+                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: safeParts)
+    }
+
     public func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {
         // The thread UI grows this window in bounded increments while the
         // user explicitly asks for older history. Capping this method at 500
