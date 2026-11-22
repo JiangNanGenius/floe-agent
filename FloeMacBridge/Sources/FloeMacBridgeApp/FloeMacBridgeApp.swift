@@ -385,6 +385,11 @@ final class BridgeAppModel: ObservableObject {
         }
     }
     #if FLOE_UNIFIED_MAC
+    func openNotifiedTask(_ id: UUID) {
+        openAgentWorkspace()
+        macWorkspace?.agent?.notificationTaskID = id
+    }
+
     func openAgentWorkspace() {
         guard !isSwitchingMode else { return }
         if !isAgentMode {
@@ -517,6 +522,7 @@ final class BridgeAppModel: ObservableObject {
         Task {
             guard !isSwitchingMode else { return }
             if let macWorkspace, !(await macWorkspace.closeToolbox(promptForScannerDraft: true)) { return }
+            if let macWorkspace, !(await macWorkspace.closeTaskTerminals()) { return }
             await service?.jobs.stopAllAndWait()
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }

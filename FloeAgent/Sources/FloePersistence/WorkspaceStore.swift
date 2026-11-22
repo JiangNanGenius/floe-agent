@@ -536,12 +536,29 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
 
     /// A live change to approval must preserve independently updated task restrictions.
     public func setApprovalMode(_ mode: TaskApprovalMode, conversationID: UUID) async throws {
-        try await database.writer { db in
+        _ = try await updateTaskPolicy(.approval(mode), conversationID: conversationID)
+    }
+
+    @discardableResult
+    public func updateTaskPolicy(_ setting: TaskPolicySetting, conversationID: UUID) async throws -> TaskPolicy {
+        let field: String
+        let value: String?
+        switch setting {
+        case .approval(let mode): (field, value) = ("approval_mode", mode?.rawValue)
+        case .recovery(let policy): (field, value) = ("recovery_policy", policy.rawValue)
+        case .notifications(let policy): (field, value) = ("notification_policy", policy.rawValue)
+        }
+        return try await database.writer { db in
             try db.execute(sql: """
-                INSERT INTO task_policies (conversation_id, approval_mode, updated_at) VALUES (?, ?, ?)
+                INSERT INTO task_policies (conversation_id, \(field), updated_at) VALUES (?, ?, ?)
                 ON CONFLICT(conversation_id) DO UPDATE SET
-                    approval_mode = excluded.approval_mode, updated_at = excluded.updated_at
-                """, arguments: [conversationID.uuidString, mode.rawValue, PersistenceCodec.encode(Date())])
+                    \(field) = excluded.\(field), updated_at = excluded.updated_at
+                """, arguments: [conversationID.uuidString, value, PersistenceCodec.encode(Date())])
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM task_policies WHERE conversation_id = ?",
+                                                arguments: [conversationID.uuidString]) else {
+                throw FloeError.notFound("task policy")
+            }
+            return try Self.taskPolicy(from: row)
         }
     }
 

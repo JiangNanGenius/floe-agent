@@ -4,6 +4,7 @@ import AppKit
 import FloeMacSelfCore
 import FloeMacToolbox
 import FloePersistence
+import FloeTools
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -17,7 +18,7 @@ private enum MacWorkspaceDestination: Hashable {
 }
 
 private enum MacTaskInspector: Equatable {
-    case files, browser(UUID)
+    case files, browser(UUID), activity(UUID), terminal(UUID)
 }
 
 private struct MacTaskPermissionsPresentation: Identifiable {
@@ -39,6 +40,7 @@ struct MacWorkspaceRootView: View {
     let openModelSettings: () -> Void
     let openPermissionSettings: () -> Void
     let openToolbox: (String) -> Void
+    let openTerminal: (UUID, WorkspaceRecord) throws -> MacTaskTerminalOwner?
     let settingsContent: () -> AnyView
     let imageContent: (((URL) -> Bool)?) -> AnyView
     let creativeContent: (((URL) async -> Bool)?) -> AnyView
@@ -68,6 +70,8 @@ struct MacWorkspaceRootView: View {
     @State private var browserReturnDestination: MacWorkspaceDestination?
     @State private var restoredInitialDestination = false
     @State private var inspector: MacTaskInspector?
+    @State private var currentTerminal: MacTaskTerminalOwner?
+    @State private var showTerminalError = false
     @State private var taskPermissions: MacTaskPermissionsPresentation?
     @State private var browserExpanded = false
     @State private var compactDetail = false
@@ -130,6 +134,7 @@ struct MacWorkspaceRootView: View {
         .onChange(of: workspace.draftSelectionID) { _, selection in
             if taskPermissions?.id != selection { taskPermissions = nil }
         }
+        .onChange(of: workspace.notificationTaskID, initial: true) { _, _ in openNotifiedTask() }
         .onChange(of: workspace.windowCommand?.id, initial: true) {
             guard let command = workspace.windowCommand else { return }
             workspace.windowCommand = nil
@@ -159,6 +164,7 @@ struct MacWorkspaceRootView: View {
                         .data(forKey: MacSpaceFilesRoot.customBookmarkKey) != nil,
                     remembers: remembersFileRoot)
             }
+            openNotifiedTask()
             guard destination == .newTask(nil) else { return }
             if remembersFileRoot, let savedID = UUID(uuidString: lastConversation),
                workspace.conversations.contains(where: { $0.id == savedID && $0.isVisibleInOrdinaryList }) {
@@ -219,6 +225,8 @@ struct MacWorkspaceRootView: View {
             if newDestination == nil { destination = .taskCenter }
             if !showsTask { inspector = nil }
             if case .browser(let owner) = inspector, owner != visibleTaskOwner { inspector = nil }
+            if case .activity(let owner) = inspector, owner != destinationConversationID { inspector = nil }
+            if case .terminal(let owner) = inspector, owner != visibleTaskOwner { inspector = nil; currentTerminal = nil }
             guard remembersFileRoot else { return }
             if case .conversation(let id) = newDestination { lastConversation = id.uuidString }
             if case .newTask = newDestination { lastConversation = "" }
@@ -248,6 +256,11 @@ struct MacWorkspaceRootView: View {
         }
         .alert("mac.workspace.exportFailed", isPresented: $showExportError) {
             Button("OK", role: .cancel) {}
+        }
+        .alert(workspaceText("终端暂不可用", "Terminal Unavailable"), isPresented: $showTerminalError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(workspaceText("请检查任务目录，或先结束此任务已打开的终端。", "Check the task folder, or stop this task’s open terminal first."))
         }
         .alert("mac.workspace.saveFailed", isPresented: $showMetadataError) {
             Button("OK", role: .cancel) {}
@@ -339,9 +352,44 @@ struct MacWorkspaceRootView: View {
                 case .files: EmptyView()
                 case .browser(let owner):
                     browserDetail(owner: owner, close: closeInspector)
+                case .activity(let id):
+                    VStack(spacing: 0) {
+                        inspectorHeader(workspaceText("执行进度与文件变更", "Progress and File Changes"))
+                        if workspace.selectedID == id, !workspace.isLoadingHistory {
+                            MacTaskActivityInspectorView(
+                                snapshot: .init(runs: workspace.transcriptRuns, events: workspace.transcriptEventsByRun),
+                                artifactReader: readTaskChange
+                            )
+                                .id(id)
+                        } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
+                    }
+                case .terminal(let owner):
+                    if let currentTerminal, currentTerminal.taskID == owner {
+                        VStack(spacing: 0) {
+                            inspectorHeader(workspaceText("终端", "Terminal"))
+                            MacTaskTerminalInspector(owner: currentTerminal).id(owner)
+                        }
+                    }
                 }
             }
         }
+    }
+
+    private func inspectorHeader(_ title: String) -> some View {
+        HStack {
+            Text(title).font(.headline)
+            Spacer()
+            Button(action: closeInspector) { Image(systemName: "sidebar.trailing") }
+                .accessibilityLabel(workspaceText("隐藏检查器", "Hide Inspector"))
+        }.padding(10)
+    }
+
+    private func readTaskChange(_ receipt: ToolArtifactReference) throws -> Data? {
+        let parts = receipt.relativePath.split(separator: "/")
+        guard parts.count == 3, let runID = UUID(uuidString: String(parts[1])),
+              workspace.transcriptRuns.contains(where: { $0.id == runID && $0.conversationID == workspace.selectedID }) else { return nil }
+        return try FloeArtifactStore.verifiedData(receipt.relativePath, allowed: [.change], maxBytes: 512 * 1024,
+                                                   expectedSHA256: receipt.sha256, root: workspace.runOutputArtifactRoot)
     }
 
     private func clampedInspectorWidth(_ requested: CGFloat, in width: CGFloat) -> CGFloat {
@@ -1124,6 +1172,15 @@ struct MacWorkspaceRootView: View {
                         .accessibilityIdentifier("workspace.files.open")
                     Button(workspaceText("浏览器", "Browser"), systemImage: "safari", action: showWorkbenchBrowser)
                         .accessibilityIdentifier("workspace.browser.open")
+                    Button(workspaceText("终端", "Terminal"), systemImage: "terminal", action: showTaskTerminal)
+                        .disabled(!currentTaskFileRootUsable)
+                        .accessibilityIdentifier("workspace.terminal.open")
+                    if let id = destinationConversationID {
+                        Button(workspaceText("执行进度与文件变更", "Progress and File Changes"), systemImage: "chart.bar") {
+                            inspector = .activity(id)
+                        }
+                        .accessibilityIdentifier("workspace.activity.open")
+                    }
                     if showsTaskInspector {
                         Divider()
                         Button(workspaceText("隐藏检查器", "Hide Inspector"), systemImage: "sidebar.trailing", action: closeInspector)
@@ -1546,6 +1603,21 @@ struct MacWorkspaceRootView: View {
 
     private func openTask(_ id: UUID) {
         if canSelectTask || workspace.selectedID == id { destination = .conversation(id) }
+    }
+
+    private func openNotifiedTask() {
+        guard workspace.isReady, let id = workspace.notificationTaskID else { return }
+        workspace.notificationTaskID = nil
+        if workspace.conversations.contains(where: { $0.id == id }) { openTask(id) }
+    }
+
+    private func showTaskTerminal() {
+        guard let id = visibleTaskOwner, let root = currentTaskFileRecord else { return }
+        do {
+            guard let owner = try openTerminal(id, root) else { return }
+            currentTerminal = owner
+            inspector = .terminal(id)
+        } catch { showTerminalError = true }
     }
 
     private func updateTask(id: UUID, change: FloeMacSelfRuntime.ConversationMetadataChange) {

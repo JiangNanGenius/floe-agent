@@ -10,6 +10,7 @@ struct MacTaskPermissionsSheet: View {
     let isDraft: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var confirmsFullAccess = false
+    @State private var fullAccessChoice: TaskApprovalMode? = .fullAccess
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,17 +25,56 @@ struct MacTaskPermissionsSheet: View {
             .frame(minHeight: FloeTheme.minimumTarget + 4)
             Divider()
             Form {
-                FloeTaskApprovalSection(mode: selection, allowsFullAccess: true, explanation: explanation, isDraft: isDraft)
-                    .disabled(workspace.savingApprovalMode || workspace.isStopping || workspace.isResolvingApproval)
+                if isDraft {
+                    FloeTaskApprovalSection(mode: selection, allowsFullAccess: true, explanation: explanation, isDraft: true)
+                        .disabled(disablesEdit)
+                } else if workspace.selectedTaskPolicy != nil {
+                    FloeSavedTaskPolicyFields(approval: savedApproval, recovery: recovery, notifications: notifications,
+                                              allowsFullAccess: true, explanation: explanation)
+                        .disabled(disablesEdit)
+                    if let center = workspace.taskNotifications { MacNotificationAuthorizationRow(center: center) }
+                }
                 if workspace.savingApprovalMode { ProgressView() }
             }
             .formStyle(.grouped)
         }
-        .frame(width: 480, height: 220)
+        .frame(width: 490, height: isDraft ? 230 : 390)
         .onExitCommand { dismiss() }
         .accessibilityIdentifier("task.permissions.sheet")
         .confirmMacFullAccess(isPresented: $confirmsFullAccess, asDefault: false) {
-            apply(.fullAccess)
+            if isDraft { apply(.fullAccess) }
+            else { applySaved(.approval(fullAccessChoice)) }
+        }
+    }
+
+    private var disablesEdit: Bool { workspace.savingApprovalMode || workspace.isStopping || workspace.isResolvingApproval }
+
+    private var savedApproval: Binding<TaskApprovalMode?> {
+        Binding(get: {
+            guard let policy = workspace.selectedTaskPolicy, policy.approvalMode != nil else { return nil }
+            return policy.resolvedApprovalMode
+        }, set: { mode in
+            if (mode ?? workspace.defaultApprovalMode) == .fullAccess {
+                fullAccessChoice = mode
+                confirmsFullAccess = true
+            } else {
+                applySaved(.approval(mode))
+            }
+        })
+    }
+
+    private var recovery: Binding<TaskRecoveryPolicy> {
+        Binding(get: { workspace.selectedTaskPolicy?.recoveryPolicy ?? .safePoint }, set: { applySaved(.recovery($0)) })
+    }
+
+    private var notifications: Binding<TaskNotificationPolicy> {
+        Binding(get: { workspace.selectedTaskPolicy?.notificationPolicy ?? .stages }, set: { applySaved(.notifications($0)) })
+    }
+
+    private func applySaved(_ setting: TaskPolicySetting) {
+        Task {
+            guard selectionID == workspace.draftSelectionID else { return }
+            await workspace.editSelectedTaskPolicy(setting)
         }
     }
 
@@ -62,6 +102,24 @@ struct MacTaskPermissionsSheet: View {
         case .automatic: MacPermissionsText.t("常规工作区操作可自动批准，其他操作会请求确认。", "Routine workspace actions can be approved automatically. Other actions ask for confirmation.")
         case .fullAccess: MacPermissionsText.t("可以使用当前 Mac 账户有权访问的文件。", "The task can use files available to the current Mac account.")
         }
+    }
+}
+
+struct MacNotificationAuthorizationRow: View {
+    @ObservedObject var center: MacTaskNotifications
+
+    var body: some View {
+        Group {
+            if center.authorization == .notDetermined {
+                Button(MacPermissionsText.t("允许系统通知", "Allow System Notifications")) {
+                    Task { await center.requestAuthorization() }
+                }
+            } else if center.authorization == .denied {
+                Text(MacPermissionsText.t("可在 macOS 的「系统设置 → 通知」开启。", "Enable notifications in macOS System Settings."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .task { await center.updateAuthorization() }
     }
 }
 

@@ -2289,7 +2289,7 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             table[MacAgentWorkspaceTools.replaceTextToolName] = MacAgentWorkspaceReplaceTextTool(rootURL: root)
             table[MacAgentWorkspaceTools.writeFileToolName] = MacAgentWorkspaceWriteFileTool(rootURL: root)
             table[MacAgentWorkspaceTools.appendFileToolName] = MacAgentWorkspaceAppendFileTool(rootURL: root)
-            table[MacAgentWorkspaceTools.applyPatchToolName] = MacAgentWorkspaceApplyPatchTool(rootURL: root)
+            table[MacAgentWorkspaceTools.applyPatchToolName] = MacAgentWorkspaceApplyPatchTool(rootURL: root, artifactRoot: runOutputArtifactRoot)
             table[MacAgentWorkspaceTools.createDirectoryToolName] = MacAgentWorkspaceCreateDirectoryTool(rootURL: root)
             if let runOutputArtifactRoot {
                 table[WorkspaceOutputPublication.name] = MacWorkspacePublishOutputTool(

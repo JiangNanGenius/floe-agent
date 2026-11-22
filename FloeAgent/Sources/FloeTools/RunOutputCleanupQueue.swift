@@ -257,8 +257,8 @@ public enum RunOutputCleanupQueue {
         return true
     }
 
-    /// Removes ONLY the canonical `RunOutputs/<runUUID>` trees named by the
-    /// request. Other runs, the request record itself, workspace originals
+    /// Removes the canonical `RunOutputs/<runUUID>` and `ChangeArtifacts/<runUUID>`
+    /// trees named by the request. Other runs, the request record itself, workspace originals
     /// and unrelated user files are never touched. An already-absent tree is
     /// a successful no-op. Refuses (without deleting anything) on a
     /// symlinked/foreign namespace chain or an unexpected component.
@@ -271,16 +271,16 @@ public enum RunOutputCleanupQueue {
                 "run-output cleanup request requires at least one durable run id")
         }
         let base = try artifactRoot ?? FloeArtifactStore.root()
-        let namespace = base
-            .appendingPathComponent(ArtifactNamespace.runOutputs.rawValue, isDirectory: true)
-        guard try assertOwnedChain(base: base.standardizedFileURL, target: namespace) else {
-            return // Namespace absent: every owned tree is already absent.
-        }
-        for runID in request.runIDs {
-            let target = namespace.appendingPathComponent(runID.uuidString, isDirectory: true)
-            guard try assertOwnedChain(base: namespace, target: target) else {
-                continue // Idempotent: this run's tree is already absent.
+        var targets: [URL] = []
+        for kind in [ArtifactNamespace.runOutputs, .change] {
+            let namespace = base.appendingPathComponent(kind.rawValue, isDirectory: true)
+            guard try assertOwnedChain(base: base.standardizedFileURL, target: namespace) else { continue }
+            for runID in request.runIDs {
+                let target = namespace.appendingPathComponent(runID.uuidString, isDirectory: true)
+                if try assertOwnedChain(base: namespace, target: target) { targets.append(target) }
             }
+        }
+        for target in targets {
             // The chain check proved the target is a real directory.
             do {
                 try FileManager.default.removeItem(at: target)

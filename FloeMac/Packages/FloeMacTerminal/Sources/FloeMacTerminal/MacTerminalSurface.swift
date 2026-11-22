@@ -11,16 +11,25 @@ import SwiftTerm
 /// The surface only attaches/detaches the terminal view owned by
 /// `MacTerminalSession`; teardown detaches without killing the child, so a
 /// rebuilt view resumes the same running session (same scrollback, same PTY).
-struct MacTerminalSurface: NSViewRepresentable {
-    @ObservedObject var session: MacTerminalSession
+///
+/// Public so host features (the task terminal inspector) can embed the same
+/// surface. This exposes display/attach only: user input still goes through
+/// the on-screen terminal view, so no model-authored code path reaches the
+/// PTY.
+public struct MacTerminalSurface: NSViewRepresentable {
+    @ObservedObject public var session: MacTerminalSession
 
-    func makeNSView(context: Context) -> NSView {
+    public init(session: MacTerminalSession) {
+        self.session = session
+    }
+
+    public func makeNSView(context: Context) -> NSView {
         let host = NSView(frame: .zero)
         host.wantsLayer = true
         return host
     }
 
-    func updateNSView(_ host: NSView, context: Context) {
+    public func updateNSView(_ host: NSView, context: Context) {
         guard let terminal = session.terminalView else {
             host.subviews.forEach { $0.removeFromSuperview() }
             return
@@ -33,7 +42,7 @@ struct MacTerminalSurface: NSViewRepresentable {
         }
     }
 
-    static func dismantleNSView(_ host: NSView, coordinator: ()) {
+    public static func dismantleNSView(_ host: NSView, coordinator: ()) {
         // Detach only: closing the session is the session owner's decision
         // (explicit close button, or its deinit backstop), never an implicit
         // side effect of SwiftUI view recycling.

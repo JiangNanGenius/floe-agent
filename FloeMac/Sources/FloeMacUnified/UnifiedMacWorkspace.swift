@@ -4,7 +4,40 @@ import AppKit
 import Combine
 import FloeMacSelfCore
 import FloeMacToolbox
+import FloeModels
 import SwiftUI
+
+@MainActor
+private final class WorkbenchTerminalAdmission: MacTaskTerminalAdmission {
+    private struct Key: Hashable {
+        let task: UUID
+        let destination: MacTaskTerminalDestination
+    }
+
+    private let activity: BridgeUpdateActivity
+    weak var workspace: HostAgentWorkspace?
+    private var leases: [Key: BridgeUpdateActivity.Lease] = [:]
+    var isClosing = false
+
+    init(activity: BridgeUpdateActivity) { self.activity = activity }
+
+    func acquire(for destination: MacTaskTerminalDestination, taskID: UUID) async throws {
+        let key = Key(task: taskID, destination: destination)
+        guard !isClosing, workspace?.isTerminating == false, leases[key] == nil else { throw CocoaError(.userCancelled) }
+        leases[key] = try activity.begin(.maintenance)
+    }
+
+    func release(for destination: MacTaskTerminalDestination, taskID: UUID) async {
+        if let lease = leases.removeValue(forKey: Key(task: taskID, destination: destination)) { activity.finish(lease) }
+    }
+}
+
+private final class TaskTerminalFolderAccess {
+    let url: URL
+    private let scoped: Bool
+    init(_ url: URL) { self.url = url; scoped = url.startAccessingSecurityScopedResource() }
+    deinit { if scoped { url.stopAccessingSecurityScopedResource() } }
+}
 
 /// Owns the native windows from the same application process as Bridge.
 /// The shared activity ledger prevents an installation from racing an
@@ -27,6 +60,9 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     }
 
     private let activity: BridgeUpdateActivity
+    private let taskTerminals = MacTaskTerminalStore()
+    private var terminalFolderAccess: [UUID: TaskTerminalFolderAccess] = [:]
+    private let terminalAdmission: WorkbenchTerminalAdmission
     private let testSupport: URL?
     private let preferences: UserDefaults
     private(set) var agent: HostAgentWorkspace?
@@ -56,6 +92,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
 
     init(activity: BridgeUpdateActivity, testSupport: URL? = nil, preferences: UserDefaults = .standard) {
         self.activity = activity
+        self.terminalAdmission = WorkbenchTerminalAdmission(activity: activity)
         self.testSupport = testSupport
         self.preferences = preferences
         super.init()
@@ -80,6 +117,14 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
             let workspace = HostAgentWorkspace(supportDirectory: root, namespace: namespace,
                                                useKeychain: testSupport == nil, preferences: preferences,
                                                admitWork: admitWork)
+            if testSupport == nil { workspace.taskNotifications = MacTaskNotifications.shared }
+            terminalAdmission.workspace = workspace
+            workspace.endTaskTerminal = { [weak self] id in
+                guard let self else { return true }
+                guard await taskTerminals.stopAndRemove(taskID: id) else { return false }
+                terminalFolderAccess.removeValue(forKey: id)
+                return true
+            }
             agent = workspace
             let directory = try? HostAgentDatabase.prepareStorageDirectory(applicationSupport: root, namespace: namespace)
             if let directory, let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
@@ -137,6 +182,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                 workspace: workspace, openSettings: openSettings,
                 openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
                 openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) },
+                openTerminal: { [weak self] id, record in try self?.terminalOwner(for: id, record: record) },
                 settingsContent: settingsContent,
                 imageContent: { attach in
                     if let images {
@@ -250,6 +296,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     #if FLOE_MAC_HOST_SMOKE
     var settingsSheet: NSWindow? { agentWindow?.attachedSheet }
     var smokeDraftStore: MacWorkspaceDraftStore? { draftStore }
+
+    func smokeTerminalOwner(for id: UUID, record: WorkspaceRecord) throws -> MacTaskTerminalOwner {
+        try terminalOwner(for: id, record: record)
+    }
     #endif
 
     func closeForBridgeMode() async throws -> Bool {
@@ -260,6 +310,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         guard draftStore?.saveFailed != true else { throw CloseError.draftSaveFailed }
         agent.cancelModelDiscovery()
         guard await closeToolbox(promptForScannerDraft: true) else { return false }
+        guard await closeTaskTerminals() else { throw CloseError.agentBusy }
         do { try await agent.finishTermination() }
         catch { throw CloseError.runtimeCloseFailed }
         agent.isSettingsPresented = false
@@ -280,6 +331,28 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         browser = nil
         self.agent = nil
         return true
+    }
+
+    private func terminalOwner(for id: UUID, record: WorkspaceRecord) throws -> MacTaskTerminalOwner {
+        var stale = false
+        let url = try URL(resolvingBookmarkData: record.rootBookmark,
+                          options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                          relativeTo: nil, bookmarkDataIsStale: &stale)
+        guard !stale else { throw CocoaError(.fileReadNoPermission) }
+        let access = TaskTerminalFolderAccess(url)
+        let owner = try taskTerminals.owner(taskID: id, workspaceURL: access.url)
+        owner.admission = terminalAdmission
+        terminalFolderAccess[id] = access
+        return owner
+    }
+
+    func closeTaskTerminals() async -> Bool {
+        terminalAdmission.isClosing = true
+        defer { terminalAdmission.isClosing = false }
+        let closed = await taskTerminals.stopAll()
+        let remaining = Set(taskTerminals.activeTaskIDs)
+        terminalFolderAccess = terminalFolderAccess.filter { remaining.contains($0.key) }
+        return closed
     }
 
     func openSpace(_ page: MacSpacePage) {

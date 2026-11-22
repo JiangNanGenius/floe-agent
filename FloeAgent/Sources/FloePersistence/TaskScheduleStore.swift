@@ -280,6 +280,39 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
         }
     }
 
+    /// Record elapsed calendar occurrences during a known interval when the
+    /// host could not launch them. Use the same stable keys and bounded history
+    /// as the foreground planner. A previously claimed run keeps its state.
+    public func recordMissedCalendarOccurrences(id: UUID, through date: Date) async throws {
+        try await database.writer { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM task_schedules WHERE id = ?",
+                                           arguments: [id.uuidString]) else { return }
+            var record = try Self.decode(row)
+            guard record.isEnabled, let next = record.nextExpectedAt, next <= date else { return }
+            let times = TaskSchedulePlanner.dueFireTimes(record: record, now: date).filter { $0 >= next }
+            guard !times.isEmpty else { return }
+            let stamp = PersistenceCodec.encode(date)
+            for time in times {
+                let key = TaskSchedulePlanner.dedupeKey(for: time, record: record)
+                let occurrenceID = TaskScheduleOccurrence.stableID(scheduleID: id, dedupeKey: key)
+                try db.execute(sql: """
+                    INSERT INTO task_schedule_occurrences
+                        (id, schedule_id, scheduled_for, state, dedupe_key, summary, finished_at, created_at, updated_at)
+                    VALUES (?, ?, ?, 'skipped', ?, ?, ?, ?, ?)
+                    ON CONFLICT(schedule_id, dedupe_key) DO UPDATE SET
+                        state = excluded.state, summary = excluded.summary,
+                        finished_at = excluded.finished_at, updated_at = excluded.updated_at
+                    WHERE task_schedule_occurrences.state = 'pending'
+                    """, arguments: [occurrenceID.uuidString, id.uuidString, PersistenceCodec.encode(time),
+                                      key, "Host unavailable at the scheduled time", stamp, stamp, stamp])
+            }
+            record.nextExpectedAt = TaskSchedulePlanner.nextFireTime(after: date, record: record)
+            if record.cadence == .once { record.isEnabled = false }
+            record.updatedAt = date
+            try Self.writeRecord(db, record)
+        }
+    }
+
     public func skipNext(id: UUID, at date: Date) async throws -> TaskScheduleSkipResult? {
         try await database.writer { db in
             guard let scheduleRow = try Row.fetchOne(

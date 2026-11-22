@@ -33,13 +33,7 @@ struct TaskScheduleSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("background.task.name_fallback") {
-                    TextField("notes.notes_root_view.name", text: $title)
-                        .accessibilityIdentifier("home.schedule.title")
-                    TextEditor(text: $prompt)
-                        .frame(minHeight: 120)
-                        .accessibilityIdentifier("home.schedule.prompt")
-                }
+                FloeTaskScheduleTextFields(title: $title, prompt: $prompt)
                 Section("home.task_schedule_sheet.project_and_time") {
                     Picker("settings.all_workspaces_files_view.workspace", selection: $workspaceID) {
                         Text("home.task_schedule_sheet.chat_private_workspace").tag(Optional<UUID>.none)
@@ -47,22 +41,8 @@ struct TaskScheduleSheet: View {
                             Text(workspace.name).tag(Optional(workspace.id))
                         }
                     }
-                    Picker(
-                        sheetText(zh: "重复", en: "Repeat"),
-                        selection: $cadence
-                    ) {
-                        Text("home.task_schedule_sheet.once").tag(TaskScheduleCadence.once)
-                        Text("home.task_schedule_sheet.daily").tag(TaskScheduleCadence.daily)
-                        Text("home.task_schedule_sheet.weekly").tag(TaskScheduleCadence.weekly)
-                        Text(sheetText(zh: "固定间隔", en: "Interval")).tag(TaskScheduleCadence.interval)
-                        Text(sheetText(zh: "任务成功后", en: "After a task succeeds")).tag(TaskScheduleCadence.afterSuccess)
-                    }
-                    .accessibilityIdentifier("home.schedule.cadence")
-                    if cadence == .interval {
-                        Stepper(value: $intervalHours, in: 1...168) {
-                            Text(sheetText(zh: "每 \(intervalHours) 小时", en: "Every \(intervalHours) hours"))
-                        }
-                    }
+                    FloeTaskScheduleTimingFields(cadence: $cadence, scheduledAt: $scheduledAt,
+                                                 intervalHours: $intervalHours, allowsAfterSuccess: true)
                     if cadence == .afterSuccess {
                         // Bound to the concrete RUN selected here (the
                         // "current selected run"), never to a schedule or a
@@ -78,8 +58,6 @@ struct TaskScheduleSheet: View {
                             zh: "该计划只会在所选运行成功完成后触发一次。",
                             en: "This schedule fires once, after the selected run succeeds."))
                             .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        DatePicker(FloeL10n.l("home.task_schedule_sheet.estimated_execution"), selection: $scheduledAt)
                     }
                     Text(sheetText(zh: "时区锚点", en: "Time zone anchor")
                          + ": " + TimeZone.current.identifier)

@@ -174,10 +174,6 @@ private enum TaskInspectorText {
         key: "workbench.task_inspector_views.output_changed",
         en: "The stored output changed after the job finished; showing what exists now.",
         zh: "任务完成后存储的输出已更改；此处显示当前内容。")
-    static let waitingForBackgroundWork = ChatBilingualCatalog.localized(
-        key: "state.waiting_for_background_work",
-        en: "Waiting for background work", zh: "等待后台作业")
-
     /// Localized durable child state; the raw machine value never reaches the
     /// UI. `ChildRunState` is the lifecycle owner's vocabulary.
     static func childState(_ state: ChildRunState) -> String {
@@ -391,37 +387,18 @@ struct TaskProgressInspectorView: View {
 /// outstanding (`checkpointed` + `awaiting.finite.job:<ids>`) is presented as
 /// WAITING — not as a completed task. A non-terminal run shows an
 /// indeterminate spinner instead of an invented percentage.
+///
+/// The visible row is the shared `FloeRunProgressRow` (also compiled into the
+/// unified Mac target); this wrapper only resolves the durable waiting
+/// reason from the run's status events through the app run store.
 private struct RunProgressRow: View {
     let run: RunRecord
     @EnvironmentObject private var environment: AppEnvironment
     @State private var waitingJobIdentifiers: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                if waitingJobIdentifiers != nil {
-                    Text(TaskInspectorText.waitingForBackgroundWork)
-                } else {
-                    Text(RunStateLocalizer.title(for: run.state))
-                }
-                Spacer()
-                Text(run.startedAt, style: .time).foregroundStyle(.secondary)
-            }
-            if let waitingJobIdentifiers {
-                Text(waitingJobIdentifiers)
-                    .font(.caption)
-                    .foregroundStyle(FloeTheme.pending)
-                    .accessibilityIdentifier("inspector.run.waiting")
-            } else if !RunStateLocalizer.isTerminal(run.state) {
-                ProgressView().controlSize(.small)
-            } else if run.state == "checkpointed" {
-                // A non-dependency checkpoint is an ordinary paused run.
-                ProgressView().controlSize(.small)
-            }
-            Text(run.goal).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-        }
-        .padding(.vertical, 4)
-        .task(id: run.id) { await loadWaitingReason() }
+        FloeRunProgressRow(run: run, waitingJobIdentifiers: waitingJobIdentifiers)
+            .task(id: run.id) { await loadWaitingReason() }
     }
 
     /// The durable reason is on the run's terminal status event
@@ -1430,20 +1407,10 @@ struct TaskPermissionsInspectorView: View {
     var body: some View {
         Form {
             if policy != nil {
-                FloeTaskApprovalSection(mode: approvalModeBinding, allowsFullAccess: !resolvedIsLocalModel,
-                                        explanation: modeExplanation)
-                Section("workbench.task_inspector_views.task_settings") {
-                    Picker("workbench.task_inspector_views.background_recovery", selection: binding(\.recoveryPolicy, fallback: .safePoint)) {
-                        Text("workbench.task_inspector_views.auto_resume_from_safety_point").tag(TaskRecoveryPolicy.safePoint)
-                        Text("workbench.task_inspector_views.always_retry_automatically").tag(TaskRecoveryPolicy.alwaysRetry)
-                    }
-                    Picker("workbench.task_inspector_views.notifications", selection: binding(\.notificationPolicy, fallback: .stages)) {
-                        Text("media.media_editor_view.close").tag(TaskNotificationPolicy.off)
-                        Text("workbench.task_inspector_views.completion_failure_only").tag(TaskNotificationPolicy.terminal)
-                        Text("workbench.task_inspector_views.approvals_and_exceptions").tag(TaskNotificationPolicy.critical)
-                        Text("workbench.task_inspector_views.stage_progress").tag(TaskNotificationPolicy.stages)
-                    }
-                }
+                FloeSavedTaskPolicyFields(approval: approvalModeBinding,
+                    recovery: binding(\.recoveryPolicy, fallback: .safePoint),
+                    notifications: binding(\.notificationPolicy, fallback: .stages),
+                    allowsFullAccess: !resolvedIsLocalModel, explanation: modeExplanation, offersInheritance: false)
                 Section {
                     if isSaving {
                         Label("workspace.office_document_editor_view.saving", systemImage: "arrow.triangle.2.circlepath")
@@ -1466,7 +1433,7 @@ struct TaskPermissionsInspectorView: View {
         .task(id: conversationID) { await load() }
     }
 
-    private var approvalModeBinding: Binding<TaskApprovalMode> {
+    private var approvalModeBinding: Binding<TaskApprovalMode?> {
         Binding(
             get: { policy?.resolvedApprovalMode ?? .ask },
             set: { value in
@@ -1474,7 +1441,7 @@ struct TaskPermissionsInspectorView: View {
                     guard !resolvedIsLocalModel else { return }
                     Task { await authenticateFullAccess() }
                 } else {
-                    policy?.approvalMode = value.rawValue
+                    policy?.approvalMode = (value ?? .ask).rawValue
                     Task { await save() }
                 }
             }

@@ -101,6 +101,14 @@ final class UnifiedMacSmoke {
             await exerciseProviderRejection(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--task-lifecycle-only"), let endpoint = projectTaskFixtureEndpoint, endpoint.host == "127.0.0.1" {
+            await exerciseTaskLifecycle(model, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--task-terminals-only") {
+            await exerciseTaskTerminals(model)
+            return
+        }
         if CommandLine.arguments.contains("--concurrent-drafts-only"), let endpoint = projectTaskFixtureEndpoint,
            endpoint.host == "127.0.0.1" {
             await exerciseConcurrentDrafts(model, endpoint: endpoint)
@@ -886,6 +894,139 @@ final class UnifiedMacSmoke {
         return agent.isReady ? agent : nil
     }
 
+    private func exerciseTaskLifecycle(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model), await agent.verifyChatSmoke(), let original = agent.selectedID else {
+            finish(["ready": false]); return
+        }
+        let followed = await agent.editSelectedTaskPolicy(.approval(nil))
+        let changed = await agent.setApprovalMode(.automatic, asDefault: true)
+        let choseRecovery = await agent.editSelectedTaskPolicy(.recovery(.alwaysRetry))
+        let choseNotice = await agent.editSelectedTaskPolicy(.notifications(.critical))
+        await agent.select(original)
+        let policy = followed && changed && choseRecovery && choseNotice && agent.taskApprovalMode == .automatic &&
+            agent.selectedTaskPolicy?.approvalMode == nil && agent.selectedTaskPolicy?.recoveryPolicy == .alwaysRetry &&
+            agent.selectedTaskPolicy?.notificationPolicy == .critical
+        let center = agent.taskSchedules
+        while center.isBusy { try? await Task.sleep(for: .milliseconds(20)) }
+        let folder = root.appendingPathComponent("Scheduled project", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil,
+              let project = await agent.addWorkspace(name: "Scheduled project", rootURL: folder, selectForNewTask: false),
+              agent.useNativeCommandFixture(endpoint: endpoint) else { finish(["policy": policy, "fixture": false]); return }
+        let once = TaskScheduleRecord(title: "Fixture calendar", prompt: "Respond to the scheduled task.",
+            workspaceID: project.id, cadence: .once, scheduledAt: Date().addingTimeInterval(2))
+        let repeating = TaskScheduleRecord(title: "Fixture repeat", prompt: "Respond to the recurring task.",
+            cadence: .daily, scheduledAt: Date().addingTimeInterval(3600), anchorTimezone: "Etc/UTC")
+        let missed = TaskScheduleRecord(title: "Fixture missed", prompt: "Respond to the manual make-up.",
+            cadence: .once, scheduledAt: Date().addingTimeInterval(-600))
+        let stored = await center.save(once)
+        let recurringStored = await center.save(repeating)
+        await center.setEnabled(repeating, enabled: false)
+        let paused = center.records.first(where: { $0.id == repeating.id })?.isEnabled == false
+        await center.setEnabled(repeating, enabled: true)
+        let rearmed = center.records.first(where: { $0.id == repeating.id })?.nextExpectedAt != nil
+        let missedStored = await center.save(missed)
+        let deadline = ContinuousClock.now + .seconds(13)
+        while ContinuousClock.now < deadline && (!center.recent.contains(where: { $0.scheduleID == once.id && $0.state == .completed })
+            || !center.recent.contains(where: { $0.scheduleID == missed.id && $0.state == .skipped })) {
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+        let result = center.recent.filter { $0.scheduleID == once.id }
+        let correctSelection = agent.selectedID == original
+        var projectOwner = false
+        if let id = result.first?.conversationID {
+            await agent.select(id)
+            projectOwner = agent.selectedConversationWorkspace?.id == project.id
+            await agent.select(original)
+        }
+        let recordedMiss = center.recent.contains(where: { $0.scheduleID == missed.id && $0.state == .skipped && $0.runID == nil })
+        await center.runNow(missed)
+        let manualDeadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < manualDeadline && !center.recent.contains(where: { $0.scheduleID == missed.id && $0.isManualRun && $0.state == .completed }) {
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+        let manual = center.recent.contains(where: { $0.scheduleID == missed.id && $0.isManualRun && $0.state == .completed })
+        var notificationRoutes = false
+        if let scheduledID = result.first?.conversationID {
+            model.openNotifiedTask(scheduledID)
+            let routeDeadline = ContinuousClock.now + .seconds(3)
+            while agent.selectedID != scheduledID && ContinuousClock.now < routeDeadline {
+                try? await Task.sleep(for: .milliseconds(35))
+            }
+            notificationRoutes = agent.selectedID == scheduledID
+        }
+        func probe(_ name: String) async -> MacProviderDiagnostic {
+            await agent.testProviderModel(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions, modelID: name,
+                                          key: "", allowsPlainHTTP: true, providerID: nil, presetID: nil)
+        }
+        let successful = await probe("model-replies")
+        let limited = await probe("model-limited")
+        var scheduleSheet = false
+        MacWorkspaceTaskCenter.smokeSchedulesFrame = nil
+        if clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame, screenshot: nil) {
+            let controls = ContinuousClock.now + .seconds(3)
+            while MacWorkspaceTaskCenter.smokeSchedulesFrame == nil && ContinuousClock.now < controls {
+                try? await Task.sleep(for: .milliseconds(35))
+            }
+            if clickWorkbenchButton(ids: ["workspace.task.schedules"], frame: MacWorkspaceTaskCenter.smokeSchedulesFrame, screenshot: nil),
+               let window = visibleWorkbench {
+                let presentation = ContinuousClock.now + .seconds(3)
+                while (window.attachedSheet == nil || center.isBusy) && ContinuousClock.now < presentation {
+                    try? await Task.sleep(for: .milliseconds(35))
+                }
+                if let sheet = window.attachedSheet, let content = sheet.contentView {
+                    capture(content, extension: "scheduled-tasks-sheet.png")
+                    scheduleSheet = await closeFixtureSheet(sheet, id: "mac.schedule.done")
+                }
+            }
+        }
+        finish(["policy": policy, "calendarCompletedOnce": stored && result.count == 1 && result.first?.state == .completed,
+                "calendarStates": result.map(\.state.rawValue), "recurringPauseResume": recurringStored && paused && rearmed,
+                "recordedMissed": missedStored && recordedMiss, "manualMakeup": manual,
+                "sameVisibleTask": correctSelection, "ownsProject": projectOwner, "notificationRoute": notificationRoutes, "scheduleSheet": scheduleSheet,
+                "modelProbe": successful.result == .response, "quotaProbe": limited.result == .quotaOrRateLimit,
+                "safeDiagnostic": !limited.exportText.contains("private-fixture-content") && !limited.exportText.contains(endpoint.absoluteString)])
+    }
+
+    private func exerciseTaskTerminals(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let unified = model.macWorkspace else {
+            finish(["ready": false]); return
+        }
+        let left = root.appendingPathComponent("Terminal Alpha", isDirectory: true)
+        let right = root.appendingPathComponent("Terminal Beta", isDirectory: true)
+        do {
+            for url in [left, right] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+            guard let firstProject = await agent.addWorkspace(name: "Terminal Alpha", rootURL: left, selectForNewTask: false),
+                  let secondProject = await agent.addWorkspace(name: "Terminal Beta", rootURL: right, selectForNewTask: false) else {
+                finish(["projects": false]); return
+            }
+            let first = try unified.smokeTerminalOwner(for: UUID(), record: firstProject)
+            let second = try unified.smokeTerminalOwner(for: UUID(), record: secondProject)
+            let ledger = model.updates.installation.activity
+            let idleCount = ledger.activityCount
+            try await first.startLocal()
+            try await second.startLocal()
+            let firstPID = first.measure(kind: .local).shellPID
+            let secondPID = second.measure(kind: .local).shellPID
+            let owned = first.workspaceURL.resolvingSymlinksInPath().path == left.resolvingSymlinksInPath().path &&
+                second.workspaceURL.resolvingSymlinksInPath().path == right.resolvingSymlinksInPath().path
+            let installedBlocked = ledger.activityCount >= idleCount + 2 && ledger.reserveInstallationIfIdle() == nil
+            let firstClosed = await first.stopLocal()
+            let secondMeasurement = second.measure(kind: .local)
+            let secondUnaffected = secondMeasurement.state == .running && secondMeasurement.shellPID == secondPID
+            let allClosed = await unified.closeTaskTerminals()
+            let deadline = ContinuousClock.now + .seconds(3)
+            while ledger.activityCount > idleCount && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(35))
+            }
+            finish(["taskRoots": owned, "independentPIDs": (firstPID ?? 0) > 0 && (secondPID ?? 0) > 0 && firstPID != secondPID,
+                    "installationBlocked": installedBlocked, "stopsIndependently": firstClosed && secondUnaffected,
+                    "reapedAndReleased": allClosed && ledger.activityCount <= idleCount])
+        } catch {
+            _ = await unified.closeTaskTerminals()
+            finish(["terminalStarted": false, "diagnostic": String(describing: type(of: error))])
+        }
+    }
+
     private func verifyTaskPermissionsSheet(_ model: BridgeAppModel) async {
         guard let agent = await readyFixtureWorkbench(model), let window = visibleWorkbench else {
             finish(["ready": false]); return
@@ -950,8 +1091,14 @@ final class UnifiedMacSmoke {
         let draft = try? Data(contentsOf: folder.appendingPathComponent("qa/files/draft.txt"))
         let deliverable = try? Data(contentsOf: folder.appendingPathComponent("qa/files/deliverable.md"))
         let expected = Data("\u{feff}old\r\nline changed\r\ntail\r\n".utf8)
+        let changes = FloeTaskActivityProjection.changes(runs: agent.transcriptRuns, events: agent.transcriptEventsByRun)
+        let diffVerified = changes.compactMap(\.artifact).contains { receipt in
+            let diff = try? FloeVerifiedChangeArtifact.verifiedDiff(receipt, floeAgentRoot: agent.runOutputArtifactRoot)
+            return diff?.contains("+line changed") == true
+        }
         finish(["status": agent.transcriptRuns.first?.state ?? "", "approved": approved.sorted(),
                 "durableDecisions": entitled.sorted(), "equalBytes": draft == expected && deliverable == expected,
+                "changeDiffVerified": diffVerified,
                 "complete": agent.messages.contains(where: {
                     $0.content == "Authoring receipts verified. The append with a stale digest failed and left the file unchanged."
                 }),

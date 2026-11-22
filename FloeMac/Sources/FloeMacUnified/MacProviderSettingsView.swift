@@ -39,6 +39,7 @@ struct MacProviderSettingsView: View {
     @State private var connectionCheck: Task<Void, Never>?
     @State private var connectionCheckID = UUID()
     @State private var connectionStatus: String?
+    @State private var modelDiagnostic: MacProviderDiagnostic?
     @State private var testingMediaListing = false
     @State private var showsCatalog = false
     @State private var catalogError: String?
@@ -465,8 +466,21 @@ struct MacProviderSettingsView: View {
                     Button("mac.provider.testConnection", action: testConnection)
                         .disabled(draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                           || !workspace.isReady || workspace.isTerminating)
+                    if role == .conversation {
+                        Button(MacProviderText.t("测试模型调用", "Test Model Call"), action: testModel)
+                            .disabled(draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      || draft.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      || !workspace.isReady || workspace.isTerminating)
+                            .accessibilityIdentifier("providers.testModel")
+                    }
                 }
                 if let connectionStatus { Text(connectionStatus).font(.caption).foregroundStyle(.secondary) }
+                if let modelDiagnostic {
+                    ShareLink(item: modelDiagnostic.exportText) {
+                        Label(MacProviderText.t("分享诊断", "Share Diagnostic"), systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityIdentifier("providers.shareDiagnostic")
+                }
             }
             if role == .conversation, let record = optionsTargetRecord {
                 Section {
@@ -1062,6 +1076,7 @@ struct MacProviderSettingsView: View {
     }
 
     private func testConnection() {
+        modelDiagnostic = nil
         let id = UUID()
         let candidate = draft
         if role != .conversation {
@@ -1113,6 +1128,23 @@ struct MacProviderSettingsView: View {
         connectionCheck?.cancel()
         connectionCheck = nil
         connectionStatus = nil
+        modelDiagnostic = nil
+    }
+
+    private func testModel() {
+        cancelConnectionCheck()
+        let id = connectionCheckID
+        let candidate = draft
+        let account = editingID
+        connectionCheck = Task {
+            let diagnostic = await workspace.testProviderModel(endpoint: candidate.endpoint, protocolKind: candidate.protocolKind,
+                modelID: candidate.modelID, key: candidate.key, allowsPlainHTTP: candidate.allowsPlainHTTP,
+                providerID: account, presetID: candidate.presetID)
+            guard !Task.isCancelled, id == connectionCheckID else { return }
+            modelDiagnostic = diagnostic
+            connectionStatus = diagnostic.message
+            connectionCheck = nil
+        }
     }
 
     private func save() {

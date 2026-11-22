@@ -1,5 +1,6 @@
 import Foundation
 import FloeCore
+import FloeModels
 
 /// App-owned artifact namespaces under `<Application Support>/FloeAgent`.
 /// Five resolvers previously maintained their own allow-lists, size caps and
@@ -28,6 +29,30 @@ public enum ArtifactNamespace: String, CaseIterable, Sendable {
 /// cards hand these paths to the model and UI, so every reader must apply the
 /// same containment, secret and digest policy.
 public enum FloeArtifactStore {
+    /// Freeze a successful tool's unified diff in the existing run-owned
+    /// change namespace. The host may supply its own private artifact root.
+    public static func storeChangeDiff(_ diff: String, runID: UUID, root: URL? = nil) throws -> ToolArtifactReference? {
+        let bytes = Data(diff.utf8)
+        guard !bytes.isEmpty, bytes.count <= 512 * 1024 else { return nil }
+        let base = try (root ?? Self.root()).standardizedFileURL.resolvingSymlinksInPath()
+        let folder = "\(ArtifactNamespace.change.rawValue)/\(runID.uuidString)"
+        let directory = base.appendingPathComponent(folder, isDirectory: true)
+        guard directory.resolvingSymlinksInPath().path == directory.path else {
+            throw FloeError.validationFailed("Change artifact directory is unavailable")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let hash = FloeDigest.sha256Hex(bytes)
+        let relative = "\(folder)/\(hash).diff"
+        let url = base.appendingPathComponent(relative)
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try resolve(relative, allowed: [.change], maxBytes: bytes.count, expectedSHA256: hash, root: base)
+        } else {
+            try bytes.write(to: url, options: [.atomic])
+        }
+        return ToolArtifactReference(id: UUID(), relativePath: relative, mimeType: "text/x-diff", byteCount: bytes.count, sha256: hash)
+    }
+
     public static func root() throws -> URL {
         guard let support = try? FileManager.default.url(
             for: .applicationSupportDirectory,

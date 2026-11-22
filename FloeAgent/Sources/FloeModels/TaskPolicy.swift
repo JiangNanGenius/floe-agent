@@ -116,7 +116,11 @@ public struct TaskPolicy: Sendable, Codable, Hashable {
     public var updatedAt: Date
 
     public var resolvedApprovalMode: TaskApprovalMode {
-        guard let approvalMode else { return .ask }
+        effectiveApprovalMode(defaultMode: .ask)
+    }
+
+    public func effectiveApprovalMode(defaultMode: TaskApprovalMode) -> TaskApprovalMode {
+        guard let approvalMode else { return defaultMode }
         switch approvalMode {
         case TaskApprovalMode.automatic.rawValue, "approvalModel": return .automatic
         case TaskApprovalMode.fullAccess.rawValue, "fullControl": return .fullAccess
@@ -151,4 +155,11 @@ public struct TaskPolicy: Sendable, Codable, Hashable {
         self.notificationPolicy = notificationPolicy
         self.updatedAt = updatedAt
     }
+}
+
+/// Updates one setting while preserving the task's other enforcement fields.
+public enum TaskPolicySetting: Sendable {
+    case approval(TaskApprovalMode?)
+    case recovery(TaskRecoveryPolicy)
+    case notifications(TaskNotificationPolicy)
 }

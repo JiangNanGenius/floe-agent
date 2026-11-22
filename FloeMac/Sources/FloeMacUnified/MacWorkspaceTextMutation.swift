@@ -660,7 +660,11 @@ public struct MacAgentWorkspaceApplyPatchTool: AgentTool, MacAgentWorkspaceExecu
     )
 
     private let root: MacAgentWorkspaceRoot
-    public init(rootURL: URL) { root = MacAgentWorkspaceRoot(rootURL) }
+    private let artifactRoot: URL?
+    public init(rootURL: URL, artifactRoot: URL? = nil) {
+        root = MacAgentWorkspaceRoot(rootURL)
+        self.artifactRoot = artifactRoot
+    }
 
     public func validate(_ args: Arguments) throws {
         guard !args.path.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -744,7 +748,12 @@ public struct MacAgentWorkspaceApplyPatchTool: AgentTool, MacAgentWorkspaceExecu
             return (published, application)
         }
         let hunks = " hunks=\(application.hunksApplied) added=\(application.linesAdded) removed=\(application.linesRemoved)"
-        return receipt.result("patched=\(relative)\(hunks) sha256=\(receipt.sha256)", path: relative)
+        var output = receipt.result("patched=\(relative)\(hunks) sha256=\(receipt.sha256)", path: relative)
+        if receipt.change == .modified, let artifactRoot,
+           let ref = try? FloeArtifactStore.storeChangeDiff(args.patch, runID: context.runID, root: artifactRoot) {
+            output.artifacts.append(ref)
+        }
+        return output
     }
 }
 

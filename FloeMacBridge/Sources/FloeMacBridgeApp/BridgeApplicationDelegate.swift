@@ -4,6 +4,14 @@ import AppKit
 @MainActor
 final class BridgeApplicationDelegate: NSObject, NSApplicationDelegate {
     static weak var model: BridgeAppModel?
+    #if FLOE_UNIFIED_MAC
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        #if FLOE_MAC_HOST_SMOKE
+        guard !CommandLine.arguments.contains(UnifiedMacSmoke.flag) else { return }
+        #endif
+        MacTaskNotifications.shared.install { id in Self.model?.openNotifiedTask(id) }
+    }
+    #endif
     func applicationDidFinishLaunching(_ notification: Notification) { Self.model?.applicationDidFinishLaunching() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         Self.model?.reopenPreferredWindow()

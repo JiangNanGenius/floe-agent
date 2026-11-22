@@ -52,7 +52,8 @@ public final class MacTerminalSession: ObservableObject {
 
     /// The child PID, when the process backend reports one.
     public var shellPID: pid_t? {
-        guard let pid = terminalView?.process.shellPid, pid > 0 else { return nil }
+        guard state == .running || state == .stopping,
+              let pid = terminalView?.process.shellPid, pid > 0 else { return nil }
         return pid
     }
 
@@ -61,8 +62,13 @@ public final class MacTerminalSession: ObservableObject {
     /// attach it to the view hierarchy.
     private(set) var terminalView: LocalProcessTerminalView?
 
-    private var terminationContinuation: AsyncStream<Void>.Continuation?
-    private var terminationStream: AsyncStream<Void>?
+    /// Independent waiters for the next confirmed child exit. Each await of
+    /// ``termination`` registers its own continuation; cancelling one waiter
+    /// unregisters only that continuation. A single shared AsyncStream is
+    /// NOT used here: cancelling one of its iterators cancels the stream for
+    /// every other consumer, which let a timed-out close() cancel a lease
+    /// watcher's signal while the child was still alive.
+    private var terminationWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     /// Guards the single terminate() fan-out so concurrent close/stop
     /// callers cannot double-signal the child; every caller still drains.
     private var terminateRequested = false
@@ -70,9 +76,15 @@ public final class MacTerminalSession: ObservableObject {
     public init() {}
 
     isolated deinit {
-        // Abandoned without close(): best-effort teardown. The normal path
-        // is `await close()`, which also confirms the reap.
-        terminalView?.process.terminate()
+        // Abandoned without close(): best-effort teardown of a live child
+        // only. The normal path is `await close()`, which also confirms the
+        // reap; idle/exited sessions own no child to signal.
+        switch state {
+        case .running, .stopping:
+            terminalView?.process.terminate()
+        case .idle, .exited:
+            break
+        }
     }
 
     /// Starts the user's interactive login shell in the scoped directory.
@@ -86,22 +98,56 @@ public final class MacTerminalSession: ObservableObject {
     }
 
     /// Completes once the child process has been reaped. Safe to await from
-    /// anywhere; stays completed after exit so late awaiters return immediately.
+    /// anywhere; returns immediately in `.idle` and after `.exited`, so late
+    /// awaiters never hang. Every running/stopping await gets an independent,
+    /// cancellation-safe registration: one caller's cancellation or timeout
+    /// never disturbs another waiter's signal, and a cancelled waiter is
+    /// never reported as a confirmed exit (callers that need the exit must
+    /// also observe `.exited`).
     public var termination: Void {
         get async {
-            guard let stream = terminationStream else { return }
-            for await _ in stream { return }
+            switch state {
+            case .idle, .exited:
+                return
+            case .running, .stopping:
+                break
+            }
+            let id = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if Task.isCancelled || state == .idle || state.exited {
+                        continuation.resume()
+                    } else {
+                        terminationWaiters[id] = continuation
+                    }
+                }
+            } onCancel: {
+                // Unregister this waiter only; when the registration is still
+                // pending, completing it keeps a cancelled caller from
+                // hanging. Waiters already taken by childTerminated are gone
+                // from the dictionary, so the continuation resumes exactly
+                // once in every interleaving.
+                Task { @MainActor in
+                    if let waiter = terminationWaiters.removeValue(forKey: id) {
+                        waiter.resume()
+                    }
+                }
+            }
         }
     }
 
-    /// Closes the session: terminate the child (SIGTERM + PTY close, which
-    /// delivers SIGHUP to the session), drain the reap, and report whether
-    /// the child exited within `timeout`.
-    /// - Returns: `true` when the child was reaped in time, `false` when it
-    ///   outlived the timeout (state remains `.stopping`).
+    /// Closes the session: terminate the child, escalate as needed, and
+    /// report whether the child was CONFIRMED reaped. Interactive shells
+    /// (e.g. `zsh -i`) ignore SIGTERM, so on the forkpty backend a close that
+    /// only waited for the polite signal would always time out; after the
+    /// window elapses the whole session group is SIGKILLed and the reap is
+    /// awaited again before reporting failure.
+    /// - Returns: `true` when the child exit was observed, `false` when it
+    ///   outlived the escalation window (state remains `.stopping`; the
+    ///   child may still exit later and complete waiters then).
     ///
     /// Cleanup-semantics limitation: on the SwiftTerm Subprocess backend
-    /// (macOS 15+/Swift 6 toolchains) `LocalProcess` exposes no child PID,
+    /// (macOS 15.4+/Swift 6 toolchains) `LocalProcess` exposes no child PID,
     /// so escalation is limited to Subprocess task cancellation plus the PTY
     /// close, which delivers SIGHUP to the session foreground group; a
     /// grandchild that escaped into its own session (`setsid`) can outlive
@@ -110,26 +156,24 @@ public final class MacTerminalSession: ObservableObject {
     @discardableResult
     public func close(timeout: Duration = .seconds(3)) async -> Bool {
         guard state == .running || state == .stopping else { return true }
+        let closingView = terminalView
         state = .stopping
         if !terminateRequested {
             terminateRequested = true
             terminalView?.process.terminate()
         }
-        let reaped = await withTimeout(timeout) { await self.termination }
-        if !reaped {
-            // On the forkpty backend escalate to SIGKILL on the whole session
-            // group; on the Subprocess backend task cancellation plus the PTY
-            // close above already delivered SIGHUP/SIGKILL semantics, and no
-            // PID is exposed, so there is nothing further to signal.
-            if let pid = shellPID {
+        await waitForExit(timeout: timeout)
+        if terminalView !== closingView || state.exited { return true }
+        guard !Task.isCancelled else { return false }
+        if let pid = shellPID {
+            // A forkpty child owns its own process group.
+            if getpgid(pid) == pid {
                 kill(-pid, SIGKILL)
-                _ = await withTimeout(.seconds(1)) { await self.termination }
             }
+            kill(pid, SIGKILL)
         }
-        if case .exited = state {
-            return true
-        }
-        return false
+        await waitForExit(timeout: .seconds(5))
+        return terminalView !== closingView || state.exited
     }
 
     /// Alias kept for call sites that phrase the action as "stop".
@@ -145,8 +189,7 @@ public final class MacTerminalSession: ObservableObject {
         state = .idle
         terminalTitle = ""
         currentDirectory = nil
-        terminationContinuation = nil
-        terminationStream = nil
+        terminationWaiters.removeAll()
         terminateRequested = false
     }
 
@@ -174,11 +217,6 @@ public final class MacTerminalSession: ObservableObject {
         view.processDelegate = self
         terminalView = view
 
-        let stream = AsyncStream<Void> { continuation in
-            terminationContinuation = continuation
-        }
-        terminationStream = stream
-
         state = .running
         view.startProcess(
             executable: executable,
@@ -186,30 +224,29 @@ public final class MacTerminalSession: ObservableObject {
             environment: nil,
             currentDirectory: workingDirectory
         )
+        if !view.process.running {
+            if !state.exited { childTerminated(exitCode: nil) }
+            throw CocoaError(.executableLoad)
+        }
     }
 
     private func childTerminated(exitCode: Int32?) {
         state = .exited(exitCode)
-        terminationContinuation?.finish()
-        terminationContinuation = nil
+        // Resume every registered waiter; each was registered independently,
+        // so one consumer's cancellation never affects another's signal.
+        let waiters = terminationWaiters
+        terminationWaiters.removeAll()
+        for (_, waiter) in waiters {
+            waiter.resume()
+        }
     }
 
-    private func withTimeout(
-        _ timeout: Duration,
-        _ body: @escaping @Sendable () async -> Void
-    ) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                await body()
-                return true
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return false
-            }
-            let result = await group.next() ?? false
+    private func waitForExit(timeout: Duration) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.termination }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            _ = await group.next()
             group.cancelAll()
-            return result
         }
     }
 }
@@ -229,6 +266,7 @@ extension MacTerminalSessionState {
 extension MacTerminalSession: LocalProcessTerminalViewDelegate {
     public nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         MainActor.assumeIsolated {
+            guard self.terminalView === source else { return }
             self.childTerminated(exitCode: exitCode)
         }
     }

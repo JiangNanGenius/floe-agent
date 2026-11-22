@@ -44,6 +44,7 @@ struct MacWorkspaceTaskCenter: View {
     @State private var selectingTasks = false
     @State private var selection = Set<UUID>()
     @State private var applyingSelection = false
+    @State private var showsSchedules = false
     private let relativeFormatter: RelativeDateTimeFormatter
 
     #if FLOE_MAC_HOST_SMOKE
@@ -52,6 +53,7 @@ struct MacWorkspaceTaskCenter: View {
     static var smokeResultFrames: [UUID: CGRect] = [:]
     static var smokeSelectionFrame: CGRect?
     static var smokeApplySelectionFrame: CGRect?
+    static var smokeSchedulesFrame: CGRect?
     #endif
 
     init(workspace: HostAgentWorkspace, projectID: UUID? = nil, findRequest: UUID? = nil,
@@ -140,6 +142,9 @@ struct MacWorkspaceTaskCenter: View {
         .popover(item: $renameTarget, arrowEdge: .trailing) { record in
             renamePopover(for: record)
         }
+        .sheet(isPresented: $showsSchedules) {
+            MacTaskScheduleView(center: workspace.taskSchedules, workspace: workspace, projectID: projectID, openTask: onOpen)
+        }
         .alert(t("清空归档？", "Clear Archive?"), isPresented: $confirmsClearArchive) {
             Button(t("取消", "Cancel"), role: .cancel) {}
             Button(t("永久删除", "Delete Permanently"), role: .destructive) {
@@ -155,6 +160,13 @@ struct MacWorkspaceTaskCenter: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 taskFilters
+                if workspace.isReady, !selectingTasks {
+                    Button(t("定时任务", "Scheduled Tasks"), systemImage: "calendar.badge.clock") { showsSchedules = true }
+                        .accessibilityIdentifier("workspace.task.schedules")
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { Self.smokeSchedulesFrame = $0 })
+                        #endif
+                }
                 if !visible.isEmpty && !selectingTasks {
                     Button(t("选择", "Select")) { selectingTasks = true }
                         .controlSize(.large)

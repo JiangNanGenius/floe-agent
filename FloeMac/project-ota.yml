@@ -43,6 +43,7 @@ targets:
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchFeatureControls.swift
+      - path: ../FloeAgent/FloeApp/Workbench/FloeTaskActivityRows.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadTranscriptViewport.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadTranscriptRows.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadTimeline.swift

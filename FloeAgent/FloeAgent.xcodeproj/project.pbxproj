@@ -768,6 +768,7 @@
 		4C79B8685CA767352A68AF92 /* Euclid in Frameworks */ = {isa = PBXBuildFile; productRef = 52705C45757158BFC726EE10 /* Euclid */; };
 		4C7FF69D1B96FB25A810A2D7 /* IDEStatusBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4436E97C0C66AC0471B1FDA2 /* IDEStatusBar.swift */; };
 		4C9272A3C74DFEE64D9086FB /* ChemistrySubmissionTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0ACFA5B0F7D1A60B948846 /* ChemistrySubmissionTracker.swift */; };
+		4C95E2C3CC3541D0B2F1043C /* FloeTaskActivityRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39D588FECC1BF9D887558CC /* FloeTaskActivityRows.swift */; };
 		4CC31522718211B2447FC893 /* PreparedVideoAlphaHDRBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 026DA57F65D24E9E40AE9AEA /* PreparedVideoAlphaHDRBoundaryTests.swift */; };
 		4CE152FC601EA98C5AC2E79B /* DocumentIntakeRoutingRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59CA0EFF5EBA32D5A0AA9D5D /* DocumentIntakeRoutingRegistry.swift */; };
 		4D049C59BE30C5C32FD786A1 /* OfficeSaveAdmissionRetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D716CE16C6EB90A334A68B4F /* OfficeSaveAdmissionRetry.swift */; };
@@ -4172,6 +4173,7 @@
 		B36C171177A4F1CF0D37953E /* RemoteSharedSkillMountTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSharedSkillMountTests.swift; sourceTree = "<group>"; };
 		B38525406F079CECF0F78766 /* CADHybridModelingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADHybridModelingTests.swift; sourceTree = "<group>"; };
 		B38C8DD9BAB4209213F90B04 /* CADManufacturingIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADManufacturingIntegrationTests.swift; sourceTree = "<group>"; };
+		B39D588FECC1BF9D887558CC /* FloeTaskActivityRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeTaskActivityRows.swift; sourceTree = "<group>"; };
 		B3D22FA2AC89DF4C8A1A7C47 /* CADSpecialistEntrySmokeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADSpecialistEntrySmokeUITests.swift; sourceTree = "<group>"; };
 		B3E52F7718CFE57A0FDF8DC3 /* OfficeEmbeddedWorkbookPreservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeEmbeddedWorkbookPreservationTests.swift; sourceTree = "<group>"; };
 		B3EB61A10919F88DF53A8F99 /* TaskEnvironmentOwnershipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskEnvironmentOwnershipTests.swift; sourceTree = "<group>"; };
@@ -6684,6 +6686,7 @@
 		5727792A466E304D18FA4B94 /* Workbench */ = {
 			isa = PBXGroup;
 			children = (
+				B39D588FECC1BF9D887558CC /* FloeTaskActivityRows.swift */,
 				DFA847C7F13243BBAFE45755 /* MediaDrawingInputPolicy.swift */,
 				26D5EDD0548FFC779DE66566 /* MediaWorkbenchView.swift */,
 				AE529725CBA54629E95EA4F0 /* TaskChangesInspectorView.swift */,
@@ -9692,6 +9695,7 @@
 				8A12DCCAD1C2D0AF155AC58E /* FloeSingleFlightGate.swift in Sources */,
 				9CC17DEB2EAB22FAF8BECAE1 /* FloeSystemAlarmControlIntents.swift in Sources */,
 				6199EC80E8347A58A50C39B8 /* FloeTLSConfiguration.m in Sources */,
+				4C95E2C3CC3541D0B2F1043C /* FloeTaskActivityRows.swift in Sources */,
 				A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */,
 				1030844E0230C4F4F177F365 /* FloeWorkbenchFeatureControls.swift in Sources */,
 				7AE5572C28ED0FDD584FC243 /* FloeWorkbenchProjectRow.swift in Sources */,

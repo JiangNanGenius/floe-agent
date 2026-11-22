@@ -148,6 +148,36 @@ final class MacTerminalLifecycleTests: XCTestCase {
         XCTAssertTrue(lateDrain)
     }
 
+    func testCancellingOneExitWaitKeepsTheOtherAttached() async throws {
+        let session = MacTerminalSession()
+        try session.start(executable: "/bin/sleep", arguments: ["30"], workingDirectory: nil)
+        let abandoned = Task { await session.termination }
+        await Task.yield()
+        abandoned.cancel()
+        await abandoned.value
+        XCTAssertEqual(session.state, .running)
+
+        let observer = Task {
+            await session.termination
+            return session.state
+        }
+        await Task.yield()
+        let closed = await session.close()
+        XCTAssertTrue(closed)
+        if !closed { observer.cancel() }
+        let observed = await observer.value
+        guard case .exited = observed else {
+            return XCTFail("The remaining waiter completed before the process exited.")
+        }
+    }
+
+    func testSSHDestinationFollowsTheOptionTerminator() throws {
+        let host = try MacSSHHost.validated(host: "floe.example.test", user: "qa", port: 2222)
+        XCTAssertEqual(host.argv(), ["-tt", "-p", "2222", "--", "qa@floe.example.test"])
+        XCTAssertThrowsError(try MacSSHHost.validated(host: "-G"))
+        XCTAssertThrowsError(try MacSSHHost.validated(host: "floe.example.test", port: 0))
+    }
+
     /// Scope validation accepts real folders and rejects missing ones.
     func testScopeValidation() throws {
         let temp = NSTemporaryDirectory()
@@ -169,16 +199,11 @@ final class MacTerminalLifecycleTests: XCTestCase {
 
     // MARK: Helpers
 
-    /// Waits for the session drain with a bounded timeout. The drain task is
-    /// created once and awaited through the task group, so exactly one group
-    /// child resumes the result — no unguarded continuation double-resume.
+    /// Waits for the session drain with a bounded timeout.
     private func raceTermination(of session: MacTerminalSession, timeout: Duration) async -> Bool {
-        let drain = Task { @MainActor in
-            await session.termination
-        }
-        let finished = await withTaskGroup(of: Bool.self) { group in
+        await withTaskGroup(of: Bool.self) { group in
             group.addTask {
-                await drain.value
+                await session.termination
                 return true
             }
             group.addTask {
@@ -189,7 +214,5 @@ final class MacTerminalLifecycleTests: XCTestCase {
             group.cancelAll()
             return first
         }
-        drain.cancel()
-        return finished
     }
 }

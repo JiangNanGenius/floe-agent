@@ -3144,11 +3144,26 @@ public actor FloeMacSelfRuntime {
     }
 
     public func taskApprovalMode(conversationID: UUID) async throws -> TaskApprovalMode {
-        try await requireStores().workspaces.taskPolicy(conversationID: conversationID).resolvedApprovalMode
+        try await taskPolicy(conversationID: conversationID).resolvedApprovalMode
     }
 
     public func setTaskApprovalMode(_ mode: TaskApprovalMode, conversationID: UUID) async throws {
         try await requireStores().workspaces.setApprovalMode(mode, conversationID: conversationID)
+    }
+
+    public func taskPolicy(conversationID: UUID) async throws -> TaskPolicy {
+        try await requireStores().workspaces.taskPolicy(conversationID: conversationID)
+    }
+
+    public func updateTaskPolicy(_ setting: TaskPolicySetting, conversationID: UUID) async throws -> TaskPolicy {
+        try requireAuthority()
+        return try await requireStores().workspaces.updateTaskPolicy(setting, conversationID: conversationID)
+    }
+
+    public func taskScheduleStore() throws -> SQLiteTaskScheduleStore {
+        try ensureOpen()
+        try requireAuthority()
+        return SQLiteTaskScheduleStore(database: database)
     }
 
     public func approvalGrantStore() throws -> FloeMacSelfApprovalGrants {

@@ -1,0 +1,242 @@
+// SPDX-License-Identifier: MPL-2.0
+
+import FloeModels
+import SwiftUI
+
+struct MacTaskScheduleView: View {
+    @ObservedObject var center: MacTaskScheduleCenter
+    @ObservedObject var workspace: HostAgentWorkspace
+    let projectID: UUID?
+    let openTask: (UUID) -> Void
+
+    private struct Edit: Identifiable {
+        let id = UUID()
+        let record: TaskScheduleRecord?
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var edit: Edit?
+    @State private var deleting: TaskScheduleRecord?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(MacPermissionsText.t("定时任务", "Scheduled Tasks")).font(.headline)
+                Spacer()
+                Button(MacPermissionsText.t("新建", "New"), systemImage: "plus") { edit = Edit(record: nil) }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("mac.schedule.create")
+                Button(MacPermissionsText.t("完成", "Done")) { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("mac.schedule.done")
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: FloeTheme.minimumTarget + 4)
+            Divider()
+            Form {
+                if let error = center.errorMessage { Text(error).foregroundStyle(.red) }
+                if let notifications = workspace.taskNotifications { MacNotificationAuthorizationRow(center: notifications) }
+                Section {
+                    ForEach(center.records) { record in planRow(record) }
+                    if center.records.isEmpty {
+                        Text(MacPermissionsText.t("暂无定时任务", "No scheduled tasks yet")).foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text(MacPermissionsText.t("Agent 运行时执行。错过的运行可从这里补跑。", "Runs while Agent is active. Run missed tasks here."))
+                }
+                if !center.recent.isEmpty {
+                    Section(MacPermissionsText.t("最近运行", "Recent Runs")) {
+                        ForEach(center.recent) { occurrence in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(center.records.first(where: { $0.id == occurrence.scheduleID })?.title ??
+                                         MacPermissionsText.t("定时任务", "Scheduled Task"))
+                                    Text(occurrence.scheduledFor, format: .dateTime.day().month().hour().minute())
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    if let error = occurrence.errorText { Text(error).font(.caption).foregroundStyle(.secondary) }
+                                }
+                                Spacer()
+                                Text(status(occurrence.state)).foregroundStyle(.secondary)
+                                if let taskID = occurrence.conversationID,
+                                   workspace.conversations.contains(where: { $0.id == taskID }) {
+                                    Button(MacPermissionsText.t("打开任务", "Open Task")) { dismiss(); openTask(taskID) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 690, height: 560)
+        .task { await center.reload() }
+        .sheet(item: $edit) { edit in
+            MacTaskScheduleEditor(center: center, workspace: workspace, editing: edit.record, projectID: projectID)
+        }
+        .alert(MacPermissionsText.t("删除这个定时任务？", "Delete This Schedule?"),
+               isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { record in
+            Button(MacPermissionsText.t("删除", "Delete"), role: .destructive) { Task { await center.delete(record) } }
+            Button("host.chat.cancel", role: .cancel) {}
+        }
+    }
+
+    private func planRow(_ record: TaskScheduleRecord) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(record.title).lineLimit(1)
+                if record.isEnabled, let next = record.nextExpectedAt {
+                    Text(next, format: .dateTime.day().month().hour().minute())
+                        .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("mac.schedule.nextRun")
+                } else {
+                    Text(MacPermissionsText.t("已暂停或结束", "Paused or Ended")).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button(MacPermissionsText.t("立即运行", "Run Now")) { Task { await center.runNow(record) } }
+                .disabled(center.isBusy || center.running.contains(record.id) || center.launching.contains(record.id))
+            Menu {
+                Button(MacPermissionsText.t("编辑", "Edit")) { edit = Edit(record: record) }
+                    .disabled(center.running.contains(record.id))
+                if record.isEnabled {
+                    Button(MacPermissionsText.t("暂停", "Pause")) { Task { await center.setEnabled(record, enabled: false) } }
+                } else if record.cadence != .once || record.scheduledAt > Date() {
+                    Button(MacPermissionsText.t("恢复", "Resume")) { Task { await center.setEnabled(record, enabled: true) } }
+                }
+                Button(MacPermissionsText.t("删除", "Delete"), role: .destructive) { deleting = record }
+                    .disabled(center.running.contains(record.id))
+            } label: { Image(systemName: "ellipsis.circle") }
+            .menuIndicator(.hidden)
+            .accessibilityLabel(MacPermissionsText.t("定时任务操作", "Schedule Actions"))
+            .disabled(center.isBusy || center.launching.contains(record.id))
+        }
+        .accessibilityIdentifier("mac.schedule.plan")
+    }
+
+    private func status(_ value: TaskScheduleOccurrenceState) -> String {
+        switch value {
+        case .pending, .claimed: MacPermissionsText.t("等待启动", "Waiting to Start")
+        case .running: MacPermissionsText.t("运行中", "Running")
+        case .completed: MacPermissionsText.t("已完成", "Completed")
+        case .failed: MacPermissionsText.t("失败", "Failed")
+        case .cancelled: MacPermissionsText.t("已停止", "Stopped")
+        case .skipped: MacPermissionsText.t("已错过", "Missed")
+        case .interrupted: MacPermissionsText.t("待核对", "Needs Review")
+        }
+    }
+}
+
+private struct MacTaskScheduleEditor: View {
+    @ObservedObject var center: MacTaskScheduleCenter
+    @ObservedObject var workspace: HostAgentWorkspace
+    let editing: TaskScheduleRecord?
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var prompt = ""
+    @State private var workspaceID: UUID?
+    @State private var modelID: UUID?
+    @State private var cadence: TaskScheduleCadence = .once
+    @State private var scheduledAt = Date().addingTimeInterval(300)
+    @State private var hours = 6
+    @State private var approval: TaskApprovalMode = .ask
+    @State private var saving = false
+    @State private var saveFailed = false
+
+    init(center: MacTaskScheduleCenter, workspace: HostAgentWorkspace, editing: TaskScheduleRecord?, projectID: UUID?) {
+        self.center = center
+        self.workspace = workspace
+        self.editing = editing
+        _workspaceID = State(initialValue: editing == nil ? projectID : editing?.workspaceID)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(editing == nil ? MacPermissionsText.t("新建定时任务", "New Schedule") :
+                     MacPermissionsText.t("编辑定时任务", "Edit Schedule")).font(.headline)
+                Spacer()
+                Button("host.chat.cancel") { dismiss() }
+                    .buttonStyle(.borderless)
+                    .keyboardShortcut(.cancelAction)
+                Button("host.chat.save") { Task { await save() } }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(saving || center.isBusy || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("mac.schedule.save")
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: FloeTheme.minimumTarget + 4)
+            Divider()
+            Form {
+                FloeTaskScheduleTextFields(title: $title, prompt: $prompt)
+                Section(MacPermissionsText.t("目录与时间", "Folder and Time")) {
+                    Picker(MacPermissionsText.t("工作区", "Workspace"), selection: $workspaceID) {
+                        Text(MacPermissionsText.t("会话默认目录", "Conversation Folder")).tag(UUID?.none)
+                        ForEach(workspace.workspaces.filter { $0.kind == .project }) { project in
+                            Text(project.name).tag(Optional(project.id))
+                        }
+                    }
+                    FloeTaskScheduleTimingFields(cadence: $cadence, scheduledAt: $scheduledAt, intervalHours: $hours)
+                }
+                Section {
+                    Picker(MacPermissionsText.t("模型", "Model"), selection: $modelID) {
+                        Text(MacPermissionsText.t("使用默认模型", "Use Default Model")).tag(UUID?.none)
+                        ForEach(workspace.providers.filter { $0.profile.isEnabled && $0.model.isEnabled && $0.model.capabilities.contains(.tools) }, id: \.model.id) { provider in
+                            Text(provider.model.displayName).tag(Optional(provider.model.id))
+                        }
+                    }
+                    Picker(MacPermissionsText.t("审批模式", "Approval Mode"), selection: $approval) {
+                        ForEach(TaskApprovalMode.allCases, id: \.self) { mode in
+                            Text(FloeTaskApprovalSection.title(mode)).tag(mode)
+                        }
+                    }
+                }
+                if saveFailed { Text(MacPermissionsText.t("无法保存定时任务。请检查时间或重试。", "Could not save. Check the schedule time or try again.")).foregroundStyle(.red) }
+            }.formStyle(.grouped)
+        }
+        .frame(width: 550, height: 610)
+        .onAppear {
+            guard let editing else { return }
+            title = editing.title
+            prompt = editing.prompt
+            cadence = editing.cadence
+            scheduledAt = editing.scheduledAt
+            hours = max(1, min(168, (editing.intervalSeconds ?? 21600) / 3600))
+            modelID = editing.modelID
+            approval = editing.permissionJSON.flatMap { try? JSONDecoder().decode(DraftTaskPolicy.self, from: Data($0.utf8)) }?.approvalMode ?? .ask
+        }
+    }
+
+    private func save() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
+        if approval == .fullAccess, !(await workspace.authenticateScheduledFullAccess()) { return }
+        let cleaned = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty, cadence != .afterSuccess else { saveFailed = true; return }
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Date()
+        var record = editing ?? TaskScheduleRecord(title: "", prompt: cleaned, cadence: cadence, scheduledAt: scheduledAt)
+        let calendarChanged = editing == nil || cadence != record.cadence || scheduledAt != record.scheduledAt ||
+            (cadence == .interval && record.intervalSeconds != hours * 3600)
+        if calendarChanged && cadence == .once && scheduledAt <= now { saveFailed = true; return }
+        record.title = String((cleanTitle.isEmpty ? String(cleaned.prefix(40)) : cleanTitle).prefix(150))
+        record.prompt = cleaned
+        record.workspaceID = workspaceID
+        record.modelID = modelID
+        record.cadence = cadence
+        record.scheduledAt = scheduledAt
+        record.weekday = cadence == .weekly ? Calendar.current.component(.weekday, from: scheduledAt) : nil
+        record.intervalSeconds = cadence == .interval ? hours * 3600 : nil
+        record.anchorTimezone = editing?.anchorTimezone ?? TimeZone.current.identifier
+        record.updatedAt = now
+        let policy = DraftTaskPolicy(approvalMode: approval)
+        guard let encoded = try? JSONEncoder().encode(policy) else { saveFailed = true; return }
+        record.permissionJSON = String(decoding: encoded, as: UTF8.self)
+        if calendarChanged {
+            record.nextExpectedAt = record.isEnabled ? TaskSchedulePlanner.nextFireTime(after: now, record: record) : nil
+        }
+        if await center.save(record) { dismiss() } else { saveFailed = true }
+    }
+}

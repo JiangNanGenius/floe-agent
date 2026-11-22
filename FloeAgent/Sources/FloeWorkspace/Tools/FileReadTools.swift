@@ -144,36 +144,7 @@ enum WorkspaceToolSupport {
     /// Application Support directory. The workspace itself is never used as
     /// an evidence store, so reviewing a change cannot modify user files.
     static func changeArtifact(diff: String, runID: UUID) throws -> ToolArtifactReference? {
-        guard !diff.isEmpty else { return nil }
-        let data = Data(diff.utf8)
-        guard data.count <= 512 * 1024 else { return nil }
-        let digest = WorkspaceFileService.sha256Hex(of: data)
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let relativeDirectory = "ChangeArtifacts/\(runID.uuidString)"
-        let directory = support
-            .appendingPathComponent("FloeAgent", isDirectory: true)
-            .appendingPathComponent(relativeDirectory, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        let name = "\(digest).diff"
-        let url = directory.appendingPathComponent(name, isDirectory: false)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try data.write(to: url, options: [.atomic])
-        }
-        return ToolArtifactReference(
-            id: UUID(),
-            relativePath: "\(relativeDirectory)/\(name)",
-            mimeType: "text/x-diff",
-            byteCount: data.count,
-            sha256: digest
-        )
+        try FloeArtifactStore.storeChangeDiff(diff, runID: runID)
     }
 }
 
