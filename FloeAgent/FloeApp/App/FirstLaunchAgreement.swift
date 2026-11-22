@@ -39,6 +39,20 @@ enum FloeUserAgreement {
         }
         return []
     }
+
+    /// Agreement resources use paired asterisks for emphasis. The delimiters
+    /// can touch Chinese or Japanese punctuation and surrounding text.
+    static func styledParagraph(_ paragraph: String) -> AttributedString {
+        let segments = paragraph.components(separatedBy: "**")
+        guard !segments.count.isMultiple(of: 2) else { return AttributedString(paragraph) }
+        return segments.enumerated().reduce(into: AttributedString()) { result, segment in
+            var run = AttributedString(segment.element)
+            if !segment.offset.isMultiple(of: 2) {
+                run.inlinePresentationIntent = .stronglyEmphasized
+            }
+            result.append(run)
+        }
+    }
 }
 
 struct FloeUserAgreementGate<Content: View>: View {
@@ -141,9 +155,7 @@ struct FloeUserAgreementDocument: View {
                 Divider()
                     .padding(.bottom, 4)
                 ForEach(Array(FloeUserAgreement.paragraphs.enumerated()), id: \.offset) { _, paragraph in
-                    Text((try? AttributedString(markdown: paragraph,
-                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-                        ?? AttributedString(paragraph))
+                    Text(FloeUserAgreement.styledParagraph(paragraph))
                         .font(.body)
                         .lineSpacing(5)
                         .fixedSize(horizontal: false, vertical: true)

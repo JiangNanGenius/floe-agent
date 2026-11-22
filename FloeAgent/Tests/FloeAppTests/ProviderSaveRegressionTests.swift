@@ -30,11 +30,48 @@ import Testing
 import FloeCore
 import FloeProviders
 import FloeExecution
+import FloeSecurity
 @testable import FloeApp
 
 @Suite("FloeApp.ProviderSaveRegression")
 @MainActor
 struct ProviderSaveRegressionTests {
+
+    @Test("Connection preflight requires a key for OpenAI and allows an uncredentialed compatible host")
+    func connectionCredentialsFollowTheActualEndpoint() throws {
+        let editor = ProviderEditorViewModel(center: AppEnvironment.preview().conversationCenter, existing: nil)
+        editor.apiKey = " \n "
+        let official = try editor.buildProfile()
+        #expect(official.baseURL == ProviderPreset.openAIResponses.defaultBaseURL)
+        #expect(throws: ProviderConnectionError.apiKeyRequired) {
+            _ = try editor.connectionCredentials(for: official)
+        }
+
+        editor.baseURLString = "https://compatible.example.invalid/v1"
+        let compatible = try editor.buildProfile()
+        #expect(try editor.connectionCredentials(for: compatible).apiKey == nil)
+    }
+
+    @Test("Connection preflight resolves the saved key and prefers a newly entered key")
+    func connectionPreflightReusesStoredCredential() throws {
+        let account = "provider.test.\(UUID().uuidString)"
+        let vault = KeychainStore(service: "org.floeagent.ios.secrets", synchronizable: false)
+        defer { try? vault.delete(account: account) }
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: ProviderPreset.openAIResponses.defaultBaseURL,
+            secretRef: .init(keychainAccount: account, synchronizable: false)
+        )
+        let editor = ProviderEditorViewModel(center: AppEnvironment.preview().conversationCenter, existing: provider)
+        #expect(throws: ProviderConnectionError.savedKeyUnavailable) {
+            _ = try editor.connectionCredentials(for: editor.buildProfile())
+        }
+        try vault.store(account: account, secret: Data("stored-test-key".utf8))
+        #expect(try editor.connectionCredentials(for: editor.buildProfile()).apiKey == "stored-test-key")
+        editor.apiKey = " new-test-key "
+        #expect(try editor.connectionCredentials(for: editor.buildProfile()).apiKey == "new-test-key")
+    }
 
     @Test("Only a successful confirmation for the current HTTP endpoint can enter the save request")
     func plainHTTPRequiresCurrentVerifiedEndpoint() async throws {

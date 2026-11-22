@@ -13,6 +13,25 @@ import Testing
 import FloeCore
 @testable import FloeApp
 
+@Test("Agreement emphasis preserves the bundled wording in every language")
+func agreementRendersEmphasisWithoutChangingWording() throws {
+    let resources = try #require(Bundle.main.resourceURL)
+    for language in FloeL10n.supportedLanguageCodes {
+        let code = language == "en" ? "Base" : language
+        let url = resources.appendingPathComponent("\(code).lproj/FloeUserAgreement.md")
+        let document = try String(contentsOf: url, encoding: .utf8)
+        let styled = FloeUserAgreement.styledParagraph(document)
+        #expect(String(styled.characters) == document.replacingOccurrences(of: "**", with: ""))
+        let strongRuns = styled.runs.filter { $0.inlinePresentationIntent == .stronglyEmphasized }
+        #expect(strongRuns.count == 1)
+        let emphasized = try #require(document.components(separatedBy: "**").dropFirst().first)
+        #expect(strongRuns.map { String(styled[$0.range].characters) } == [emphasized])
+    }
+    #expect(FloeUserAgreement.hasAccepted("accepted"))
+    #expect(FloeUserAgreement.hasAccepted("1.8.48/1"))
+    #expect(!FloeUserAgreement.hasAccepted(""))
+}
+
 @Suite("FloeApp.SetupGuideReducer")
 struct SetupGuideReducerTests {
 

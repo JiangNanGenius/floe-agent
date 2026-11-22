@@ -101,6 +101,7 @@ final class ProviderEditorViewModel: ObservableObject {
         /// success is not media readiness and media readiness is proven by
         /// the real adapter, not by a paid generation.
         case verifiedWithoutLiveProbe(modelCount: Int)
+        case needsCredential(String)
         case failed(String)
     }
 
@@ -186,7 +187,7 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published private(set) var nativeToolStatusByModelID: [UUID: NativeToolCapabilityStatus] = [:]
     @Published var errorMessage: String?
     /// Drives the save-failure alert ONLY. Connection-test and model-discovery
-    /// failures keep their own inline context (`errorMessage` / `testState`)
+    /// failures keep their own inline context (`testState`)
     /// instead of being relabeled as a save failure.
     @Published var saveErrorMessage: String?
     /// Field-level findings from the last Save preflight. Cleared on every
@@ -526,21 +527,15 @@ final class ProviderEditorViewModel: ObservableObject {
     /// reason and no partial models are staged.
     private func enableServiceOfferWithDiscovery(_ role: ProviderServiceRole) async {
         do {
-            let profile = try buildProfile()
-            let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            let credentials: ProviderCredentials
-            if !enteredKey.isEmpty {
-                credentials = ProviderCredentials(apiKey: enteredKey)
-            } else {
-                credentials = center.resolveCredentials(for: profile)
-            }
+            let profile = try makeSaveRequest().get().profile
+            let credentials = try connectionCredentials(for: profile)
             let adapter = adapterFactory.adapter(for: profile)
             let discovered = try await adapter.listModels(
                 provider: profile,
                 credentials: credentials
             )
             guard !discovered.isEmpty else {
-                throw FloeError.validationFailed("Model discovery returned no models")
+                throw ProviderConnectionError.modelRequired
             }
             additionalRoleModels[role] = makeRoleModels(
                 for: role,
@@ -551,7 +546,7 @@ final class ProviderEditorViewModel: ObservableObject {
             }
             serviceOfferDiscoveryState[role] = .succeeded(modelCount: discovered.count)
         } catch {
-            let message = SecretRedactor.redact(error.localizedDescription)
+            let message = Self.connectionFailureMessage(for: error)
             serviceOfferDiscoveryState[role] = .failed(message)
             serviceOfferDiscoveryError[role] = message
             additionalRoleModels[role] = nil
@@ -1061,52 +1056,60 @@ final class ProviderEditorViewModel: ObservableObject {
 
     // MARK: - Test connection
 
+    func connectionCredentials(for profile: ProviderProfile) throws -> ProviderCredentials {
+        let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !enteredKey.isEmpty {
+            return ProviderCredentials(apiKey: enteredKey)
+        }
+        // Resolve a saved key using the same namespaces as an ordinary run.
+        let saved = center.resolveCredentials(for: profile)
+        if let key = saved.apiKey, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return saved
+        }
+        guard !ProviderConnectionProbe.requiresAPIKey(for: profile, catalogEntry: resolvedCatalogEntry()) else {
+            throw profile.secretRef == nil
+                ? ProviderConnectionError.apiKeyRequired : ProviderConnectionError.savedKeyUnavailable
+        }
+        return ProviderCredentials()
+    }
+
+    func clearConnectionCredentialIssue() {
+        if case .needsCredential = testState { testState = .idle }
+    }
+
     /// Runs the committed connection test: adapter.testConnection plus
     /// model discovery when supported. On failure the manual-model
     /// fallback remains available.
     func testConnection() async {
-        await discoverModels(testConnectivity: true)
+        await discoverModels()
     }
 
     /// Re-fetches the provider's model catalog from the normal settings flow.
     /// Existing credentials are resolved from Keychain when the key field is
     /// intentionally left blank while editing.
     func refreshModels() async {
-        await discoverModels(testConnectivity: true)
+        await discoverModels()
     }
 
-    private func discoverModels(testConnectivity: Bool) async {
+    private func discoverModels() async {
+        guard testState != .testing else { return }
         testState = .testing
         errorMessage = nil
         mediaProbeNote = nil
         do {
-            let profile = try buildProfile()
-            let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            let credentials: ProviderCredentials
-            if !enteredKey.isEmpty {
-                credentials = ProviderCredentials(apiKey: enteredKey)
-            } else {
-                // Use the same Keychain resolution as ConversationCenter so
-                // the editor and runtime agree on which namespace to read.
-                credentials = center.resolveCredentials(for: profile)
-            }
+            let profile = try makeSaveRequest().get().profile
+            let credentials = try connectionCredentials(for: profile)
             if serviceRole != .conversation {
                 await probeMediaRole(profile: profile, credentials: credentials)
                 return
             }
             let adapter = adapterFactory.adapter(for: profile)
-            if testConnectivity {
-                // Subscription gateways have no documented /models listing;
-                // their honest probe is one minimal chat request for the
-                // model the user actually selected. This call happens only on
-                // an explicit Test action.
-                try await ProviderConnectionProbe.testConnection(
-                    provider: profile,
-                    credentials: credentials,
-                    modelRemoteID: selectedChatProbeModelID,
-                    adapter: adapter
-                )
-            }
+            try await ProviderConnectionProbe.testConnection(
+                provider: profile,
+                credentials: credentials,
+                modelRemoteID: selectedChatProbeModelID,
+                adapter: adapter
+            )
             if supportsDiscovery {
                 let models = try await adapter.listModels(
                     provider: profile,
@@ -1120,9 +1123,38 @@ final class ProviderEditorViewModel: ObservableObject {
                 testState = .succeeded(modelCount: selectedModels.count)
             }
         } catch {
-            let message = SecretRedactor.redact(error.localizedDescription)
-            testState = .failed(message)
-            errorMessage = message
+            recordConnectionFailure(error)
+        }
+    }
+
+    private func recordConnectionFailure(_ error: Error) {
+        switch error {
+        case is CancellationError:
+            testState = .idle
+        case let error as URLError where error.code == .cancelled:
+            testState = .idle
+        case ProviderConnectionError.apiKeyRequired, ProviderConnectionError.savedKeyUnavailable:
+            testState = .needsCredential(Self.connectionFailureMessage(for: error))
+        case let report as ProviderConfigurationValidationReport
+            where report.primary?.problem == .connectionChangedRequiresNewCredential:
+            testState = .needsCredential(Self.connectionFailureMessage(for: report))
+        default:
+            testState = .failed(Self.connectionFailureMessage(for: error))
+        }
+    }
+
+    static func connectionFailureMessage(for error: Error) -> String {
+        switch error {
+        case let error as ProviderConnectionError:
+            error.localizedDescription
+        case let report as ProviderConfigurationValidationReport:
+            report.issues.map(presentableMessage(for:)).joined(separator: "\n")
+        case is URLError:
+            FloeL10n.l("providers.connection_test.network_error")
+        case is DecodingError:
+            FloeL10n.l("providers.connection_test.invalid_response")
+        default:
+            FloeL10n.l("providers.connection_test.rejected")
         }
     }
 
@@ -1214,8 +1246,7 @@ final class ProviderEditorViewModel: ObservableObject {
                     modelCount: candidateModels.filter { modelServesCurrentRole($0) }.count
                 )
             } catch {
-                let message = SecretRedactor.redact(error.localizedDescription)
-                testState = .failed(message)
+                recordConnectionFailure(error)
             }
         case .unavailable:
             testState = .failed(Self.mediaRouteUnavailableMessage(for: serviceRole))

@@ -19,6 +19,7 @@ struct ProviderEditorView: View {
     @StateObject private var viewModel: ProviderEditorViewModel
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isEndpointFocused: Bool
+    @FocusState private var isAPIKeyFocused: Bool
     private enum ConnectionAction { case save, test, refresh }
     private enum EditorNotice {
         case http(ProviderEditorViewModel.HTTPApproval, ConnectionAction)
@@ -78,7 +79,7 @@ struct ProviderEditorView: View {
         }
     }
 
-    var body: some View {
+    private var editorForm: some View {
         Form {
             Section("providers.provider_editor_view.service_purpose") {
                 Label(viewModel.serviceRole.title, systemImage: viewModel.serviceRole.icon)
@@ -140,6 +141,17 @@ struct ProviderEditorView: View {
                 }
             }
         }
+    }
+
+    var body: some View {
+        ScrollViewReader { scroll in
+            editorForm
+                .onChange(of: viewModel.testState) { _, state in
+                    guard case .needsCredential = state else { return }
+                    scroll.scrollTo("providers.api_key", anchor: .center)
+                    isAPIKeyFocused = true
+                }
+        }
         .navigationTitle(viewModel.existing == nil
             ? LocalizedStringKey("providers.add")
             : LocalizedStringKey("providers.edit"))
@@ -193,7 +205,12 @@ struct ProviderEditorView: View {
         // RQ05: a corrected value never keeps showing the old finding; the
         // next Save re-validates the whole form anyway.
         .onChange(of: viewModel.displayName) { _, _ in viewModel.invalidateFieldIssues(matching: .displayName) }
-        .onChange(of: viewModel.baseURLString) { _, _ in viewModel.invalidateFieldIssues(matching: .baseURL) }
+        .onChange(of: viewModel.baseURLString) { _, _ in
+            viewModel.invalidateFieldIssues(matching: .baseURL)
+            viewModel.clearConnectionCredentialIssue()
+        }
+        .onChange(of: viewModel.apiKey) { _, _ in viewModel.clearConnectionCredentialIssue() }
+        .onChange(of: viewModel.selectedPreset) { _, _ in viewModel.clearConnectionCredentialIssue() }
         .onChange(of: viewModel.nonSecretHeadersText) { _, _ in viewModel.invalidateFieldIssues(matching: .nonSecretHeader) }
         .onChange(of: viewModel.allowsPlainHTTP) { _, _ in viewModel.invalidateFieldIssues(matching: .plainHTTP) }
         .sheet(isPresented: $showModelPicker) {
@@ -526,10 +543,12 @@ struct ProviderEditorView: View {
                 if viewModel.showingAPIKey {
                     TextField("providers.api_key", text: $viewModel.apiKey)
                         .textInputAutocapitalization(.never)
+                        .focused($isAPIKeyFocused)
                         .accessibilityIdentifier("providers.api_key")
                 } else {
                     SecureField("providers.api_key", text: $viewModel.apiKey)
                         .textInputAutocapitalization(.never)
+                        .focused($isAPIKeyFocused)
                         .accessibilityIdentifier("providers.api_key")
                 }
                 Button {
@@ -544,16 +563,24 @@ struct ProviderEditorView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(viewModel.showingAPIKey ? "providers.provider_editor_view.hide_api_key" : "providers.provider_editor_view.show_api_key")
             }
-            if viewModel.secretStatus == .waitingForSecret {
-                Label("providers.waiting_secret.hint", systemImage: "key.fill")
+            .id("providers.api_key")
+            if case .needsCredential(let message) = viewModel.testState {
+                Label(message, systemImage: "key.fill")
                     .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(FloeTheme.pending)
-            }
-            if let message = viewModel.connectionCredentialRequirementMessage {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(FloeTheme.pending)
-                    .accessibilityIdentifier("providers.validation.endpointChanged")
+                    .foregroundStyle(FloeTheme.destructive)
+                    .accessibilityIdentifier("providers.test.keyRequired")
+            } else {
+                if viewModel.secretStatus == .waitingForSecret {
+                    Label("providers.waiting_secret.hint", systemImage: "key.fill")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.pending)
+                }
+                if let message = viewModel.connectionCredentialRequirementMessage {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.pending)
+                        .accessibilityIdentifier("providers.validation.endpointChanged")
+                }
             }
         } header: {
             Text("providers.credentials")
@@ -596,7 +623,7 @@ struct ProviderEditorView: View {
                     Text("providers.test_connection")
                     Spacer()
                     switch viewModel.testState {
-                    case .idle:
+                    case .idle, .needsCredential:
                         EmptyView()
                     case .testing:
                         ProgressView()
@@ -779,6 +806,7 @@ struct ProviderEditorView: View {
     private func requestConnectionAction(_ action: ConnectionAction) {
         guard authentication == nil else { return }
         isEndpointFocused = false
+        isAPIKeyFocused = false
         if let request = viewModel.pendingHTTPApproval {
             viewModel.saveErrorMessage = nil
             httpNotice = .http(request, action)
@@ -806,6 +834,7 @@ struct ProviderEditorView: View {
     }
 
     private func perform(_ action: ConnectionAction) {
+        viewModel.clearConnectionCredentialIssue()
         switch action {
         case .test: Task { await viewModel.testConnection() }
         case .refresh: Task { await viewModel.refreshModels() }

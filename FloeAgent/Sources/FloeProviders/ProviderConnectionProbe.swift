@@ -27,7 +27,66 @@ import FoundationNetworking
 #endif
 import FloeCore
 
+/// Connection checks report actionable statuses without displaying a service's
+/// response body, which may contain account data or an echoed credential.
+public enum ProviderConnectionError: LocalizedError, Sendable, Equatable {
+    case apiKeyRequired
+    case savedKeyUnavailable
+    case modelRequired
+    case httpStatus(Int)
+    case invalidResponse
+    case noCompletion
+    case rejected
+
+    public var errorDescription: String? {
+        switch self {
+        case .apiKeyRequired: FloeL10n.l("providers.connection_test.key_required")
+        case .savedKeyUnavailable: FloeL10n.l("providers.connection_test.saved_key_unavailable")
+        case .modelRequired: FloeL10n.l("providers.no_models")
+        case .httpStatus(401): FloeL10n.l("providers.model_discovery.api_key_is_invalid_or_expired")
+        case .httpStatus(403): FloeL10n.l("providers.connection_test.model_permission")
+        case .httpStatus(429): FloeL10n.l("providers.connection_test.quota")
+        case .httpStatus(let status): FloeL10n.l("providers.connection_test.http_error", status)
+        case .invalidResponse: FloeL10n.l("providers.connection_test.invalid_response")
+        case .noCompletion: FloeL10n.l("providers.connection_test.no_completion")
+        case .rejected: FloeL10n.l("providers.connection_test.rejected")
+        }
+    }
+
+    static func validate(_ response: URLResponse, credentials: ProviderCredentials) throws {
+        guard let http = response as? HTTPURLResponse else { throw Self.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 401, credentials.apiKey == nil {
+                throw Self.apiKeyRequired
+            }
+            throw Self.httpStatus(http.statusCode)
+        }
+    }
+}
+
 public enum ProviderConnectionProbe {
+
+    /// A compatible wire protocol can carry an API key even when a server
+    /// does not require one. Only known supplier connections declare it
+    /// mandatory before the first contact with the endpoint.
+    public static func requiresAPIKey(
+        for provider: ProviderProfile,
+        catalogEntry: ProviderCatalogEntry? = nil
+    ) -> Bool {
+        typealias Connection = ProviderConfigurationValidation.ProviderConnectionIdentity
+        guard provider.kind != .local,
+              let target = Connection.key(kind: provider.kind, baseURL: provider.baseURL) else { return false }
+
+        if let catalogEntry, catalogEntry.availability == .available,
+           let endpoint = catalogEntry.baseURL,
+           Connection.key(kind: provider.kind, baseURL: endpoint) == target {
+            return catalogEntry.authStyle != "none"
+        }
+        return ProviderPreset.all.contains { preset in
+            preset.id != .custom && preset.authStyle != .none
+                && Connection.key(kind: provider.kind, baseURL: preset.defaultBaseURL) == target
+        }
+    }
 
     /// True when the adapter's default listing probe must be replaced by a
     /// minimal selected-model chat request.
@@ -79,71 +138,31 @@ public enum ProviderConnectionProbe {
         }
         guard let model = modelRemoteID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !model.isEmpty else {
-            // The plan catalog always stages a candidate, so this only happens
-            // when no row is selected/configured. Reuse the existing bilingual
-            // "no models" message instead of adding protocol detail to the UI.
-            throw FloeError.validationFailed(FloeL10n.l("providers.no_models"))
+            throw ProviderConnectionError.modelRequired
         }
         let request = try minimalChatRequest(
             provider: provider,
             credentials: credentials,
             modelRemoteID: model
         )
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await BoundedHTTP.data(
-                for: request,
-                session: session,
-                maxBytes: 1_024 * 1_024
-            )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as URLError where error.code == .cancelled {
-            throw CancellationError()
-        } catch let error as FloeError {
-            throw error
-        } catch {
-            let detail = SecretRedactor.redact(error.localizedDescription, secret: credentials.apiKey)
-            throw FloeError.validationFailed(FloeL10n.l("providers.connection_test.network_error", detail))
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw FloeError.internalError(FloeL10n.l("providers.connection_test.invalid_response"))
-        }
-        let rawBody = String(decoding: data.prefix(1_024), as: UTF8.self)
-        let body = SecretRedactor.redact(rawBody, secret: credentials.apiKey)
-        switch http.statusCode {
-        case 200..<300:
-            break
-        case 401:
-            throw FloeError.validationFailed(
-                FloeL10n.l("providers.model_discovery.api_key_is_invalid_or_expired", body)
-            )
-        case 403:
-            throw FloeError.validationFailed(
-                FloeL10n.l("providers.connection_test.model_permission", body)
-            )
-        case 429:
-            throw FloeError.validationFailed(
-                FloeL10n.l("providers.connection_test.quota", body)
-            )
-        default:
-            throw FloeError.internalError(FloeL10n.l("providers.connection_test.http_error", http.statusCode, body))
-        }
+        let (data, response) = try await BoundedHTTP.data(
+            for: request,
+            session: session,
+            maxBytes: 1_024 * 1_024
+        )
+        try ProviderConnectionError.validate(response, credentials: credentials)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw FloeError.validationFailed(FloeL10n.l("providers.connection_test.invalid_data", body))
+            throw ProviderConnectionError.invalidResponse
         }
         if let providerError = object["error"], !(providerError is NSNull) {
-            throw FloeError.internalError(FloeL10n.l("providers.connection_test.rejected", body))
+            throw ProviderConnectionError.rejected
         }
         // A 200 with `{}` (or any payload without a completion choice) is not
         // proof that chat inference works.
         guard let choices = object["choices"] as? [[String: Any]],
               !choices.isEmpty,
               choices.contains(where: { $0["message"] is [String: Any] }) else {
-            throw FloeError.validationFailed(
-                FloeL10n.l("providers.connection_test.no_completion", body)
-            )
+            throw ProviderConnectionError.noCompletion
         }
     }
 

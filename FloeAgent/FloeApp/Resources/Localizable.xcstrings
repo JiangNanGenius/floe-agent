@@ -258873,114 +258873,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Connection test failed (HTTP %@): %@"
+            "value": "Connection test failed (HTTP %@)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "连接测试失败（HTTP %@）：%@"
+            "value": "连接测试失败（HTTP %@）。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "連線測試失敗（HTTP %@）：%@"
+            "value": "連線測試失敗（HTTP %@）。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "接続テストに失敗しました（HTTP %@）：%@"
+            "value": "接続テストに失敗しました（HTTP %@）。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "연결 테스트에 실패했습니다 (HTTP %@): %@"
+            "value": "연결 테스트에 실패했습니다 (HTTP %@)."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Échec du test de connexion (HTTP %@) : %@"
+            "value": "Échec du test de connexion (HTTP %@)."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verbindungstest fehlgeschlagen (HTTP %@): %@"
+            "value": "Verbindungstest fehlgeschlagen (HTTP %@)."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Prueba de conexión fallida (HTTP %@): %@"
+            "value": "Prueba de conexión fallida (HTTP %@)."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Falha no teste de conexão (HTTP %@): %@"
-          }
-        }
-      }
-    },
-    "providers.connection_test.invalid_data": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The service returned invalid data: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "服务返回的数据无效：%@"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "服務返回的資料無效：%@"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "サービスが無効なデータを返しました: %@"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "서비스가 잘못된 데이터를 반환했습니다: %@"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Le service a renvoyé des données invalides : %@"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Der Dienst hat ungültige Daten zurückgegeben: %@"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El servicio devolvió datos no válidos: %@"
-          }
-        },
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O serviço retornou dados inválidos: %@"
+            "value": "Falha no teste de conexão (HTTP %@)."
           }
         }
       }
@@ -259044,61 +258985,120 @@
         }
       }
     },
+    "providers.connection_test.key_required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter an API key to test this connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入 API 密钥后再测试连接。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "請輸入 API 金鑰後再測試連線。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続をテストするには、API キーを入力してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "연결을 테스트하려면 API 키를 입력하세요."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saisissez une clé API pour tester cette connexion."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gib einen API-Schlüssel ein, um die Verbindung zu testen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Introduce una clave API para probar esta conexión."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insira uma chave de API para testar esta conexão."
+          }
+        }
+      }
+    },
     "providers.connection_test.model_permission": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The model or plan is not available to this API key (HTTP 403): %@"
+            "value": "The model or plan is not available to this API key (HTTP 403)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此密钥没有该模型或套餐的访问权限（HTTP 403）：%@"
+            "value": "此密钥没有该模型或套餐的访问权限（HTTP 403）。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "此金鑰沒有該模型或套餐的訪問許可權（HTTP 403）：%@"
+            "value": "此金鑰沒有該模型或套餐的訪問許可權（HTTP 403）。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "この API キー（HTTP 403）では、モデルまたはプランが利用できません：%@"
+            "value": "この API キー（HTTP 403）では、モデルまたはプランが利用できません。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "이 API 키(HTTP 403)에서는 모델 또는 플랜을 사용할 수 없습니다: %@"
+            "value": "이 API 키(HTTP 403)에서는 모델 또는 플랜을 사용할 수 없습니다."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Le modèle ou le plan n'est pas disponible pour cette clé API (HTTP 403) : %@"
+            "value": "Le modèle ou le plan n'est pas disponible pour cette clé API (HTTP 403)."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Das Modell oder Plan ist für diesen API-Schlüssel (HTTP 403) nicht verfügbar: %@"
+            "value": "Das Modell oder Plan ist für diesen API-Schlüssel (HTTP 403) nicht verfügbar."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El modelo o plan no está disponible para esta clave API (HTTP 403): %@"
+            "value": "El modelo o plan no está disponible para esta clave API (HTTP 403)."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "O modelo ou plano não está disponível para esta chave API (HTTP 403): %@"
+            "value": "O modelo ou plano não está disponível para esta chave API (HTTP 403)."
           }
         }
       }
@@ -259109,55 +259109,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Network error while testing the connection: %@"
+            "value": "Network error while testing the connection."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "连接失败，请检查网络后重试。%@"
+            "value": "连接失败，请检查网络后重试。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "連線失敗，請檢查網路後重試。%@"
+            "value": "連線失敗，請檢查網路後重試。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "接続テスト中にネットワークエラーが発生しました: %@"
+            "value": "接続テスト中にネットワークエラーが発生しました。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "연결을 테스트하는 중 네트워크 오류가 발생했습니다: %@"
+            "value": "연결을 테스트하는 중 네트워크 오류가 발생했습니다."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erreur réseau lors du test de la connexion : %@"
+            "value": "Erreur réseau lors du test de la connexion."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Netzwerkfehler beim Testen der Verbindung: %@"
+            "value": "Netzwerkfehler beim Testen der Verbindung."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Error de red al probar la conexión: %@"
+            "value": "Error de red al probar la conexión."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erro de rede ao testar a conexão: %@"
+            "value": "Erro de rede ao testar a conexão."
           }
         }
       }
@@ -259168,55 +259168,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The service returned no reply. Check the selected model and try again. %@"
+            "value": "The service returned no reply. Check the selected model and try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "服务没有返回回答，请检查所选模型后重试。%@"
+            "value": "服务没有返回回答，请检查所选模型后重试。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "服務沒有返回回答，請檢查所選模型後重試。%@"
+            "value": "服務沒有返回回答，請檢查所選模型後重試。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "サービスは返答がありませんでした。 選択したモデルを確認して、もう一度お試しください。 %@"
+            "value": "サービスは返答がありませんでした。 選択したモデルを確認して、もう一度お試しください。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "서비스가 회신을 하지 않았습니다. 선택한 모델을 확인하고 다시 시도하십시오. %@"
+            "value": "서비스가 회신을 하지 않았습니다. 선택한 모델을 확인하고 다시 시도하십시오."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Le service n'a pas répondu. Vérifiez le modèle sélectionné et réessayez. %@"
+            "value": "Le service n'a pas répondu. Vérifiez le modèle sélectionné et réessayez."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Der Dienst gab keine Antwort zurück. Überprüfen Sie das ausgewählte Modell und versuchen Sie es erneut. %@"
+            "value": "Der Dienst gab keine Antwort zurück. Überprüfen Sie das ausgewählte Modell und versuchen Sie es erneut."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El servicio no devolvió respuesta. Compruebe el modelo seleccionado e inténtelo de nuevo. %@"
+            "value": "El servicio no devolvió respuesta. Compruebe el modelo seleccionado e inténtelo de nuevo."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "O serviço não retornou nenhuma resposta. Verifique o modelo selecionado e tente novamente. %@"
+            "value": "O serviço não retornou nenhuma resposta. Verifique o modelo selecionado e tente novamente."
           }
         }
       }
@@ -259227,55 +259227,114 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Provider rate limit or quota exceeded (HTTP 429): %@"
+            "value": "Provider rate limit or quota exceeded (HTTP 429)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "服务额度不足或请求过于频繁（HTTP 429）：%@"
+            "value": "服务额度不足或请求过于频繁（HTTP 429）。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "服務額度不足或請求過於頻繁（HTTP 429）：%@"
+            "value": "服務額度不足或請求過於頻繁（HTTP 429）。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "プロバイダーのレート上限またはクォータが超過しました (HTTP 429): %@"
+            "value": "プロバイダーのレート上限またはクォータが超過しました (HTTP 429)。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "제공자 요금 제한 또는 할당량 초과 (HTTP 429): %@"
+            "value": "제공자 요금 제한 또는 할당량 초과 (HTTP 429)."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Limite ou quota du fournisseur dépassé (HTTP 429) : %@"
+            "value": "Limite ou quota du fournisseur dépassé (HTTP 429)."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Anbieter-Tariflimit oder -Kontingent überschritten (HTTP 429): %@"
+            "value": "Anbieter-Tariflimit oder -Kontingent überschritten (HTTP 429)."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Se ha superado el límite o cuota de tarifa del proveedor (HTTP 429): %@"
+            "value": "Se ha superado el límite o cuota de tarifa del proveedor (HTTP 429)."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Limite ou cota de taxa do provedor excedido (HTTP 429): %@"
+            "value": "Limite ou cota de taxa do provedor excedido (HTTP 429)."
+          }
+        }
+      }
+    },
+    "providers.connection_test.saved_key_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved API key is unavailable. Enter it again to test this connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取已保存的 API 密钥。请重新输入后再测试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法讀取已儲存的 API 金鑰。請重新輸入後再測試。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存済みの API キーを読み込めません。再入力して接続をテストしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "저장된 API 키를 읽을 수 없습니다. 다시 입력한 후 연결을 테스트하세요."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La clé API enregistrée est indisponible. Saisissez-la de nouveau pour tester la connexion."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der gespeicherte API-Schlüssel ist nicht verfügbar. Gib ihn erneut ein, um die Verbindung zu testen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La clave API guardada no está disponible. Introdúcela de nuevo para probar la conexión."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A chave de API salva está indisponível. Insira-a novamente para testar a conexão."
           }
         }
       }
@@ -259286,55 +259345,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The service rejected the connection test: %@"
+            "value": "The service rejected the connection test."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "服务拒绝了连接测试：%@"
+            "value": "服务拒绝了连接测试。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "服務拒絕了連線測試：%@"
+            "value": "服務拒絕了連線測試。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "サービスが接続テストを拒否しました: %@"
+            "value": "サービスが接続テストを拒否しました。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "서비스가 연결 테스트를 거부했습니다: %@"
+            "value": "서비스가 연결 테스트를 거부했습니다."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Le service a rejeté le test de connexion : %@"
+            "value": "Le service a rejeté le test de connexion."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Der Dienst hat den Verbindungstest abgelehnt: %@"
+            "value": "Der Dienst hat den Verbindungstest abgelehnt."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El servicio rechazó la prueba de conexión: %@"
+            "value": "El servicio rechazó la prueba de conexión."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "O serviço rejeitou o teste de conexão: %@"
+            "value": "O serviço rejeitou o teste de conexão."
           }
         }
       }
@@ -261458,55 +261517,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "API key is invalid or expired: %@"
+            "value": "API key is invalid or expired."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "API key 无效或已过期：%@"
+            "value": "API 密钥无效或已过期。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "API key 無效或已過期：%@"
+            "value": "API 金鑰無效或已過期。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "API キーが無効または期限切れです: %@"
+            "value": "API キーが無効または期限切れです。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "API 키가 유효하지 않거나 만료되었습니다: %@"
+            "value": "API 키가 유효하지 않거나 만료되었습니다."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "La clé API n'est pas valide ou a expiré : %@"
+            "value": "La clé API n'est pas valide ou a expiré."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "API-Schlüssel ist ungültig oder abgelaufen: %@"
+            "value": "API-Schlüssel ist ungültig oder abgelaufen."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "La clave API no es válida o ha caducado: %@"
+            "value": "La clave API no es válida o ha caducado."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "A chave API é inválida ou expirou: %@"
+            "value": "A chave API é inválida ou expirou."
           }
         }
       }

@@ -281,6 +281,13 @@ final class SetupGuideUITests: XCTestCase {
         let testConnection = app.buttons["providers.test_connection"]
         scrollTo(testConnection, in: app)
         XCTAssertTrue(testConnection.waitForExistence(timeout: 8))
+        testConnection.tap()
+        let missingKey = anyElement(app, "providers.test.keyRequired")
+        XCTAssertTrue(missingKey.waitForExistence(timeout: 4))
+        XCTAssertTrue(keyField.isHittable, "connection validation should reveal the API key field")
+        app.typeText("floe-ui-test-key")
+        XCTAssertNotEqual(keyField.value as? String, keyValue, "typing should go to the focused API key field")
+        XCTAssertFalse(missingKey.exists, "editing the field should clear the old validation")
     }
 
     /// Existing behaviour preserved: skipping still leaves the composer and

@@ -203,11 +203,7 @@ struct ProviderConnectionProbeTests {
                 session: session()
             )
             Issue.record("Expected a missing-model validation failure")
-        } catch let error as FloeError {
-            guard case .validationFailed = error else {
-                Issue.record("Expected validationFailed, got \(error)")
-                return
-            }
+        } catch ProviderConnectionError.modelRequired {
             #expect(ProbeURLProtocol.snapshotRequests().isEmpty)
         } catch {
             Issue.record("Unexpected error: \(error)")
@@ -239,36 +235,19 @@ struct ProviderConnectionProbeTests {
     @Test("401 is authentication, 403 is model/plan permission, 429 is quota")
     func statusClassification() async {
         let session = session()
-        let auth = await run(status: 401, body: #"{"error":{"message":"bad key"}}"#, session: session)
-        let permission = await run(status: 403, body: #"{"error":{"message":"model not enabled"}}"#, session: session)
-        let quota = await run(status: 429, body: #"{"error":{"message":"quota exhausted"}}"#, session: session)
-
-        guard let auth,
-              let authError = auth as? FloeError,
-              case .validationFailed(let authMessage) = authError else {
-            Issue.record("401 should be a validation failure")
-            return
+        let cases = [
+            (401, "bad key", "providers.model_discovery.api_key_is_invalid_or_expired"),
+            (403, "model not enabled", "providers.connection_test.model_permission"),
+            (429, "quota exhausted", "providers.connection_test.quota"),
+        ]
+        for (status, diagnostic, localizationKey) in cases {
+            let error = await run(
+                status: status, body: #"{"error":{"message":"\#(diagnostic)"}}"#, session: session
+            )
+            #expect(error as? ProviderConnectionError == .httpStatus(status))
+            #expect(error?.localizedDescription == FloeL10n.l(localizationKey))
+            #expect(error?.localizedDescription.contains(diagnostic) == false)
         }
-        #expect(!authMessage.contains("HTTP 403"))
-        #expect(!authMessage.contains("HTTP 429"))
-
-        guard let permission,
-              let permissionError = permission as? FloeError,
-              case .validationFailed(let permissionMessage) = permissionError else {
-            Issue.record("403 should be a validation failure")
-            return
-        }
-        #expect(permissionMessage.contains("HTTP 403"))
-        #expect(permissionMessage.contains("model not enabled"))
-
-        guard let quota,
-              let quotaError = quota as? FloeError,
-              case .validationFailed(let quotaMessage) = quotaError else {
-            Issue.record("429 should be a validation failure")
-            return
-        }
-        #expect(quotaMessage.contains("HTTP 429"))
-        #expect(quotaMessage.contains("quota exhausted"))
     }
 
     @Test("A network failure is reported as network, not as a chat success")
@@ -288,8 +267,10 @@ struct ProviderConnectionProbeTests {
                 session: session()
             )
             Issue.record("Expected a network failure")
+        } catch let error as URLError {
+            #expect(error.code == .notConnectedToInternet)
         } catch {
-            #expect(error.localizedDescription.contains(FloeL10n.l("providers.connection_test.network_error", "").trimmingCharacters(in: .whitespacesAndNewlines)))
+            Issue.record("Unexpected error: \(error)")
         }
     }
 

@@ -164,6 +164,7 @@ struct SetupGuideSectionRow: View {
 
     var body: some View {
         let status = displayedStatus
+        let isSelected = model.state.section == section
         HStack(spacing: 10) {
             Label {
                 VStack(alignment: .leading, spacing: 2) {
@@ -171,15 +172,15 @@ struct SetupGuideSectionRow: View {
                     if status == .needsAttention {
                         Text("setup.section.attention.hint")
                             .font(FloeTheme.Typography.metadata)
-                            .foregroundStyle(FloeTheme.pending)
+                            .foregroundStyle(isSelected ? .white : FloeTheme.pending)
                     }
                 }
             } icon: {
                 Image(systemName: section.systemImage)
-                    .foregroundStyle(FloeTheme.primary)
+                    .foregroundStyle(isSelected ? .white : FloeTheme.primary)
             }
             Spacer(minLength: 8)
-            SetupGuideStatusChip(status: status)
+            SetupGuideStatusChip(status: status, isSelected: isSelected)
         }
         .frame(minHeight: FloeTheme.minimumTarget)
         .contentShape(Rectangle())
@@ -204,14 +205,15 @@ struct SetupGuideSectionRow: View {
 
 struct SetupGuideStatusChip: View {
     let status: SetupSectionStatus
+    let isSelected: Bool
 
     var body: some View {
         Text(titleKey)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(color)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isSelected ? Color(uiColor: .label) : color)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(color.opacity(0.14), in: Capsule())
+            .background(isSelected ? Color(uiColor: .systemBackground) : color.opacity(0.14), in: Capsule())
             .accessibilityIdentifier("setup.status.\(status.rawValue)")
     }
 
