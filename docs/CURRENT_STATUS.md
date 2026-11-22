@@ -3,7 +3,7 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-最新内部 TestFlight、GitHub 和 Feather 已核验为 1.8.68（389）。 / Build 389 is verified for internal TestFlight, GitHub and Feather. [交付记录 / Delivery](releases/builds/FLOE_1.8.68_BUILD389_DELIVERY.md)
+最新内部 TestFlight、GitHub 和 Feather 已核验为 1.8.70（391）。 / Build 391 is verified for internal TestFlight, GitHub and Feather. [交付记录 / Delivery](releases/builds/FLOE_1.8.70_BUILD391_DELIVERY.md)
 
 ## 2026-11-19 iOS 1.8.45（366）
 
