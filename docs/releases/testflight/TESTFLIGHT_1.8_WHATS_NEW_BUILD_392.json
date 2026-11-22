@@ -1,0 +1,4 @@
+{
+  "en-US": "Open the setup guide and test the default OpenAI connection with the API key field empty. The app should prompt for a key and focus the field. Check bold text in the opening paragraph of the user agreement and the Saved badge on the selected iPad setup row in light and dark appearance.",
+  "zh-Hans": "打开设置向导，保留默认 OpenAI 并将密钥留空，点「测试连接」。确认提示填写密钥并自动定位到输入框。检查用户协议首段的加粗显示，以及 iPad 设置向导选中行的「已保存」标签在浅色和深色下的可读性。"
+}
