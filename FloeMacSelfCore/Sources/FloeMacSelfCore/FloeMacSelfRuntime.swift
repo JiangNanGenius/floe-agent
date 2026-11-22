@@ -3187,6 +3187,18 @@ public actor FloeMacSelfRuntime {
         return SQLiteSkillStore(database: database)
     }
 
+    public func deviceHistory(conversationID: UUID) async throws -> DeviceConversationHistory {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().conversations.deviceHistory(conversationID: conversationID)
+    }
+
+    public func importDeviceHistory(_ history: DeviceConversationHistory) async throws -> DeviceConversationImport {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().conversations.importDeviceHistory(history)
+    }
+
     public func isCompletedScheduleRun(_ id: UUID) async throws -> Bool {
         try ensureOpen()
         try requireAuthority()

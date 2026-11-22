@@ -1,4 +1,4 @@
 "NSCameraUsageDescription" = "扫描文档、扫码或使用放大镜时，Floe 会使用相机。";
 "NSLocationUsageDescription" = "使用位置工具时，Floe 会获取你的位置。";
-"NSLocalNetworkUsageDescription" = "选择发现服务时，Floe 会搜索你的本地网络。";
+"NSLocalNetworkUsageDescription" = "Floe 使用本地网络发现服务，并与配对设备同步你选择的会话。";
 "NSMicrophoneUsageDescription" = "启动声音分析时，Floe 会使用麦克风。";

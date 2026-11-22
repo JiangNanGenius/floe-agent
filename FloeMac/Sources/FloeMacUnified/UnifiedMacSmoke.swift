@@ -8,6 +8,7 @@ import CoreText
 import CryptoKit
 import Darwin
 import FloeCore
+import FloeDeviceSync
 import FloeMacBridgeProtocol
 import FloeMacToolbox
 import FloeModels
@@ -111,6 +112,10 @@ final class UnifiedMacSmoke {
         }
         if CommandLine.arguments.contains("--task-terminals-only") {
             await exerciseTaskTerminals(model)
+            return
+        }
+        if CommandLine.arguments.contains("--device-history-only") {
+            await exerciseDeviceHistory(model)
             return
         }
         if CommandLine.arguments.contains("--concurrent-drafts-only"), let endpoint = projectTaskFixtureEndpoint,
@@ -1122,6 +1127,89 @@ final class UnifiedMacSmoke {
         } catch {
             _ = await unified.closeTaskTerminals()
             finish(["terminalStarted": false, "diagnostic": String(describing: type(of: error))])
+        }
+    }
+
+    private func exerciseDeviceHistory(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let center = agent.deviceHistorySync else {
+            finish(["ready": false]); return
+        }
+        let defaultsOff = !center.enabled
+        let remoteID = UUID()
+        let remoteMessage = UUID()
+        do {
+            let remoteDatabase = try DatabaseManager.inMemory()
+            try await remoteDatabase.migrate()
+            let store = SQLiteConversationStore(database: remoteDatabase)
+            let date = Date()
+            try await store.saveConversationWithCanonicalWorkspace(
+                .init(id: remoteID, title: "Paired device fixture", createdAt: date, updatedAt: date))
+            try await store.appendMessage(.init(id: remoteMessage, conversationID: remoteID, role: "user",
+                                               content: "Arrived from the other device.", createdAt: date))
+            let file = root.appendingPathComponent("remote-identity")
+            let offer = DeviceHistoryOffer(id: remoteID, title: "Paired device fixture")
+            let remote = DeviceHistorySyncCenter(
+                settingsURL: root.appendingPathComponent("remote-settings.json"),
+                identityStorage: .init(load: { try? Data(contentsOf: file) }, save: { try $0.write(to: file, options: .atomic) }),
+                source: .init(list: { _ in [offer] }, export: { try await store.deviceHistory(conversationID: $0).encoded() }),
+                localTasks: { [offer] },
+                importHistory: { id, data in
+                    let history = try DeviceConversationHistory(data: data)
+                    guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
+                    return try await store.importDeviceHistory(history).addedMessages
+                }
+            )
+            guard await agent.verifyChatSmoke(), let localID = agent.selectedID else {
+                finish(["fixtureSaved": false]); return
+            }
+            await center.activate()
+            await center.setEnabled(true)
+            await remote.activate()
+            await remote.setEnabled(true)
+            guard let localCode = center.pairingCode, let remoteCode = remote.pairingCode else {
+                await center.pause(); await remote.pause()
+                finish(["identities": false]); return
+            }
+            let localTicket = try DeviceHistoryPairingTicket(code: localCode)
+            let remoteTicket = try DeviceHistoryPairingTicket(code: remoteCode)
+            await center.pair(remoteTicket, named: "Remote fixture")
+            await remote.pair(localTicket, named: "Native Mac fixture")
+            await center.share(localID, with: remoteTicket.id, enabled: true)
+            await remote.share(remoteID, with: localTicket.id, enabled: true)
+
+            await center.receive(remoteID, from: remoteTicket.id)
+            await agent.select(remoteID)
+            let nativeReadBack = agent.messages.contains(where: { $0.id == remoteMessage && $0.content == "Arrived from the other device." })
+            await center.receive(remoteID, from: remoteTicket.id)
+            let duplicate = center.status == .received(0)
+            await remote.receive(localID, from: localTicket.id)
+            let otherReadBack = try await store.messages(conversationID: localID).contains { $0.content == "Synthetic persisted reply." }
+
+            model.openSettings(.deviceSync)
+            let deadline = ContinuousClock.now + .seconds(4)
+            var settingsShown = false
+            while ContinuousClock.now < deadline && !settingsShown {
+                if let view = model.smokeAgentSettingsSheet?.contentView,
+                   model.settingsPane == .deviceSync, model.smokeDeviceSyncMounted {
+                    settingsShown = true
+                    capture(view, extension: "device-sync-settings.png")
+                }
+                if !settingsShown { try await Task.sleep(for: .milliseconds(35)) }
+            }
+            model.closeSettingsWindow()
+            await center.pause()
+            await center.activate()
+            let reconnected = await remote.remoteConversations(from: localTicket.id)?.contains { $0.id == localID } == true
+            await center.remove(remoteTicket.id)
+            let revoked = await remote.remoteConversations(from: localTicket.id) == nil
+            await center.pause()
+            await remote.pause()
+            finish(["defaultOff": defaultsOff, "nativeReadBack": nativeReadBack, "reverseReadBack": otherReadBack,
+                    "repeatedImport": duplicate, "settingsShown": settingsShown, "revocation": revoked,
+                    "reconnectedWithoutPairingAgain": reconnected])
+        } catch {
+            await center.pause()
+            finish(["finished": false, "error": String(describing: type(of: error))])
         }
     }
 

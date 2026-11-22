@@ -27,7 +27,7 @@
 		0F3D0039DDD02FEB3173A223 /* BridgeAbsoluteFileRead.swift in Sources */ = {isa = PBXBuildFile; fileRef = F46E3F3B74713493EDED60CE /* BridgeAbsoluteFileRead.swift */; };
 		0FF4F88A7B7F70B69D2B87F9 /* MacWorkbenchSkillsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEC2986262207C41DB3812A4 /* MacWorkbenchSkillsView.swift */; };
 		118B9A6913854D1ED370D45C /* SearchProviderCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67D55414F0827E62C8E8F79 /* SearchProviderCatalog.swift */; };
-		1281768E1D776ADEB5B57FCB /* FloeCanvasTemplates in Frameworks */ = {isa = PBXBuildFile; productRef = FAEC36724F92BAEEA5D3A60A /* FloeCanvasTemplates */; };
+		1281768E1D776ADEB5B57FCB /* FloeCanvasIntegration in Frameworks */ = {isa = PBXBuildFile; productRef = 1F7520E225F916F56E57CC1B /* FloeCanvasIntegration */; };
 		1291244649F5BB8366A065FE /* BridgeWorkspaceTransferPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD24B6E2B20C6C8879CF2C4E /* BridgeWorkspaceTransferPolicy.swift */; };
 		12B5E17E0C95F1FCD3BC6F33 /* BridgeHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 208EF31199397B1993286E07 /* BridgeHTTPServer.swift */; };
 		12FE62E6D843D2E78A1F23B0 /* MacNativeCommandPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07649B19058ED43D09CFA4A /* MacNativeCommandPolicy.swift */; };
@@ -77,6 +77,7 @@
 		3D92DF7A66FBF665D58DC999 /* TaskHistoryPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD421AEB51F30EDF75E32FB /* TaskHistoryPresentation.swift */; };
 		433B8C413D6597E5998EA9AC /* MacRemoteConnectionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27FC9EC242B1419FD75A59AB /* MacRemoteConnectionsView.swift */; };
 		436EC702B047D752DFE4FF40 /* BridgeJobs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92EB0CE2A06FF0D2C8B14ABF /* BridgeJobs.swift */; };
+		438151B608B03D15ADE07252 /* FloeCanvasTemplatesUI in Frameworks */ = {isa = PBXBuildFile; productRef = 213D2922B53F1C5EF7C4CD77 /* FloeCanvasTemplatesUI */; };
 		43AE2EC324C1BEBCAB078089 /* MacAuxiliaryModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE1275EF672559ABA635853 /* MacAuxiliaryModelsView.swift */; };
 		456FC72765A7DE5FBAD4959C /* BridgeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74AFD277E0611BE7C61FA36A /* BridgeService.swift */; };
 		460A34D6CDF04E600079737E /* BridgeAbsoluteFileRead.swift in Sources */ = {isa = PBXBuildFile; fileRef = F46E3F3B74713493EDED60CE /* BridgeAbsoluteFileRead.swift */; };
@@ -134,7 +135,7 @@
 		880CC6A99443A7C5DF49163E /* RunOutputFileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F15FDEABE49B428C3DF48B9 /* RunOutputFileView.swift */; };
 		8893E41D02F62BD46D1B030E /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C09FA9AA45BDAEAD397761 /* FloeTheme.swift */; };
 		88CBF833DF907C4AA4F0CB2B /* FixtureSandbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C972A1CD73913EA94584683 /* FixtureSandbox.swift */; };
-		896F59A72771B86CA3F86F0C /* FloeCanvasIntegration in Frameworks */ = {isa = PBXBuildFile; productRef = 1F7520E225F916F56E57CC1B /* FloeCanvasIntegration */; };
+		896F59A72771B86CA3F86F0C /* FloeCanvasCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1ADFB8FA3A1E14CF8DBE5EFA /* FloeCanvasCore */; };
 		89BCF6E499A9099EBF626F55 /* BridgeIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 509E4A335020226C70E1F566 /* BridgeIdentity.swift */; };
 		89DAD5B00A08113E7E91DC5E /* BridgeUpdateActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A648F3F1CF8B3B738DE0A119 /* BridgeUpdateActivity.swift */; };
 		8A1112397E69B5E496AE3561 /* MacTaskBrowserSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7AEBFFB5B1C4EDFE2B8CDA8 /* MacTaskBrowserSession.swift */; };
@@ -153,7 +154,7 @@
 		96F3D0EB05B1ED039E5CEE87 /* MacWorkspaceFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0E41AA8C8D64377647B155 /* MacWorkspaceFilesView.swift */; };
 		9756C39FCFD8412E4568CEB6 /* BridgeCapabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = E342249109D575285652FF85 /* BridgeCapabilities.swift */; };
 		97870DF19630A0061CBAA64D /* FloeBrand.png in Resources */ = {isa = PBXBuildFile; fileRef = 2D4485C44EC8025E06400AE3 /* FloeBrand.png */; };
-		98709B1AE79E7A039894039A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = DF56E6BCF371112F5A250970 /* ZIPFoundation */; };
+		98709B1AE79E7A039894039A /* FloeDeviceSync in Frameworks */ = {isa = PBXBuildFile; productRef = 3E438726EDEF67B279943676 /* FloeDeviceSync */; };
 		992B001DD3898503FA5FDC42 /* HostAgentDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52EB6F1FBCB4F78D26283FC1 /* HostAgentDatabase.swift */; };
 		99C4A311514AB8880CBE7C71 /* ServiceArguments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4FAD16C299535C7951FAF3 /* ServiceArguments.swift */; };
 		99ED4F404C1A94E9926B50BA /* ThreadEarlierActivityRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D93D3A7CAE153165579E9EA /* ThreadEarlierActivityRow.swift */; };
@@ -172,6 +173,7 @@
 		A8728B9529FBBC07FCAD0E53 /* ErrorEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4F40E0B29C0C14A90B7316 /* ErrorEventView.swift */; };
 		A99847923BA29B40BC35EA3E /* FixtureSandbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C972A1CD73913EA94584683 /* FixtureSandbox.swift */; };
 		AB22C554C4AA22582BAACDF5 /* MacImageGeneration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10B9BA421EC847B74F9A4258 /* MacImageGeneration.swift */; };
+		AB233F5EAC50EED4C3CA3913 /* Iroh-FFI-APACHE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0F3DC1FB2B33BE11B7AB8EF9 /* Iroh-FFI-APACHE.txt */; };
 		AB2529C4F7EAC5F8489FDE81 /* MacWorkbenchSkills.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2AB22BB6B4171CE2DC3D89 /* MacWorkbenchSkills.swift */; };
 		AC48E16FE34BBD64E11D0793 /* ComposerDraftTextRevisions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26217F501D0A1ED2FFEB8221 /* ComposerDraftTextRevisions.swift */; };
 		AC8BE57429FA77173006DF8C /* MacQuestionHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FFFAB59E01717D5FB145D41 /* MacQuestionHistoryView.swift */; };
@@ -203,11 +205,12 @@
 		D168282587B3A8AA0FD3D08B /* FloeTaskActivityRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B01BD5383D76B30B5B44F89 /* FloeTaskActivityRows.swift */; };
 		D2FC991018483F18E00503B1 /* MacNativeShellTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28877918BFBA665B730F135E /* MacNativeShellTool.swift */; };
 		D38C5CCFD803477C3D3886CD /* BridgeConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A583838B33A00947EEDB8092 /* BridgeConfiguration.swift */; };
+		D50CA8553DE347D1C493365A /* Iroh-FFI-MIT.txt in Resources */ = {isa = PBXBuildFile; fileRef = 493F6D40AF1EF3959781DF8B /* Iroh-FFI-MIT.txt */; };
 		D581E00160FB882697BBA25E /* MacRemoteConnections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DD579188556BF725E477D0F /* MacRemoteConnections.swift */; };
 		DB86E17BA42F9C476BE68734 /* BridgeStoreLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1D86F60F44E86D9CAC37E1 /* BridgeStoreLock.swift */; };
 		DC31A64C5C40002C4030A7BD /* MacTaskScheduleCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD8B53C2B5D2FA7F996183B /* MacTaskScheduleCenter.swift */; };
 		DC38655A407BEF8B5F36AAA0 /* CanvasFrameworkProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEDEF8D66D039E3D6314AC3D /* CanvasFrameworkProjection.swift */; };
-		DD29E95EDFC193F9CC6FE23A /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A2CC7F387AB6E44C77104109 /* Sparkle */; };
+		DD29E95EDFC193F9CC6FE23A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = DF56E6BCF371112F5A250970 /* ZIPFoundation */; };
 		DDFC58152CCE87D945837C14 /* MacTemporaryChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04F7C278DA8899C63BD6F71 /* MacTemporaryChat.swift */; };
 		DE0C77116986CCB1E65F824A /* BridgePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8DE76D3EBE56F86A1BA84A6 /* BridgePaths.swift */; };
 		DE6E7D1A724A70D4D25C06A8 /* MacAgentWorkspaceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71ED0F3A41EB9A170FE0BBE0 /* MacAgentWorkspaceTools.swift */; };
@@ -222,8 +225,8 @@
 		E64BB5B1E17158510F354376 /* MacWorkspaceDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 227F57DC81BD43C84C23EA63 /* MacWorkspaceDraftStore.swift */; };
 		E727EF64A97E1440E879938D /* ProviderCatalogAddView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 292E60246E0393AB312396AC /* ProviderCatalogAddView.swift */; };
 		E7C79EA76C805CB8AA95A044 /* MacWorkspaceFileOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03846677D4E4E8AC553A4C9B /* MacWorkspaceFileOperations.swift */; };
-		E94892F1DB1B03830F8EFEF5 /* FloeCanvasTemplatesUI in Frameworks */ = {isa = PBXBuildFile; productRef = 213D2922B53F1C5EF7C4CD77 /* FloeCanvasTemplatesUI */; };
-		E9CCD23139FB9F67C128E072 /* FloeCanvasCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1ADFB8FA3A1E14CF8DBE5EFA /* FloeCanvasCore */; };
+		E94892F1DB1B03830F8EFEF5 /* FloeCanvasTemplates in Frameworks */ = {isa = PBXBuildFile; productRef = FAEC36724F92BAEEA5D3A60A /* FloeCanvasTemplates */; };
+		E9CCD23139FB9F67C128E072 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A2CC7F387AB6E44C77104109 /* Sparkle */; };
 		EA534D5E422E8C388CDF4AE9 /* HostChildSubagentController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4712CA524DCBF978F4624B88 /* HostChildSubagentController.swift */; };
 		EE0AAE65E5526B4D81B71042 /* ThreadSearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5269EB675AE09ADB301AE81 /* ThreadSearchBar.swift */; };
 		EE82BA4D7740DDCFA4C20D80 /* BridgeServiceRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6502E6BD209EFE21D6681A50 /* BridgeServiceRuntime.swift */; };
@@ -276,6 +279,7 @@
 		0CEF1CCEF87420BABFFDE864 /* HostAgentQuestion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAgentQuestion.swift; sourceTree = "<group>"; };
 		0E117F9B1DFE833DFA4D6543 /* MoonshotSearchOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonshotSearchOptions.swift; sourceTree = "<group>"; };
 		0E4F40E0B29C0C14A90B7316 /* ErrorEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorEventView.swift; sourceTree = "<group>"; };
+		0F3DC1FB2B33BE11B7AB8EF9 /* Iroh-FFI-APACHE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Iroh-FFI-APACHE.txt"; sourceTree = "<group>"; };
 		0FFBF3AE007339AD4615736D /* BridgeSafeFileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeSafeFileSystem.swift; sourceTree = "<group>"; };
 		10B9BA421EC847B74F9A4258 /* MacImageGeneration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacImageGeneration.swift; sourceTree = "<group>"; };
 		10BA99B795C22C2FB0647128 /* MacWorkspaceTextMutation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWorkspaceTextMutation.swift; sourceTree = "<group>"; };
@@ -326,6 +330,7 @@
 		4712CA524DCBF978F4624B88 /* HostChildSubagentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostChildSubagentController.swift; sourceTree = "<group>"; };
 		475CED61013FB9BDAC7763F7 /* NetworkStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkStatusMonitor.swift; sourceTree = "<group>"; };
 		477E645468BE1A34C11B253B /* FloeMacBridgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeMacBridgeApp.swift; sourceTree = "<group>"; };
+		493F6D40AF1EF3959781DF8B /* Iroh-FFI-MIT.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Iroh-FFI-MIT.txt"; sourceTree = "<group>"; };
 		4B71C6ED51082B64D7A259C2 /* ApprovalCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalCardView.swift; sourceTree = "<group>"; };
 		4CD421AEB51F30EDF75E32FB /* TaskHistoryPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskHistoryPresentation.swift; sourceTree = "<group>"; };
 		4CE38C06CC8FD8D5BCB1045B /* HostProviderAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProviderAccount.swift; sourceTree = "<group>"; };
@@ -354,6 +359,7 @@
 		6908564F49345ECD728FF539 /* ThreadTranscriptViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTranscriptViewport.swift; sourceTree = "<group>"; };
 		6970ADA9A8A6A23789269EB5 /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
 		69A3BAE3298CED494FA61C10 /* MacVideoGeneration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacVideoGeneration.swift; sourceTree = "<group>"; };
+		6D3B1210EB707706E399522A /* FloeDeviceLink */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeDeviceLink; path = ../FloeDeviceLink; sourceTree = SOURCE_ROOT; };
 		6DEB5C7FC678EE5139D25AC2 /* MacICloudModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacICloudModelsView.swift; sourceTree = "<group>"; };
 		6F1D006608C2CCC3FCC6B459 /* MacCreativeLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacCreativeLibrary.swift; sourceTree = "<group>"; };
 		6F69B4D24F68532B3C268076 /* MacTaskVideoOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacTaskVideoOwner.swift; sourceTree = "<group>"; };
@@ -481,12 +487,13 @@
 				1441ED6BDCA1923C35B98602 /* FloeMacToolbox in Frameworks */,
 				9391786C69E4EBB0E41CE750 /* FloeMacSelfCore in Frameworks */,
 				8D39B060E3FBBDD20EAA41F1 /* libFloeMacBridgeProtocolKit.a in Frameworks */,
-				98709B1AE79E7A039894039A /* ZIPFoundation in Frameworks */,
-				DD29E95EDFC193F9CC6FE23A /* Sparkle in Frameworks */,
-				E9CCD23139FB9F67C128E072 /* FloeCanvasCore in Frameworks */,
-				896F59A72771B86CA3F86F0C /* FloeCanvasIntegration in Frameworks */,
-				1281768E1D776ADEB5B57FCB /* FloeCanvasTemplates in Frameworks */,
-				E94892F1DB1B03830F8EFEF5 /* FloeCanvasTemplatesUI in Frameworks */,
+				98709B1AE79E7A039894039A /* FloeDeviceSync in Frameworks */,
+				DD29E95EDFC193F9CC6FE23A /* ZIPFoundation in Frameworks */,
+				E9CCD23139FB9F67C128E072 /* Sparkle in Frameworks */,
+				896F59A72771B86CA3F86F0C /* FloeCanvasCore in Frameworks */,
+				1281768E1D776ADEB5B57FCB /* FloeCanvasIntegration in Frameworks */,
+				E94892F1DB1B03830F8EFEF5 /* FloeCanvasTemplates in Frameworks */,
+				438151B608B03D15ADE07252 /* FloeCanvasTemplatesUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -913,6 +920,8 @@
 		BF4B87FF49885C4957A4DE8E /* Licenses */ = {
 			isa = PBXGroup;
 			children = (
+				0F3DC1FB2B33BE11B7AB8EF9 /* Iroh-FFI-APACHE.txt */,
+				493F6D40AF1EF3959781DF8B /* Iroh-FFI-MIT.txt */,
 				58C4E62E37B0D4DAFFB538C9 /* ZIPFoundation.txt */,
 			);
 			path = Licenses;
@@ -969,6 +978,7 @@
 			children = (
 				F2E704A1A691AA0F8DD8CFD0 /* FloeCanvasKit */,
 				75DA55185FB577224525F9CA /* FloeCanvasTemplates */,
+				6D3B1210EB707706E399522A /* FloeDeviceLink */,
 				D33A481D04236B7E33271F5D /* FloeMacSelfCore */,
 				54DEFD9DF0B49531696C1455 /* FloeMacToolbox */,
 			);
@@ -1097,6 +1107,7 @@
 			packageProductDependencies = (
 				38B92699B9D9E56596E9ABAB /* FloeMacToolbox */,
 				DDD538C5EDC2908F0096ACAC /* FloeMacSelfCore */,
+				3E438726EDEF67B279943676 /* FloeDeviceSync */,
 				DF56E6BCF371112F5A250970 /* ZIPFoundation */,
 				A2CC7F387AB6E44C77104109 /* Sparkle */,
 				1ADFB8FA3A1E14CF8DBE5EFA /* FloeCanvasCore */,
@@ -1153,6 +1164,7 @@
 				0C796EED5F94650581D26ED1 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 				70792A2959B73D0BF8035CE0 /* XCLocalSwiftPackageReference "../FloeAgent/Modules/FloeCanvasKit" */,
 				A5489255344A34991ED39EFF /* XCLocalSwiftPackageReference "../FloeAgent/Modules/FloeCanvasTemplates" */,
+				A71D779A35470CD6E52E4154 /* XCLocalSwiftPackageReference "../FloeDeviceLink" */,
 				86AB20D9A136639678FD63CB /* XCLocalSwiftPackageReference "../FloeMacSelfCore" */,
 				758A92DFA01C24E74DC6B968 /* XCLocalSwiftPackageReference "Packages/FloeMacToolbox" */,
 			);
@@ -1189,6 +1201,8 @@
 				04D9A78F385D0AFC8331E067 /* FloeBridgeIcon.png in Resources */,
 				642134207B98C672F56153F7 /* InfoPlist.strings in Resources */,
 				56AE69180768D2B17A96D516 /* InfoPlist.strings in Resources */,
+				AB233F5EAC50EED4C3CA3913 /* Iroh-FFI-APACHE.txt in Resources */,
+				D50CA8553DE347D1C493365A /* Iroh-FFI-MIT.txt in Resources */,
 				BE20BAF1001DD88605D73598 /* Localizable.strings in Resources */,
 				5A87FBF51BF3E69808341B44 /* Localizable.strings in Resources */,
 				B9F6D6BE4847C02A870A6E3A /* ProviderCatalog.json in Resources */,
@@ -1985,6 +1999,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../FloeAgent/Modules/FloeCanvasTemplates;
 		};
+		A71D779A35470CD6E52E4154 /* XCLocalSwiftPackageReference "../FloeDeviceLink" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../FloeDeviceLink;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -2022,6 +2040,10 @@
 		38B92699B9D9E56596E9ABAB /* FloeMacToolbox */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeMacToolbox;
+		};
+		3E438726EDEF67B279943676 /* FloeDeviceSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeDeviceSync;
 		};
 		A2CC7F387AB6E44C77104109 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;

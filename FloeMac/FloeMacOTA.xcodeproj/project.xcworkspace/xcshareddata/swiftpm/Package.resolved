@@ -1,5 +1,5 @@
 {
-  "originHash" : "eb8766206ff034b65e7c3dac0f7082d9917a84cceb6c7cabd63dc645ad0b2ff9",
+  "originHash" : "f3cf30e5892420f30def38cf080a203ab2679df372059ae781f95a66380ad38c",
   "pins" : [
     {
       "identity" : "cryptoswift",
@@ -25,6 +25,15 @@
       "state" : {
         "revision" : "aa3626829160917d4378330617971977cbd78f5b",
         "version" : "1.0.1"
+      }
+    },
+    {
+      "identity" : "iroh-ffi",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/n0-computer/iroh-ffi.git",
+      "state" : {
+        "revision" : "66a8d619a4d791d458d582f312df6e0ab42bc541",
+        "version" : "1.2.0"
       }
     },
     {

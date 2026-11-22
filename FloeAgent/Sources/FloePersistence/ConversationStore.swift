@@ -985,18 +985,15 @@ public actor SQLiteConversationStore: ConversationStore {
     }
 
     private static func portableDeviceMessage(_ row: Row, id: UUID, parts: [MessagePart]) throws -> DeviceConversationHistory.Message {
-        guard let owner = UUID(uuidString: row["conversation_id"]) else {
+        guard UUID(uuidString: row["conversation_id"]) != nil else {
             throw DeviceConversationHistoryError.invalidHistory
         }
-        let message = PersistedMessage(id: id, conversationID: owner, role: row["role"], content: row["content"],
-                                       createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: parts)
-        let exportedConfirmation = TranscriptDesignConfirmation.exportContent(for: message)
-        let safeParts: [DeviceConversationHistory.TextPart] = exportedConfirmation == nil ? parts.compactMap {
+        let safeParts: [DeviceConversationHistory.TextPart] = parts.compactMap {
             guard $0.kind == .text, let text = $0.text else { return nil }
             return .init(id: $0.id, index: $0.partIndex, text: SecretRedactor.redact(text), createdAt: $0.createdAt)
-        } : []
-        return .init(id: id, role: message.role, content: SecretRedactor.redact(exportedConfirmation ?? message.content),
-                     createdAt: message.createdAt, parts: safeParts)
+        }
+        return .init(id: id, role: row["role"], content: SecretRedactor.redact(row["content"]),
+                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: safeParts)
     }
 
     public func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {

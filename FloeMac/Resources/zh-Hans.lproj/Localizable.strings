@@ -738,6 +738,7 @@
 "mac.settings.webSearch" = "网页搜索";
 "mac.settings.skills" = "技能";
 "mac.settings.connectors" = "连接器";
+"mac.settings.deviceSync" = "设备同步";
 "mac.settings.diagnostics" = "诊断";
 "mac.settings.toolsUnavailable" = "工具暂不可用";
 "mac.settings.appVersion" = "App 版本";

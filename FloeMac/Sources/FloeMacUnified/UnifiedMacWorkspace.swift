@@ -2,9 +2,11 @@
 
 import AppKit
 import Combine
+import FloeDeviceSync
 import FloeMacSelfCore
 import FloeMacToolbox
 import FloeModels
+import FloeSecurity
 import FloeTools
 import SwiftUI
 
@@ -150,6 +152,38 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
             }
             agent = workspace
             let directory = try? HostAgentDatabase.prepareStorageDirectory(applicationSupport: root, namespace: namespace)
+            if let directory {
+                let vault = KeychainStore(service: namespace + ".device-sync", synchronizable: false,
+                                          accessibility: .afterFirstUnlockThisDeviceOnly)
+                let account = "endpoint-identity-v1"
+                let identity: DeviceHistoryIdentityStorage
+                if testSupport == nil {
+                    identity = .init(load: {
+                        do { return try vault.read(account: account) }
+                        catch KeychainStoreError.itemNotFound { return nil }
+                    }, save: { try vault.store(account: account, secret: $0) })
+                } else {
+                    let fixtureKey = directory.appendingPathComponent("DeviceSync-fixture.key")
+                    identity = .init(load: { try? Data(contentsOf: fixtureKey) },
+                                     save: { try $0.write(to: fixtureKey, options: .atomic) })
+                }
+                let sync = DeviceHistorySyncCenter(
+                    settingsURL: directory.appendingPathComponent("DeviceSync/settings.json"),
+                    identityStorage: identity,
+                    source: .init(list: { [weak workspace] shared in
+                        await workspace?.deviceHistoryOffers(shared: shared) ?? []
+                    }, export: { [weak workspace] id in
+                        guard let workspace else { throw CocoaError(.userCancelled) }
+                        return try await workspace.exportDeviceHistory(id)
+                    }),
+                    localTasks: { [weak workspace] in workspace?.deviceHistoryOffers() ?? [] },
+                    importHistory: { [weak workspace] id, data in
+                        guard let workspace else { throw CocoaError(.userCancelled) }
+                        return try await workspace.receiveDeviceHistory(id, data)
+                    }
+                )
+                workspace.deviceHistorySync = sync
+            }
             if let directory, let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
                 let catalogs = FloeMacOfficialCatalogs(root: directory.appendingPathComponent("ProviderCatalogs", isDirectory: true),
                                                        appVersion: version)
@@ -352,6 +386,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         agent.cancelModelDiscovery()
         guard await closeToolbox(promptForScannerDraft: true) else { return false }
         guard await closeTaskTerminals() else { throw CloseError.agentBusy }
+        await agent.deviceHistorySync?.pause()
         await agent.workbenchConnectors?.disconnect()
         do { try await agent.finishTermination() }
         catch { throw CloseError.runtimeCloseFailed }

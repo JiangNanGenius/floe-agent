@@ -6,6 +6,8 @@ include:
 name: FloeMacOTA
 
 packages:
+  FloeDeviceLink:
+    path: ../FloeDeviceLink
   FloeCanvasKit:
     path: ../FloeAgent/Modules/FloeCanvasKit
   FloeCanvasTemplates:
@@ -86,6 +88,8 @@ targets:
       - path: ../FloeAgent/FloeApp/Resources/SearchProviderCatalog.json
       - path: ../FloeAgent/FloeApp/Resources/ProviderCatalog.json
       - path: Resources/Licenses/ZIPFoundation.txt
+      - path: Resources/Licenses/Iroh-FFI-APACHE.txt
+      - path: Resources/Licenses/Iroh-FFI-MIT.txt
       - path: Resources/en.lproj/Localizable.strings
       - path: Resources/zh-Hans.lproj/Localizable.strings
       - path: Resources/en.lproj/InfoPlist.strings
@@ -116,6 +120,8 @@ targets:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FLOE_UNIFIED_MAC FLOE_MAC_HOST_SMOKE"
     dependencies:
+      - package: FloeDeviceLink
+        product: FloeDeviceSync
       - package: ZIPFoundation
         product: ZIPFoundation
       - package: Sparkle

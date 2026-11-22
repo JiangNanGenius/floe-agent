@@ -4,6 +4,7 @@ import AppKit
 import FloeMacBridgeProtocol
 #if FLOE_UNIFIED_MAC
 import FloeCore
+import FloeDeviceSync
 import FloeMacToolbox
 #endif
 
@@ -144,7 +145,7 @@ private struct BridgeMenuView: View {
 @MainActor
 final class BridgeAppModel: ObservableObject {
     enum SettingsPane: String, CaseIterable {
-        case general, models, auxiliary, webSearch, skills, connectors, usage, permissions, diagnostics, bridge
+        case general, models, auxiliary, webSearch, skills, connectors, deviceSync, usage, permissions, diagnostics, bridge
     }
 
     @Published var error: String?
@@ -194,6 +195,7 @@ final class BridgeAppModel: ObservableObject {
     var smokePort: UInt16? { server?.boundPort }
     var smokeSettingsFrames: [SettingsPane: CGRect] = [:]
     var smokeSettingsBackFrame: CGRect?
+    var smokeDeviceSyncMounted = false
     var smokeSettingsWindow: NSWindow? { settingsWindow }
     var smokeAgentSettingsSheet: NSWindow? { macWorkspace?.settingsSheet }
     private(set) var smokeSwitchFrame: CGRect?
@@ -803,6 +805,16 @@ private struct UnifiedMacSettingsView: View {
             }
         case .permissions:
             MacPermissionsSettingsView(workspace: workspace, bridge: model)
+        case .deviceSync:
+            if let center = workspace.deviceHistorySync {
+                DeviceHistorySyncSettings(center: center)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .onAppear { model.smokeDeviceSyncMounted = true }
+                    .onDisappear { model.smokeDeviceSyncMounted = false }
+                    #endif
+            } else {
+                ContentUnavailableView("mac.settings.toolsUnavailable", systemImage: "arrow.triangle.2.circlepath")
+            }
         case .diagnostics:
             MacWorkbenchDiagnosticsView(workspace: workspace)
         case .bridge:
@@ -913,6 +925,7 @@ private extension BridgeAppModel.SettingsPane {
         case .skills: "mac.settings.skills"
         case .connectors: "mac.settings.connectors"
         case .permissions: "Permissions"
+        case .deviceSync: "mac.settings.deviceSync"
         case .diagnostics: "mac.settings.diagnostics"
         case .bridge: "host.role.bridge"
         }
@@ -928,6 +941,7 @@ private extension BridgeAppModel.SettingsPane {
         case .skills: "技能 技能库 Skills Catalog"
         case .connectors: "连接器 外部工具 MCP Connectors tools"
         case .permissions: "权限 审批 自动审批 完全访问 命令 执行 屏幕录制 辅助功能 磁盘 Kimi CU Permissions approvals command access disk screen"
+        case .deviceSync: "跨设备同步 配对 会话同步 设备 Device Sync Pairing Conversation History"
         case .diagnostics: "诊断 版本 本地数据 Diagnostics version storage"
         case .bridge: "桥接 配对 更新 存储 Bridge pairing updates storage OTA"
         }
@@ -943,6 +957,7 @@ private extension BridgeAppModel.SettingsPane {
         case .skills: "shippingbox"
         case .connectors: "point.3.connected.trianglepath.dotted"
         case .permissions: "checkmark.shield"
+        case .deviceSync: "arrow.triangle.2.circlepath"
         case .diagnostics: "stethoscope"
         case .bridge: "server.rack"
         }

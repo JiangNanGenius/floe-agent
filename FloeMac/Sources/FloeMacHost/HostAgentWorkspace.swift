@@ -11,6 +11,7 @@ import FloeSecurity
 import Foundation
 import UniformTypeIdentifiers
 #if FLOE_UNIFIED_MAC
+import FloeDeviceSync
 import FloeSkills
 import FloeTools
 import LocalAuthentication
@@ -614,6 +615,7 @@ final class HostAgentWorkspace: ObservableObject {
     var makeTaskBrowserTools: ((UUID, URL) -> [AnyAgentTool])?
     var workbenchSkills: MacWorkbenchSkillsService?
     var workbenchConnectors: MacWorkbenchConnectorsService?
+    var deviceHistorySync: DeviceHistorySyncCenter?
     var endTaskBrowserRun: ((UUID) -> Void)?
     let webSearch: MacSearchSettings
     private let networkStatus = NetworkStatusMonitor()
@@ -1039,6 +1041,10 @@ final class HostAgentWorkspace: ObservableObject {
             restoreStagedAttachments(for: selectedID)
             reloadProviders()
             #if FLOE_UNIFIED_MAC
+            Task { [weak self] in
+                guard let self, !self.isTerminating else { return }
+                await self.deviceHistorySync?.activate()
+            }
             if let store = try? await runtime.taskScheduleStore() {
                 taskSchedules.bind(store: store, workspace: self)
             }
@@ -2229,6 +2235,46 @@ final class HostAgentWorkspace: ObservableObject {
     func installedSkillStore() async throws -> SQLiteSkillStore {
         guard let runtime, isReady, !isTerminating else { throw CocoaError(.userCancelled) }
         return try await runtime.installedSkillStore()
+    }
+
+    func deviceHistoryOffers(shared: Set<UUID>? = nil) -> [DeviceHistoryOffer] {
+        guard isReady, !isTerminating else { return [] }
+        return conversations.compactMap { task in
+            guard task.isVisibleInOrdinaryList, shared?.contains(task.id) != false else { return nil }
+            let title = String(SecretRedactor.redact(task.title).prefix(256))
+            guard !title.isEmpty else { return nil }
+            return DeviceHistoryOffer(id: task.id, title: title)
+        }
+    }
+
+    func exportDeviceHistory(_ id: UUID) async throws -> Data {
+        guard isReady, !isTerminating, let runtime, let release = admit() else { throw CocoaError(.userCancelled) }
+        defer { release() }
+        return try await runtime.deviceHistory(conversationID: id).encoded()
+    }
+
+    func receiveDeviceHistory(_ id: UUID, _ data: Data) async throws -> Int {
+        guard isReady, !isTerminating, let runtime, liveRuns[id] == nil,
+              !changingTasks.contains(id), let release = admit() else {
+            throw DeviceHistorySyncError.busy
+        }
+        changingTasks.insert(id)
+        defer {
+            changingTasks.remove(id)
+            release()
+        }
+        let history = try DeviceConversationHistory(data: data)
+        guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
+        do {
+            let result = try await runtime.importDeviceHistory(history)
+            try await reloadConversations(using: runtime)
+            if selectedID == id, result.addedMessages > 0 {
+                try await refreshTranscript(for: id, runtime: runtime)
+            }
+            return result.addedMessages
+        } catch DeviceConversationHistoryError.messageConflict {
+            throw DeviceHistorySyncError.conflict
+        }
     }
 
     private static func skillTools(for service: MacWorkbenchSkillsService, allowsNetwork: Bool) -> [AnyAgentTool] {
