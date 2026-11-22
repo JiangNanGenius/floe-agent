@@ -5,6 +5,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
+import FloeDeviceSync
 import FloeSyncCore
 import LocalAuthentication
 
@@ -29,6 +30,19 @@ struct SyncSettingsView: View {
 
     var body: some View {
         Form {
+            if center.environment.persistenceReady, let host = center.environment.deviceHistorySync {
+                Section {
+                    NavigationLink {
+                        DeviceHistorySyncSettings(center: host.center)
+                            .navigationTitle(Text("settings.sync.device_history"))
+                    } label: {
+                        Label("settings.sync.device_history", systemImage: "arrow.left.arrow.right")
+                            .frame(minHeight: FloeTheme.minimumTarget)
+                    }
+                    .accessibilityIdentifier("settings.sync.device_history")
+                }
+            }
+
             Section {
                 Toggle("settings.sync.enabled", isOn: Binding(
                     get: { center.overallSyncEnabled },

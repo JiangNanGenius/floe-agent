@@ -1560,6 +1560,7 @@
 		9E44BE6879B0750AB8EE5AD0 /* LaTeXAppComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = D260A58D68E1B3F18E7874F2 /* LaTeXAppComposition.swift */; };
 		9E4D43108160B5CE964A1C81 /* OfficeSavedCoverRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 914081EBFB2858519B452F9A /* OfficeSavedCoverRenderer.swift */; };
 		9E6877ACC73B9821BC07DBC8 /* CatastrophicGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1088CF206AB9F1D4328D840A /* CatastrophicGateTests.swift */; };
+		9E776EF3871ECA7AC85B499F /* FloeDeviceSync in Frameworks */ = {isa = PBXBuildFile; productRef = 45FC212763EC35DBD38272A0 /* FloeDeviceSync */; };
 		9E8B07F73029C340C3F5D85C /* MediaWorkbenchUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7296CA58458A64E2B4DFA6EE /* MediaWorkbenchUITests.swift */; };
 		9E91FBEB4CF6E7EAFCC3C8E9 /* GuestPythonRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 418AD92B65BA11E89E2A9914 /* GuestPythonRuntimeTests.swift */; };
 		9ED4490B238D72162E3690E2 /* TransientHeat05Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3208658C51BFA157CFE00F9B /* TransientHeat05Tests.swift */; };
@@ -2075,6 +2076,7 @@
 		D0CDD881C4931F1DB5358E7B /* OfficeEmbeddedWorkbookPreservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E52F7718CFE57A0FDF8DC3 /* OfficeEmbeddedWorkbookPreservationTests.swift */; };
 		D0DAAB9E68EB5B29291D431B /* GameDeveloperBridgeFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40197D7F50054476B2A35E4B /* GameDeveloperBridgeFactory.swift */; };
 		D0DCE96CCC9A0EDC009517BA /* StorageOptimizationDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A48308CA64AE344280431941 /* StorageOptimizationDiagnosticsTests.swift */; };
+		D10CE7BC6CAE1BD68F71C572 /* DeviceHistorySyncHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE19D733AE60B2067ADE88 /* DeviceHistorySyncHost.swift */; };
 		D10D86DCB27628502FAEAB55 /* TaskBulkManagementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9027C00BA41093FFD8EAD44B /* TaskBulkManagementTests.swift */; };
 		D110F879A203E5F554677EC9 /* SystemAlarmTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34E36CA6626336279B885AD8 /* SystemAlarmTool.swift */; };
 		D12836A21F064A9592C176DE /* SkillAuthoringAppBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = A32693EEDC21CED742F3860D /* SkillAuthoringAppBackend.swift */; };
@@ -3205,6 +3207,7 @@
 		42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeView.swift; sourceTree = "<group>"; };
 		431076A7A91A1A4A8E10135C /* WorkURLLaunchRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkURLLaunchRoutingTests.swift; sourceTree = "<group>"; };
 		4350479F23AE12A0BF8D0D82 /* DesignEntryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEntryPolicyTests.swift; sourceTree = "<group>"; };
+		436AAB1EA2DE2124C54FE42F /* FloeDeviceLink */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeDeviceLink; path = ../FloeDeviceLink; sourceTree = SOURCE_ROOT; };
 		436B2C5C853B7C60DCEF2059 /* ApprovalModelBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalModelBackend.swift; sourceTree = "<group>"; };
 		43723967DE78A30C51888931 /* MediaV2AnimationInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaV2AnimationInspector.swift; sourceTree = "<group>"; };
 		43BFCD6413106A816075C6B0 /* LinuxGuestProcessEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxGuestProcessEnvironmentTests.swift; sourceTree = "<group>"; };
@@ -4329,6 +4332,7 @@
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
 		C4D47253980A89D11CA1CC6F /* EditorInputOwnership.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorInputOwnership.swift; sourceTree = "<group>"; };
 		C4D8BC401607FC0508CCFB17 /* ko */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = ko; path = ko.lproj/FloeUserAgreement.md; sourceTree = "<group>"; };
+		C4DE19D733AE60B2067ADE88 /* DeviceHistorySyncHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceHistorySyncHost.swift; sourceTree = "<group>"; };
 		C4FC7E75E93AD39ED2D2318C /* HelpAgentToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpAgentToolTests.swift; sourceTree = "<group>"; };
 		C52FA14D37F55D94DA9C3B41 /* HelpRelatedHelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpRelatedHelpView.swift; sourceTree = "<group>"; };
 		C5306540934CBA39F1F574E4 /* MacMetalCacheLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMetalCacheLocation.swift; sourceTree = "<group>"; };
@@ -5066,6 +5070,7 @@
 				2CB8FA53B6F4AD62E834E572 /* FloeGit in Frameworks */,
 				3404E9068ED5ED1F8A7E33C8 /* FloeLocalModels in Frameworks */,
 				6E637C52ED9723A8BAFF1B93 /* FloeShellEngine in Frameworks */,
+				9E776EF3871ECA7AC85B499F /* FloeDeviceSync in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -6917,6 +6922,7 @@
 				A7A5F2275DCABC7DDA74B914 /* ContentUpdatesSettingsView.swift */,
 				0D2B7E13BD4AC38CDD17BD0D /* CoreAIModelInspection.swift */,
 				DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */,
+				C4DE19D733AE60B2067ADE88 /* DeviceHistorySyncHost.swift */,
 				67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */,
 				CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */,
 				36E68916820B033030E49814 /* DocumentRecoveryListView.swift */,
@@ -8131,6 +8137,7 @@
 				1C8CDF5B2FEEC818CF3EC7FA /* FloeCanvasKit */,
 				749ED3D4977EA57B48F01BE2 /* FloeCanvasTemplates */,
 				6C1663D13117FB62595032D6 /* FloeChemistryKit */,
+				436AAB1EA2DE2124C54FE42F /* FloeDeviceLink */,
 				D3883617FC464F2B014F2271 /* FloeDiagramKit */,
 				AFCD9B1A03AD97FB028D9B18 /* FloeElectronicsKit */,
 				72FC6B82909ECEDD0B595C12 /* FloeFontKit */,
@@ -8881,6 +8888,7 @@
 				E6A81719803BDDE4E13451F3 /* FloeGit */,
 				A0ED3E17200948E8978373F2 /* FloeLocalModels */,
 				923643E245C0A12DF9647622 /* FloeShellEngine */,
+				45FC212763EC35DBD38272A0 /* FloeDeviceSync */,
 			);
 			productName = FloeAgent;
 			productReference = 8D4157CD2630B494873F61E6 /* Floe Agent.app */;
@@ -9174,6 +9182,7 @@
 				58E861120BDA5523DE7AECB7 /* XCLocalSwiftPackageReference "Modules/FloeCanvasKit" */,
 				307DE82E681218E798AAB135 /* XCLocalSwiftPackageReference "Modules/FloeCanvasTemplates" */,
 				754B0FA7724BD3E71E013F00 /* XCLocalSwiftPackageReference "Modules/FloeChemistryKit" */,
+				95B9DE1FFB034AE3BCCA74AF /* XCLocalSwiftPackageReference "../FloeDeviceLink" */,
 				92E2B5A0876CCD7317B0ACC3 /* XCLocalSwiftPackageReference "Modules/FloeDiagramKit" */,
 				EC8C7E528BE1577930D56E70 /* XCLocalSwiftPackageReference "Modules/FloeElectronicsKit" */,
 				E55BB5FF5E879C6ADA23B7C8 /* XCLocalSwiftPackageReference "Modules/FloeFontKit" */,
@@ -9670,6 +9679,7 @@
 				9242D4AC57FB1A2D0D242AD5 /* DesignWorkflowFixture.swift in Sources */,
 				64C7876E6FD48478F53BB1FE /* DesignWorkflowPanel.swift in Sources */,
 				BEE09DF321378355A79E26BC /* DeviceFontStore.swift in Sources */,
+				D10CE7BC6CAE1BD68F71C572 /* DeviceHistorySyncHost.swift in Sources */,
 				D27117ADEB48A630EEF5C7E2 /* DiagnosticsAboutView.swift in Sources */,
 				E9E31F6E33B8B0EA398D33A9 /* DiagnosticsExporter.swift in Sources */,
 				1108F93F3CEE73E9893D390B /* DiffView.swift in Sources */,
@@ -12621,6 +12631,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Modules/FloeDiagramKit;
 		};
+		95B9DE1FFB034AE3BCCA74AF /* XCLocalSwiftPackageReference "../FloeDeviceLink" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../FloeDeviceLink;
+		};
 		9678EB01B9F239D58253982E /* XCLocalSwiftPackageReference "Modules/FloeMediaExchange" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Modules/FloeMediaExchange;
@@ -13001,6 +13015,10 @@
 		44CEBA29E3B42BC3D7A6B316 /* FloeMeetings */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeMeetings;
+		};
+		45FC212763EC35DBD38272A0 /* FloeDeviceSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeDeviceSync;
 		};
 		49C449FB8E83E8089840177A /* FloeScoreKit */ = {
 			isa = XCSwiftPackageProductDependency;

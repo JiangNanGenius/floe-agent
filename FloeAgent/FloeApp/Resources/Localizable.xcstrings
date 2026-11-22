@@ -316096,6 +316096,65 @@
         }
       }
     },
+    "settings.sync.device_history": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device Conversation Sync"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跨设备会话同步"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跨裝置對話同步"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デバイス間のチャット同期"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기기 간 대화 동기화"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Synchronisation des conversations entre appareils"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unterhaltungen zwischen Geräten synchronisieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sincronización de conversaciones entre dispositivos"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sincronização de conversas entre dispositivos"
+          }
+        }
+      }
+    },
     "settings.sync.enabled": {
       "extractionState": "manual",
       "localizations": {
@@ -316338,55 +316397,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The master switch controls all cross-device sync. Turning it off moves configured provider keys to this device's local Keychain and pauses CloudKit traffic."
+            "value": "Turning off iCloud sync pauses CloudKit sync and moves configured provider keys to this device’s Keychain."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "总开关控制全部跨设备同步。关闭后，已配置的供应商密钥会迁移到本机钥匙串，同时暂停 CloudKit 网络同步。"
+            "value": "关闭 iCloud 同步后，CloudKit 同步会暂停，已配置的供应商密钥会移到本机钥匙串。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "總開關控制全部跨裝置同步。關閉後，已配置的供應商金鑰會遷移到本機鑰匙串，同時暫停 CloudKit 網路同步。"
+            "value": "關閉 iCloud 同步後，CloudKit 同步會暫停，已設定的供應商金鑰會移到本機鑰匙圈。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "マスタースイッチはすべてのデバイス間同期を制御します。 オフにすると、設定されたプロバイダーキーがこのデバイスのローカルキーチェーンに移動し、CloudKit のトラフィックが一時停止します。"
+            "value": "iCloud 同期をオフにすると、CloudKit の同期が停止し、設定済みのプロバイダキーがこのデバイスのキーチェーンに移動します。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "마스터 스위치는 모든 장치 간 동기화를 제어합니다. 이를 끄면 구성된 제공자 키가 이 장치의 로컬 키체인으로 이동하고 CloudKit 트래픽이 일시 중지됩니다."
+            "value": "iCloud 동기화를 끄면 CloudKit 동기화가 일시 중지되고 설정된 제공업체 키가 이 기기의 키체인으로 이동합니다."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Le commutateur principal contrôle toute la synchronisation inter-appareils. En le désactivant, déplace les clés du fournisseur configurées vers le trousseau local de cet appareil et met en pause le trafic CloudKit."
+            "value": "Désactiver la synchronisation iCloud suspend la synchronisation CloudKit et déplace les clés des fournisseurs configurées vers le trousseau de cet appareil."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Der Hauptschalter steuert die gesamte geräteübergreifende Synchronisierung. Das Ausschalten verschiebt konfigurierte Anbieterschlüssel in den lokalen Schlüsselbund dieses Geräts und pausiert den CloudKit-Verkehr."
+            "value": "Wenn Sie die iCloud-Synchronisierung deaktivieren, wird die CloudKit-Synchronisierung pausiert und konfigurierte Anbieterschlüssel werden in den Schlüsselbund dieses Geräts verschoben."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El interruptor maestro controla toda la sincronización entre dispositivos. Apagarlo mueve las claves de proveedor configuradas al llavero local de este dispositivo y pausa el tráfico de CloudKit."
+            "value": "Al desactivar la sincronización con iCloud, se pausa la sincronización de CloudKit y las claves de proveedor configuradas se trasladan al llavero de este dispositivo."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "O interruptor mestre controla toda a sincronização entre dispositivos. Desligá-lo move as chaves do provedor configuradas para o Chaveiro local deste dispositivo e pausa o tráfego do CloudKit."
+            "value": "Desativar a sincronização com o iCloud pausa a sincronização do CloudKit e move as chaves de provedor configuradas para as Chaves deste dispositivo."
           }
         }
       }

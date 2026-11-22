@@ -21,6 +21,8 @@ options:
   generateEmptyDirectories: true
 
 packages:
+  FloeDeviceLink:
+    path: ../FloeDeviceLink
   FloeMacBridge:
     path: ../FloeMacBridge
   SpeechSwiftTTS:
@@ -386,7 +388,7 @@ targets:
         NSHealthShareUsageDescription: Floe reads the Health data you request after you authorize access.
         NSHealthUpdateUsageDescription: Floe only reads the Health data you authorize; it does not save or modify Health data.
         NFCReaderUsageDescription: Floe reads a nearby NFC tag when you request a scan.
-        NSLocalNetworkUsageDescription: Floe discovers nearby devices only when you start a local-network check or ask the assistant to do so.
+        NSLocalNetworkUsageDescription: Floe uses the local network to check for nearby devices on request and to sync selected conversations with devices you pair.
         NSBluetoothAlwaysUsageDescription: Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.
         NSContactsUsageDescription: Floe reads the contacts you ask it to find.
         NSAlarmKitUsageDescription: Floe schedules the alarms and timers you create in the app.
@@ -747,6 +749,8 @@ targets:
         embed: true
       - target: FloeFileProvider
         embed: true
+      - package: FloeDeviceLink
+        product: FloeDeviceSync
     postBuildScripts:
       - name: Embed verified native Office host
         script: /usr/bin/python3 -B "${SRCROOT}/scripts/embed_office_host.py"

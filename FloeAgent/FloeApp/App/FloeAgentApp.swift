@@ -108,6 +108,16 @@ struct FloeAgentApp: App {
             acceptedAgreement)
     }
 
+    private var deviceHistoryForeground: Bool? {
+        guard showsMainWindow, environment.persistenceReady else { return false }
+        switch applicationPhase {
+        case .active: return true
+        case .background: return false
+        case .inactive: return nil
+        @unknown default: return nil
+        }
+    }
+
     init() {
         MacMetalCacheLocation.prepare()
         // Apply the saved in-app language before any catalog lookup.
@@ -204,6 +214,9 @@ struct FloeAgentApp: App {
         // The App phase covers all windows, including the first-launch agreement.
         .onChange(of: applicationPhase, initial: true) { _, phase in
             UIApplication.shared.isIdleTimerDisabled = phase == .active || phase == .inactive
+        }
+        .onChange(of: deviceHistoryForeground, initial: true) { _, foreground in
+            if let foreground { environment.deviceHistorySync?.setForeground(foreground) }
         }
     }
 

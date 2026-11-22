@@ -163,7 +163,7 @@
 	<key>NSHomeKitUsageDescription</key>
 	<string>Floe accesses your Home only when you enable Home tools and request an automation action.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Floe discovers nearby devices only when you start a local-network check or ask the assistant to do so.</string>
+	<string>Floe uses the local network to check for nearby devices on request and to sync selected conversations with devices you pair.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Floe uses your location when you open the location toolbox or request weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.</string>
 	<key>NSMicrophoneUsageDescription</key>

@@ -107,6 +107,12 @@ final class AppEnvironment: ObservableObject {
 
     let database: DatabaseManager
     let conversationStore: any ConversationStore
+    private(set) lazy var deviceHistorySync: DeviceHistorySyncHost? = {
+        guard !isEphemeral, let store = conversationStore as? SQLiteConversationStore else { return nil }
+        return DeviceHistorySyncHost(store: store) { [weak self] conversationID in
+            await self?.conversationCenter.deviceHistoryDidImport(conversationID)
+        }
+    }()
     let runStore: any RunStore
     /// Atomic preparation of conversation + run + first message before any
     /// provider work begins.

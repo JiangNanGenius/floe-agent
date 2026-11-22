@@ -669,6 +669,32 @@ final class ThreadDetailViewModel: ObservableObject {
         mergeMessageRows([message])
     }
 
+    func refreshImportedDeviceHistory() async {
+        guard !isTemporary, !isConversationMissing else { return }
+        let generation = loadGeneration
+        let oldestLoaded = messages.first.map(Self.messageCursor)
+        let store = center.conversationStore(for: conversationID)
+        var before: ConversationMessageCursor?
+        var refreshedCoverage = TimelinePageCoverage<ConversationMessageCursor>()
+        var newPages: [[PersistedMessage]] = []
+        repeat {
+            guard !Task.isCancelled, let page = try? await store.messagePage(
+                conversationID: conversationID, before: before, limit: 100
+            ), !Task.isCancelled, generation == loadGeneration, !isConversationMissing else { return }
+            refreshedCoverage.record(first: page.earlierCursor, last: page.messages.last.map(Self.messageCursor),
+                                     before: before, hasEarlier: page.hasEarlier)
+            newPages.append(page.messages.filter { !messageIDs.contains($0.id) })
+            guard page.hasEarlier, let next = page.earlierCursor, let oldestLoaded, next > oldestLoaded else { break }
+            before = next
+        } while true
+
+        // An import can insert rows before a previously exhausted timeline.
+        messageCoverage = refreshedCoverage
+        mergeMessageRows(newPages.reversed().flatMap { $0 })
+        let hasEarlier = messageCoverage.earlierCursor != nil
+        if hasEarlierMessages != hasEarlier { hasEarlierMessages = hasEarlier }
+    }
+
     /// Loads persisted state, then subscribes to the selected run's bounded
     /// push stream while it is non-terminal.
     func load() async {

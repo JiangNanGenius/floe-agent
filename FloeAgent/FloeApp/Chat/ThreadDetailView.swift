@@ -84,6 +84,7 @@ struct ThreadDetailView: View {
     /// A pending scroll to an exact message (in-chat find or a global-search
     /// jump). A fresh token makes repeated requests to the same row real.
     @State private var scrollRequest: ThreadScrollRequest?
+    @State private var importedDeviceHistoryRevision: UInt64 = 0
     @State private var scheduleDetail: ScheduleDetailRequest?
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var designEntryState: DesignEntryStateCenter
@@ -403,6 +404,14 @@ struct ThreadDetailView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .floeInteractiveMessageDidChange)) { notice in
                 if let message = notice.object as? PersistedMessage { viewModel.presentCommittedMessage(message) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .floeDeviceHistoryDidImport)) { notice in
+                guard notice.object as? UUID == viewModel.conversationID else { return }
+                importedDeviceHistoryRevision &+= 1
+            }
+            .task(id: importedDeviceHistoryRevision) {
+                guard importedDeviceHistoryRevision != 0 else { return }
+                await viewModel.refreshImportedDeviceHistory()
             }
             .onDisappear {
                 automaticRead.cancel()

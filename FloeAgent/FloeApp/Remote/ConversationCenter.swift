@@ -2178,6 +2178,11 @@ final class ConversationCenter: ObservableObject {
         await refreshConversationInList(conversationID)
     }
 
+    func deviceHistoryDidImport(_ conversationID: UUID) async {
+        await refreshConversationInList(conversationID)
+        NotificationCenter.default.post(name: .floeDeviceHistoryDidImport, object: conversationID)
+    }
+
     private func refreshConversationInList(_ conversationID: UUID) async {
         // Temporary conversations never enter the saved list projection.
         guard !isTemporaryConversation(conversationID) else { return }

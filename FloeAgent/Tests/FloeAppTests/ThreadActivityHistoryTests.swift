@@ -29,6 +29,40 @@ import FloePersistence
 @MainActor
 struct ThreadActivityHistoryTests {
 
+    @Test("Imported history reopens earlier paging and keeps the loaded transcript in order")
+    func deviceHistoryRefreshRestoresMessagePaging() async throws {
+        let (environment, center, conversation) = try await makeEnvironment()
+        let local = try #require(environment.conversationStore as? SQLiteConversationStore)
+        let peerDB = try DatabaseManager.inMemory()
+        try await peerDB.migrate()
+        let peer = SQLiteConversationStore(database: peerDB)
+        try await peer.saveConversation(conversation)
+        let messages = (0..<241).map { index in
+            PersistedMessage(id: UUID(), conversationID: conversation.id, role: "user",
+                             content: "Message \(index)", createdAt: Date(timeIntervalSince1970: Double(index + 1)))
+        }
+        try await local.appendMessage(messages[120])
+        let model = ThreadDetailViewModel(conversationID: conversation.id, center: center)
+        await model.load()
+        defer { model.stopLiveUpdates() }
+        #expect(model.messages.map(\.id) == [messages[120].id])
+        #expect(!model.hasEarlierMessages)
+
+        for message in messages { try await peer.appendMessage(message) }
+        let history = try await peer.deviceHistory(conversationID: conversation.id)
+        let receipt = try await local.importDeviceHistory(history)
+        #expect(receipt.addedMessages == 240)
+        await model.refreshImportedDeviceHistory()
+        #expect(model.messages.map(\.id) == messages.suffix(200).map(\.id))
+        #expect(model.hasEarlierMessages)
+
+        await model.loadEarlierMessages()
+        await model.loadEarlierMessages()
+        await model.refreshImportedDeviceHistory()
+        #expect(model.messages.map(\.id) == messages.map(\.id))
+        #expect(!model.hasEarlierMessages)
+    }
+
     @Test("Stop freezes already-buffered text while cancellation settles")
     func stopFreezesPresentationBacklog() async throws {
         let (environment, center, conversation) = try await makeEnvironment()

@@ -626,6 +626,65 @@
         }
       }
     },
+    "NSLocalNetworkUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe uses the local network to check for nearby devices on request and to sync selected conversations with devices you pair."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 使用本地网络按需查找附近设备，并将你选定的会话与已配对的设备同步。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 使用區域網路按需尋找附近的裝置，並將你選取的對話與已配對的裝置同步。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe は、要求に応じて近くのデバイスを検索し、選択したチャットをペアリング済みのデバイスと同期するために、ローカルネットワークを使用します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe는 요청 시 주변 기기를 찾고 선택한 대화를 페어링한 기기와 동기화하기 위해 로컬 네트워크를 사용합니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe utilise le réseau local pour rechercher des appareils à proximité sur demande et synchroniser les conversations sélectionnées avec les appareils jumelés."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe nutzt das lokale Netzwerk, um auf Anfrage Geräte in der Nähe zu finden und ausgewählte Unterhaltungen mit gekoppelten Geräten zu synchronisieren."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe usa la red local para buscar dispositivos cercanos cuando lo solicitas y sincronizar las conversaciones seleccionadas con los dispositivos enlazados."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O Floe usa a rede local para procurar dispositivos próximos quando solicitado e sincronizar as conversas selecionadas com dispositivos emparelhados."
+          }
+        }
+      }
+    },
     "NSBluetoothAlwaysUsageDescription" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device." } },
