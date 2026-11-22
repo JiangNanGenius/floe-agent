@@ -88,22 +88,15 @@ def application_pins(project):
     return resolved_pins({"version": 1, "object": {"pins": pins}}) if pins else []
 
 
-# The one local package allowed to sit outside the XcodeGen project directory.
-# FloeMacBridge is first-party source in this repository: the App links only its
-# FloeMacBridgeProtocol target and the Mac companion app is built from the same
-# package. It lives one level above FloeAgent/, so the declaration necessarily
-# spells ../FloeMacBridge. This is an exact name-and-path allowlist, not
-# permission for ../ in general: another package, sibling directory, absolute
-# path, symlink, separate repository, submodule, untracked file or changed
-# manifest still fails.
+# Reviewed first-party packages can be shared by the iOS and Mac projects.
+# Each must live at its fixed path and be committed in the same checkout.
 #
 # The reviewed Package.swift digest is the dependency guarantee. A missing
 # Package.resolved is NOT evidence that a manifest has no package dependencies,
 # so the manifest bytes are pinned to a reviewed hash instead: any change
 # (including a new dependency, target or resource) requires updating this policy
-# and its test, and new package dependencies must be promoted to the host lock
-# and the license inventory rather than silently resolved by Xcode. The package
-# carries only its explicitly reviewed companion lock, checked against the host.
+# and its test. Pins must match the host lock or come from a reviewed App-local
+# lock with bundled license evidence.
 FIRST_PARTY_SIBLING_PACKAGES = {
     "FloeMacBridge": {
         "path": "../FloeMacBridge",
@@ -111,6 +104,17 @@ FIRST_PARTY_SIBLING_PACKAGES = {
         # occur in the committed host closure; arbitrary sibling locks fail.
         "manifestSHA256": "c7f593b2e8ee27e01a89d7a53f2e6c4945ef892991eee30ba897c47da376c7dc",
         "resolvedSHA256": "1ad9a7512c0851f74e084a70f38c2d1d2e6d97aff133f37625cbf21fceb53ec5",
+    },
+    "FloeDeviceLink": {
+        "path": "../FloeDeviceLink",
+        "manifestSHA256": "128d0c88d40a2a5960c9ca2083f5322ac018d1356e734c09970f94b5e4d063a5",
+        "resolvedSHA256": "986cb598314ecf6be1b705db5f196264ccb1ea5aa42ba6488c3d5f5345f61b1f",
+        "appLocal": True,
+        "dependencies": ("FloeDesktopSync",),
+    },
+    "FloeDesktopSync": {
+        "path": "../FloeDesktopSync",
+        "manifestSHA256": "923fb517d33df5c20b9136cc70802c2e0b28939778dec78bc20653d8f40540d7",
     },
 }
 
@@ -140,8 +144,8 @@ def _git_checkout_query(repository, *arguments):
     return completed.stdout
 
 
-def _first_party_package_dir(root, name, raw_path):
-    """Resolve an allowlisted first-party sibling from the same Git checkout.
+def _first_party_package_pins(root, name, raw_path):
+    """Verify a first-party sibling and return its reviewed App-local pins.
 
     The declaration must be the exact fixed path; the directory must be a real
     directory (never a symlink) and the direct child of the repository root
@@ -243,26 +247,39 @@ def _first_party_package_dir(root, name, raw_path):
     if manifest_digest != policy["manifestSHA256"]:
         raise ValueError(
             "First-party Xcode package manifest does not match the reviewed SHA-256; "
-            f"review the change, promote any new dependencies to the host lock and "
-            f"license inventory, then update the policy and its test: {name} "
+            f"review the change, lock any new dependencies and update the "
+            f"license inventory and policy test: {name} "
             f"({manifest_digest})"
         )
+    dependency_pins = [
+        pin
+        for dependency in policy.get("dependencies", ())
+        for pin in _first_party_package_pins(root, dependency, FIRST_PARTY_SIBLING_PACKAGES[dependency]["path"])
+    ]
     lock_path = resolved / "Package.resolved"
+    expected_lock = policy.get("resolvedSHA256")
+    if expected_lock is None:
+        if lock_path.is_symlink() or lock_path.exists():
+            raise ValueError(f"First-party Xcode package must not add an independent Package.resolved: {name}")
+        return dependency_pins
     if (lock_path.is_symlink() or not lock_path.is_file()
-            or hashlib.sha256(lock_path.read_bytes()).hexdigest() != policy["resolvedSHA256"]):
+            or hashlib.sha256(lock_path.read_bytes()).hexdigest() != expected_lock):
         raise ValueError(
             "First-party Xcode package must not add an independent Package.resolved; "
             f"only the reviewed companion lock is allowed: {name}"
         )
+    pins = resolved_pins(json.loads(lock_path.read_text(encoding="utf-8")))
+    if policy.get("appLocal"):
+        return dependency_pins + pins
     try:
         host = {pin["identity"]: pin for pin in resolved_pins(
             json.loads((root / "Package.resolved").read_text(encoding="utf-8")))}
-        for pin in resolved_pins(json.loads(lock_path.read_text(encoding="utf-8"))):
+        for pin in pins:
             if not same_pin(host.get(pin["identity"]), pin):
                 raise ValueError(f"Companion dependency differs from the committed host lock: {pin['identity']}")
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"Companion dependencies need a valid committed host lock: {name}") from error
-    return resolved
+    return dependency_pins
 
 
 # These reviewed adapters have ONLY local module + FloeAgent path dependencies.
@@ -413,18 +430,20 @@ def application_local_pins(project, project_dir):
     The manifest-reviewed MediaExchange lock retires only its four exact
     provenance-bound vendored references; every other pin remains authoritative.
 
-    One first-party sibling is allowlisted by name and exact path:
-    ``FloeMacBridge`` at ``../FloeMacBridge``. It is accepted only as a real,
-    tracked and clean directory of the same Git checkout whose manifest matches
-    the reviewed digest, with every non-cache file tracked and no symlinks, and
-    carries only the reviewed ``Package.resolved`` also pinned in the host.
-    It contributes no unreviewed pins; a changed manifest, file or dependency needs an explicit
-    policy/test review before it can build. Every other path outside
-    ``project_dir`` still fails.
+    First-party siblings must match the exact path, manifest and lock policy
+    above. FloeMacBridge's companion lock remains covered by the host lock.
+    FloeDeviceLink contributes the reviewed Iroh pin and verifies its local
+    FloeDesktopSync dependency. Other paths outside ``project_dir`` fail.
     """
     root = Path(project_dir).resolve()
-    pins = []
     seen = {}
+
+    def record(pin):
+        identity = pin["identity"]
+        if identity in seen and not same_pin(seen[identity], pin):
+            raise ValueError(f"Conflicting resolved dependency across application local packages: {identity}")
+        seen.setdefault(identity, pin)
+
     for name, body in _package_entries(project):
         path_match = re.search(r"^    path:\s*(\S.*?)\s*$", body, re.M)
         if path_match is None:
@@ -435,7 +454,8 @@ def application_local_pins(project, project_dir):
         if not raw_path:
             raise ValueError(f"Xcode local package has an empty path: {name}")
         if name in FIRST_PARTY_SIBLING_PACKAGES:
-            _first_party_package_dir(root, name, raw_path)
+            for pin in _first_party_package_pins(root, name, raw_path):
+                record(pin)
             continue
         if name in HOST_GRAPH_ADAPTERS:
             _verify_host_graph_adapter(root, name, raw_path)
@@ -482,17 +502,8 @@ def application_local_pins(project, project_dir):
                 if not _retired_host_graph_pin_matches(root, pin):
                     raise ValueError(f"Local retired reference differs from reviewed vendored proof: {name}: {pin['identity']}")
                 continue
-            existing = seen.get(pin["identity"])
-            if existing is not None:
-                if same_pin(existing, pin):
-                    continue
-                raise ValueError(
-                    "Conflicting resolved dependency across application local packages: "
-                    f"{pin['identity']}"
-                )
-            seen[pin["identity"]] = pin
-            pins.append(pin)
-    return sorted(pins, key=lambda pin: pin["identity"])
+            record(pin)
+    return sorted(seen.values(), key=lambda pin: pin["identity"])
 
 
 def same_pin(actual, expected):

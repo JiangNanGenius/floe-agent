@@ -661,7 +661,7 @@ class RealApplicationGraphTests(unittest.TestCase):
         self.host_lock = self.root / "Package.resolved"
 
     def test_complete_graph_with_local_closure_and_revision_only_zip(self):
-        self.assertEqual(len(self.local), 40)
+        self.assertEqual(len(self.local), 41)
         committed_by_identity = {p["identity"]: p for p in self.committed}
         zip_pin = committed_by_identity["zipfoundation"]
         self.assertEqual(zip_pin["state"]["version"], "0.9.20")
@@ -677,6 +677,10 @@ class RealApplicationGraphTests(unittest.TestCase):
         self.assertEqual(len(combined), len({p["identity"] for p in self.committed + self.local}))
         by_identity = {p["identity"]: p for p in combined}
         self.assertEqual(by_identity["zipfoundation"]["state"], zip_pin["state"])
+        self.assertEqual(by_identity["iroh-ffi"]["state"], {
+            "revision": "66a8d619a4d791d458d582f312df6e0ab42bc541",
+            "version": "1.2.0",
+        })
         self.assertEqual(set(by_identity), set(committed_by_identity) | {
             p["identity"] for p in self.local})
 

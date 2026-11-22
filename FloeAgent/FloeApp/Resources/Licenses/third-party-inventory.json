@@ -68,6 +68,32 @@
   ],
   "documents": [
     {
+      "id": "iroh-ffi-mit",
+      "repositoryPath": "FloeApp/Resources/Licenses/Iroh-FFI-MIT.txt",
+      "bundlePath": "Licenses/Iroh-FFI-MIT.txt",
+      "titleKey": "settings.licenses.document.iroh_ffi_mit.title",
+      "titleFallback": "Iroh FFI (MIT)",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": null
+    },
+    {
+      "id": "iroh-ffi-apache",
+      "repositoryPath": "FloeApp/Resources/Licenses/Iroh-FFI-APACHE.txt",
+      "bundlePath": "Licenses/Iroh-FFI-APACHE.txt",
+      "titleKey": "settings.licenses.document.iroh_ffi_apache.title",
+      "titleFallback": "Iroh FFI (Apache-2.0)",
+      "titleArgument": null,
+      "license": "Apache-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": null
+    },
+    {
       "id": "libmaxminddb",
       "repositoryPath": "FloeApp/Resources/Licenses/libmaxminddb-LICENSES.txt",
       "bundlePath": "Licenses/libmaxminddb-LICENSES.txt",
@@ -932,6 +958,15 @@
       "section": "swift",
       "noteKey": null,
       "evidence": ".build/checkouts/h/LICENSE"
+    },
+    {
+      "name": "iroh-ffi",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://github.com/n0-computer/iroh-ffi.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/Licenses/Iroh-FFI-MIT.txt"
     },
     {
       "name": "mlx-swift",
@@ -3132,8 +3167,8 @@
     }
   ],
   "counts": {
-    "components": 241,
-    "documents": 63,
-    "pins": 40
+    "components": 242,
+    "documents": 65,
+    "pins": 41
   }
 }

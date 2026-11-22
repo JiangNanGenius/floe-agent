@@ -132,6 +132,11 @@ CHECKOUT_EVIDENCE_PREFIX = ".build/checkouts/"
 APP_ONLY_NOTICES = {
     "whisperkit": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
     "sparkle": "FloeApp/Resources/Licenses/Sparkle-LICENSE.txt",
+    "iroh-ffi": "FloeApp/Resources/Licenses/Iroh-FFI-MIT.txt",
+}
+IROH_FFI_NOTICE_HASHES = {
+    APP_ONLY_NOTICES["iroh-ffi"]: "f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050",
+    "FloeApp/Resources/Licenses/Iroh-FFI-APACHE.txt": "903131e2786f073a942fbf8fae122d9e576e4dad758c6da7f9f2ba58fd8611ab",
 }
 
 # Packages vendored under ThirdParty/ that replaced a formerly resolved remote
@@ -352,6 +357,7 @@ LICENSE_FILE_CANDIDATES = (
 ALLOWED_EXACT = {
     "MIT",
     "MIT AND PSF-2.0",
+    "MIT OR Apache-2.0",
     "Apache-2.0",
     "Apache-2.0 WITH Swift-exception",
     "BSD-2-Clause",
@@ -1048,6 +1054,16 @@ STATIC_COMPONENTS = (
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
     (
+        "iroh-ffi-mit", APP_ONLY_NOTICES["iroh-ffi"],
+        "Licenses/Iroh-FFI-MIT.txt", "settings.licenses.document.iroh_ffi_mit.title",
+        "Iroh FFI (MIT)", None, "MIT", "full_text", True, "swift",
+    ),
+    (
+        "iroh-ffi-apache", "FloeApp/Resources/Licenses/Iroh-FFI-APACHE.txt",
+        "Licenses/Iroh-FFI-APACHE.txt", "settings.licenses.document.iroh_ffi_apache.title",
+        "Iroh FFI (Apache-2.0)", None, "Apache-2.0", "full_text", True, "swift",
+    ),
+    (
         "libmaxminddb", "FloeApp/Resources/Licenses/libmaxminddb-LICENSES.txt",
         "Licenses/libmaxminddb-LICENSES.txt", "settings.licenses.document.libmaxminddb.title",
         "libmaxminddb — offline IP database reader", None,
@@ -1516,19 +1532,14 @@ def load_pins() -> list[dict]:
     # this is the same immutable pin. Emit the committed spelling so a cloud
     # checkout cannot spuriously change the recorded license source.
     #
-    # The local package closure (FloeCADKit's six pins) is validated against
-    # its committed locks above, but it is declared by resolve_cad_packages()
-    # with the reviewed linked-package rows and build-only exclusions. Keep
-    # this host inventory limited to pins carried by the committed host lock so
-    # those reviewed CAD rows are neither duplicated nor broadened here. The
-    # first-party FloeMacBridge sibling is accepted only as tracked, lock-free
-    # source with a reviewed manifest digest, so it contributes no pin and no
-    # license row of its own.
+    # CAD pins are inventoried by resolve_cad_packages(), including its
+    # build-only exclusions. App-only pins with bundled notices, such as Iroh
+    # in FloeDeviceLink's lock, also belong in this inventory.
     committed_by_identity = {pin["identity"]: pin for pin in committed_pins}
     pins = [
-        committed_by_identity[pin["identity"]]
+        committed_by_identity.get(pin["identity"], pin)
         for pin in verified_pins
-        if pin["identity"] in committed_by_identity
+        if pin["identity"] in committed_by_identity or pin["identity"] in APP_ONLY_NOTICES
     ]
     rows = []
     for pin in pins:
@@ -1608,6 +1619,8 @@ def detect_bundled_notice(
     path = root / relative
     if not path.is_file():
         return None, None, None
+    if identity == "iroh-ffi":
+        return "MIT OR Apache-2.0", relative, sha256_file(path)
     return (
         classify_license(path.read_text(encoding="utf-8", errors="replace")),
         relative,
@@ -2736,6 +2749,11 @@ def validate(
     # a later pin edit can never silently inherit another revision's license.
     evidence_by_identity = {row["identity"]: row for row in evidence_document["licenses"]}
     for pin in pins:
+        if pin["identity"] == "iroh-ffi":
+            for relative, digest in IROH_FFI_NOTICE_HASHES.items():
+                path = ROOT / relative
+                if not path.is_file() or sha256_file(path) != digest:
+                    problems.append(f"iroh-ffi: notice must match the pinned upstream text: {relative}")
         row = evidence_by_identity.get(pin["identity"])
         if row is None:
             problems.append(f"missing license evidence row: {pin['identity']}")

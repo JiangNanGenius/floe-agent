@@ -76,6 +76,14 @@
       "source": "https://github.com/rarestype/h"
     },
     {
+      "identity": "iroh-ffi",
+      "license": "MIT OR Apache-2.0",
+      "evidence": "FloeApp/Resources/Licenses/Iroh-FFI-MIT.txt",
+      "sha256": "f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050",
+      "revision": "66a8d619a4d791d458d582f312df6e0ab42bc541",
+      "source": "https://github.com/n0-computer/iroh-ffi.git"
+    },
+    {
       "identity": "libgit2",
       "license": "GPL-2.0 WITH libgit2 linking exception",
       "evidence": "ThirdParty/FloeNativeGit/libgit2/COPYING",
