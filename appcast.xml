@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.9</title>
+      <pubDate>Sun, 22 Nov 2026 07:32:40 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.9</link>
+      <sparkle:version>39</sparkle:version>
+      <sparkle:shortVersionString>1.11.9</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>续跑原任务并保留重试前后的工具回执。 Continue original runs and keep tool receipts across retries.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.9/Floe-Agent-1.11.9.dmg" length="36348316" type="application/octet-stream" sparkle:edSignature="rD9SQXnIooyTx5a6RM/85+TtRSNaACgqtQ5fLYxFxAkQtkxCpaKkPqCwISW9t8HjqPXFVg5QGZ4KvsEoq+KDDQ==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.8</title>
       <pubDate>Sat, 21 Nov 2026 20:39:00 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.8</link>
