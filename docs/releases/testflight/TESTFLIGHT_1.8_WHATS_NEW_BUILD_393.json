@@ -1,0 +1,4 @@
+{
+  "en-US": "Start a task that needs Linux on a device with an earlier Linux environment and confirm the upgrade. Check that progress appears in chat and the waiting command runs once after the upgrade finishes. Also start the upgrade in Settings first and check that the task waits for that same upgrade.",
+  "zh-Hans": "在仍使用旧版 Linux 环境的设备上，让任务执行一条 Linux 命令并点「升级」。确认聊天显示升级进度，原命令在升级完成后执行一次。也可以先在设置中升级，再让任务执行命令，确认它会等待同一次升级。"
+}
