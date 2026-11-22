@@ -1,8 +1,9 @@
-# README installation buttons
+# README buttons
 
-The current README row has three entries: App Store, TestFlight, and a shared Self-signing stores entry for Feather and AltStore. The shared entry opens the existing source page without selecting a signing client in advance. English and Chinese combined buttons use both original channel icons. All buttons share a 180 × 70 canvas, navy surface, border and typography, displayed at 144 × 56 with vertical breathing room when wrapped.
+The README row shows App Store, TestFlight, Self-signing stores, and Discord. Self-signing opens the shared Feather and AltStore source page. The four buttons use the same 180 × 70 layout and display at 144 × 56.
 
-Channel icons are the original upstream artwork, embedded without recolouring or raster changes so the SVG has no remote image dependency:
+The self-contained buttons use original upstream marks:
+- Discord: [Discord Brand Assets](https://discord.com/branding), using the [official white Clyde symbol](https://cdn.prod.website-files.com/6257adef93867e50d84d30e2/66e3d7f4ef6498ac018f2c55_Symbol.svg) in the English and Chinese PNGs.
 
 - App Store: [Apple Developer icon](https://developer.apple.com/assets/elements/icons/app-store/app-store-128x128_2x.png).
 - TestFlight: [Apple's TestFlight listing](https://apps.apple.com/app/testflight/id899247664), artwork returned by the public Apple lookup endpoint.

@@ -3,7 +3,6 @@
   <h1>Floe Agent</h1>
   <p><strong>面向 iOS、iPadOS 和 Android 的设备端 AI 工作台。</strong></p>
   <p>你的模型，你的文件，你的电脑。</p>
-  <p><a href="https://discord.gg/qRJJAV8hzT"><img src="docs/images/community/discord-zh.png" width="188" height="44" alt="加入 Discord 社区"></a></p>
   <p>Floe Agent 是面向 iOS、iPadOS 和 Android 的开源 AI 智能体。把文档、代码与创作项目放进同一处，在自己的设备上运行真实的 Linux 环境。以 iPadOS 与 Apple Pencil 体验为核心，原生支持 iPhone，并提供 Android 特有的设备协作流程。</p>
   <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">floe-agent.com</a> · <a href="https://www.floe-agent.com/releases?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">版本与更新</a> · <a href="docs/README.md">文档中心</a> · <a href="docs/DISCLAIMER.zh-CN.md">免责声明</a></p>
 </div>
@@ -12,6 +11,7 @@
   <a href="https://apps.apple.com/app/id6801209053"><img src="docs/images/install/app-store.svg" alt="从 App Store 获取 Floe Agent 正式版" width="144" height="56"></a>
   <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_zh#beta"><img src="docs/images/install/testflight.svg" alt="前往官网申请 TestFlight 内测" width="144" height="56"></a>
   <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json"><img src="docs/images/install/self-signing-zh.svg" alt="自签名商店：Feather 与 AltStore" width="144" height="56"></a>
+  <a href="https://discord.gg/qRJJAV8hzT"><img src="docs/images/install/discord-zh.png" alt="加入 Discord 社区" width="144" height="56"></a>
 </p>
 
 [![iOS / iPadOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
