@@ -9,4 +9,6 @@
 
 ## App Store 正式审核
 
-2026-11-23 00:41（悉尼时间）提交 1.8.72（393）。独立读回确认版本与审核单均为 `WAITING_FOR_REVIEW`，绑定原构建 393，发布方式为审核通过后手动发布。中英文更新说明与审核备注均已核对，商店页面沿用原排列的 60 张截图和 6 支预览。[App Store Connect 审核记录](https://appstoreconnect.apple.com/apps/6801209053/distribution/reviewsubmissions/details/8c2869fc-fae8-42de-add8-f24d788088f1)
+2026-11-23 01:02（悉尼时间）撤下首次审核单，用同一构建 393 连同新版 iPad 宣传图重新送审。独立读回确认版本与新审核单均为 `WAITING_FOR_REVIEW`，发布方式为审核通过后自动发布（`AFTER_APPROVAL`）。[App Store Connect 审核记录](https://appstoreconnect.apple.com/apps/6801209053/distribution/reviewsubmissions/details/04e784af-b37e-4141-aff2-f6f48d3c70a0)
+
+iPad 的简体中文和英文第 4 张以代码 IDE 为主，右侧为原生游戏编辑器完整窗口。已回读两张新图的资产编号和位置，核对六套素材的排列及总计 60 张截图、6 支预览，并再次核对中英文更新说明。
