@@ -6,6 +6,51 @@ final class SyncSettingsUITests: XCTestCase {
     }
 
     @MainActor
+    func testMacSyncHasOneSwitchAndKeepsICloudIndependent() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--ui-test-skip-onboarding", "-ui-testing", "-ui-testing-ipad",
+            "-AppleLanguages", "(en)", "-AppleLocale", "en_US"
+        ]
+        app.launch()
+
+        let settings = app.buttons["sidebar.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+        let sync = app.descendants(matching: .any).matching(identifier: "settings.section.sync").firstMatch
+        XCTAssertTrue(sync.waitForExistence(timeout: 8))
+        sync.tap()
+
+        let macSync = app.switches["settings.sync.device_history.enabled"]
+        let iCloud = app.switches["settings.sync.master"]
+        let pairing = app.descendants(matching: .any).matching(identifier: "settings.sync.device_history.devices").firstMatch
+        XCTAssertTrue(macSync.waitForExistence(timeout: 8))
+        XCTAssertTrue(iCloud.exists)
+        let initialICloud = try XCTUnwrap(iCloud.value as? String)
+        let initialMacSync = try XCTUnwrap(macSync.value as? String) == "1"
+        defer {
+            let back = app.navigationBars["Pairing and Sharing"].buttons.firstMatch
+            if !macSync.exists, back.exists {
+                back.tap()
+            }
+            if macSync.exists {
+                setSwitch(macSync, enabled: initialMacSync)
+            }
+        }
+
+        setSwitch(macSync, enabled: false)
+        XCTAssertFalse(pairing.exists)
+        setSwitch(macSync, enabled: true)
+        XCTAssertEqual(wait(forValue: initialICloud, element: iCloud), .completed)
+        XCTAssertTrue(pairing.waitForExistence(timeout: 8))
+        pairing.tap()
+        XCTAssertTrue(app.buttons["deviceHistorySync.addDevice"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.switches["deviceHistorySync.enabled"].exists)
+        XCTAssertFalse(macSync.exists)
+    }
+
+    @MainActor
     func testDedicatedSyncMenuAndIndependentConfigurationSwitch() throws {
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
@@ -97,7 +142,13 @@ final class SyncSettingsUITests: XCTestCase {
 
     @MainActor
     private func turnOff(_ element: XCUIElement) {
-        guard (element.value as? String) != "0" else { return }
+        setSwitch(element, enabled: false)
+    }
+
+    @MainActor
+    private func setSwitch(_ element: XCUIElement, enabled: Bool) {
+        let value = enabled ? "1" : "0"
+        guard (element.value as? String) != value else { return }
         // iOS Simulator occasionally drops the first synthesized event while
         // a three-column Form is settling. Retry at distinct points within
         // the native trailing UISwitch; the operation is idempotent because
@@ -106,12 +157,12 @@ final class SyncSettingsUITests: XCTestCase {
             element.coordinate(withNormalizedOffset: CGVector(dx: x, dy: 0.50))
                 .press(forDuration: 0.08)
             let changed = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "value == %@", "0"),
+                predicate: NSPredicate(format: "value == %@", value),
                 object: element
             )
             if XCTWaiter.wait(for: [changed], timeout: 2) == .completed { return }
         }
-        XCTFail("Switch did not reach the off state after three physical-control attempts")
+        XCTFail("Switch did not reach the requested value after three control attempts")
     }
 
 }

@@ -1,4 +1,4 @@
-// FloeApp — Dedicated iCloud synchronization settings.
+// FloeApp — iCloud and paired-device synchronization settings.
 
 // SPDX-License-Identifier: MPL-2.0
 
@@ -31,16 +31,7 @@ struct SyncSettingsView: View {
     var body: some View {
         Form {
             if center.environment.persistenceReady, let host = center.environment.deviceHistorySync {
-                Section {
-                    NavigationLink {
-                        DeviceHistorySyncSettings(center: host.center)
-                            .navigationTitle(Text("settings.sync.device_history"))
-                    } label: {
-                        Label("settings.sync.device_history", systemImage: "arrow.left.arrow.right")
-                            .frame(minHeight: FloeTheme.minimumTarget)
-                    }
-                    .accessibilityIdentifier("settings.sync.device_history")
-                }
+                DeviceHistorySyncSection(center: host.center)
             }
 
             Section {
@@ -292,6 +283,47 @@ struct SyncSettingsView: View {
             Text("settings.sync.icloud.unavailable").foregroundStyle(.secondary)
         case .unknown:
             Text("settings.capability.unknown").foregroundStyle(FloeTheme.unknown)
+        }
+    }
+}
+
+private struct DeviceHistorySyncSection: View {
+    @ObservedObject var center: DeviceHistorySyncCenter
+
+    var body: some View {
+        Section {
+            Toggle("settings.sync.device_history.enable_mac", isOn: Binding(
+                get: { center.enabled },
+                set: { enabled in Task { await center.setEnabled(enabled) } }
+            ))
+            .disabled(center.busy)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("settings.sync.device_history.enabled")
+
+            if center.enabled {
+                NavigationLink {
+                    DeviceHistorySyncSettings(center: center, showsEnableControl: false)
+                        .navigationTitle(Text("settings.sync.device_history.devices"))
+                } label: {
+                    HStack {
+                        Label("settings.sync.device_history.devices", systemImage: "laptopcomputer")
+                        Spacer()
+                        if center.busy { ProgressView().controlSize(.small) }
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                }
+                .accessibilityIdentifier("settings.sync.device_history.devices")
+            }
+
+            if center.status == .unableToStart {
+                Label("settings.sync.device_history.unavailable", systemImage: "exclamationmark.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("settings.sync.device_history")
+        } footer: {
+            Text("settings.sync.device_history.footer")
         }
     }
 }

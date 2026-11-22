@@ -4,6 +4,7 @@ import SwiftUI
 
 public struct DeviceHistorySyncSettings: View {
     @ObservedObject private var center: DeviceHistorySyncCenter
+    private let showsEnableControl: Bool
     @State private var addingPeer = false
     @State private var peerName = ""
     @State private var peerCode = ""
@@ -14,44 +15,45 @@ public struct DeviceHistorySyncSettings: View {
     @State private var proposed: DeviceHistoryPairingTicket?
     @State private var selectedPeer: DeviceHistoryPeer?
 
-    public init(center: DeviceHistorySyncCenter) { self.center = center }
+    public init(center: DeviceHistorySyncCenter, showsEnableControl: Bool = true) {
+        self.center = center
+        self.showsEnableControl = showsEnableControl
+    }
 
     public var body: some View {
         Form {
-            Section {
-                Toggle(label("跨设备会话同步", "Sync Conversations Across Devices"), isOn: Binding(
-                    get: { center.enabled }, set: { value in Task { await center.setEnabled(value) } }))
-                    .disabled(center.busy)
-                if center.enabled {
-                    Toggle(label("使用公共测试中继", "Use Public Test Relay"), isOn: Binding(
-                        get: { center.usesPublicRelay }, set: { value in Task { await center.setPublicRelay(value) } }))
+            if showsEnableControl {
+                Section {
+                    Toggle(label("跨设备会话同步", "Sync Conversations Across Devices"), isOn: Binding(
+                        get: { center.enabled }, set: { value in Task { await center.setEnabled(value) } }))
                         .disabled(center.busy)
-                    Button {
-                        relayAddress = center.customRelayURL?.absoluteString ?? ""
-                        relayError = false
-                        editingRelay = true
-                    } label: {
-                        LabeledContent(label("自定义中继", "Custom Relay"), value: center.customRelayURL?.host() ?? "—")
-                    }.disabled(center.busy)
-                    if let fingerprint = center.fingerprint {
-                        Text(fingerprint).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-                            .accessibilityLabel(label("本机设备指纹", "This Device’s Fingerprint"))
+                        .accessibilityIdentifier("deviceHistorySync.enabled")
+                    if !center.enabled, let statusText {
+                        Text(statusText).font(.callout).foregroundStyle(.secondary)
                     }
-                    HStack {
-                        if let code = center.pairingCode {
-                            ShareLink(item: code, preview: SharePreview(label("Floe 设备配对信息", "Floe Device Pairing"))) {
-                                Label(label("分享配对信息", "Share Pairing Info"), systemImage: "square.and.arrow.up")
-                            }
-                        }
-                        Button(label("刷新配对地址", "Refresh Pairing Address")) {
-                            Task { await center.refreshPairingCode() }
-                        }
-                        .disabled(center.fingerprint == nil || center.busy)
-                    }.buttonStyle(.borderless)
                 }
-                if let statusText { Text(statusText).font(.callout).foregroundStyle(.secondary) }
             }
             if center.enabled {
+                Section(label("本机配对", "Pair This Device")) {
+                    if let code = center.pairingCode {
+                        ShareLink(item: code, preview: SharePreview(label("Floe 设备配对信息", "Floe Device Pairing"))) {
+                            Label(label("分享配对信息", "Share Pairing Info"), systemImage: "square.and.arrow.up")
+                        }
+                        .accessibilityIdentifier("deviceHistorySync.sharePairing")
+                    }
+                    Button(label("刷新配对地址", "Refresh Pairing Address"), systemImage: "arrow.clockwise") {
+                        Task { await center.refreshPairingCode() }
+                    }
+                    .disabled(center.fingerprint == nil || center.busy)
+                    if let fingerprint = center.fingerprint {
+                        DisclosureGroup(label("本机设备指纹", "This Device’s Fingerprint")) {
+                            Text(fingerprint).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                                .accessibilityIdentifier("deviceHistorySync.fingerprint")
+                        }
+                    }
+                    if let statusText { Text(statusText).font(.callout).foregroundStyle(.secondary) }
+                }
+
                 Section(label("已配对设备", "Paired Devices")) {
                     ForEach(center.peers) { peer in
                         Button {
@@ -70,12 +72,35 @@ public struct DeviceHistorySyncSettings: View {
                         addingPeer = true
                     }
                     .disabled(center.pairingCode == nil || center.busy)
+                    .accessibilityIdentifier("deviceHistorySync.addDevice")
                 }
+
+                Section {
+                    Toggle(label("使用公共测试中继", "Use Public Test Relay"), isOn: Binding(
+                        get: { center.usesPublicRelay }, set: { value in Task { await center.setPublicRelay(value) } }))
+                        .disabled(center.busy)
+                    Button {
+                        relayAddress = center.customRelayURL?.absoluteString ?? ""
+                        relayError = false
+                        editingRelay = true
+                    } label: {
+                        LabeledContent(label("自定义中继", "Custom Relay"), value: center.customRelayURL?.host() ?? "—")
+                    }
+                    .disabled(center.busy)
+                } header: {
+                    Text(label("连接选项", "Connection Options"))
+                }
+            } else if !showsEnableControl {
+                ContentUnavailableView(label("会话同步已关闭", "Conversation Sync Is Off"),
+                                       systemImage: "laptopcomputer")
             }
         }
         .formStyle(.grouped)
         .accessibilityIdentifier("deviceHistorySync.settings")
-        .task { await center.activate() }
+        .task {
+            // The containing app scene owns activation when the switch lives outside this page.
+            if showsEnableControl { await center.activate() }
+        }
         .sheet(isPresented: $addingPeer) { pairing }
         .alert(label("自定义中继", "Custom Relay"), isPresented: $editingRelay) {
             TextField("https://", text: $relayAddress)
