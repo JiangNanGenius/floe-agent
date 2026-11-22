@@ -49,6 +49,31 @@ class PhoneAutomationPauseTest {
         assertFalse(gate.resume(owner, paused.id) { false })
         assertFalse(gate.resumeAfterHumanAnswer(owner, paused.id, 200) { false })
         assertTrue(gate.isPaused(owner))
+        assertNull(gate.handbackID(owner))
+    }
+
+    @Test fun handbackRequiresAScreenCaptureFromTheCurrentPause() {
+        val gate = PhoneAutomationPause()
+        val other = owner.copy(runID = UUID.randomUUID())
+        val first = gate.pause(owner, 100)
+        assertTrue(gate.resume(owner, first.id))
+        assertEquals(first.id, gate.handbackID(owner))
+        assertNull(gate.handbackID(other))
+
+        val latest = gate.pause(owner, 200)
+        assertTrue(gate.resumeAfterHumanAnswer(owner, latest.id, 201))
+        gate.observedAfterHandback(owner, first.id)
+        gate.observedAfterHandback(other, latest.id)
+        assertEquals(latest.id, gate.handbackID(owner))
+        gate.observedAfterHandback(owner, latest.id)
+        assertNull(gate.handbackID(owner))
+    }
+
+    @Test fun stoppingAnOwnedPauseDoesNotArmHandback() {
+        val gate = PhoneAutomationPause()
+        val paused = gate.pause(owner, 100)
+        assertTrue(gate.resume(owner, paused.id, reread = false))
+        assertNull(gate.handbackID(owner))
     }
 
     @Test fun onlyRealOwnerCallBindingsSurviveProcessRestore() {

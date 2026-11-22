@@ -51,6 +51,7 @@ import com.floe.android.feature.conversation.ProjectOptionUi
 import com.floe.android.contracts.Revision
 import com.floe.android.feature.conversation.RunEventKindUi
 import com.floe.android.feature.conversation.RunEventUi
+import com.floe.android.feature.conversation.RunFileChangeUi
 import com.floe.android.feature.conversation.ToolEventProjectionUi
 import com.floe.android.feature.conversation.ToolArtifactUi
 import com.floe.android.feature.conversation.RunLaunchRequest
@@ -2205,11 +2206,31 @@ class ThreadProjectionBuilder internal constructor(
 
     // ------------------------------------------------ D04 run-output cards
 
+    /** Runs whose owned-output view this session already requested from the
+     * native reader (any answer, including the honest empty/removal one).
+     * The bounded eager cold-load window only covers the recent tail;
+     * recorded-event reads for an older run (cold reopen, on-demand
+     * historical selection beyond that window) fill its cards exactly once
+     * through [refreshRunOutputCards]. Explicit refreshes (terminal close,
+     * "Check again", save-copy settle) re-request deliberately. */
+    private val runOutputRefreshRequested = mutableSetOf<String>()
+
+    fun runOutputRefreshNeeded(runID: String): Boolean = !runOutputRefreshRequested.contains(runID)
+
+    /** The host accepted an owned-output read for these runs (the async
+     * reply lands later through [applyRunOutputs]/[markRunOutputsUnavailable]);
+     * recording the request up front keeps a racing recorded-event read from
+     * duplicating the same native list read on cold load. */
+    fun markRunOutputRefreshRequested(runIDs: Collection<String>) {
+        runOutputRefreshRequested.addAll(runIDs)
+    }
+
     /** Replaces the last verified owned-output view for one run. An empty
      * list removes the group entirely (the honest "this run sealed no
      * user outputs"); it never leaves stale cards behind. Transient action
      * states are merged by (run/output) key. */
     fun applyRunOutputs(runID: String, items: List<RunOutputCardUi>, scanTruncated: Boolean) {
+        runOutputRefreshRequested.add(runID)
         if (items.isEmpty()) {
             runOutputsByRun.remove(runID)
             runOutputScanTruncatedByRun.remove(runID)
@@ -2226,6 +2247,7 @@ class ThreadProjectionBuilder internal constructor(
      * verified cards stay (they came from real durable records) but flip to
      * the honest non-actionable "unavailable" state. Never the reverse. */
     fun markRunOutputsUnavailable(runID: String) {
+        runOutputRefreshRequested.remove(runID)
         runOutputsByRun[runID]?.replaceWith { it.copy(availabilityRaw = "unavailable") }
     }
 
@@ -2320,6 +2342,13 @@ class ThreadProjectionBuilder internal constructor(
                 (it.kind == RunEventKindUi.ERROR || it.kind == RunEventKindUi.NOTICE) &&
                     !it.message.isNullOrBlank()
             }.forEach { rows.add(TimelineRowUi.Event(it)) }
+            // Per-run verified workspace file changes ride with the same
+            // recorded activity. Receipts only — temporary chat is fenced
+            // before its RAM-only run can ever reach the durable journal.
+            if (!isTemporary) {
+                val changes = RunFileChangeReceipts.changesFor(events)
+                if (changes.isNotEmpty()) rows.add(TimelineRowUi.RunFileChanges(runId, changes))
+            }
             runOutputsByRun[runId]?.takeIf { it.isNotEmpty() }?.let { outputs ->
                 rows.add(
                     TimelineRowUi.RunOutputGroup(
@@ -2544,6 +2573,7 @@ internal object ConversationWire {
                 ?.takeIf { it.isFinite() && it >= 0 }?.div(1000.0),
             artifacts = artifacts,
             harnessSuppressed = value.bool("harnessSuppressed") ?: false,
+            outcomeUnknown = value.bool("outcomeUnknown") == true || value.string("outcomeUnknown") == "true",
         )
     }
 
@@ -3915,6 +3945,218 @@ internal object ConversationWire {
 
     private fun JsonObject.long(key: String): Long? =
         (this[key] as? JsonPrimitive)?.longOrNull
+}
+
+/** Per-run workspace file-change receipts (⇄ iOS RunFileChangeList.consume,
+ * narrowed to the ANDROID producer vocabulary in
+ * `FloeWorkspace/Tools/FileWriteTools.swift`, `FileManageTools.swift` and
+ * `WorkspacePublishOutputTool.swift`).
+ *
+ * The projection never invents a change from model prose, artifact metadata
+ * or a workspace path: one change exists only where the run's OWN durable
+ * toolResult event carries BOTH `status == "ok"` AND one of the sealed
+ * effect receipts, in the exact shapes those tools commit:
+ *   * `workspace.createFile`  → `created=<path> bytes=N sha256=… mtime=…`
+ *   * `workspace.writeFile`   → `written=<path> bytes=N sha256=… mtime=…`
+ *   * `workspace.applyPatch`  → `patched=<path> hunks=N added=N removed=N sha256=…`
+ *   * `workspace.moveFile`    → `moved=<from> -> <to>`
+ *   * `workspace.copyFile`    → `copied=<from> -> <to>`
+ *   * `workspace.deleteFile`  → `deleted=<path> recursive=<bool>`
+ *   * `workspace.publishOutput` → `published=…` marks a file THIS run
+ *     already changed as delivered (the request path is read from the paired
+ *     toolRequest's redacted input arguments). Publishing an existing file
+ *     alone is not a workspace write, so it never mints a change row.
+ * Anything else — unknown tools, malformed receipts, interrupted results
+ * (`status` != "ok"), and the explicit iOS `change=unchanged saved=true`
+ * no-op marker — produces nothing. `workspace.createDirectory` also emits a
+ * `created=` string; the strict tool gate keeps it out of the FILE change
+ * list. Parsed paths are re-validated (relative, no `..`/NUL) before they
+ * may render, and they stay DISPLAY-ONLY: no code path turns one into a
+ * filesystem read.
+ *
+ * Merge discipline (mirrors the iOS run-local group): first-seen order is
+ * kept; a later receipt for the same path merges into its entry; a delete of
+ * a file this run added cancels the entry (net no-op); a move folds the
+ * origin entry into the destination (an added origin stays added at the new
+ * path). A retried call keeps every genuine earlier receipt: the ledger
+ * consumes ALL ok results in sequence order, so an ok result followed by a
+ * later failed retry leaves the earlier change visible (⇄ db3d1b4ee). */
+internal object RunFileChangeReceipts {
+
+    private const val TOOL_CREATE = "workspace.createFile"
+    private const val TOOL_WRITE = "workspace.writeFile"
+    private const val TOOL_PATCH = "workspace.applyPatch"
+    private const val TOOL_APPEND = "workspace.appendFile"
+    private const val TOOL_REPLACE = "workspace.replaceText"
+    private const val TOOL_MOVE = "workspace.moveFile"
+    private const val TOOL_COPY = "workspace.copyFile"
+    private const val TOOL_DELETE = "workspace.deleteFile"
+    private const val TOOL_PUBLISH = "workspace.publishOutput"
+
+    private val CHANGE_TOOLS = setOf(
+        TOOL_CREATE, TOOL_WRITE, TOOL_PATCH, TOOL_APPEND, TOOL_REPLACE,
+        TOOL_MOVE, TOOL_COPY, TOOL_DELETE, TOOL_PUBLISH,
+    )
+
+    /** The explicit no-op write marker honored for shared/legacy receipts. */
+    private const val UNCHANGED_MARKER = " change=unchanged saved=true"
+
+    /** All recorded events of ONE run, in stored sequence order. */
+    fun changesFor(events: List<RunEventUi>): List<RunFileChangeUi> {
+        val publicationPaths = HashMap<String, String>()
+        val createOnlyCalls = HashSet<String>()
+        val files = LinkedHashMap<String, Entry>()
+        fun record(path: String, action: String, tool: String) {
+            val key = path
+            val existing = files[key]
+            if (existing == null) {
+                files[key] = Entry(path, action, tool)
+                return
+            }
+            // Merge into the run-local entry (iOS RunFileChangeList.record).
+            if (existing.action == RunFileChangeUi.ACTION_ADDED &&
+                action == RunFileChangeUi.ACTION_DELETED) {
+                files.remove(key)
+                return
+            }
+            existing.action = when {
+                action == RunFileChangeUi.ACTION_DELIVERED -> existing.action
+                existing.action == RunFileChangeUi.ACTION_ADDED &&
+                    action in setOf(RunFileChangeUi.ACTION_EDITED, RunFileChangeUi.ACTION_SAVED) ->
+                    existing.action
+                existing.action == RunFileChangeUi.ACTION_DELETED &&
+                    action == RunFileChangeUi.ACTION_ADDED -> RunFileChangeUi.ACTION_EDITED
+                else -> action
+            }
+        }
+        for (event in events) {
+            val tool = event.tool ?: continue
+            if (tool.toolName !in CHANGE_TOOLS) continue
+            when (event.kind) {
+                RunEventKindUi.TOOL_REQUEST -> {
+                    if (tool.statusRaw != "pending") continue
+                    if (tool.toolName == TOOL_PUBLISH) {
+                        publicationPath(tool.inputSummary)?.let { publicationPaths[tool.callId] = it }
+                    } else if (tool.toolName == TOOL_CREATE) {
+                        createOnlyCalls.remove(tool.callId)
+                        val args = receiptArguments(tool.inputSummary)
+                        val overwrite = args?.get("overwrite")
+                        if (args != null && (overwrite == null || overwrite == kotlinx.serialization.json.JsonNull ||
+                                (overwrite as? JsonPrimitive)?.booleanOrNull == false)) {
+                            createOnlyCalls.add(tool.callId)
+                        }
+                    }
+                }
+                RunEventKindUi.TOOL_RESULT -> {
+                    if (tool.statusRaw != "ok" || tool.outcomeUnknown) continue
+                    val summary = tool.resultSummary ?: continue
+                    if (summary.contains(UNCHANGED_MARKER)) continue
+                    when (tool.toolName) {
+                        TOOL_CREATE -> receiptPath(summary, "created=", " bytes=")
+                            ?.let { path ->
+                                // Overwrite-enabled saves use the same producer
+                                // prefix as insert-only creates, including old receipts.
+                                val action = if (tool.callId in createOnlyCalls) RunFileChangeUi.ACTION_ADDED
+                                    else RunFileChangeUi.ACTION_SAVED
+                                record(path, action, TOOL_CREATE)
+                            }
+                        TOOL_WRITE -> receiptPath(summary, "written=", " bytes=")
+                            ?.let { record(it, RunFileChangeUi.ACTION_EDITED, TOOL_WRITE) }
+                        TOOL_PATCH -> receiptPath(summary, "patched=", " hunks=")
+                            ?.let { record(it, RunFileChangeUi.ACTION_EDITED, TOOL_PATCH) }
+                        TOOL_APPEND, TOOL_REPLACE -> receiptPath(summary, "edited=", " bytes=")
+                            ?.let { record(it, RunFileChangeUi.ACTION_EDITED, tool.toolName) }
+                        TOOL_DELETE -> receiptPath(summary, "deleted=", " recursive=")
+                            ?.let { record(it, RunFileChangeUi.ACTION_DELETED, TOOL_DELETE) }
+                        TOOL_MOVE -> {
+                            val pair = arrowPair(summary, "moved=") ?: continue
+                            // Fold the origin entry into the destination: an
+                            // added origin stays added at its new path.
+                            val origin = pair.first
+                            val target = pair.second
+                            val previous = files.remove(origin)
+                            if (previous != null && origin != target) {
+                                val carried = if (previous.action == RunFileChangeUi.ACTION_ADDED)
+                                    RunFileChangeUi.ACTION_ADDED else RunFileChangeUi.ACTION_MOVED
+                                val merged = files[target]
+                                if (merged == null) {
+                                    files[target] = Entry(target, carried, TOOL_MOVE)
+                                } else {
+                                    merged.action = carried
+                                }
+                            } else {
+                                record(target, RunFileChangeUi.ACTION_MOVED, TOOL_MOVE)
+                            }
+                        }
+                        TOOL_COPY -> {
+                            val pair = arrowPair(summary, "copied=") ?: continue
+                            // The destination did not exist before the run:
+                            // the copy genuinely added it.
+                            record(pair.second, RunFileChangeUi.ACTION_ADDED, TOOL_COPY)
+                        }
+                        TOOL_PUBLISH -> {
+                            if (!summary.startsWith("published=")) continue
+                            val requested = publicationPaths.remove(tool.callId) ?: continue
+                            // Delivering an already-changed file: mark it; a
+                            // bare publish of an untouched file is not a write.
+                            if (files.containsKey(requested)) {
+                                record(requested, RunFileChangeUi.ACTION_DELIVERED, TOOL_PUBLISH)
+                            }
+                        }
+                    }
+                }
+                else -> Unit
+            }
+        }
+        return files.values.map { RunFileChangeUi("path:${it.path}", it.path, it.action, it.tool) }
+    }
+
+    private class Entry(val path: String, var action: String, val tool: String)
+
+    /** `<prefix><path><delimiter>…` → the validated display path, else null. */
+    private fun receiptPath(summary: String, prefix: String, delimiter: String): String? {
+        if (!summary.startsWith(prefix)) return null
+        val end = summary.indexOf(delimiter, startIndex = prefix.length)
+        if (end < 0) return null
+        return displayPath(summary.substring(prefix.length, end))
+    }
+
+    /** `<prefix><from> -> <to>[ network=true]` → the validated pair. */
+    private fun arrowPair(summary: String, prefix: String): Pair<String, String>? {
+        if (!summary.startsWith(prefix)) return null
+        val body = summary.substring(prefix.length)
+        val split = body.lastIndexOf(" -> ")
+        if (split < 0) return null
+        val from = displayPath(body.substring(0, split)) ?: return null
+        var to = body.substring(split + 4)
+        val network = to.indexOf(" network=true")
+        if (network >= 0) to = to.substring(0, network)
+        val target = displayPath(to) ?: return null
+        return from to target
+    }
+
+    /** The redacted publish arguments (`{"path":"…"}`) → the request path. */
+    private fun publicationPath(inputSummary: String?): String? {
+        val parsed = receiptArguments(inputSummary) ?: return null
+        val path = (parsed["path"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.contentOrNull ?: return null
+        return displayPath(path)
+    }
+
+    private fun receiptArguments(inputSummary: String?): JsonObject? = inputSummary?.let { raw ->
+        runCatching { kotlinx.serialization.json.Json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+    }
+
+    /** Defense-in-depth display validation (⇄ iOS RunFileChangeList
+     * .relativePath): relative, no `..`/`.` litter, no NUL, non-empty.
+     * A receipt that cannot produce a clean display path never renders. */
+    private fun displayPath(raw: String): String? {
+        if (raw.isEmpty() || raw.startsWith("/") || raw.startsWith("~") ||
+            raw.contains('\u0000')) return null
+        val pieces = raw.split('/').filter { it.isNotEmpty() && it != "." }
+        if (pieces.isEmpty() || pieces.any { it == ".." }) return null
+        return pieces.joinToString("/")
+    }
 }
 
 class HistoryPage(

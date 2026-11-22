@@ -194,6 +194,88 @@ internal fun List<TimelineRowUi>.runOutputIsActionable(card: RunOutputCardUi): B
 
 /* --------------------------- timeline rows ---------------------------- */
 
+/** The per-run verified workspace file-change surface (⇄ iOS
+ * RunFileChangesDisclosure). Pure gate: closed action vocabulary →
+ * localized caption resource; the composable renders ONLY what the host
+ * projection proved from genuine receipts and never turns a path into a
+ * filesystem read. */
+internal object RunFileChangePresentation {
+
+    fun actionLabelRes(actionRaw: String): Int = when (actionRaw) {
+        RunFileChangeUi.ACTION_ADDED -> R.string.run_file_change_added
+        RunFileChangeUi.ACTION_EDITED -> R.string.run_file_change_edited
+        RunFileChangeUi.ACTION_MOVED -> R.string.run_file_change_moved
+        RunFileChangeUi.ACTION_DELETED -> R.string.run_file_change_deleted
+        RunFileChangeUi.ACTION_SAVED -> R.string.run_file_change_saved
+        RunFileChangeUi.ACTION_DELIVERED -> R.string.run_file_change_delivered
+        else -> R.string.run_file_change_edited
+    }
+}
+
+/** One run's verified file changes: a compact header plus hairline rows of
+ * path + action. Display-only receipts — no preview is invented here; the
+ * sealed generated outputs of the same run render as the neighboring
+ * [RunOutputGroupRow] cards under their authoritative output IDs. */
+@Composable
+internal fun RunFileChangesRow(
+    row: TimelineRowUi.RunFileChanges,
+    holder: ConversationFlowHolder,
+    modifier: Modifier = Modifier,
+) {
+    val colors = Floe.colors
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconGlyph(FloeIcons.Pencil, colors.secondaryLabel, 14.dp)
+            FloeText(
+                text = if (row.changes.size == 1) {
+                    stringResource(R.string.run_file_changes_header_one)
+                } else {
+                    stringResource(R.string.run_file_changes_header_many, row.changes.size)
+                },
+                style = Floe.typography.evidence,
+                color = colors.secondaryLabel,
+            )
+        }
+        row.changes.forEach { change ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(FloeLayout.BubbleCorner))
+                    .background(colors.sectionCardSurface)
+                    .border(0.5.dp, colors.chromeHairline, RoundedCornerShape(FloeLayout.BubbleCorner))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    FloeText(
+                        text = change.path,
+                        style = Floe.typography.metadata,
+                        color = colors.label,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                FloeText(
+                    text = stringResource(RunFileChangePresentation.actionLabelRes(change.actionRaw)),
+                    style = Floe.typography.evidence,
+                    color = when (change.actionRaw) {
+                        RunFileChangeUi.ACTION_DELETED -> colors.pending
+                        RunFileChangeUi.ACTION_DELIVERED -> colors.success
+                        else -> colors.secondaryLabel
+                    },
+                )
+            }
+        }
+    }
+}
+
 /** One run's per-item sealed outputs: a compact hairline card per file with
  * native icon/typography, real availability states and only the actions the
  * host actually proved. */

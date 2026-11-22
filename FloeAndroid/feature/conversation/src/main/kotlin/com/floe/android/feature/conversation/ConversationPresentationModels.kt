@@ -115,6 +115,7 @@ data class ToolEventProjectionUi(
     /** Harness suppression is host-authoritative protocol bookkeeping; the
      * projection marks it so the timeline keeps skipping the paired rows. */
     val harnessSuppressed: Boolean = false,
+    val outcomeUnknown: Boolean = false,
 )
 
 /** One SEALED per-item run output ("this run produced this user file"), as
@@ -139,6 +140,35 @@ data class RunOutputCardUi(
      * "saving" | "saved" | "cancelled" | "failed" | "opening". */
     val actionStateRaw: String? = null,
 )
+
+/** One verified per-run workspace file change (⇄ iOS RunFileChange), as the
+ * host re-derived it from the run's OWN durable toolResult success receipts.
+ * [path] is a DISPLAY-ONLY workspace-relative receipt label: it never
+ * authorizes a filesystem read and never re-enters the workspace guard —
+ * the row proves "this run genuinely added/changed this file", nothing
+ * more. Generated (sealed) outputs stay in [RunOutputCardUi] under their
+ * authoritative per-run output IDs; a publish can only mark a file this run
+ * already changed as [ACTION_DELIVERED], never mint a workspace write.
+ * [actionRaw] is the closed vocabulary added/edited/moved/deleted/saved/
+ * delivered; the presentation localizes it, never re-interprets it. */
+data class RunFileChangeUi(
+    /** Stable row key within one run's list ("path:<path>"; a path appears
+     * once — later receipts for it merge into the same entry). */
+    val id: String,
+    val path: String,
+    val actionRaw: String,
+    /** The producing tool name (bounded diagnostics vocabulary only). */
+    val toolName: String,
+) {
+    companion object {
+        const val ACTION_ADDED = "added"
+        const val ACTION_EDITED = "edited"
+        const val ACTION_MOVED = "moved"
+        const val ACTION_DELETED = "deleted"
+        const val ACTION_SAVED = "saved"
+        const val ACTION_DELIVERED = "delivered"
+    }
+}
 
 /** One persisted run event projected for display. */
 data class RunEventUi(
@@ -1145,6 +1175,18 @@ sealed interface TimelineRowUi {
         val scanTruncated: Boolean = false,
     ) : TimelineRowUi {
         override val id get() = "runOutputs.$runId"
+    }
+
+    /** The workspace files this run verifiably added/changed (⇄ iOS
+     * RunFileChangesDisclosure), rendered beside the same run's recorded
+     * activity and its [RunOutputGroup]. [changes] come only from genuine
+     * success/effect receipts; the paths are display-only and never become
+     * filesystem reads. Empty runs emit no row. */
+    data class RunFileChanges(
+        val runId: String,
+        val changes: List<RunFileChangeUi>,
+    ) : TimelineRowUi {
+        override val id get() = "runFileChanges.$runId"
     }
 
     data class Terminal(val event: RunEventUi) : TimelineRowUi {

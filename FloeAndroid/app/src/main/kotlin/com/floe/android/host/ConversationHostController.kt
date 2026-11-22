@@ -6567,11 +6567,17 @@ class ConversationHostController internal constructor(
                                     if (frame != null) entry.builder.applyRecordedEvents(runID, listOf(frame),
                                         page.hasEarlier, browsingEarlier = beforeSequence != null)
                                     else entry.builder.actionError(failure ?: "eventProtocolMismatch")
+                                    refreshRunOutputsAfterRecordedEvents(
+                                        entry, session.conversationId, session.sessionEpoch, runID)
                                     entry.holder.applyHostSnapshot(entry.builder.build())
                                 }
                             })
                         return@trackOperation
-                    } else entry.builder.applyRecordedEvents(runID, page.frames, page.hasEarlier, browsingEarlier = beforeSequence != null)
+                    } else {
+                        entry.builder.applyRecordedEvents(runID, page.frames, page.hasEarlier, browsingEarlier = beforeSequence != null)
+                        refreshRunOutputsAfterRecordedEvents(
+                            entry, session.conversationId, session.sessionEpoch, runID)
+                    }
                 }
                 is HostOperationOutcome.Rejected -> entry.builder.actionError(outcome.code)
                 is HostOperationOutcome.Failed -> entry.builder.actionError(outcome.code)
@@ -8795,6 +8801,25 @@ class ConversationHostController internal constructor(
     /** Bounded cold-load / terminal refresh window for owned-output cards. */
     private val runOutputRefreshMaxRuns = 24
 
+    /** D04 history fill: recorded events just landed for a run whose owned
+     * output view this session never requested — the bounded eager window
+     * only covers the recent cold-load tail, so an older run reopened on
+     * demand (historical selection beyond that window, earlier-page
+     * browsing, a scheduled-run focus) must fill its sealed output cards
+     * itself. One request per run per session (the builder marks the run on
+     * ANY native answer, including the honest empty one); the read is the
+     * SAME verified owned reader the eager path uses and its reply replaces
+     * the card view idempotently. */
+    private fun refreshRunOutputsAfterRecordedEvents(
+        entry: ConversationFlowHolderEntry,
+        conversationId: String,
+        sessionEpoch: Long,
+        runID: String,
+    ) {
+        if (!entry.builder.runOutputRefreshNeeded(runID)) return
+        refreshRunOutputCards(entry, conversationId, sessionEpoch, listOf(runID))
+    }
+
     private fun isCanonicalUuid(raw: String): Boolean = runCatching {
         java.util.UUID.fromString(raw).toString().equals(raw, ignoreCase = true)
     }.getOrDefault(false)
@@ -8817,6 +8842,9 @@ class ConversationHostController internal constructor(
         val capped = runIDs.filter { isCanonicalUuid(it) }.distinct().take(runOutputRefreshMaxRuns)
         if (capped.isEmpty()) return
         if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return
+        // Record the accepted request before the async read: a racing
+        // recorded-event read for the same run must not duplicate it.
+        entry.builder.markRunOutputRefreshRequested(capped)
         host.scope.launch(host.ioDispatcher) {
             for (runID in capped) {
                 if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@launch

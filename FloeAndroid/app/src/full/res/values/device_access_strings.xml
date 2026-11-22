@@ -31,9 +31,9 @@
     <string name="device_access_active_waiting">Waiting for you</string>
     <string name="device_access_active_taken_over">Taken over</string>
     <string name="device_access_active_stopping">Stopping</string>
-    <string name="device_access_stop_task">Stop</string>
+    <string name="device_access_stop_task">Stop task</string>
     <string name="device_access_take_over">Take over</string>
-    <string name="device_access_take_over_hint">Taking over blocks new actions and leaves the task for your review.</string>
+    <string name="device_access_take_over_hint">Take over to pause device actions. Hand back when ready.</string>
 
     <string name="device_access_screen_section">Screen content</string>
     <string name="device_access_screen_hint">Choose when the active task may see the screen. Nothing is recorded continuously.</string>

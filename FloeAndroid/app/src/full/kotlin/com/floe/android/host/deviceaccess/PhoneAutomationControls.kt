@@ -107,7 +107,7 @@ internal class PhoneAutomationControls(
     private val context: Context,
     private val act: (PhoneControlOwner, Action) -> Unit,
     private val captureTakeover: (PhoneControlOwner) -> OverlayTakeoverBinding?,
-    private val takeOver: (PhoneControlOwner, OverlayTakeoverBinding) -> Unit,
+    private val takeOver: (PhoneControlOwner, OverlayTakeoverBinding, Boolean) -> Unit,
     private val canPresent: (PhoneControlOwner) -> Boolean,
     private val ownerStillLive: (PhoneControlOwner) -> Boolean,
     private val approvalStillCurrent: (DeviceApprovalIdentity) -> Boolean,
@@ -121,7 +121,7 @@ internal class PhoneAutomationControls(
     private var token = UUID.randomUUID().toString()
     private var takeoverBinding: OverlayTakeoverBinding? = null
     private var deferredClear: Runnable? = null
-    enum class Action { PAUSE, RESUME, TAKE_OVER }
+    enum class Action { PAUSE, RESUME }
 
     private var bubble: FrameLayout? = null
     private var bubbleProgress: ProgressBar? = null
@@ -447,10 +447,10 @@ internal class PhoneAutomationControls(
             if (owner == null || token != receivedToken) return@deliver
             val current = owner ?: return@deliver
             // A physical tap can fence Accessibility before this callback.
-            // The pre-bound token authorizes only this exact owner's Stop.
-            if (action == "stop") {
+            // The pre-bound token still identifies the exact interrupted run.
+            if (action == "stop" || (action == "pause" && !paused)) {
                 val binding = takeoverBinding
-                if (binding != null) takeOver(current, binding)
+                if (binding != null) takeOver(current, binding, action == "stop")
                 else android.widget.Toast.makeText(context, R.string.phone_automation_control_changed,
                     android.widget.Toast.LENGTH_SHORT).show()
                 return@deliver
@@ -459,12 +459,7 @@ internal class PhoneAutomationControls(
                 clear(expectedOwner = current, retainApprovalRegistration = ownerStillLive(current))
                 return@deliver
             }
-            val accepted = when (action) {
-                "pause" -> if (!paused) Action.PAUSE else return@deliver
-                "resume" -> if (paused) Action.RESUME else return@deliver
-                else -> return@deliver
-            }
-            act(current, accepted)
+            if (action == "resume" && paused) act(current, Action.RESUME)
         }
         if (Looper.myLooper() == main.looper) deliver() else main.post { deliver() }
     }

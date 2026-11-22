@@ -71,11 +71,26 @@ object C01LinuxEnvironmentOwner {
         val action = control.optString("action")
         return when (action) {
             "catalog" -> catalog(attached, control)
+            "preparation" -> JSONObject().put("phase", phaseName(attached.setup.state.value.phase))
             "status" -> status(attached, control)
             "start" -> start(attached, control)
             "stop" -> stop(attached, control)
             else -> refusal("unknownAction")
         }
+    }
+
+    // The preparation query reads the same phases as status without connecting
+    // to a guest that may still be installing.
+    private fun phaseName(phase: LocalRuntimeSetupHost.Phase): String = when (phase) {
+        LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING -> "pending"
+        LocalRuntimeSetupHost.Phase.INSTALLING -> "installing"
+        LocalRuntimeSetupHost.Phase.INSTALLED -> "installed"
+        LocalRuntimeSetupHost.Phase.COMPONENT_REQUIRED -> "componentRequired"
+        LocalRuntimeSetupHost.Phase.SETUP_REQUIRED -> "setupRequired"
+        LocalRuntimeSetupHost.Phase.INSTALL_REQUIRED -> "installRequired"
+        LocalRuntimeSetupHost.Phase.STOPPING -> "stopping"
+        LocalRuntimeSetupHost.Phase.FAILED -> "failed"
+        LocalRuntimeSetupHost.Phase.UNKNOWN -> "unknown"
     }
 
     /** Metadata only, scoped by the original runtime workspace identity.
@@ -148,19 +163,9 @@ object C01LinuxEnvironmentOwner {
         val state = currentSetupState(attached)
             ?: return pending(attached, control, "Checking the installed Linux environment. Try again shortly.")
         val runtime = runtimeStatus(attached.context)
-        val phase = when (state.phase) {
-            LocalRuntimeSetupHost.Phase.COMPONENT_REQUIRED -> "componentRequired"
-            LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING -> "pending"
-            LocalRuntimeSetupHost.Phase.SETUP_REQUIRED -> "setupRequired"
-            LocalRuntimeSetupHost.Phase.INSTALL_REQUIRED -> "installRequired"
-            LocalRuntimeSetupHost.Phase.INSTALLING -> "installing"
-            LocalRuntimeSetupHost.Phase.INSTALLED -> if (runtime?.optBoolean("active") == true) "ready" else "installed"
-            LocalRuntimeSetupHost.Phase.STOPPING -> "stopping"
-            LocalRuntimeSetupHost.Phase.FAILED -> "failed"
-            LocalRuntimeSetupHost.Phase.UNKNOWN -> "unknown"
-        }
-        val componentMatches = runCatching { RuntimeComponentMatch.matches(attached.context) }.getOrDefault(false)
         val installed = state.phase == LocalRuntimeSetupHost.Phase.INSTALLED
+        val phase = if (installed && runtime?.optBoolean("active") == true) "ready" else phaseName(state.phase)
+        val componentMatches = runCatching { RuntimeComponentMatch.matches(attached.context) }.getOrDefault(false)
         return JSONObject()
             .put("phase", phase)
             .put("environmentID", control.optString("environmentID").take(128))

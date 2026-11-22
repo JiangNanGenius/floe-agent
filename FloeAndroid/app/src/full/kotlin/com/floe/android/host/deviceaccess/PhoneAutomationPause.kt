@@ -31,6 +31,7 @@ internal class PhoneAutomationPause(initial: Snapshot? = null) {
     }
     @Volatile var snapshot: Snapshot? = initial
         private set
+    @Volatile private var handback: Snapshot? = null
 
     @Synchronized fun pause(owner: PhoneControlOwner, now: Long): Snapshot =
         Snapshot(owner, maxOf(1, now), UUID.randomUUID()).also { snapshot = it }
@@ -52,10 +53,12 @@ internal class PhoneAutomationPause(initial: Snapshot? = null) {
         return true
     }
 
-    @Synchronized fun resume(owner: PhoneControlOwner, expectedID: UUID, persistClear: () -> Boolean = { true }): Boolean {
+    @Synchronized fun resume(owner: PhoneControlOwner, expectedID: UUID, reread: Boolean = true,
+        persistClear: () -> Boolean = { true }): Boolean {
         val current = snapshot ?: return false
         if (current.owner != owner || current.id != expectedID) return false
         if (!persistClear()) return false
+        handback = current.takeIf { reread }
         snapshot = null
         return true
     }
@@ -66,8 +69,18 @@ internal class PhoneAutomationPause(initial: Snapshot? = null) {
         persistClear: () -> Boolean = { true }): Boolean {
         val current = snapshot ?: return false
         if (current.owner != owner || current.id != expectedID || answeredAt <= current.atMillis) return false
-        if (!persistClear()) return false
-        snapshot = null
-        return true
+        return resume(owner, current.id, persistClear = persistClear)
+    }
+
+    fun handbackID(owner: PhoneControlOwner): UUID? = handback?.takeIf { it.owner == owner }?.id
+
+    /** Only an actual capture started under this handback can reopen actions.
+     * Paging an old observation and callbacks from an earlier pause cannot. */
+    @Synchronized fun observedAfterHandback(owner: PhoneControlOwner, id: UUID) {
+        if (handbackID(owner) == id && !isPaused(owner)) handback = null
+    }
+
+    @Synchronized fun retireHandback(owner: PhoneControlOwner? = null) {
+        if (owner == null || handback?.owner == owner) handback = null
     }
 }

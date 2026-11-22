@@ -115,7 +115,7 @@ enum class DeviceAccessScreenScopeUi { OFF, CURRENT_TASK, UNTIL_STOPPED }
 enum class DeviceAccessTaskPhaseUi { RUNNING, WAITING_FOR_USER, TAKEN_OVER, STOPPING }
 
 /** User-only arm state for phone control on the visible task. */
-enum class DeviceAccessTaskControlUi { OFF, ARMED, STOPPED }
+enum class DeviceAccessTaskControlUi { OFF, ARMED, PAUSED, STOPPED }
 
 enum class DeviceAccessPairingDiscoveryUi { IDLE, DISCOVERING, FOUND, UNAVAILABLE }
 
@@ -374,6 +374,7 @@ class DeviceAccessCallbacks(
     val onReleaseSensitiveGuard: (String) -> Unit = {},
     val onStopActiveTask: () -> Unit = {},
     val onTakeOverActiveTask: () -> Unit = {},
+    val onReturnActiveTask: () -> Unit = {},
     val onAllowedPackagesChange: (Set<String>) -> Unit = {},
     val onFileRootsChange: (Set<String>) -> Unit = {},
     /** Adds one explicit other-app data folder while Root is live. The host
@@ -627,7 +628,8 @@ object DeviceAccessPresentation {
 
     fun canStopTask(state: DeviceAccessPresentationState): Boolean =
         state.activeTask != null &&
-            state.taskControl == DeviceAccessTaskControlUi.ARMED &&
+            (state.taskControl == DeviceAccessTaskControlUi.ARMED ||
+                state.taskControl == DeviceAccessTaskControlUi.PAUSED) &&
             state.busy == DeviceAccessBusyUi.NONE
 
     fun canTakeOverTask(state: DeviceAccessPresentationState): Boolean =
@@ -1289,12 +1291,16 @@ fun DeviceAccessSettingsPage(
         // no interactive affordance leaves the card.
         val task = state.activeTask
         val taskArmed = state.taskControl == DeviceAccessTaskControlUi.ARMED
+        val taskPaused = state.taskControl == DeviceAccessTaskControlUi.PAUSED
         FloeSettingsSectionCard(
             title = stringResource(R.string.device_access_active_section),
             caption = when {
                 task == null -> null
                 taskArmed -> (@Composable {
                     CaptionText(stringResource(R.string.device_access_take_over_hint))
+                })
+                taskPaused -> (@Composable {
+                    CaptionText(stringResource(R.string.phone_automation_paused))
                 })
                 else -> (@Composable {
                     Column {
@@ -1346,7 +1352,7 @@ fun DeviceAccessSettingsPage(
                         )
                     }
                 })
-                if (taskArmed) {
+                if (taskArmed || taskPaused) {
                     // Stop and take over are sibling controls: one wrapping
                     // capsule row, each keeping its own honest enabled state.
                     FlowRow(
@@ -1360,9 +1366,10 @@ fun DeviceAccessSettingsPage(
                             enabled = DeviceAccessPresentation.canStopTask(state),
                         )
                         PageCapsuleButton(
-                            stringResource(R.string.device_access_take_over),
-                            onClick = callbacks.onTakeOverActiveTask,
-                            enabled = DeviceAccessPresentation.canTakeOverTask(state),
+                            stringResource(if (taskPaused) R.string.phone_automation_resume else R.string.device_access_take_over),
+                            onClick = if (taskPaused) callbacks.onReturnActiveTask else callbacks.onTakeOverActiveTask,
+                            enabled = if (taskPaused) state.busy == DeviceAccessBusyUi.NONE
+                                else DeviceAccessPresentation.canTakeOverTask(state),
                         )
                     }
                 } else {

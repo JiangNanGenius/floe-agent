@@ -141,6 +141,78 @@ extension FacadeRunDomain {
         return (shape, observations)
     }
 
+    // MARK: - Execution-target eligibility (Linux preparation/upgrade recheck)
+
+    /// Eligibility of a parked run's PINNED execution target for an
+    /// automatic continuation, decided against the task's CURRENT target.
+    enum ResumeExecutionTargetVerdict: Sendable, Equatable {
+        /// No pin exists (a park that predates pinning) or the pin matches
+        /// the live target identity AND the live root generation.
+        case eligible
+        /// The pinned environment identity, target revision or root
+        /// generation no longer matches the live target. The automatic
+        /// continuation surfaces the change and NEVER adopts a different
+        /// environment by itself: unlike the iOS live-binding path there is
+        /// no committed retained-rebuild receipt for a parked run, so the run
+        /// stays parked as the visible recoverable wait until an explicit
+        /// user Continue decides the new environment.
+        case changed
+        /// The store could not prove the target state. Never treated as
+        /// eligible by an automatic callback.
+        case unverifiable
+    }
+
+    /// Compare the run's durable pin with the task's current target through
+    /// the SAME generation-owned C02 authority the dispatch path uses. A nil
+    /// `executionTargets` component (older composition) honestly reports
+    /// `.eligible`: not observed is not proof of a change.
+    func resumeExecutionTargetVerdict(runID: UUID, taskID: UUID) async
+        -> ResumeExecutionTargetVerdict {
+        guard let domain = components.executionTargets?.domain else { return .eligible }
+        do {
+            guard let pin = try await domain.runTargetPin(runID: runID) else {
+                return .eligible
+            }
+            guard let target = try await domain.executionTarget(taskID: taskID) else {
+                // The environment the park pinned no longer resolves at all.
+                return .changed
+            }
+            // `C02RunTargetPin.matches` deliberately ignores the root
+            // generation, so the live generation is re-proved HERE through
+            // the existing authorities: the pinned value must belong to the
+            // generation this domain actually serves and the target must
+            // carry the same root epoch. A generation move with an otherwise
+            // identical target is still a changed authority.
+            guard pin.rootEpoch == target.rootEpoch,
+                  pin.rootEpoch == epoch else {
+                return .changed
+            }
+            return pin.matches(target) ? .eligible : .changed
+        } catch {
+            return .unverifiable
+        }
+    }
+
+    /// Durable, fence-neutral visibility for a refused automatic resume: a
+    /// `.notice` row (never a `status` row, so the park marker identity and
+    /// the resume fence are untouched) records WHY the run did not continue.
+    /// Best-effort: the typed refusal remains the authoritative answer.
+    func noteResumeRefusedExecutionTargetChanged(runID: UUID) async {
+        do {
+            _ = try await durable.runs.appendEvent(
+                runID: runID, kind: .notice,
+                payloadJSON: Self.jsonString([
+                    "notice": "resumeRefusedExecutionTargetChanged",
+                    "reason": "resumeRefusedExecutionTargetChanged",
+                    "recoverable": "true",
+                    // The event projection surfaces payload.message.
+                    "message": "The task's execution environment changed. Review the current environment before continuing. Completed work is preserved.",
+                ]))
+        } catch {
+            // Best-effort visibility; the typed refusal still reaches the caller.
+        }
+    }
+
     // MARK: - Automatic continuation
 
     /// Trusted dependency callback entry. Re-proves every boundary against
@@ -226,6 +298,39 @@ extension FacadeRunDomain {
         guard !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil,
               owners[runID] == nil else { return .fenced }
+        switch await resumeExecutionTargetVerdict(runID: runID, taskID: conversationID) {
+        case .eligible: break
+        case .unverifiable: return .unverified
+        case .changed:
+            await noteResumeRefusedExecutionTargetChanged(runID: runID)
+            return .refused(code: RunDomainError.Code.unsupportedRole.rawValue,
+                            reason: RunDomainError.Reason.environmentRoleUnresolvable.rawValue)
+        }
+        if dependencyRunsWaitingForLinux.contains(runID) { return .waiting([]) }
+        let savedTarget = try? await components.executionTargets?.domain.executionTarget(taskID: conversationID)
+        let localTarget = savedTarget?.kind == .localLinux ? savedTarget : nil
+        if let target = localTarget,
+           !Self.linuxPreflightPrerequisitesAreLive(LinuxReadinessIngress.shared.derivedFields()) {
+            let rootEpoch = epoch
+            let host = C01LinuxEnvironmentMailboxHost(epoch: { rootEpoch })
+            let phase = await host.preparationPhase()
+            if phase == .pending || phase == .installing {
+                dependencyRunsWaitingForLinux.insert(runID)
+                // Release the usual resume reservation while the installer
+                // owns work, so Stop and explicit Continue remain responsive.
+                // The wake re-enters the original admission from the beginning.
+                Task { [weak self] in
+                    await self?.wakeDependencyAfterLinuxPreparation(runID: runID, target: target, park: park)
+                }
+                return .waiting([])
+            }
+            // Installation can finish between the first check and the host
+            // reply. Honor newly verified readiness for this generation.
+            guard Self.linuxPreflightPrerequisitesAreLive(LinuxReadinessIngress.shared.derivedFields()) else {
+                await noteLinuxPreparationInterrupted(runID: runID)
+                return Self.resumeRefusal(RunDomainError(.capabilityNotUsable, .environmentRoleUnresolvable))
+            }
+        }
         let checkpoint: AgentCheckpoint
         do {
             guard let loaded = try await components.checkpoints.load(runID: runID),
@@ -312,6 +417,10 @@ extension FacadeRunDomain {
             return .refused(code: RunDomainError.Code.persistenceUnavailable.rawValue,
                             reason: RunDomainError.Reason.storeWriteFailed.rawValue)
         }
+        if localTarget != nil, !RuntimeFacadeLinuxBindings.shared.isCapabilityQualified {
+            await noteLinuxPreparationInterrupted(runID: runID)
+            return Self.resumeRefusal(RunDomainError(.capabilityNotUsable, .environmentRoleUnresolvable))
+        }
         // Durable re-proof before the ONE committed resume admission: the row
         // must still be checkpointed, the EXACT park marker must still be the
         // latest park (a Stop appends its own row and invalidates this
@@ -332,6 +441,28 @@ extension FacadeRunDomain {
         guard !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil,
               owners[runID] == nil else { return .fenced }
+
+        // Linux preparation/upgrade recheck (Android counterpart of the iOS
+        // live-execution-binding guard, commit 6a4582131): the parked run's
+        // pinned environment must still be the task's live target — same
+        // identity AND same live root generation — before the ONE committed
+        // admission. A change NEVER auto-continues: unlike iOS there is no
+        // committed retained-rebuild receipt for a parked run, so any change
+        // is surfaced as a typed, durably noticed refusal; the run stays
+        // parked and recoverable, and an explicit user Continue decides the
+        // new environment.
+        switch await resumeExecutionTargetVerdict(runID: runID,
+                                                  taskID: conversationID) {
+        case .eligible:
+            break
+        case .unverifiable:
+            return .unverified
+        case .changed:
+            await noteResumeRefusedExecutionTargetChanged(runID: runID)
+            return .refused(
+                code: RunDomainError.Code.unsupportedRole.rawValue,
+                reason: RunDomainError.Reason.environmentRoleUnresolvable.rawValue)
+        }
 
         // The ONE trusted lifecycle cause (system role, deterministic id).
         // It is persisted AFTER the resume CAS commits and BEFORE the runtime
@@ -403,6 +534,26 @@ extension FacadeRunDomain {
             releaseResumeAdmission(runID: runID)
             return hasOtherLiveConversationRun(conversationID: conversationID,
                                                excluding: runID) ? .busy : .fenced
+        }
+        // The foreground start awaited REAL OS work: a target migration may
+        // have landed inside that window. Re-prove the same eligibility and
+        // release the lease truthfully on any change — the resume CAS must
+        // never commit onto an environment the park did not pin.
+        switch await resumeExecutionTargetVerdict(runID: runID,
+                                                  taskID: conversationID) {
+        case .eligible:
+            break
+        case .unverifiable:
+            await releaseForegroundAdmission(runID: runID, epoch: epoch)
+            releaseResumeAdmission(runID: runID)
+            return .unverified
+        case .changed:
+            await noteResumeRefusedExecutionTargetChanged(runID: runID)
+            await releaseForegroundAdmission(runID: runID, epoch: epoch)
+            releaseResumeAdmission(runID: runID)
+            return .refused(
+                code: RunDomainError.Code.unsupportedRole.rawValue,
+                reason: RunDomainError.Reason.environmentRoleUnresolvable.rawValue)
         }
 
         var committedIncarnation: RunIncarnation?
@@ -581,6 +732,14 @@ extension FacadeRunDomain {
             preparedRunID: runID, service: service, goal: record.goal,
             resumeFrom: resumedCheckpoint)
         return .resumed
+    }
+
+    private func wakeDependencyAfterLinuxPreparation(runID: UUID, target: C02ExecutionTarget,
+                                                     park: RunDependencyParkMarker) async {
+        let prepared = (try? await awaitLocalLinuxPreparation(runID: runID, target: target, park: park)) == true
+        dependencyRunsWaitingForLinux.remove(runID)
+        guard prepared, await durableParkMarker(runID: runID) == park else { return }
+        _ = await resumeAwaitingDependencyInternal(runID: runID, conversationID: target.taskID)
     }
 
     /// A committed resume abandoned by the user's explicit Stop. The row was
