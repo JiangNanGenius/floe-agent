@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的 iOS 发布为 1.8.70（391）。** Apple 返回 `VALID`，Floe QA 可安装，GitHub 无签名包是最新版，实时 Feather 源已核对。 [391 交付记录](releases/builds/FLOE_1.8.70_BUILD391_DELIVERY.md)
+**最近已核验的 iOS 发布为 1.8.71（392）。** Apple 返回 `VALID`，Floe QA 可安装，GitHub 无签名包是最新版，实时 Feather 源已核对。 [392 交付记录](releases/builds/FLOE_1.8.71_BUILD392_DELIVERY.md)
 
 ## 依据与判定
 
@@ -12,6 +12,8 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+1.8.71（392）冻结在 `bfde5af4017664df8f203f8f850e9ec4e4e1aa2d`，交付 Floe QA、GitHub 和 Feather。涵盖设置向导的空密钥提示、协议排版和选中状态可读性修复。 [392 交付记录](releases/builds/FLOE_1.8.71_BUILD392_DELIVERY.md)
 
 1.8.70（391）冻结在 `041f4d9c3fc6625986cae7985e331cf0a47d8e1b`，进入 Floe QA、GitHub 和 Feather。1.8.69（390）保留为本地冻结候选，后由本版接替。 [391 交付记录](releases/builds/FLOE_1.8.70_BUILD391_DELIVERY.md)
 
