@@ -122,6 +122,16 @@ public final class ThreadHistoryPager: ObservableObject {
         publishMessages()
     }
 
+    /// Refreshes one durable same-ID edit without disturbing page coverage.
+    public func refreshPresentedMessage(id: UUID, conversationID: UUID, store: any ConversationStore,
+                                        fence: Fence) async throws {
+        let message = try await store.message(id: id, conversationID: conversationID)
+        try fence.guardCurrent()
+        if let message, state.replaceMessages([message]) {
+            publishMessages()
+        }
+    }
+
     /// Pages one earlier message window, exactly like the iPad "Load earlier".
     /// No-op when coverage already reaches the beginning of history.
     public func loadEarlierMessages(

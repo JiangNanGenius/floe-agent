@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
+import FloeModels
 
 /// Cumulative usage of one exact admitted run, never a request to resume or
 /// redefine its long-term Goal. Native Core derives these values from events.
@@ -48,6 +49,15 @@ struct GoalRunAdmissionPayload: Decodable {
     let goalRevision: Int?
     let goalDefinitionFingerprint: String?
     var isNativeAdmission: Bool { kind == "goalRoundAdmission" || state == "preparing" }
+
+    static func first(for goalID: UUID, in events: [RunEventRecord]) -> Self? {
+        for event in events.sorted(by: { $0.sequence < $1.sequence }) where event.kind == .status {
+            guard let admission = try? JSONDecoder().decode(Self.self, from: Data(event.payloadJSON.utf8)),
+                  admission.goalID == goalID, admission.isNativeAdmission else { continue }
+            return admission
+        }
+        return nil
+    }
 
     private enum CodingKeys: String, CodingKey {
         case kind, state, goalID, goalRevision, goalDefinitionFingerprint

@@ -55,11 +55,19 @@ struct MacThreadTranscript: View {
                 }
                 if let prompt = workspace.pendingPrompt { UserMessageBubble(text: prompt) }
                 if workspace.isSending && liveRun == nil {
-                    if let approval = workspace.pendingApproval { MacWorkspaceApprovalView(workspace: workspace, approval: approval) }
                     if !workspace.liveReasoning.isEmpty { ReasoningBlockView(text: workspace.liveReasoning, isStreaming: true) }
                     if !workspace.streamedText.isEmpty { AssistantMessageView(text: workspace.streamedText, isStreaming: true, allowsReadAloud: false) }
                     else if workspace.pendingApproval == nil { ModelResponseWaitingView() }
                 }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 4) {
+            if let approval = workspace.pendingApproval {
+                MacWorkspaceApprovalView(workspace: workspace, approval: approval)
+                    .frame(maxWidth: 720)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                    .background(FloeTheme.readingSurface)
             }
         }
         .task(id: workspace.isLoadingHistory ? nil : requestedMessageID) {
@@ -151,12 +159,7 @@ struct MacThreadTranscript: View {
                 liveFinishedTools: settledQuestionStatuses(runID: events.first?.runID),
                 pendingApprovals: workspace.pendingApproval.map { [$0.cardRequest] } ?? [],
                 decisions: decisions, conversationID: conversationID,
-                approvalPresentation: { approval in
-                    if let current = workspace.pendingApproval, current.cardRequest.id == approval.id {
-                        return AnyView(MacWorkspaceApprovalView(workspace: workspace, approval: current))
-                    }
-                    return nil
-                })
+                approvalPresentation: { _ in nil })
             outputLinks(for: events)
         case .terminal(let event):
             TerminalEventRow(event: event)
@@ -168,10 +171,8 @@ struct MacThreadTranscript: View {
             AssistantMessageView(text: workspace.streamedText, isStreaming: true, allowsReadAloud: false)
         case .liveThinking:
             ModelResponseWaitingView(title: RunStateLocalizer.responseWaitingTitle(for: liveRun?.state))
-        case .approval(let approval):
-            if let current = workspace.pendingApproval, current.cardRequest.id == approval.id {
-                MacWorkspaceApprovalView(workspace: workspace, approval: current)
-            }
+        case .approval:
+            EmptyView() // The review stays above the composer on Mac.
         }
     }
 

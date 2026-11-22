@@ -31,6 +31,7 @@ struct HostAgentWorkspaceView: View {
     static var smokeAttachmentFrames: [String: CGRect] = [:]
     static var smokeExpandFrame: CGRect?
     static var smokeHistoryContinueFrame: CGRect?
+    static var smokeGoalContinueFrame: CGRect?
     static var smokeLocatedMessageID: UUID?
     #endif
     @StateObject private var search: ThreadSearchModel
@@ -846,26 +847,82 @@ struct HostAgentWorkspaceView: View {
         return { workspace.runAcceptedPlan(snapshot) }
     }
 
+    /// iPad `ThreadDetailView.goalStatusRow` parity for the Mac card slice:
+    /// Continue is the primary action for an idle resumable goal, with Pause
+    /// kept reachable from the goal menu when both controls are eligible.
+    /// Progress, the paused-while-running note and the criteria/steps/evidence
+    /// list read only the saved goal fields.
     private func goalCard(_ goal: ConversationGoal) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let showsMenuPause = workspace.canContinueGoal(goal) && workspace.canPauseGoal(goal)
+        let canEditGoal = editableGoal?.id == goal.id && !workspace.isSending
+        // Concatenate before LocalizedStringKey: an interpolated literal key
+        // would be looked up as a format key and render raw on macOS.
+        let statusKey = "mac.agent.goal." + goal.status.rawValue
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Label("mac.agent.goalStatus", systemImage: "scope").font(.callout.weight(.semibold))
-                Text(LocalizedStringKey("mac.agent.goal.\(goal.status.rawValue)"))
+                Text(LocalizedStringKey(statusKey))
                     .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("mac.agent.goal.status")
                 Spacer(minLength: 0)
-                if workspace.canConfirmGoal(goal) {
-                    Button("mac.agent.confirmGoal", systemImage: "checkmark") { goalForConfirmation = goal }
-                        .accessibilityIdentifier("mac.agent.goal.confirm")
-                }
                 if workspace.canContinueGoal(goal) {
                     Button("mac.agent.continueGoal", systemImage: "play") { workspace.continueGoal(goal) }
                         .accessibilityIdentifier("mac.agent.goal.continue")
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { Self.smokeGoalContinueFrame = $0 })
+                        #endif
                 } else if workspace.canPauseGoal(goal) {
                     Button("mac.agent.pauseGoal", systemImage: "pause") { Task { await workspace.pauseGoal(goal) } }
                         .accessibilityIdentifier("mac.agent.goal.pause")
                 }
+                if workspace.canConfirmGoal(goal) {
+                    Button("mac.agent.confirmGoal", systemImage: "checkmark") { goalForConfirmation = goal }
+                        .accessibilityIdentifier("mac.agent.goal.confirm")
+                }
+                if showsMenuPause || canEditGoal {
+                    Menu {
+                        if showsMenuPause {
+                            Button("mac.agent.pauseGoal", systemImage: "pause") {
+                                Task { await workspace.pauseGoal(goal) }
+                            }
+                            .accessibilityIdentifier("mac.agent.goal.pause")
+                        }
+                        if canEditGoal {
+                            Button("mac.agent.editGoal", systemImage: "pencil") { goalToEdit = goal }
+                                .accessibilityIdentifier("mac.agent.goal.edit")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    }
+                    .accessibilityLabel("mac.agent.goalActions")
+                    .accessibilityIdentifier("mac.agent.goal.actions")
+                }
             }
-            Text(verbatim: goal.objective).lineLimit(2).help(goal.objective)
+            if canEditGoal {
+                Button { goalToEdit = goal } label: {
+                    Text(verbatim: goal.objective).lineLimit(2).help(goal.objective)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("mac.agent.editGoal")
+                .accessibilityValue(goal.objective)
+                .accessibilityIdentifier("mac.agent.goal.editSummary")
+            } else {
+                Text(verbatim: goal.objective).lineLimit(2).help(goal.objective)
+            }
+            let completedSteps = goal.steps.filter { $0.status == .completed }.count
+            ProgressView(value: Double(completedSteps), total: Double(max(1, goal.steps.count)))
+                .accessibilityLabel("mac.agent.goalProgress")
+                .accessibilityValue(Text("mac.agent.goalProgressValue \(completedSteps) \(max(1, goal.steps.count))"))
+                .accessibilityIdentifier("mac.agent.goal.progress")
+            if goal.status == .paused, workspace.isSending {
+                Text("mac.agent.goalPausedRunning")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("mac.agent.goal.pausedRunning")
+            }
             DisclosureGroup("mac.agent.goalCriteria") {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
@@ -875,6 +932,18 @@ struct HostAgentWorkspaceView: View {
                             } icon: {
                                 Image(systemName: criterion.isSatisfied ? "checkmark.circle" : "circle")
                             }
+                        }
+                        if !goal.steps.isEmpty {
+                            Text("mac.agent.goalStepList").font(.headline)
+                            ForEach(goal.steps) { step in
+                                Label {
+                                    Text(verbatim: step.title).lineLimit(1)
+                                        .help(step.title)
+                                } icon: {
+                                    Image(systemName: stepStatusSymbol(step.status))
+                                }
+                            }
+                            .accessibilityIdentifier("mac.agent.goal.steps")
                         }
                         if !goal.evidence.isEmpty {
                             Text("mac.agent.goalEvidence").font(.headline)
@@ -898,6 +967,18 @@ struct HostAgentWorkspaceView: View {
     private var editableGoal: ConversationGoal? {
         guard let goal = workspace.goal, !goal.status.isTerminal else { return nil }
         return goal
+    }
+
+    /// Saved step state shown in the goal disclosure, aligned with the
+    /// criterion icons: open circle until done, crossed out on failure.
+    private func stepStatusSymbol(_ status: GoalStepStatus) -> String {
+        switch status {
+        case .completed: "checkmark.circle"
+        case .failed: "xmark.circle"
+        case .skipped: "minus.circle"
+        case .inProgress: "circle.lefthalf.filled"
+        case .pending: "circle"
+        }
     }
 
     private func reasoningMenu(_ model: ModelProfile) -> some View {

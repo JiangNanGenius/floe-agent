@@ -2490,13 +2490,10 @@ public actor ConversationRunService {
     @discardableResult private func reserveGoal(_ goal: ConversationGoal, events: [RunEventRecord]) -> Bool {
         if let prior = goalRunReservation { return prior.goalID == goal.id && prior.runID == runID }
         var revision: Int?, fingerprint: String?
-        for event in events.sorted(by: { $0.sequence < $1.sequence }) where event.kind == .status {
-            guard let fields = try? JSONDecoder().decode(GoalRunAdmissionPayload.self, from: Data(event.payloadJSON.utf8)),
-                  fields.goalID == goal.id, fields.isNativeAdmission else { continue }
+        if let fields = GoalRunAdmissionPayload.first(for: goal.id, in: events) {
             revision = fields.goalRevision.flatMap { $0 > 0 ? $0 : nil }
             fingerprint = fields.goalDefinitionFingerprint
             if revision == nil || fingerprint?.range(of: "^[a-f0-9]{64}$", options: .regularExpression) == nil { fingerprint = nil }
-            break // First native admission wins; never mint one from a later edited Goal.
         }
         goalRunReservation = .init(goalID: goal.id, runID: runID, admissionRevision: revision, definitionFingerprint: fingerprint)
         return true

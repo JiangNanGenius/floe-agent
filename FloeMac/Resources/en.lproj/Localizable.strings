@@ -437,6 +437,11 @@
 "mac.agent.goalSteps" = "Completed Steps";
 "mac.agent.goalCriteria" = "Acceptance Criteria";
 "mac.agent.goalConfirmationFailed" = "The results couldn’t be confirmed. Check the steps and evidence, then try again.";
+"mac.agent.goalProgress" = "Goal progress";
+"mac.agent.goalProgressValue" = "%lld of %lld steps";
+"mac.agent.goalPausedRunning" = "Long-term advancement is paused. This round continues. Use Stop in the composer to end this round.";
+"mac.agent.goalActions" = "Goal actions";
+"mac.agent.goalStepList" = "Steps";
 
 "mac.provider.preset" = "Provider Type";
 "mac.provider.catalog.field" = "Provider";

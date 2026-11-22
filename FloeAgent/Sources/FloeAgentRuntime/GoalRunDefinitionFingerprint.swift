@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 import FloeCore
+import FloeModels
 
 /// Definition identity only. Runtime goal ID/owner is verified separately;
 /// changing status, progress, evidence or future budgets cannot rewrite the
@@ -36,5 +37,12 @@ public enum GoalRunDefinitionFingerprint {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return FloeDigest.sha256Hex(try encoder.encode(definition))
+    }
+
+    /// Compares a goal definition with the round's first native admission.
+    public static func matchesAdmission(_ goal: ConversationGoal, events: [RunEventRecord]) throws -> Bool {
+        guard let admission = GoalRunAdmissionPayload.first(for: goal.id, in: events),
+              let revision = admission.goalRevision, revision > 0 else { return false }
+        return try admission.goalDefinitionFingerprint == make(goal)
     }
 }

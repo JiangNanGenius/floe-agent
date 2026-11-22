@@ -438,6 +438,11 @@
 "mac.agent.goalSteps" = "已完成步骤";
 "mac.agent.goalCriteria" = "验收标准";
 "mac.agent.goalConfirmationFailed" = "无法确认验收。请检查待完成步骤和验收证据后重试。";
+"mac.agent.goalProgress" = "目标进度";
+"mac.agent.goalProgressValue" = "已完成 %lld/%lld 个步骤";
+"mac.agent.goalPausedRunning" = "长期目标已暂停。本轮继续执行。可用输入框的停止按钮结束本轮。";
+"mac.agent.goalActions" = "目标操作";
+"mac.agent.goalStepList" = "步骤";
 
 "mac.provider.preset" = "服务商类型";
 "mac.provider.catalog.field" = "服务商";

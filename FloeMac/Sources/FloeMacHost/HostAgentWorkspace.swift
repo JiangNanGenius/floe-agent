@@ -1301,12 +1301,17 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
-    private func refreshTranscript(for id: UUID, runtime: FloeMacSelfRuntime, runID: UUID? = nil) async throws {
+    private func refreshTranscript(for id: UUID, runtime: FloeMacSelfRuntime, runID: UUID? = nil,
+                                   updatedMessageID: UUID? = nil) async throws {
         let fence = transcriptFence(for: id, selection: historySelection)
         try fence.guardCurrent()
         let stores = try await runtime.transcriptReadStores()
         try fence.guardCurrent()
         try await transcriptPager.loadLatestMessages(conversationID: id, store: stores.conversations, fence: fence)
+        if let updatedMessageID {
+            try await transcriptPager.refreshPresentedMessage(id: updatedMessageID, conversationID: id,
+                                                               store: stores.conversations, fence: fence)
+        }
         try await transcriptPager.loadRunHeaders(conversationID: id, store: stores.runs, fence: fence)
         try await hydrateTranscriptRuns(for: id, store: stores.runs, fence: fence)
         if let runID = runID ?? transcriptPager.runs.first?.id {
@@ -2242,10 +2247,11 @@ final class HostAgentWorkspace: ObservableObject {
                 )
                 guard liveRuns[taskID]?.stopping == false else { return }
                 let handle: FloeMacSelfSessionHandle
-                if checkpointRunID != nil {
+                if resumingGoal {
+                    handle = try await runtime.resumeGoalSession(request, provider: provider, tools: tools,
+                                                                 auxiliary: auxRoutes, restoringCheckpoint: checkpointRunID != nil)
+                } else if checkpointRunID != nil {
                     handle = try await runtime.resumeCheckpointSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
-                } else if resumingGoal {
-                    handle = try await runtime.resumeGoalSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
                 } else {
                     handle = try await runtime.startSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
                 }
@@ -2301,7 +2307,9 @@ final class HostAgentWorkspace: ObservableObject {
                 try? await reloadConversations(using: runtime)
                 #if FLOE_UNIFIED_MAC
                 if selectedID == taskID {
-                    try? await refreshTranscript(for: taskID, runtime: runtime, runID: handle.identity.runID)
+                    try? await refreshTranscript(for: taskID, runtime: runtime, runID: handle.identity.runID,
+                                                 updatedMessageID: acceptedExecution?.userMessageID)
+                    if mode == .goal { await loadPlanning(conversationID: taskID, runtime: runtime) }
                 }
                 #endif
                 await updateLiveRun(handle)
@@ -2551,8 +2559,8 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func canContinueGoal(_ candidate: ConversationGoal) -> Bool {
-        canChangeGoal(candidate) && !isSending
-            && [.paused, .interrupted, .blocked].contains(candidate.status)
+        canChangeGoal(candidate) && !isSending && pendingQuestion == nil && pendingApproval == nil
+            && [.active, .paused, .interrupted, .blocked, .waitingUser].contains(candidate.status)
     }
 
     func canConfirmGoal(_ candidate: ConversationGoal) -> Bool {
@@ -2600,19 +2608,44 @@ final class HostAgentWorkspace: ObservableObject {
 
     func continueGoal(_ candidate: ConversationGoal) {
         guard canContinueGoal(candidate), let runtime else { return }
-        do {
-            guard let config = try configuration() else {
-                notice = String(localized: "host.chat.configureFirst")
+        let selection = historySelection
+        Task {
+            let route: FloeMacSelfGoalContinuation
+            do {
+                route = try await runtime.goalContinuation(conversationID: candidate.conversationID, goalID: candidate.id,
+                                                           expectedRevision: candidate.revision ?? 1)
+            } catch {
+                if historySelection == selection && canContinueGoal(candidate) {
+                    notice = String(localized: "mac.agent.goalControlFailed")
+                }
                 return
             }
-            guard config.model.capabilities.contains(.tools) else {
-                notice = String(localized: "mac.agent.toolsModelRequired")
-                return
+            guard historySelection == selection, canContinueGoal(candidate) else { return }
+            do {
+                guard let config = try configuration() else {
+                    notice = String(localized: "host.chat.configureFirst")
+                    return
+                }
+                guard config.model.capabilities.contains(.tools) else {
+                    notice = String(localized: "mac.agent.toolsModelRequired")
+                    return
+                }
+                switch route {
+                case .checkpoint(let original):
+                    guard config.model.id == original.modelID, config.profile.id == original.providerID else {
+                        notice = String(localized: "mac.agent.continueOriginalModel")
+                        return
+                    }
+                    _ = beginSend(original.goal, runtime: runtime, provider: config.binding(),
+                                  workspaceID: selectedConversationWorkspace?.id, mode: .goal, resumingGoal: true,
+                                  checkpointRunID: original.id)
+                case .newRound:
+                    _ = beginSend(String(localized: "mac.agent.continueGoalPrompt"), runtime: runtime, provider: config.binding(),
+                                  mode: .goal, resumingGoal: true)
+                }
+            } catch {
+                notice = String(localized: "host.chat.keychainUnavailable")
             }
-            _ = beginSend(String(localized: "mac.agent.continueGoalPrompt"), runtime: runtime, provider: config.binding(),
-                          mode: .goal, resumingGoal: true)
-        } catch {
-            notice = String(localized: "host.chat.keychainUnavailable")
         }
     }
     #endif
@@ -4364,12 +4397,13 @@ final class HostAgentWorkspace: ObservableObject {
             .filter { $0.lastPathComponent.hasPrefix(".floe-previous-") })
     }
 
-    func startNamedAgentFixture(_ prompt: String, modelID: String, endpoint: URL, projectID: UUID?) -> Bool {
+    func startNamedAgentFixture(_ prompt: String, modelID: String, endpoint: URL, projectID: UUID?,
+                                mode: HostAgentMode = .agent) -> Bool {
         guard vault == nil, isReady, !isSending, let runtime, endpoint.scheme == "http", endpoint.host == "127.0.0.1",
               let profile = try? HostAgentProvider(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
                                                    modelID: modelID, apiKey: "", supportsTools: true, allowsPlainHTTP: true)
         else { return false }
-        return beginSend(prompt, runtime: runtime, provider: profile.binding(), workspaceID: projectID, mode: .agent)
+        return beginSend(prompt, runtime: runtime, provider: profile.binding(), workspaceID: projectID, mode: mode)
     }
 
     func configureCheckpointFixtureModel(run: RunRecord, endpoint: URL) -> Bool {
@@ -4555,8 +4589,11 @@ final class HostAgentWorkspace: ObservableObject {
               let confirmed = pendingAcceptedPlan,
               let executor = smokeProvider(.executePlan),
               beginSend(confirmed.executionPrompt, runtime: runtime, provider: executor,
-                        mode: .agent, acceptedPlan: confirmed), await waitForSmokeRun(),
-              messages.first(where: { $0.id == confirmed.messageID })?.runID == confirmed.executionRunID else {
+                        mode: .agent, acceptedPlan: confirmed), await waitForSmokeRun() else {
+            return (false, false)
+        }
+        guard messages.first(where: { $0.id == confirmed.messageID })?.runID == confirmed.executionRunID else {
+            smokeRunDiagnostics.append("The accepted-plan message did not reach the visible execution run.")
             return (false, false)
         }
         let planSaved = pendingAcceptedPlan == nil

@@ -126,6 +126,10 @@ final class UnifiedMacSmoke {
             await exerciseQuestionRecovery(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--goal-controls-only") {
+            await exerciseGoalControls(model)
+            return
+        }
         let firstLaunch = CommandLine.arguments.contains("--verify-first-launch")
         if firstLaunch || CommandLine.arguments.contains("--verify-saved-launch-mode") {
             let deadline = ContinuousClock.now + .seconds(5)
@@ -849,6 +853,7 @@ final class UnifiedMacSmoke {
         while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
         guard agent.isReady else { finish(["ready": false]); return }
         let verifiesContinuation = CommandLine.arguments.contains("--continue-checkpoint")
+        let verifiesGoal = CommandLine.arguments.contains("--goal-checkpoint-recovery")
         let projectFolder = root.appendingPathComponent("Resume Project", isDirectory: true)
         let savedFile = projectFolder.appendingPathComponent("checkpoint-proof.txt")
         let expectedFile = "Saved before the question.\n"
@@ -861,7 +866,9 @@ final class UnifiedMacSmoke {
                 projectID = project.id
             }
             guard agent.startNamedAgentFixture("Prepare the project deliverable.", modelID: "recovery-fixture", endpoint: endpoint,
-                                               projectID: projectID) else { finish(["started": false]); return }
+                                               projectID: projectID, mode: verifiesGoal ? .goal : .agent) else {
+                finish(["started": false]); return
+            }
             let pendingDeadline = ContinuousClock.now + .seconds(12)
             var approved = false
             while agent.pendingQuestion == nil && ContinuousClock.now < pendingDeadline {
@@ -879,8 +886,9 @@ final class UnifiedMacSmoke {
             await agent.saveQuestionDraft(target: card.snapshot.target(for: question), answer: .init(selectedOptionIDs: ["report"]))
             preferences.set(root.path, forKey: Self.recoveryPathKey)
             preferences.synchronize()
-            let ready: [String: Any] = ["pending": true, "pid": getpid(), "taskID": card.conversationID.uuidString,
+            var ready: [String: Any] = ["pending": true, "pid": getpid(), "taskID": card.conversationID.uuidString,
                                         "runID": card.runID.uuidString, "requestID": card.requestID, "approvedFile": approved]
+            if verifiesGoal { ready["goalID"] = agent.goal?.id.uuidString }
             if let bytes = try? JSONSerialization.data(withJSONObject: ready, options: [.prettyPrinted]) {
                 try? bytes.write(to: report, options: .atomic)
             }
@@ -899,6 +907,8 @@ final class UnifiedMacSmoke {
         }
         let noResumption = agent.activeRunCount == 0 && !agent.isSending
         let restoredDraft = UserQuestionCardView.smokeModel?.isSelected("report") == true
+        let recoveredGoal = agent.goal
+        let waitsForGoalAnswer = recoveredGoal.map { !agent.canContinueGoal($0) } ?? false
         let usedVisibleCard = await answerProjectQuestion(in: agent)
         let duplicate = await agent.answerQuestion(target: card.snapshot.target(for: question),
                                                     answer: .init(selectedOptionIDs: ["notes"]))
@@ -913,8 +923,14 @@ final class UnifiedMacSmoke {
         if verifiesContinuation {
             result["continuedOriginalRun"] = await continueCheckpointFixture(model, agent: agent, runID: card.runID,
                                                                              owner: taskID, endpoint: endpoint, file: savedFile,
-                                                                             expectedFile: expectedFile)
+                                                                             expectedFile: expectedFile, isGoal: verifiesGoal)
             if result["continuedOriginalRun"] as? Bool == true {
+                if verifiesGoal, let recoveredGoal {
+                    result["goalID"] = recoveredGoal.id.uuidString
+                    result["goalWaitedForAnswer"] = waitsForGoalAnswer
+                    result["goalRoundAccountedOnce"] = await verifyRecoveredGoal(agent, id: recoveredGoal.id,
+                        taskID: taskID, runID: card.runID)
+                }
                 result["publishedOutputReopenedAndDeleted"] = await verifyResumedRunOutput(agent, runID: card.runID,
                     taskID: taskID, original: savedFile, expected: expectedFile)
             }
@@ -924,8 +940,10 @@ final class UnifiedMacSmoke {
     }
 
     private func continueCheckpointFixture(_ model: BridgeAppModel, agent: HostAgentWorkspace, runID: UUID,
-                                          owner: UUID, endpoint: URL, file: URL, expectedFile: String) async -> Bool {
-        guard let run = agent.continuableRun, run.id == runID, agent.resumesOriginalRun,
+                                          owner: UUID, endpoint: URL, file: URL, expectedFile: String,
+                                          isGoal: Bool) async -> Bool {
+        let candidate = isGoal ? agent.transcriptRuns.first : agent.continuableRun
+        guard let run = candidate, run.id == runID, isGoal || agent.resumesOriginalRun,
               agent.configureCheckpointFixtureModel(run: run, endpoint: endpoint),
               let draftStore = model.macWorkspace?.smokeDraftStore,
               let fileDate = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
@@ -936,8 +954,14 @@ final class UnifiedMacSmoke {
         let userMessageIDs = agent.messages.filter { $0.role == "user" }.map(\.id)
         let draft = "Unsent follow-up for this exact task."
         draftStore.setText(draft, for: owner)
-        guard clickWorkbenchButton(ids: ["mac.agent.run.continue"], frame: HostAgentWorkspaceView.smokeHistoryContinueFrame,
-                                   screenshot: "checkpoint-continue.png") else {
+        let clicked = if isGoal {
+            clickWorkbenchButton(ids: ["mac.agent.goal.continue"], frame: HostAgentWorkspaceView.smokeGoalContinueFrame,
+                                 screenshot: "goal-continue.png")
+        } else {
+            clickWorkbenchButton(ids: ["mac.agent.run.continue"], frame: HostAgentWorkspaceView.smokeHistoryContinueFrame,
+                                 screenshot: "checkpoint-continue.png")
+        }
+        guard clicked else {
             settingsDiagnostics.append("Continue Task was unavailable in the active window.")
             return false
         }
@@ -957,6 +981,42 @@ final class UnifiedMacSmoke {
             && agent.messages.contains { $0.runID == runID && $0.content == "Original task continued." }
             && draftStore.text(for: owner) == draft && (try? String(contentsOf: file, encoding: .utf8)) == expectedFile
             && (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) == fileDate
+    }
+
+    private func verifyRecoveredGoal(_ agent: HostAgentWorkspace, id: UUID, taskID: UUID, runID: UUID) async -> Bool {
+        await agent.select(nil)
+        await agent.select(taskID)
+        guard let goal = agent.goal, goal.id == id, goal.status == .verifying,
+              agent.transcriptRuns.first?.goalID == id, agent.transcriptRuns.first?.id == runID,
+              goal.progress.cycleCount == 1, goal.progress.modelCallCount == 6,
+              goal.progress.totalIterationCount == 5,
+              goal.evidence.contains(where: { $0.kind == .toolResult && $0.reference.hasPrefix("run:\(runID.uuidString):") }),
+              Set(goal.evidence.map(\.reference)).count == goal.evidence.count else {
+            settingsDiagnostics.append("The resumed Goal did not retain its identity, evidence and once-only cycle accounting.")
+            return false
+        }
+        await agent.confirmGoal(goal, completedSteps: Set(goal.steps.map(\.id)),
+                                confirmedCriteria: Set(goal.acceptanceCriteria.map(\.id)))
+        return agent.goal?.id == id && agent.goal?.status == .completed
+    }
+
+    private func exerciseGoalControls(_ model: BridgeAppModel) async {
+        model.openAgentWorkspace()
+        guard let agent = model.macWorkspace?.agent else { finish(["opened": false]); return }
+        await agent.prepare()
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
+        let projectFolder = root.appendingPathComponent("Goal Project", isDirectory: true)
+        guard agent.isReady, (try? FileManager.default.createDirectory(at: projectFolder, withIntermediateDirectories: false)) != nil,
+              (try? "Goal evidence fixture.\n".write(to: projectFolder.appendingPathComponent("fixture.md"),
+                                                    atomically: true, encoding: .utf8)) != nil,
+              let project = await agent.addWorkspace(name: "Goal Project", rootURL: projectFolder) else {
+            finish(["goalProject": false]); return
+        }
+        let planning = await agent.verifyPlanningSmoke(project: project)
+        let controls = planning.goalSaved ? await agent.verifyGoalControlsSmoke() : false
+        finish(["planAccepted": planning.planSaved, "goalSaved": planning.goalSaved, "goalControls": controls,
+                "diagnostics": agent.smokeRunDiagnostics])
     }
 
     private func verifyResumedRunOutput(_ agent: HostAgentWorkspace, runID: UUID, taskID: UUID,
