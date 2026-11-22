@@ -16,12 +16,14 @@
 // (conversation). A receipt from another run/call/tool/task is never shown;
 // global Get Run Files keeps its own, stricter notes/temporary exclusion.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
 import FloeCore
 import FloeModels
 import FloeTools
+#if canImport(UIKit)
 import FloeWorkspace
+#endif
 
 /// The trusted identity of the tool-result row that carries the receipts.
 /// Values come from the persisted event envelope, never from model text.
@@ -41,6 +43,7 @@ struct RunOutputReceiptContext: Sendable, Hashable {
 /// engineering format always uses the same controlled preview package as
 /// workspace/IDE/files entries; everything else keeps Quick Look. The receipt
 /// has already been identity- and digest-verified before this decision runs.
+#if canImport(UIKit)
 enum RunOutputPreviewRoute: Equatable {
     case engineering
     case text
@@ -54,6 +57,7 @@ enum RunOutputPreviewRouting {
         return .quickLook
     }
 }
+#endif
 
 /// Pure ownership gate for receipts rendered inside one tool-result row.
 /// Kept separate from the view so the focused tests can exercise the exact
@@ -82,6 +86,12 @@ enum RunOutputReceiptGate {
                          in context: RunOutputReceiptContext) -> [RunOutputFile] {
         receipts.filter { accepts($0, in: context) }
     }
+
+    static func accepted(encoded: String?, in context: RunOutputReceiptContext) -> [RunOutputFile] {
+        guard let encoded, encoded.utf8.count <= 196_608,
+              let receipts = try? JSONDecoder().decode([RunOutputFile].self, from: Data(encoded.utf8)) else { return [] }
+        return accepted(receipts, in: context)
+    }
 }
 
 /// A compact list of verified run-owned files for one tool result. Rows are
@@ -103,6 +113,16 @@ struct RunOutputFilesCard: View {
     }
 }
 
+struct RunOutputImagePreviewRequest: Sendable, Hashable {
+    let receipt: RunOutputFile
+    let context: RunOutputReceiptContext
+    var artifactRoot: URL? = nil
+}
+
+extension EnvironmentValues {
+    @Entry var runOutputArtifactRoot: URL? = nil
+}
+
 /// One receipt row with a bounded inline bitmap when available. Thumbnail
 /// verification is independent of the fresh check on every preview/share.
 struct RunOutputFileView: View {
@@ -110,20 +130,26 @@ struct RunOutputFileView: View {
     let context: RunOutputReceiptContext
     /// Test seam only: production resolves the real artifact root.
     var artifactRoot: URL? = nil
+    @Environment(\.runOutputArtifactRoot) private var hostArtifactRoot
 
     @State private var state: VerificationState = .unverified
     @State private var pendingAction: PendingAction?
     @State private var presentation: Presentation?
     @State private var verificationGeneration = 0
+    #if FLOE_MAC_HOST_SMOKE
+    static var smokePreviewFrames: [String: CGRect] = [:]
+    #endif
+    #if canImport(UIKit)
     @State private var imagePreview: InlinePreview?
 
     private struct InlinePreview {
         let request: RunOutputImagePreviewRequest
         let image: UIImage
     }
+    #endif
 
     private var imageRequest: RunOutputImagePreviewRequest {
-        RunOutputImagePreviewRequest(receipt: receipt, context: context, artifactRoot: artifactRoot)
+        RunOutputImagePreviewRequest(receipt: receipt, context: context, artifactRoot: artifactRoot ?? hostArtifactRoot)
     }
 
     private struct ActionVerificationID: Hashable {
@@ -153,6 +179,7 @@ struct RunOutputFileView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            #if canImport(UIKit)
             if let imagePreview, imagePreview.request == imageRequest {
                 Button { activate(.preview) } label: {
                     Image(uiImage: imagePreview.image)
@@ -166,8 +193,10 @@ struct RunOutputFileView: View {
                     en: "Preview \(receipt.displayName)",
                     zh: "预览 \(receipt.displayName)")))
             }
+            #endif
             fileRow
         }
+        #if canImport(UIKit)
         .task(id: imageRequest) {
             let request = imageRequest
             imagePreview = nil
@@ -177,6 +206,7 @@ struct RunOutputFileView: View {
                 imagePreview = InlinePreview(request: preview.request, image: image)
             }
         }
+        #endif
         .onChange(of: imageRequest) { _, _ in
             state = .unverified
             pendingAction = nil
@@ -187,6 +217,7 @@ struct RunOutputFileView: View {
             await verify()
         }
         .sheet(item: $presentation) { item in
+            #if canImport(UIKit)
             switch item.kind {
             case .preview:
                 NavigationStack {
@@ -222,6 +253,26 @@ struct RunOutputFileView: View {
                     includeSiblingResources: false,
                     startsSecurityScope: false))
             }
+            #else
+            VStack(spacing: 0) {
+                HStack {
+                    Text(receipt.displayName).font(.headline).lineLimit(1)
+                    Spacer()
+                    ShareLink(item: item.url)
+                    Button("mac.composer.done") { presentation = nil }
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("chat.runOutput.preview.done")
+                }
+                .padding(12)
+                if item.kind != .share {
+                    Divider()
+                    MacWorkspaceQuickLook(url: item.url)
+                        .frame(minWidth: 440, minHeight: 300)
+                        .accessibilityIdentifier("chat.runOutput.verifiedPreview")
+                }
+            }
+            .frame(minWidth: 340)
+            #endif
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.runOutput.\(receipt.outputID)")
@@ -274,6 +325,9 @@ struct RunOutputFileView: View {
                     en: "Preview \(receipt.displayName)",
                     zh: "预览 \(receipt.displayName)")))
                 .accessibilityIdentifier("chat.runOutput.preview")
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { frame in Self.smokePreviewFrames[receipt.outputID] = frame })
+                #endif
                 Button {
                     activate(.share)
                 } label: {
@@ -343,6 +397,7 @@ struct RunOutputFileView: View {
     private func present(_ action: PendingAction, url: URL) {
         switch action {
         case .preview:
+            #if canImport(UIKit)
             let kind: Presentation.Kind
             switch RunOutputPreviewRouting.route(for: receipt) {
             case .engineering: kind = .engineering
@@ -350,6 +405,9 @@ struct RunOutputFileView: View {
             case .quickLook: kind = .preview
             }
             presentation = Presentation(url: url, kind: kind)
+            #else
+            presentation = Presentation(url: url, kind: .preview)
+            #endif
         case .systemPreview:
             presentation = Presentation(url: url, kind: .preview)
         case .share:
@@ -372,6 +430,7 @@ struct RunOutputFileView: View {
         }
     }
 }
+#if canImport(UIKit)
 private struct RunOutputShareSheet: UIViewControllerRepresentable {
     let url: URL
 
@@ -381,4 +440,5 @@ private struct RunOutputShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
+#endif
 #endif

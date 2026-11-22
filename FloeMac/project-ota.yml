@@ -64,6 +64,7 @@ targets:
       - path: ../FloeAgent/FloeApp/Chat/UserMessageBubble.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/CodeBlockView.swift
       - path: ../FloeAgent/FloeApp/Chat/Render/MarkdownRendererView.swift
+      - path: ../FloeAgent/FloeApp/Chat/Render/RunOutputFileView.swift
       - path: ../FloeAgent/Sources/FloeExecution/WebSearchService.swift
       - path: ../FloeAgent/Sources/FloeExecution/WebRetrievalModels.swift
       - path: ../FloeAgent/Sources/FloeExecution/SearchProviderCatalog.swift

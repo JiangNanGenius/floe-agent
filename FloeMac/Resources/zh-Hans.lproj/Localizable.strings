@@ -391,6 +391,7 @@
 "mac.agent.projectRequired" = "请先选择项目文件夹，再使用 Agent 或计划模式。";
 "mac.agent.approvalRequired" = "确认操作";
 "mac.agent.createFileApproval" = "创建这个文件？";
+"mac.agent.publishOutputApproval" = "将这个文件保存为任务产出？";
 "mac.agent.replaceTextApproval" = "修改这个文件？";
 "mac.agent.reviewReplacement" = "查看原文和替换文字";
 "mac.agent.originalText" = "原文";
@@ -429,6 +430,10 @@
 "mac.agent.continueGoal" = "继续目标";
 "mac.agent.continueGoalPrompt" = "根据已保存的进度继续当前目标。";
 "mac.agent.goalControlFailed" = "无法更新目标。请查看当前状态后重试。";
+"mac.agent.continueTask" = "继续任务";
+"mac.agent.continueHistory" = "从历史继续";
+"mac.agent.continueOriginalModel" = "请在设置中恢复原模型，再继续此任务。";
+"mac.agent.checkpointUnavailable" = "无法从上次进度继续。请重新打开任务后重试。";
 "mac.agent.confirmGoal" = "确认验收";
 "mac.agent.goalSteps" = "已完成步骤";
 "mac.agent.goalCriteria" = "验收标准";
@@ -594,8 +599,6 @@
 "mac.question.credentials.retry" = "回答未保存。请在设置中配置凭据。";
 "mac.question.restored.note.required" = "回答会保存在此任务中。准备好后可继续任务。";
 "mac.question.restored.note.optional" = "回答会保存在此任务的待发送消息中。";
-"mac.question.restored.note.required" = "回答已保存到此任务，不会自动发送给模型；准备好后请从历史继续该任务。";
-"mac.question.restored.note.optional" = "回答已保存到此任务，会在该任务下一个安全步骤一次性送达。";
 
 "mac.permissions.authenticate" = "允许 Floe Agent 任务使用完全访问。";
 

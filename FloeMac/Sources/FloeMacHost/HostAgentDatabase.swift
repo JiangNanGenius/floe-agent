@@ -45,7 +45,12 @@ enum HostAgentDatabase {
         let privateTaskRootBase = try preparePrivateTaskRootBase(runtimeDirectory: directory)
         return try FloeMacSelfRuntime(databaseURL: database,
                                       owner: .init(displayName: "Floe Mac"), provenance: provenance,
-                                      options: .init(privateTaskRootBaseURL: privateTaskRootBase))
+                                      options: .init(privateTaskRootBaseURL: privateTaskRootBase,
+                                                     runOutputArtifactRootURL: runOutputArtifactRoot(in: privateTaskRootBase)))
+    }
+
+    static func runOutputArtifactRoot(in runtimeDirectory: URL) -> URL {
+        runtimeDirectory.appendingPathComponent("Artifacts", isDirectory: true)
     }
 
     /// Canonical on-disk base of every per-task personal workspace:

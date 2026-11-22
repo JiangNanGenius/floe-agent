@@ -12,12 +12,6 @@ import FloeImages
 import FloeModels
 import FloeTools
 
-struct RunOutputImagePreviewRequest: Sendable, Hashable {
-    let receipt: RunOutputFile
-    let context: RunOutputReceiptContext
-    var artifactRoot: URL? = nil
-}
-
 /// Only bounded encoded bytes cross the worker boundary; ImageIO objects and
 /// UIKit images stay on the actor/thread that creates them.
 struct RunOutputImagePreview: Sendable {

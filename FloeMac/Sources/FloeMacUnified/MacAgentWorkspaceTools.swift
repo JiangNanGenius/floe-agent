@@ -170,7 +170,7 @@ public enum MacAgentWorkspaceTools {
         searchFilesToolName,
         readDocumentToolName,
     ]
-    public static let writeToolNames: Set<String> = [createFileToolName, replaceTextToolName]
+    public static let writeToolNames: Set<String> = [createFileToolName, replaceTextToolName, WorkspaceOutputPublication.name]
 
     /// Stable labels for the host gate (provenance, not secrets).
     public static let toolCorpusIdentifier = "floe.macunified.workspace-tools.v1"
@@ -222,6 +222,7 @@ public enum MacAgentWorkspaceTools {
     public static func binding(
         workspace: WorkspaceRecord,
         privateTaskRootBase: URL? = nil,
+        runOutputArtifactRoot: URL? = nil,
         readOnly: Bool,
         chatOnly: Bool = false,
         delegationRegistry: SubagentRunnerRegistry? = nil,
@@ -247,14 +248,14 @@ public enum MacAgentWorkspaceTools {
 
         let baseExecutor = MacAgentWorkspaceToolExecutor(
             workspaceRootURL: root,
+            runOutputArtifactRoot: runOutputArtifactRoot,
             readOnly: readOnly || chatOnly,
             search: search,
             conversations: chatOnly ? nil : conversations,
             imageTools: imageTools, videoTools: videoTools
         )
         let taskReadTools = Set(baseExecutor.allDescriptors.filter { ConversationToolAccess.plan.allows($0) }.map(\.name))
-        var allowed = chatOnly ? taskReadTools.intersection(ConversationToolAccess.chatNames)
-            : (readOnly ? taskReadTools : taskReadTools.union(writeToolNames))
+        var allowed = chatOnly ? taskReadTools.intersection(ConversationToolAccess.chatNames) : taskReadTools
         if !readOnly && !chatOnly { allowed.formUnion(baseExecutor.allDescriptors.map(\.name)) }
         let executor: any ToolExecutor
         if let delegationRegistry, !chatOnly {
@@ -2159,6 +2160,73 @@ public struct MacAgentWorkspaceReplaceTextTool: AgentTool, MacAgentWorkspaceExec
     }
 }
 
+struct MacWorkspacePublishOutputTool: AgentTool, MacAgentWorkspaceExecutable {
+    typealias Arguments = WorkspaceOutputPublication.Arguments
+
+    static let name = WorkspaceOutputPublication.name
+    static let toolDescription = WorkspaceOutputPublication.toolDescription
+    static let parametersJSON = WorkspaceOutputPublication.parametersJSON
+    static let riskLabels: Set<RiskLabel> = [.writesFiles]
+    static let isSideEffecting = true
+
+    let root: MacAgentWorkspaceRoot
+    let artifactRoot: URL
+
+    func validate(_ arguments: Arguments) throws {
+        if let displayName = arguments.displayName, !RunOutputFile.isValidDisplayName(displayName) {
+            throw MacAgentWorkspaceToolsError.invalidArguments("displayName must be a safe single filename component")
+        }
+    }
+
+    func execute(_ arguments: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let path = arguments.path
+        try macWorkspacePreflight(path: path, context: context, scopeArgument: arguments.scope)
+        let (physicalRoot, relative) = try macWorkspacePinSetup(root: root, path: path)
+        return try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physicalRoot, relative: relative, root: root) { pin in
+            let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(pin, physicalRoot: physicalRoot, displayPath: path)
+            defer { Darwin.close(descriptor) }
+            let displayName = arguments.displayName ?? pin.name
+            guard RunOutputFile.isValidDisplayName(displayName) else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("displayName must be a safe single filename component")
+            }
+            var before = stat()
+            guard fstat(descriptor, &before) == 0, before.st_size >= 0 else { throw MacAgentWorkspaceToolsError.revisionChanged }
+            let limit = RunOutputCaps.standard.perFileBytes
+            guard before.st_size <= limit else { throw MacAgentWorkspaceToolsError.tooLarge(limit: limit) }
+
+            // Freeze the authorized descriptor in private scratch so the shared
+            // publisher never follows a user-controlled path after validation.
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let snapshot = folder.appendingPathComponent(pin.name)
+            try Data().write(to: snapshot, options: .withoutOverwriting)
+            let writer = try FileHandle(forWritingTo: snapshot)
+            defer { try? writer.close() }
+            let source = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            var count = 0
+            while let chunk = try source.read(upToCount: 262_144), !chunk.isEmpty {
+                try context.cancellation.throwIfCancelled()
+                try Task.checkCancellation()
+                guard chunk.count <= Int(before.st_size) - count else { throw MacAgentWorkspaceToolsError.revisionChanged }
+                try writer.write(contentsOf: chunk)
+                count += chunk.count
+            }
+            var after = stat(), named = stat()
+            guard count == before.st_size, fstat(descriptor, &after) == 0, after.st_size == before.st_size, after.st_nlink == 1,
+                  after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec, after.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec,
+                  after.st_ctimespec.tv_sec == before.st_ctimespec.tv_sec, after.st_ctimespec.tv_nsec == before.st_ctimespec.tv_nsec,
+                  fstatat(pin.parentFileDescriptor, pin.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  named.st_dev == before.st_dev, named.st_ino == before.st_ino else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            return try WorkspaceOutputPublication.publish(sourceURL: snapshot, displayName: displayName,
+                                                           byteCount: count, context: context, artifactRoot: artifactRoot)
+        }
+    }
+}
+
 // MARK: - Executor
 
 /// The focused native project-file executor. It owns the listed
@@ -2174,7 +2242,7 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
         tools.values.map(\.executionDescriptor).sorted { $0.name < $1.name }
     }
 
-    public init(workspaceRootURL: URL, readOnly: Bool = false, search: MacSearchAccess? = nil,
+    public init(workspaceRootURL: URL, runOutputArtifactRoot: URL? = nil, readOnly: Bool = false, search: MacSearchAccess? = nil,
                 conversations: FloeMacConversationToolCapability? = nil,
                 imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = []) {
         let root = workspaceRootURL.resolvingSymlinksInPath().standardizedFileURL
@@ -2203,6 +2271,10 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             for tool in MacNativeDesktopTools.available(rootURL: root) { table[tool.executionDescriptor.name] = tool }
             table[MacAgentWorkspaceTools.createFileToolName] = MacAgentWorkspaceCreateFileTool(rootURL: root)
             table[MacAgentWorkspaceTools.replaceTextToolName] = MacAgentWorkspaceReplaceTextTool(rootURL: root)
+            if let runOutputArtifactRoot {
+                table[WorkspaceOutputPublication.name] = MacWorkspacePublishOutputTool(
+                    root: MacAgentWorkspaceRoot(root), artifactRoot: runOutputArtifactRoot)
+            }
         }
         self.tools = table
     }

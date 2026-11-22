@@ -15,6 +15,7 @@ import FloeTools
 import FloeSecurity
 import FloePersistence
 import FloeAgentRuntime
+import OSLog
 
 public struct FloeMacSelfRuntimeOptions: Sendable, Hashable {
     /// Per-subscriber event buffer for the host projection. The upstream
@@ -25,13 +26,16 @@ public struct FloeMacSelfRuntimeOptions: Sendable, Hashable {
     /// verified root is `<base>/<internalRelativePath>`. Nil refuses a
     /// private-task tool boundary fail-closed.
     public var privateTaskRootBaseURL: URL?
+    public var runOutputArtifactRootURL: URL?
 
     public init(
         eventBufferLimit: Int = 256,
-        privateTaskRootBaseURL: URL? = nil
+        privateTaskRootBaseURL: URL? = nil,
+        runOutputArtifactRootURL: URL? = nil
     ) {
         self.eventBufferLimit = min(2_048, max(32, eventBufferLimit))
         self.privateTaskRootBaseURL = privateTaskRootBaseURL
+        self.runOutputArtifactRootURL = runOutputArtifactRootURL
     }
 }
 
@@ -49,7 +53,29 @@ private struct FloeMacSelfStores: Sendable {
     let runningInputs: SQLiteRunningInputStore
 }
 
+public enum FloeMacSelfContinuation: Sendable {
+    case checkpoint(ConversationToolAccess)
+    case history(ConversationToolAccess)
+
+    public var toolAccess: ConversationToolAccess {
+        switch self {
+        case .checkpoint(let access), .history(let access): access
+        }
+    }
+
+    public var resumesOriginalRun: Bool {
+        if case .checkpoint = self { return true }
+        return false
+    }
+}
+
 public actor FloeMacSelfRuntime {
+    private struct CheckpointCandidate {
+        let checkpoint: AgentCheckpoint
+        let admission: FloeMacSelfAdmissionRecord
+        let prepared: PreparedRun
+        let access: ConversationToolAccess
+    }
     public nonisolated let databaseURL: URL
     public nonisolated let owner: FloeMacSelfHostIdentity
     /// Exact lock file this runtime holds beside the database. Diagnostic
@@ -332,6 +358,14 @@ public actor FloeMacSelfRuntime {
             )
         }
         stores = preparedStores
+        if let root = options.runOutputArtifactRootURL {
+            let recovered = await RunOutputCleanupQueue.retryPersistedTombstones(storeRoot: root, artifactRoot: root) { id in
+                try await preparedStores.conversations.conversation(id: id) != nil
+            }
+            if recovered.failedRequestCount > 0 {
+                Logger(subsystem: "org.floeagent.macbridge", category: "storage").error("Run output cleanup is pending")
+            }
+        }
         admissions = FloeMacSelfAdmissionStore(database: database, authorityLock: authorityLock)
         // The question center binds the existing durable store/coordinator
         // pair to this database. Register the runtime's live-wait projection
@@ -362,12 +396,27 @@ public actor FloeMacSelfRuntime {
         try await startSession(request, provider: provider, tools: tools, auxiliary: auxiliary, replacingClaim: nil)
     }
 
+    public func resumeCheckpointSession(
+        _ request: FloeMacSelfSessionRequest,
+        provider: FloeMacSelfProviderBinding,
+        tools: FloeMacSelfToolBinding? = nil,
+        auxiliary: FloeMacSelfAuxiliaryRoutes = .init()
+    ) async throws -> FloeMacSelfSessionHandle {
+        guard request.conversationID != nil, request.runID != nil, request.attachments.isEmpty,
+              request.expectedGoal == nil, request.reusingUserMessageID == nil else {
+            throw FloeMacSelfCoreError.invalidRequest("Invalid checkpoint continuation.")
+        }
+        return try await startSession(request, provider: provider, tools: tools, auxiliary: auxiliary,
+                                      replacingClaim: nil, resumingCheckpoint: true)
+    }
+
     private func startSession(
         _ request: FloeMacSelfSessionRequest,
         provider: FloeMacSelfProviderBinding,
         tools: FloeMacSelfToolBinding?,
         auxiliary: FloeMacSelfAuxiliaryRoutes,
-        replacingClaim: UUID?
+        replacingClaim: UUID?,
+        resumingCheckpoint: Bool = false
     ) async throws -> FloeMacSelfSessionHandle {
         guard !shuttingDown, !closed, !authorityCompromised else {
             throw FloeMacSelfCoreError.runtimeClosed
@@ -379,15 +428,6 @@ public actor FloeMacSelfRuntime {
         let canonicalGoal = request.goal.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let resolvedProvider = try FloeMacSelfCapabilityResolver.resolveProvider(provider)
-        let needsVision = request.attachments.contains { $0.kind == .image } && !resolvedProvider.model.capabilities.contains(.vision)
-        if needsVision {
-            guard let vision = auxiliary.vision, vision.model.isEnabled, vision.provider.isEnabled,
-                  vision.model.supportsAuxiliaryVisionSurface else {
-                throw FloeError.invalidConfiguration("Select a vision model for image attachments.")
-            }
-            _ = try FloeMacSelfCapabilityResolver.resolveProvider(vision)
-        }
-
         // Ordinary chat runs tool-free. Plan discovery is read-only but needs
         // the compiled read-only investigation ceiling plus `plan.submit`, so
         // it requires an explicit tool binding like every other tool-enabled
@@ -480,15 +520,46 @@ public actor FloeMacSelfRuntime {
             }
         }
 
+        let recovery: CheckpointCandidate?
+        if resumingCheckpoint {
+            guard let candidate = try await checkpointCandidate(runID: runID, conversationID: resolvedConversationID,
+                                                                allowWaitingForAnswer: false),
+                  candidate.checkpoint.conversationMode == request.mode,
+                  effectiveChatFastMode == (candidate.access == .chat),
+                  candidate.prepared.run.goal.utf8.elementsEqual(canonicalGoal.utf8),
+                  candidate.prepared.run.providerID == resolvedProvider.provider.id,
+                  candidate.prepared.run.modelID == resolvedProvider.model.id,
+                  candidate.prepared.workspace.id == (resolvedTools.boundary?.workspaceID ?? request.workspaceID) else {
+                throw FloeMacSelfCoreError.invalidRequest("The original model, mode or workspace is unavailable for continuation.")
+            }
+            recovery = candidate
+        } else {
+            recovery = nil
+        }
+        let hasImages = recovery?.prepared.attachments.contains { $0.kind == .image }
+            ?? request.attachments.contains { $0.kind == .image }
+        let needsVision = hasImages && !resolvedProvider.model.capabilities.contains(.vision)
+        if needsVision {
+            guard let vision = auxiliary.vision, vision.model.isEnabled, vision.provider.isEnabled,
+                  vision.model.supportsAuxiliaryVisionSurface else {
+                throw FloeError.invalidConfiguration("Select a vision model for image attachments.")
+            }
+            _ = try FloeMacSelfCapabilityResolver.resolveProvider(vision)
+        }
+
         var admission: FloeMacSelfAdmissionRecord?
         var prepareCommitted = false
         do {
+            try ensureAdmissionStillAllowed()
+            try Task.checkCancellation()
             try requireAuthority()
-            let admitted = try await admissions.admit(
-                conversationID: resolvedConversationID,
-                runID: runID,
-                owner: owner
-            )
+            let admitted: FloeMacSelfAdmissionRecord
+            if let recovery {
+                admitted = try await admissions.admitCheckpointResume(previous: recovery.admission,
+                                                                       runState: recovery.prepared.run.state, owner: owner)
+            } else {
+                admitted = try await admissions.admit(conversationID: resolvedConversationID, runID: runID, owner: owner)
+            }
             admission = admitted
             let taskEpoch = FloeMacSelfTaskEpoch(
                 conversationID: resolvedConversationID,
@@ -502,7 +573,7 @@ public actor FloeMacSelfRuntime {
             // before the launch transaction so a history failure creates no
             // durable run.
             var conversationHistory: [ConversationMessage] = []
-            if request.conversationID != nil {
+            if request.conversationID != nil, recovery == nil {
                 do {
                     // Historical turns stay text-only: re-reading mutable
                     // bookmarks behind old attachment rows is not safe. The
@@ -531,7 +602,7 @@ public actor FloeMacSelfRuntime {
 
             let providerName = resolvedProvider.provider.displayName
                 ?? resolvedProvider.provider.kind.rawValue
-            let stagedAttachments: [AttachmentRef] = request.attachments.map { attachment in
+            let stagedAttachments: [AttachmentRef] = recovery?.prepared.attachments ?? request.attachments.map { attachment in
                 AttachmentRef(
                     id: attachment.id,
                     kind: attachment.kind == .image ? .image : .document,
@@ -568,11 +639,15 @@ public actor FloeMacSelfRuntime {
                 startedAt: request.startedAt
             )
             let prepared: PreparedRun
-            do {
-                prepared = try await stores.launch.prepare(launchRequest)
-                prepareCommitted = true
-            } catch {
-                throw Self.surface(error)
+            if let recovery {
+                prepared = recovery.prepared
+            } else {
+                do {
+                    prepared = try await stores.launch.prepare(launchRequest)
+                    prepareCommitted = true
+                } catch {
+                    throw Self.surface(error)
+                }
             }
 
             guard prepared.conversation.id == resolvedConversationID,
@@ -587,7 +662,14 @@ public actor FloeMacSelfRuntime {
             // The launch transaction proves the exact user turn in-transaction;
             // these reads re-check the committed identity only.
             let verifyPreparedInput: @Sendable (PersistedMessage) throws -> Void
-            if request.reusingUserMessageID != nil {
+            if recovery != nil {
+                let original = prepared.userMessage
+                verifyPreparedInput = { message in
+                    guard message == original else {
+                        throw FloeMacSelfCoreError.preparedIdentityMismatch("The original user turn changed.")
+                    }
+                }
+            } else if request.reusingUserMessageID != nil {
                 verifyPreparedInput = { message in
                     try FloeMacSelfPreparedConfirmationInput.verify(
                         message, messageID: prepared.userMessage.id,
@@ -649,11 +731,15 @@ public actor FloeMacSelfRuntime {
                 )
                 let workspaceStore = stores.workspaces
                 let privateTaskRootBase = options.privateTaskRootBaseURL
+                let conversationID = prepared.conversation.id
                 verifyWorkspaceLease = {
                     guard let durable = try await workspaceStore.workspace(id: boundary.workspaceID) else {
                         throw FloeMacSelfCoreError.invalidTaskBoundary(
                             "the leased workspace row is unavailable"
                         )
+                    }
+                    guard try await workspaceStore.workspaceID(conversationID: conversationID) == boundary.workspaceID else {
+                        throw FloeMacSelfCoreError.invalidTaskBoundary("The task's workspace changed before dispatch.")
                     }
                     _ = try FloeMacSelfWorkspaceLease.verifiedRoot(
                         workspace: durable,
@@ -717,7 +803,7 @@ public actor FloeMacSelfRuntime {
             let questionCenter = try self.userQuestionCenter()
             let questionEligible = request.allowsUserQuestions && resolvedProvider.model.capabilities.contains(.tools)
             var launchStatusPayloads: [String] = []
-            if questionEligible {
+            if questionEligible, recovery == nil {
                 let inputMode = request.mode == .chat && !request.chatFastMode ? "agent" : request.mode.rawValue
                 let owner = QuestionInputOwner(questionWorkspaceID: prepared.workspace.id, inputMode: inputMode)
                 let payload = try JSONEncoder().encode(owner)
@@ -977,6 +1063,7 @@ public actor FloeMacSelfRuntime {
                 questionCenter: questionCenter,
                 questionAnsweringEnabled: questionEligible && runtimeToolsEnabled,
                 launchStatusPayloads: launchStatusPayloads,
+                checkpointResume: recovery.map { ($0.checkpoint, $0.admission) },
                 eventBufferLimit: options.eventBufferLimit,
                 beforeInputRecheck: preparedInputTestHook,
                 beforeServiceStart: dispatchTestHook,
@@ -989,11 +1076,11 @@ public actor FloeMacSelfRuntime {
             return FloeMacSelfSessionHandle(runtime: self, session: session, identity: identity)
         } catch {
             if let admission, !sessionOwnsClaim {
-                await abortAdmission(
-                    admission,
-                    prepareCommitted: prepareCommitted,
-                    reason: "startSessionAborted"
-                )
+                if let recovery {
+                    try? await admissions.releaseCheckpointResume(previous: recovery.admission, epoch: admission.epoch)
+                } else {
+                    await abortAdmission(admission, prepareCommitted: prepareCommitted, reason: "startSessionAborted")
+                }
             }
             throw error
         }
@@ -2228,7 +2315,22 @@ public actor FloeMacSelfRuntime {
                 try await stores.conversations.setArchived(id: id, archived: archived)
             }
         case .delete:
-            try await stores.conversations.deleteConversation(id: id)
+            if let root = options.runOutputArtifactRootURL {
+                let children = try await SQLiteChildRunStore(database: database).children(conversationID: id)
+                guard children.allSatisfy({ $0.state.isTerminal }) else {
+                    throw FloeMacSelfCoreError.conversationBusy(id)
+                }
+                let runIDs = try await stores.runs.runs(conversationID: id).map(\.id) + children.map(\.id)
+                let cleaned = try await RunOutputCleanupQueue.deleteConversation(id: id, runIDs: runIDs,
+                    storeRoot: root, artifactRoot: root) {
+                    try await stores.conversations.deleteConversation(id: id)
+                }
+                if !cleaned {
+                    Logger(subsystem: "org.floeagent.macbridge", category: "storage").error("Run output cleanup is pending")
+                }
+            } else {
+                try await stores.conversations.deleteConversation(id: id)
+            }
         }
     }
 
@@ -2571,6 +2673,90 @@ public actor FloeMacSelfRuntime {
     public func recentRunEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
         let stores = try requireStores()
         return try await stores.runs.recentEvents(runID: runID, limit: min(500, max(1, limit)))
+    }
+
+    public func continuation(after runID: UUID, in conversationID: UUID) async throws -> FloeMacSelfContinuation? {
+        if let candidate = try await checkpointCandidate(runID: runID, conversationID: conversationID,
+                                                         allowWaitingForAnswer: true) {
+            return .checkpoint(candidate.access)
+        }
+        return try await historyContinuationAccess(after: runID, in: conversationID).map(FloeMacSelfContinuation.history)
+    }
+
+    /// A confirmed stop can resume a proved checkpoint. For an unconfirmed
+    /// interruption after process loss, the only eligible boundary is the
+    /// exact durable user-question wait. Running commands, children and
+    /// missing tool receipts do not prove that the old work ended.
+    private func checkpointCandidate(runID: UUID, conversationID: UUID,
+                                     allowWaitingForAnswer: Bool) async throws -> CheckpointCandidate? {
+        let stores = try requireStores()
+        guard sessions[runID] == nil,
+              let conversation = try await stores.conversations.conversation(id: conversationID),
+              conversation.isVisibleInOrdinaryList,
+              let run = try await stores.runs.recentRuns(conversationID: conversationID, limit: 1).first,
+              run.id == runID, run.goalID == nil,
+              let admission = try await admissionRecord(conversationID: conversationID), admission.runID == runID,
+              admission.stopRequestedAt == nil else { return nil }
+        let oldHost = admission.ownerHostInstanceID != nil && admission.ownerHostInstanceID != owner.hostInstanceID
+        let interruptedResume = oldHost && admission.detail == "checkpointResume"
+        let confirmed = ["failed", "interrupted", "checkpointed"].contains(run.state)
+            && (admission.phase == .settledConfirmed || interruptedResume)
+        let lostQuestionWait = oldHost && run.state == "waitingUserQuestion"
+            && (admission.phase == .starting || interruptedResume)
+        guard confirmed || lostQuestionWait,
+              let checkpoint = try await stores.checkpoints.load(runID: runID),
+              checkpoint.runID == runID, checkpoint.conversationID == conversationID,
+              checkpoint.goalID == nil, checkpoint.parentRunID == nil,
+              checkpoint.activeChildRunIDs?.isEmpty != false,
+              checkpoint.runtimeWaits?.contains(where: { $0.receipt == nil }) != true,
+              let access = checkpoint.toolAccess,
+              let mode = try? RunConversationModeResolver.resolve(persistedRunMode: run.conversationMode,
+                                                                  checkpointMode: checkpoint.conversationMode,
+                                                                  checkpointWasUnreadable: false),
+              mode == checkpoint.conversationMode, mode != .goal, (mode == .plan) == (access == .plan),
+              let workspaceID = try await stores.workspaces.workspaceID(conversationID: conversationID),
+              let workspace = try await stores.workspaces.workspace(id: workspaceID) else { return nil }
+        if case .checkpointed(let ref) = checkpoint.state,
+           ref.reason?.hasPrefix(FloeAgentRuntime.dependencyWaitReasonPrefix) == true { return nil }
+        let lifecycle = checkpoint.toolLifecycleEntries ?? []
+        guard Set(lifecycle.map(\.callID)).count == lifecycle.count else { return nil }
+        let committed = Set(checkpoint.pendingToolResults.map(\.callID))
+        let outstanding = checkpoint.pendingToolCalls.filter { !committed.contains($0.id) }
+        let questionCenter = try userQuestionCenter()
+        if !allowWaitingForAnswer,
+           try await questionCenter.pendingSnapshot(runID: runID)?.hasBlockingPending == true { return nil }
+        for call in outstanding {
+            guard let entry = lifecycle.first(where: { $0.callID == call.id }) else { return nil }
+            if call.toolName == UserAskTool.name {
+                guard let question = try await questionCenter.store.snapshot(runID: runID, toolCallID: call.id),
+                      question.conversationID == conversationID, !question.isEphemeral,
+                      allowWaitingForAnswer || !question.hasBlockingPending else { return nil }
+            } else if lostQuestionWait || (entry.phase == .dispatched && entry.isSideEffecting != false) {
+                return nil
+            }
+        }
+        if lostQuestionWait, outstanding.isEmpty { return nil }
+        let events = try await stores.runs.events(runID: runID, afterSequence: -1, limit: 64)
+        let expectedInputMode = access == .task ? "agent" : access.rawValue
+        guard let frozenOwner = events.lazy.filter({ $0.kind == .status }).compactMap({
+            try? JSONDecoder().decode(QuestionInputOwner.self, from: Data($0.payloadJSON.utf8))
+        }).first, frozenOwner.questionWorkspaceID == workspace.id, frozenOwner.inputMode == expectedInputMode,
+              let inputID = checkpoint.messages.last(where: { $0.role == "user" && $0.content == run.goal })?.id,
+              let message = try await stores.conversations.message(id: inputID, conversationID: conversationID),
+              message.runID == runID, message.role == "user", message.content == run.goal else { return nil }
+        var attachments: [AttachmentRef] = []
+        for id in message.parts.compactMap(\.attachmentID) {
+            guard let attachment = try await stores.conversations.attachment(id: id),
+                  attachment.conversationID == conversationID, attachment.messageID == message.id else { return nil }
+            attachments.append(attachment)
+        }
+        var restored = checkpoint
+        // Run approvals are re-evaluated with current task policy. Durable
+        // task-scoped choices still arrive through the normal grant store.
+        restored.approvals = []
+        return CheckpointCandidate(checkpoint: restored, admission: admission,
+            prepared: PreparedRun(conversation: conversation, workspace: workspace, run: run, userMessage: message,
+                                  attachments: attachments, createdConversation: false), access: access)
     }
 
     /// A history continuation starts a separate turn. Never adopt a live call,

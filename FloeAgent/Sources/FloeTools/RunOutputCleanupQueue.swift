@@ -64,6 +64,28 @@ public struct RunOutputCleanupRetryOutcome: Sendable, Equatable {
 
 /// Exact, owned, idempotent cleanup queue for run-output snapshots.
 public enum RunOutputCleanupQueue {
+    /// The caller must cancel and join the task's writers before invoking this.
+    public static func deleteConversation(
+        id: UUID, runIDs: [UUID], storeRoot: URL? = nil, artifactRoot: URL? = nil,
+        isolation: isolated (any Actor)? = #isolation,
+        deleteRecord: () async throws -> Void
+    ) async throws -> Bool {
+        if runIDs.isEmpty {
+            try await deleteRecord()
+            return true
+        }
+        let request = RunOutputCleanupRequest(conversationID: id, runIDs: runIDs)
+        try enqueue(request, storeRoot: storeRoot)
+        try await deleteRecord()
+        do {
+            try removeOwnedSnapshots(for: request, artifactRoot: artifactRoot)
+            try complete(conversationID: id, storeRoot: storeRoot)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Directory (inside the Floe artifact store root) that owns the pending
     /// request records. Distinct from the `RunOutputs` namespace itself so a
     /// request never interferes with snapshot caps or readers.

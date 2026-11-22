@@ -23,6 +23,7 @@ actor FloeMacSelfSession {
     private let service: ConversationRunService
     private let conversationStore: any ConversationStore
     private let launchStatusPayloads: [String]
+    private let checkpointResume: (checkpoint: AgentCheckpoint, previousAdmission: FloeMacSelfAdmissionRecord)?
     private let runStore: any RunStore
     private let checkpointStore: any CheckpointStore
     private let admissions: FloeMacSelfAdmissionStore
@@ -95,6 +96,7 @@ actor FloeMacSelfSession {
         questionCenter: FloeMacSelfQuestionCenter? = nil,
         questionAnsweringEnabled: Bool = false,
         launchStatusPayloads: [String] = [],
+        checkpointResume: (AgentCheckpoint, FloeMacSelfAdmissionRecord)? = nil,
         eventBufferLimit: Int,
         beforeInputRecheck: (@Sendable () async -> Void)? = nil,
         beforeServiceStart: (@Sendable () async -> Void)? = nil,
@@ -104,6 +106,7 @@ actor FloeMacSelfSession {
         self.service = service
         self.conversationStore = conversationStore
         self.launchStatusPayloads = launchStatusPayloads
+        self.checkpointResume = checkpointResume
         self.runStore = runStore
         self.checkpointStore = checkpointStore
         self.admissions = admissions
@@ -240,7 +243,15 @@ actor FloeMacSelfSession {
             for payload in launchStatusPayloads {
                 _ = try await runStore.appendEvent(runID: identity.runID, kind: .status, payloadJSON: payload)
             }
-            try await service.startPrepared(goal: goal, userMessageID: identity.userMessageID)
+            if let checkpointResume {
+                // The previous activation may already have a terminal row. A
+                // new dispatch must prove a newer terminal event to settle.
+                _ = try await runStore.appendEvent(runID: identity.runID, kind: .status,
+                                                   payloadJSON: #"{"kind":"resumingCheckpoint"}"#)
+                try await service.resumePrepared(from: checkpointResume.checkpoint)
+            } else {
+                try await service.startPrepared(goal: goal, userMessageID: identity.userMessageID)
+            }
             await finishRun(failure: nil)
         } catch {
             await finishRun(failure: FloeMacSelfFailure.from(error))
@@ -254,6 +265,25 @@ actor FloeMacSelfSession {
     private func settleBeforeDispatch(reason: String) async {
         guard !runFinished, !tornDown else { return }
         _ = fence.beginSettlement()
+        if let checkpointResume {
+            let released = (try? await admissions.releaseCheckpointResume(previous: checkpointResume.previousAdmission,
+                                                                          epoch: admissionEpoch)) != nil
+            let original = try? await runStore.run(id: identity.runID)
+            let receipt = FloeMacSelfTerminalReceipt(runID: identity.runID, conversationID: identity.conversationID,
+                outcome: .interrupted, durableRunState: original?.state ?? "unknown", durableEndedAt: original?.endedAt,
+                terminalEventSequence: nil,
+                confirmed: false, unconfirmedReason: released ? "resumeNotDispatched" : "resumeReservationUnconfirmed",
+                finalMessageID: nil, finalMessageVerified: false)
+            terminalReceipt = receipt
+            runFinished = true
+            phase = .startFailed
+            fence.settle(confirmed: false)
+            forwardTask?.cancel()
+            forwardTask = nil
+            channel.yield(.ended(receipt))
+            channel.finish()
+            return
+        }
         let failure = FloeMacSelfFailure(
             code: "stoppedBeforeDispatch",
             message: "The Mac run was stopped before dispatch."

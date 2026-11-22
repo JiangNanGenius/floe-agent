@@ -116,6 +116,7 @@
 		85AF684897AFE98E9E91A486 /* MacTaskActionPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF61A58351C3CC1A9C266D51 /* MacTaskActionPreview.swift */; };
 		863D45562367F00BDD4DE9B2 /* BridgeJobs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92EB0CE2A06FF0D2C8B14ABF /* BridgeJobs.swift */; };
 		8771640EF1BD2C66ACD048BF /* BridgeCapabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = E342249109D575285652FF85 /* BridgeCapabilities.swift */; };
+		880CC6A99443A7C5DF49163E /* RunOutputFileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F15FDEABE49B428C3DF48B9 /* RunOutputFileView.swift */; };
 		8893E41D02F62BD46D1B030E /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C09FA9AA45BDAEAD397761 /* FloeTheme.swift */; };
 		88CBF833DF907C4AA4F0CB2B /* FixtureSandbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C972A1CD73913EA94584683 /* FixtureSandbox.swift */; };
 		89BCF6E499A9099EBF626F55 /* BridgeIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 509E4A335020226C70E1F566 /* BridgeIdentity.swift */; };
@@ -295,6 +296,7 @@
 		5CCDAFD7A9B69CEABFF9566C /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; path = Localizable.strings; sourceTree = "<group>"; };
 		5DC1BA5D058F52C074D363C3 /* ThreadEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadEventView.swift; sourceTree = "<group>"; };
 		5EB28DD141E924E4E3C82DAB /* InfoPlist.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; path = InfoPlist.strings; sourceTree = "<group>"; };
+		5F15FDEABE49B428C3DF48B9 /* RunOutputFileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunOutputFileView.swift; sourceTree = "<group>"; };
 		6216D1E096739C25086B0F50 /* MacMediaAccountSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMediaAccountSettings.swift; sourceTree = "<group>"; };
 		6419113B0B354E8DCEB07B30 /* MacChatLinkText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacChatLinkText.swift; sourceTree = "<group>"; };
 		6479E99AB7FA109B72D85E8D /* ModePreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModePreferenceStore.swift; sourceTree = "<group>"; };
@@ -849,6 +851,7 @@
 			children = (
 				1451CB1F58CC8621976EA1DA /* CodeBlockView.swift */,
 				27AF0F3369F6A2451D3DCF66 /* MarkdownRendererView.swift */,
+				5F15FDEABE49B428C3DF48B9 /* RunOutputFileView.swift */,
 			);
 			path = Render;
 			sourceTree = "<group>";
@@ -1214,6 +1217,7 @@
 				066E050A5504B2AC64A42E2B /* NetworkStatusMonitor.swift in Sources */,
 				E727EF64A97E1440E879938D /* ProviderCatalogAddView.swift in Sources */,
 				9CBD1161433B41B10A272FC6 /* ReasoningBlockView.swift in Sources */,
+				880CC6A99443A7C5DF49163E /* RunOutputFileView.swift in Sources */,
 				8E4CB9F2A515566439D00308 /* RunStateLocalizer.swift in Sources */,
 				30E04270FB8FBB95DFB0D26E /* RunningInputModePolicy.swift in Sources */,
 				118B9A6913854D1ED370D45C /* SearchProviderCatalog.swift in Sources */,

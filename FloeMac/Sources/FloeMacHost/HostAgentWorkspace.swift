@@ -147,6 +147,11 @@ struct HostAgentApproval: Equatable {
     var canAllow: Bool {
         #if FLOE_UNIFIED_MAC
         if MacNativeCommandPolicy.review(toolCall) != nil || MacTaskActionPreview(toolCall) != nil { return true }
+        if toolName == WorkspaceOutputPublication.name,
+           let args = try? JSONDecoder().decode(WorkspaceOutputPublication.Arguments.self, from: toolCall.argumentsJSON),
+           let relative = try? MacAgentWorkspacePinSupport.standardizedRelativePath(args.path) {
+            return relative != "." && (args.displayName.map(RunOutputFile.isValidDisplayName) ?? true)
+        }
         #endif
         if toolName == DelegateTool.name { return text?.isEmpty == false }
         return path?.isEmpty == false && text != nil
@@ -623,13 +628,14 @@ final class HostAgentWorkspace: ObservableObject {
     private let preferences: UserDefaults
     @Published private var taskModelID: UUID?
     @Published private var failedRunID: UUID?
-    @Published private var historyContinuation: RunRecord?
+    @Published private var historyContinuation: (run: RunRecord, action: FloeMacSelfContinuation)?
     var continuableRun: RunRecord? {
         guard isReady, !isSending, !isLoadingHistory, !historyLoadFailed, !isTerminating, !isAcceptingPlan,
               pendingAcceptedPlan == nil, plan?.awaitsConfirmation != true, pendingQuestion == nil,
-              let run = historyContinuation, run.conversationID == selectedID else { return nil }
+              let run = historyContinuation?.run, run.conversationID == selectedID else { return nil }
         return run
     }
+    var resumesOriginalRun: Bool { historyContinuation?.action.resumesOriginalRun == true }
     @Published private var changingGoals = Set<UUID>()
     @Published private(set) var settledQuestions: [UUID: [UserQuestionWaitingSnapshot]] = [:]
     /// Durable question card re-presented for a reopened task that has no
@@ -1788,6 +1794,10 @@ final class HostAgentWorkspace: ObservableObject {
         HostAgentDatabase.runtimeDirectoryURL(applicationSupport: supportDirectory, namespace: namespace)
     }
 
+    var runOutputArtifactRoot: URL {
+        HostAgentDatabase.runOutputArtifactRoot(in: personalTaskLeaseBase)
+    }
+
     /// Durable-shaped private workspace record for one stable task UUID.
     private func personalWorkspaceRecord(id: UUID, title: String) -> WorkspaceRecord {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1988,7 +1998,7 @@ final class HostAgentWorkspace: ObservableObject {
                             provider: FloeMacSelfProviderBinding,
                             workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "",
                             acceptedPlan: PlanConfirmationSnapshot? = nil, resumingGoal: Bool = false,
-                            continuingFromHistory: Bool = false,
+                            continuingFromHistory: Bool = false, checkpointRunID: UUID? = nil,
                             queued: PendingUserInput? = nil, queuedGoal: ConversationGoal? = nil,
                             queuedAttachments: [HostAgentAttachmentDraft] = [],
                             onAdmitted: (() -> Void)? = nil) -> Bool {
@@ -2036,7 +2046,8 @@ final class HostAgentWorkspace: ObservableObject {
         #if !FLOE_UNIFIED_MAC
         if currentID == nil { newDraftRunID = taskID }
         #endif
-        liveRuns[taskID] = LiveRun(prompt: acceptedPlan == nil ? text : nil, mode: mode, modelID: provider.model.id)
+        let pendingPrompt = acceptedPlan == nil && checkpointRunID == nil ? text : nil
+        liveRuns[taskID] = LiveRun(prompt: pendingPrompt, mode: mode, modelID: provider.model.id)
         // A live run for this task becomes the sole authority for its question
         // card, even before its handle lands; any durable restored card for an
         // earlier run steps aside.
@@ -2053,7 +2064,7 @@ final class HostAgentWorkspace: ObservableObject {
         // Bind delegation to the same durable run as plan execution, queued
         // input, or a manually started round.
         let delegationRunID: UUID? = mode == .agent || mode == .goal
-            ? (acceptedPlan?.executionRunID ?? queued?.id ?? UUID()) : nil
+            ? (checkpointRunID ?? acceptedPlan?.executionRunID ?? queued?.id ?? UUID()) : nil
         #if FLOE_UNIFIED_MAC
         let readOnly = mode == .plan || !allowsWorkspaceWrites
         let finalReview = mode != .chat && mode != .plan && verifyAgentAnswers
@@ -2153,7 +2164,7 @@ final class HostAgentWorkspace: ObservableObject {
                         }
                     }
                     tools = try MacAgentWorkspaceTools.binding(workspace: toolWorkspace,
-                        privateTaskRootBase: personalTaskLeaseBase, readOnly: readOnly,
+                        privateTaskRootBase: personalTaskLeaseBase, runOutputArtifactRoot: runOutputArtifactRoot, readOnly: readOnly,
                         chatOnly: mode == .chat, delegationRegistry: delegationRegistry,
                         search: webSearch.access, conversations: conversations, imageTools: images, videoTools: videoTools) { root, identities in
                         let context = MacProjectApprovalContext(grants: grants, workspaceID: toolWorkspace.id,
@@ -2208,7 +2219,7 @@ final class HostAgentWorkspace: ObservableObject {
                     goal: acceptedExecution?.goal ?? text,
                     mode: acceptedExecution?.conversationMode ?? mode.runtimeMode,
                     initialPolicy: .init(approvalMode: approvalMode),
-                    runID: acceptedExecution?.runID ?? queued?.id ?? delegationRunID,
+                    runID: checkpointRunID ?? acceptedExecution?.runID ?? queued?.id ?? delegationRunID,
                     context: FloeMacSelfRunContext(workspaceName: toolWorkspace?.name),
                     attachments: drafts.map {
                         FloeMacSelfSessionAttachment(
@@ -2231,7 +2242,9 @@ final class HostAgentWorkspace: ObservableObject {
                 )
                 guard liveRuns[taskID]?.stopping == false else { return }
                 let handle: FloeMacSelfSessionHandle
-                if resumingGoal {
+                if checkpointRunID != nil {
+                    handle = try await runtime.resumeCheckpointSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
+                } else if resumingGoal {
                     handle = try await runtime.resumeGoalSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
                 } else {
                     handle = try await runtime.startSession(request, provider: provider, tools: tools, auxiliary: auxRoutes)
@@ -2373,6 +2386,15 @@ final class HostAgentWorkspace: ObservableObject {
                 }
                 liveRuns[taskID]?.streamedText = ""
                 guard let terminal, terminal.confirmed else {
+                    if terminal?.unconfirmedReason == "resumeNotDispatched" {
+                        _ = try? await handle.close(allowUnconfirmed: true)
+                        #if FLOE_UNIFIED_MAC
+                        if selectedID == taskID, let run = try? await runtime.runRecord(runID: handle.identity.runID) {
+                            await loadHistoryContinuation(run, runtime: runtime)
+                        }
+                        #endif
+                        return
+                    }
                     if selectedID == taskID { notice = String(localized: "host.chat.unconfirmed") }
                     return
                 }
@@ -2411,7 +2433,8 @@ final class HostAgentWorkspace: ObservableObject {
                 case .attachmentUnreadable(let name):
                     notice = String(format: String(localized: "mac.workspace.documentUnreadable"), name)
                 default:
-                    notice = String(localized: "host.chat.runFailed")
+                    notice = checkpointRunID == nil ? String(localized: "host.chat.runFailed")
+                        : String(localized: "mac.agent.checkpointUnavailable")
                 }
             }
         }
@@ -2420,11 +2443,12 @@ final class HostAgentWorkspace: ObservableObject {
 
     #if FLOE_UNIFIED_MAC
     private func loadHistoryContinuation(_ run: RunRecord, runtime: FloeMacSelfRuntime) async {
-        guard run.conversationID == selectedID, ["failed", "interrupted", "checkpointed"].contains(run.state) else { return }
+        guard run.conversationID == selectedID,
+              ["failed", "interrupted", "checkpointed", "waitingUserQuestion"].contains(run.state) else { return }
         let selection = historySelection
-        let access = try? await runtime.historyContinuationAccess(after: run.id, in: run.conversationID)
+        let action = try? await runtime.continuation(after: run.id, in: run.conversationID)
         guard historySelection == selection, selectedID == run.conversationID else { return }
-        historyContinuation = access == nil ? nil : run
+        historyContinuation = action.map { (run: run, action: $0) }
         if run.state == "failed" { await loadProviderFailure(run, runtime: runtime, selection: selection) }
     }
 
@@ -2489,16 +2513,23 @@ final class HostAgentWorkspace: ObservableObject {
         defer { release() }
         let selection = historySelection
         do {
-            let access = try await runtime.historyContinuationAccess(after: run.id, in: run.conversationID)
+            let action = try await runtime.continuation(after: run.id, in: run.conversationID)
             guard historySelection == selection, run == continuableRun else { return }
-            guard let access else { historyContinuation = nil; return }
-            guard let config = try configuration(), taskModelID == nil || config.model.id == taskModelID else {
-                notice = String(localized: "host.chat.configureFirst")
+            guard let action else { historyContinuation = nil; return }
+            guard let config = try configuration(), taskModelID == nil || config.model.id == taskModelID,
+                  !action.resumesOriginalRun || (config.model.id == run.modelID && config.profile.id == run.providerID) else {
+                notice = action.resumesOriginalRun ? String(localized: "mac.agent.continueOriginalModel")
+                    : String(localized: "host.chat.configureFirst")
                 return
             }
-            let mode: HostAgentMode = switch access { case .chat: .chat; case .task: .agent; case .plan: .plan }
+            let mode: HostAgentMode = switch action.toolAccess { case .chat: .chat; case .task: .agent; case .plan: .plan }
             guard mode == .chat || config.model.capabilities.contains(.tools) else {
                 notice = String(localized: "mac.agent.toolsModelRequired")
+                return
+            }
+            if action.resumesOriginalRun {
+                _ = beginSend(run.goal, runtime: runtime, provider: config.binding(), workspaceID: selectedConversationWorkspace?.id,
+                              mode: mode, continuingFromHistory: true, checkpointRunID: run.id)
                 return
             }
             let prompt = MacPermissionsText.t(
@@ -2735,6 +2766,9 @@ final class HostAgentWorkspace: ObservableObject {
         case MacAgentWorkspaceReplaceTextTool.name:
             let args = try? decoder.decode(MacAgentWorkspaceReplaceTextTool.Arguments.self, from: call.argumentsJSON)
             preview = (args?.path, args?.newText, args?.oldText)
+        case WorkspaceOutputPublication.name:
+            let args = try? decoder.decode(WorkspaceOutputPublication.Arguments.self, from: call.argumentsJSON)
+            preview = (args?.path, nil, nil)
         case DelegateTool.name:
             let args = try? decoder.decode(DelegateTool.Arguments.self, from: call.argumentsJSON)
             let details = args.map { [$0.task, $0.context].compactMap { $0 }.joined(separator: "\n\n") }
@@ -4336,6 +4370,20 @@ final class HostAgentWorkspace: ObservableObject {
                                                    modelID: modelID, apiKey: "", supportsTools: true, allowsPlainHTTP: true)
         else { return false }
         return beginSend(prompt, runtime: runtime, provider: profile.binding(), workspaceID: projectID, mode: .agent)
+    }
+
+    func configureCheckpointFixtureModel(run: RunRecord, endpoint: URL) -> Bool {
+        guard vault == nil, endpoint.scheme == "http", endpoint.host == "127.0.0.1",
+              let providerID = run.providerID, let modelID = run.modelID,
+              var fixture = try? HostAgentProvider(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
+                  modelID: "recovery-fixture", apiKey: "", supportsTools: true, allowsPlainHTTP: true) else { return false }
+        fixture.profile.id = providerID
+        fixture.model.id = modelID
+        fixture.model.providerID = providerID
+        providers = [fixture]
+        selectedProviderID = providerID
+        selectedModelID = modelID
+        return composerProvider?.model.id == modelID
     }
 
     func verifyProjectTaskWorkflowSmoke(

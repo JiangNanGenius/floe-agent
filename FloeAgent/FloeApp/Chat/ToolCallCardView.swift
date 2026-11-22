@@ -72,12 +72,8 @@ struct ToolCallCardView: View {
     /// details are collapsed.
     var outputFiles: [RunOutputFile] = []
     /// Trusted identity of the persisted tool-result row that carries the
-    /// receipts; nil for calls without a verifiable envelope. The context
-    /// type is UIKit-gated today (Render/RunOutputFileView.swift); macOS
-    /// supplies nil until that surface is ported.
-    #if canImport(UIKit)
+    /// receipts; nil for calls without a verifiable envelope.
     var outputContext: RunOutputReceiptContext? = nil
-    #endif
     /// Native outcome uncertainty must never become a Saved badge.
     var outcomeUnknown = false
     /// The exact native completion, never a link parsed from model text.
@@ -141,11 +137,9 @@ struct ToolCallCardView: View {
                         summary: resultSummary, outcomeUnknown: outcomeUnknown))
                 #endif
             }
-            #if canImport(UIKit)
             if let outputContext, !outputFiles.isEmpty {
                 RunOutputFilesCard(receipts: outputFiles, context: outputContext)
             }
-            #endif
             if isExpanded {
                 Divider()
                 detail.transition(FloeTheme.stepTransition(reduceMotion: reduceMotion))
@@ -260,15 +254,8 @@ struct ToolCallCardView: View {
     }
 
     private var displayedArtifacts: [ToolArtifactReference] {
-        #if canImport(UIKit)
         ToolArtifactPresentation.withoutLegacyPlaygroundDuplicates(artifacts,
             outputs: outputFiles, context: outputContext)
-        #else
-        // The legacy-playground duplicate filter needs the sealed receipt
-        // context (UIKit-gated); with no output card on macOS the raw
-        // artifact list is the honest projection.
-        artifacts
-        #endif
     }
 
     /// The card's accessible title. The studio display names are a UIKit
@@ -333,7 +320,6 @@ struct ToolCallCardView: View {
 /// the same canonical MIME policy so an image row is never collapsed into one
 /// accessibility element that hides its individual preview controls.
 enum ToolArtifactPresentation {
-    #if canImport(UIKit)
     static func withoutLegacyPlaygroundDuplicates(_ artifacts: [ToolArtifactReference], outputs: [RunOutputFile],
         context: RunOutputReceiptContext?) -> [ToolArtifactReference] {
         guard let context, context.toolName == "image.playground", let callID = context.callID else { return artifacts }
@@ -348,7 +334,6 @@ enum ToolArtifactPresentation {
             return !owned.contains { $0.sha256 == artifact.sha256 && $0.byteCount == artifact.byteCount && $0.mimeType == artifact.mimeType }
         }
     }
-    #endif
     static func isImage(_ artifact: ToolArtifactReference) -> Bool {
         ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil
     }

@@ -4,6 +4,7 @@ import AppKit
 import FloeAgentRuntime
 import FloeMacSelfCore
 import FloeSecurity
+import FloeTools
 import SwiftUI
 
 struct MacWorkspaceApprovalView: View {
@@ -56,6 +57,7 @@ struct MacWorkspaceApprovalView: View {
             return review.risk.title + " · " + target
         }
         if approval.toolName == DelegateTool.name { return String(localized: "mac.child.approve") }
+        if approval.toolName == WorkspaceOutputPublication.name { return String(localized: "mac.agent.publishOutputApproval") }
         if let action = MacTaskActionPreview(approval.toolCall) { return action.title }
         if approval.previousText != nil { return String(localized: "mac.agent.replaceTextApproval") }
         if approval.path != nil { return String(localized: "mac.agent.createFileApproval") }

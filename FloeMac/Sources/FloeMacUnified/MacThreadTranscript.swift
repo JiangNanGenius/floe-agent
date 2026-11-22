@@ -148,6 +148,7 @@ struct MacThreadTranscript: View {
             StepGroupView(events: events, isLatest: isLatest,
                 isLive: events.first?.runID == liveRun?.id && workspace.isSending,
                 hasError: events.contains { $0.kind == .error },
+                liveFinishedTools: settledQuestionStatuses(runID: events.first?.runID),
                 pendingApprovals: workspace.pendingApproval.map { [$0.cardRequest] } ?? [],
                 decisions: decisions, conversationID: conversationID,
                 approvalPresentation: { approval in
@@ -171,6 +172,14 @@ struct MacThreadTranscript: View {
             if let current = workspace.pendingApproval, current.cardRequest.id == approval.id {
                 MacWorkspaceApprovalView(workspace: workspace, approval: current)
             }
+        }
+    }
+
+    private func settledQuestionStatuses(runID: UUID?) -> [String: String] {
+        guard let runID else { return [:] }
+        return workspace.settledQuestions[runID, default: []].reduce(into: [:]) { statuses, request in
+            if request.state == .settled { statuses[request.toolCallID] = "ok" }
+            if request.state == .cancelled { statuses[request.toolCallID] = "cancelled" }
         }
     }
 

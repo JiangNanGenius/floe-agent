@@ -848,21 +848,39 @@ final class UnifiedMacSmoke {
         let deadline = ContinuousClock.now + .seconds(8)
         while !agent.isReady && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
         guard agent.isReady else { finish(["ready": false]); return }
+        let verifiesContinuation = CommandLine.arguments.contains("--continue-checkpoint")
+        let projectFolder = root.appendingPathComponent("Resume Project", isDirectory: true)
+        let savedFile = projectFolder.appendingPathComponent("checkpoint-proof.txt")
+        let expectedFile = "Saved before the question.\n"
         if !CommandLine.arguments.contains("--workbench-reopen") {
+            var projectID: UUID?
+            if verifiesContinuation {
+                guard (try? FileManager.default.createDirectory(at: projectFolder, withIntermediateDirectories: false)) != nil,
+                      let project = await agent.addWorkspace(name: "Resume Project", rootURL: projectFolder,
+                                                            selectForNewTask: false) else { finish(["project": false]); return }
+                projectID = project.id
+            }
             guard agent.startNamedAgentFixture("Prepare the project deliverable.", modelID: "recovery-fixture", endpoint: endpoint,
-                                               projectID: nil) else { finish(["started": false]); return }
-            let pendingDeadline = ContinuousClock.now + .seconds(8)
+                                               projectID: projectID) else { finish(["started": false]); return }
+            let pendingDeadline = ContinuousClock.now + .seconds(12)
+            var approved = false
             while agent.pendingQuestion == nil && ContinuousClock.now < pendingDeadline {
+                if verifiesContinuation, !approved, let approval = agent.pendingApproval,
+                   approval.workspaceID == projectID, approval.path == savedFile.lastPathComponent {
+                    approved = clickApproval(in: agent, allow: true, screenshot: "checkpoint-approval.png")
+                }
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            guard let card = agent.pendingQuestion, let question = card.currentQuestion, agent.isSending else {
-                finish(["pending": false, "notice": agent.notice ?? ""]); return
+            guard let card = agent.pendingQuestion, let question = card.currentQuestion, agent.isSending,
+                  !verifiesContinuation || (approved && (try? String(contentsOf: savedFile, encoding: .utf8)) == expectedFile) else {
+                finish(["pending": false, "approved": approved, "notice": agent.notice ?? "",
+                        "diagnostics": agent.smokeRunDiagnostics]); return
             }
             await agent.saveQuestionDraft(target: card.snapshot.target(for: question), answer: .init(selectedOptionIDs: ["report"]))
             preferences.set(root.path, forKey: Self.recoveryPathKey)
             preferences.synchronize()
             let ready: [String: Any] = ["pending": true, "pid": getpid(), "taskID": card.conversationID.uuidString,
-                                        "runID": card.runID.uuidString, "requestID": card.requestID]
+                                        "runID": card.runID.uuidString, "requestID": card.requestID, "approvedFile": approved]
             if let bytes = try? JSONSerialization.data(withJSONObject: ready, options: [.prettyPrinted]) {
                 try? bytes.write(to: report, options: .atomic)
             }
@@ -888,11 +906,94 @@ final class UnifiedMacSmoke {
         await agent.select(taskID)
         let receipts = agent.settledQuestions[card.runID]?.filter { $0.requestID == card.requestID } ?? []
         let answer = receipts.first?.questions.first?.answerRecord()
-        finish(["restoredCard": true, "taskID": taskID.uuidString, "runID": card.runID.uuidString,
-                "requestID": card.requestID, "restoredDraft": restoredDraft, "usedVisibleCard": usedVisibleCard,
-                "answeredOnce": !duplicate && receipts.count == 1 && answer?.source == .human
-                    && answer?.selectedOptionIDs == ["report"], "reopenedWithoutRunning": noResumption,
-                "diagnostics": settingsDiagnostics])
+        var result: [String: Any] = ["restoredCard": true, "taskID": taskID.uuidString, "runID": card.runID.uuidString,
+                                     "requestID": card.requestID, "restoredDraft": restoredDraft, "usedVisibleCard": usedVisibleCard,
+                                     "answeredOnce": !duplicate && receipts.count == 1 && answer?.source == .human
+                                         && answer?.selectedOptionIDs == ["report"], "reopenedWithoutRunning": noResumption]
+        if verifiesContinuation {
+            result["continuedOriginalRun"] = await continueCheckpointFixture(model, agent: agent, runID: card.runID,
+                                                                             owner: taskID, endpoint: endpoint, file: savedFile,
+                                                                             expectedFile: expectedFile)
+            if result["continuedOriginalRun"] as? Bool == true {
+                result["publishedOutputReopenedAndDeleted"] = await verifyResumedRunOutput(agent, runID: card.runID,
+                    taskID: taskID, original: savedFile, expected: expectedFile)
+            }
+        }
+        result["diagnostics"] = settingsDiagnostics + agent.smokeRunDiagnostics
+        finish(result)
+    }
+
+    private func continueCheckpointFixture(_ model: BridgeAppModel, agent: HostAgentWorkspace, runID: UUID,
+                                          owner: UUID, endpoint: URL, file: URL, expectedFile: String) async -> Bool {
+        guard let run = agent.continuableRun, run.id == runID, agent.resumesOriginalRun,
+              agent.configureCheckpointFixtureModel(run: run, endpoint: endpoint),
+              let draftStore = model.macWorkspace?.smokeDraftStore,
+              let fileDate = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+              let project = agent.selectedConversationWorkspace?.id else {
+            settingsDiagnostics.append("Original checkpoint, model or project unavailable in the workbench.")
+            return false
+        }
+        let userMessageIDs = agent.messages.filter { $0.role == "user" }.map(\.id)
+        let draft = "Unsent follow-up for this exact task."
+        draftStore.setText(draft, for: owner)
+        guard clickWorkbenchButton(ids: ["mac.agent.run.continue"], frame: HostAgentWorkspaceView.smokeHistoryContinueFrame,
+                                   screenshot: "checkpoint-continue.png") else {
+            settingsDiagnostics.append("Continue Task was unavailable in the active window.")
+            return false
+        }
+        let deadline = ContinuousClock.now + .seconds(12)
+        while ContinuousClock.now < deadline {
+            if !agent.isSending, agent.messages.contains(where: { $0.runID == runID && $0.content == "Original task continued." }) { break }
+            if agent.pendingApproval?.toolName == WorkspaceOutputPublication.name,
+               agent.pendingApproval?.path == file.lastPathComponent {
+                _ = clickApproval(in: agent, allow: true, screenshot: "checkpoint-publication-approval.png")
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        return !agent.isSending && agent.notice == nil && userMessageIDs.count == 1 && agent.selectedID == owner
+            && agent.selectedConversationWorkspace?.id == project && agent.transcriptRuns.map(\.id) == [runID]
+            && agent.transcriptRuns.first?.state == "completed"
+            && agent.messages.filter { $0.role == "user" }.map(\.id) == userMessageIDs
+            && agent.messages.contains { $0.runID == runID && $0.content == "Original task continued." }
+            && draftStore.text(for: owner) == draft && (try? String(contentsOf: file, encoding: .utf8)) == expectedFile
+            && (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) == fileDate
+    }
+
+    private func verifyResumedRunOutput(_ agent: HostAgentWorkspace, runID: UUID, taskID: UUID,
+                                        original: URL, expected: String) async -> Bool {
+        await agent.select(nil)
+        await agent.select(taskID)
+        let outputs = (agent.transcriptEventsByRun[runID] ?? []).filter { $0.kind == .toolResult }.flatMap { event in
+            let payload = ThreadEventPayload.decode(event.payloadJSON)
+            guard payload["tool"] == WorkspaceOutputPublication.name, let encoded = payload["outputFilesJSON"] else {
+                return [RunOutputFile]()
+            }
+            let receipts = (try? JSONDecoder().decode([RunOutputFile].self, from: Data(encoded.utf8))) ?? []
+            return RunOutputReceiptGate.accepted(receipts, in: .init(runID: runID, conversationID: taskID,
+                callID: payload["id"], toolName: payload["tool"]))
+        }
+        guard outputs.count == 1, let receipt = outputs.first,
+              case .verified(let snapshot) = RunOutputSnapshotStore.verify(receipt, artifactRoot: agent.runOutputArtifactRoot),
+              (try? "Edited after publication.\n".write(to: original, atomically: true, encoding: .utf8)) != nil,
+              (try? String(contentsOf: snapshot, encoding: .utf8)) == expected else {
+            settingsDiagnostics.append("The stored publication receipt or immutable snapshot was unavailable.")
+            return false
+        }
+        let limit = ContinuousClock.now + .seconds(5)
+        while visibleWorkbench?.attachedSheet == nil && ContinuousClock.now < limit {
+            _ = clickWorkbenchButton(ids: ["chat.runOutput.preview"], frame: RunOutputFileView.smokePreviewFrames[receipt.outputID], screenshot: nil)
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard let sheet = visibleWorkbench?.attachedSheet, let body = sheet.contentView,
+              descendant(QLPreviewView.self, in: body)?.previewItem?.previewItemURL?.standardizedFileURL == snapshot.standardizedFileURL else {
+            settingsDiagnostics.append("The retained file card did not open the verified snapshot.")
+            return false
+        }
+        capture(body, extension: "run-output-preview.png")
+        guard await closeFixtureSheet(sheet, id: "chat.runOutput.preview.done"),
+              await agent.changeConversationMetadata(id: taskID, change: .delete) else { return false }
+        return !FileManager.default.fileExists(atPath: snapshot.path)
+            && (try? String(contentsOf: original, encoding: .utf8)) == "Edited after publication.\n"
     }
 
     private func openTaskFromCenter(_ taskID: UUID, agent: HostAgentWorkspace) async -> Bool {

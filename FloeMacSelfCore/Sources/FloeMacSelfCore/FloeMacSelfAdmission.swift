@@ -652,6 +652,71 @@ actor FloeMacSelfAdmissionStore {
         }
     }
 
+    /// Reclaims the original durable run under a new attempt epoch. The
+    /// runtime has already checked the checkpoint and its exact tool wait.
+    /// The writer rechecks the admission and run header before changing either
+    /// invocation's authority. It never inserts a run or another user turn.
+    func admitCheckpointResume(
+        previous: FloeMacSelfAdmissionRecord,
+        runState: String,
+        owner: FloeMacSelfHostIdentity
+    ) async throws -> FloeMacSelfAdmissionRecord {
+        try verifyAuthority()
+        let now = Date().timeIntervalSince1970
+        return try await database.writer { db in
+            let conversationID = previous.conversationID
+            let runID = previous.runID
+            let oldHost = previous.ownerHostInstanceID != nil && previous.ownerHostInstanceID != owner.hostInstanceID
+            let interruptedReservation = oldHost && previous.detail == "checkpointResume"
+            let canReclaimQuestion = runState == "waitingUserQuestion" && oldHost
+                && (previous.phase == .starting || interruptedReservation)
+            let canReclaimTerminal = ["failed", "interrupted", "checkpointed"].contains(runState)
+                && (previous.phase == .settledConfirmed || interruptedReservation)
+            guard canReclaimQuestion || canReclaimTerminal,
+                  try Self.fetchRecord(db: db, conversationID: conversationID) == previous,
+                  previous.stopRequestedAt == nil,
+                  try String.fetchOne(db, sql: "SELECT state FROM runs WHERE id = ? AND conversation_id = ?",
+                                      arguments: [runID.uuidString, conversationID.uuidString]) == runState,
+                  try !Self.hasNonTerminalRun(db: db, conversationID: conversationID, excluding: runID) else {
+                throw FloeMacSelfCoreError.admissionConflict(conversationID)
+            }
+            try db.execute(sql: """
+                UPDATE floe_mac_self_admission
+                SET phase = 'admitting', epoch = epoch + 1, admitted_at = ?, updated_at = ?,
+                    owner_host_id = ?, owner_pid = ?, stop_requested_at = NULL, stop_epoch = 0,
+                    previous_run_id = ?, previous_phase = ?, detail = 'checkpointResume'
+                WHERE conversation_id = ? AND run_id = ? AND epoch = ?
+                """, arguments: [now, now, owner.hostInstanceID.uuidString, Int(owner.processIdentifier),
+                                   runID.uuidString, previous.phase.rawValue, conversationID.uuidString, runID.uuidString, previous.epoch])
+            guard db.changesCount == 1, let admitted = try Self.fetchRecord(db: db, conversationID: conversationID) else {
+                throw FloeMacSelfCoreError.admissionConflict(conversationID)
+            }
+            return admitted
+        }
+    }
+
+    /// Only the caller that still holds the undispatched fence may roll back
+    /// this reservation. The newer epoch keeps all earlier handles fenced.
+    func releaseCheckpointResume(previous: FloeMacSelfAdmissionRecord, epoch: Int) async throws {
+        try verifyAuthority()
+        let now = Date().timeIntervalSince1970
+        let changed = try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE floe_mac_self_admission
+                SET phase = ?, epoch = epoch + 1, admitted_at = ?, updated_at = ?, owner_host_id = ?, owner_pid = ?,
+                    stop_requested_at = ?, stop_epoch = ?, previous_run_id = ?, previous_phase = ?, detail = ?
+                WHERE conversation_id = ? AND run_id = ? AND epoch = ? AND detail = 'checkpointResume'
+                  AND phase IN ('admitting', 'prepared', 'starting')
+                """, arguments: [previous.phase.rawValue, previous.admittedAt.timeIntervalSince1970, now,
+                                   previous.ownerHostInstanceID?.uuidString, previous.ownerProcessIdentifier,
+                                   previous.stopRequestedAt?.timeIntervalSince1970, previous.stopEpoch,
+                                   previous.previousRunID?.uuidString, previous.previousPhase?.rawValue, previous.detail,
+                                   previous.conversationID.uuidString, previous.runID.uuidString, epoch])
+            return db.changesCount == 1
+        }
+        guard changed else { throw FloeMacSelfCoreError.admissionConflict(previous.conversationID) }
+    }
+
     /// CAS admitting -> prepared after prepare committed and all exact
     /// identities were verified.
     func markPrepared(conversationID: UUID, runID: UUID, epoch: Int) async throws {
@@ -1101,16 +1166,16 @@ actor FloeMacSelfAdmissionStore {
         )
     }
 
-    private static func hasNonTerminalRun(db: Database, conversationID: UUID) throws -> Bool {
+    private static func hasNonTerminalRun(db: Database, conversationID: UUID, excluding runID: UUID? = nil) throws -> Bool {
         try Bool.fetchOne(
             db,
             sql: """
                 SELECT EXISTS(
                     SELECT 1 FROM runs
-                    WHERE conversation_id = ? AND state NOT IN (\(FloeMacSelfRunState.sqlTerminalList))
+                    WHERE conversation_id = ? AND id IS NOT ? AND state NOT IN (\(FloeMacSelfRunState.sqlTerminalList))
                 )
                 """,
-            arguments: [conversationID.uuidString]
+            arguments: [conversationID.uuidString, runID?.uuidString]
         ) ?? true
     }
 }

@@ -30,6 +30,7 @@ struct HostAgentWorkspaceView: View {
     #if FLOE_MAC_HOST_SMOKE
     static var smokeAttachmentFrames: [String: CGRect] = [:]
     static var smokeExpandFrame: CGRect?
+    static var smokeHistoryContinueFrame: CGRect?
     static var smokeLocatedMessageID: UUID?
     #endif
     @StateObject private var search: ThreadSearchModel
@@ -270,13 +271,17 @@ struct HostAgentWorkspaceView: View {
                     Button {
                         Task { await workspace.continueFromHistory(run) }
                     } label: {
-                        Label(MacPermissionsText.t("从历史继续", "Continue from History"), systemImage: "play")
+                        Label(LocalizedStringKey(workspace.resumesOriginalRun ? "mac.agent.continueTask" : "mac.agent.continueHistory"),
+                              systemImage: "play")
                             .padding(.horizontal, 6)
                             .frame(minHeight: FloeTheme.minimumTarget)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .accessibilityIdentifier("mac.agent.run.continue")
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { frame in Self.smokeHistoryContinueFrame = frame })
+                    #endif
                     .padding(.horizontal, 16)
                 }
                 if let failed = workspace.failedUserMessage,
@@ -341,6 +346,7 @@ struct HostAgentWorkspaceView: View {
         }
         #if FLOE_UNIFIED_MAC
         .background(FloeTheme.readingSurface)
+        .environment(\.runOutputArtifactRoot, workspace.runOutputArtifactRoot)
         .task(id: [findRequest, workspace.selectedID]) {
             guard findRequest != nil, let id = findConversationID, id == workspace.selectedID else { return }
             search.begin()

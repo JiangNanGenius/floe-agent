@@ -390,6 +390,7 @@
 "mac.agent.projectRequired" = "Choose a project folder when starting a task in Agent or Plan mode.";
 "mac.agent.approvalRequired" = "Review operation";
 "mac.agent.createFileApproval" = "Create this file?";
+"mac.agent.publishOutputApproval" = "Save this file as a task output?";
 "mac.agent.replaceTextApproval" = "Edit this file?";
 "mac.agent.reviewReplacement" = "Review the original and replacement text";
 "mac.agent.originalText" = "Original text";
@@ -428,6 +429,10 @@
 "mac.agent.continueGoal" = "Continue Goal";
 "mac.agent.continueGoalPrompt" = "Continue the existing goal from its saved progress.";
 "mac.agent.goalControlFailed" = "The goal couldn’t be updated. Check its current status and try again.";
+"mac.agent.continueTask" = "Continue Task";
+"mac.agent.continueHistory" = "Continue from History";
+"mac.agent.continueOriginalModel" = "Restore the original model in Settings to continue this task.";
+"mac.agent.checkpointUnavailable" = "Floe couldn’t continue from the saved progress. Reopen the task and try again.";
 "mac.agent.confirmGoal" = "Confirm Results";
 "mac.agent.goalSteps" = "Completed Steps";
 "mac.agent.goalCriteria" = "Acceptance Criteria";
@@ -593,8 +598,6 @@
 "mac.question.credentials.retry" = "Your answer was not saved. Configure credentials in Settings.";
 "mac.question.restored.note.required" = "Floe will save this answer to the task. You can continue the task when you’re ready.";
 "mac.question.restored.note.optional" = "Your answer will be saved with this task’s queued messages.";
-"mac.question.restored.note.required" = "Your answer is saved to this task and is not sent to the model automatically. Continue the task from History when you are ready.";
-"mac.question.restored.note.optional" = "Your answer is saved to this task and is delivered once, at the task's next safe step.";
 
 "mac.permissions.authenticate" = "Allow Full Access for Floe Agent tasks.";
 
