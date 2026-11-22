@@ -32,6 +32,7 @@ struct MacImageWorkbenchView: View {
     @State private var quality: String?
     @State private var references: [ReferenceItem] = []
     @State private var referenceError: String?
+    @State private var editSession: MacMediaEditSession?
 
     private struct ReferenceItem: Identifiable {
         let id = UUID()
@@ -186,6 +187,8 @@ struct MacImageWorkbenchView: View {
                                     }
                                     .disabled(preview == nil)
                                 }
+                                Button(MacMediaEditStrings.editImage) { openEditor(for: item) }.disabled(preview == nil)
+                                    .accessibilityIdentifier("mac.images.edit")
                                 Button("mac.images.saveAs") { export(item) }.disabled(preview == nil)
                             }
                         }
@@ -210,6 +213,20 @@ struct MacImageWorkbenchView: View {
         .alert("mac.workspace.attachFailed", isPresented: $attachmentFailed) {
             Button("OK", role: .cancel) {}
         }
+        .sheet(item: $editSession) { session in
+            MacMediaEditorView(session: session)
+        }
+    }
+
+    /// Opens the reusable editor on the selected image. The task/canvas
+    /// routes are captured now, so the edit keeps pointing at the owner
+    /// that owned the image when editing started.
+    private func openEditor(for item: MacImageGeneration.ResultItem) {
+        let url = images.imageURL(for: item)
+        editSession = MacMediaEditSession(
+            source: .init(url: url, kind: .image, title: item.prompt),
+            saveToTask: saveToTask,
+            addToCanvas: addToCanvas)
     }
 
     /// Reference image picker plus an optional local canvas URL input. Every

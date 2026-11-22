@@ -243,6 +243,16 @@ struct MacPermissionsSettingsView: View {
             }
 
             Section {
+                let ready = MacAgentWorkspaceTools.approvalGateAvailable
+                Label(ready ? MacPermissionsText.t("高风险保护已启用", "High-Risk Protection Active")
+                    : MacPermissionsText.t("保护规则无法加载", "Protection Rules Unavailable"),
+                    systemImage: ready ? "shield.checkered" : "shield.slash")
+                    .foregroundStyle(ready ? FloeTheme.success : FloeTheme.destructive)
+            } footer: {
+                Text(MacPermissionsText.t("此保护对所有审批模式生效。", "This protection applies to all approval modes."))
+            }
+
+            Section {
                 MacSavedApprovalGrantsView(workspace: workspace)
             } header: {
                 Text(MacPermissionsText.t("已保存的授权", "Saved Approvals"))

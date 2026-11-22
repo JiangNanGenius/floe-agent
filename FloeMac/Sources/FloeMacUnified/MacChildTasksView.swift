@@ -4,6 +4,7 @@ import SwiftUI
 struct MacChildTasksView: View {
     @ObservedObject var controller: HostChildSubagentController
     let conversationID: UUID
+    var isInspector = false
     @State private var expanded = false
     @State private var detail: HostChildSubagentSnapshot?
     #if FLOE_MAC_HOST_SMOKE
@@ -29,7 +30,7 @@ struct MacChildTasksView: View {
                     #if FLOE_MAC_HOST_SMOKE
                     .background(MacWorkbenchButtonFrameReader { Self.smokeDisclosureFrame = $0 })
                     #endif
-                    if expanded {
+                    if expanded || isInspector {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(controller.presentedChildren) { child in
@@ -38,12 +39,14 @@ struct MacChildTasksView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxHeight: 145)
+                        .frame(maxHeight: isInspector ? .infinity : 145)
                     }
                 }
                 .font(.callout)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 4)
+            } else if isInspector {
+                ContentUnavailableView(MacPermissionsText.t("暂无子代理", "No Subagents"), systemImage: "person.2")
             }
         }
         .sheet(item: $detail) { selected in

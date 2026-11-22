@@ -33,11 +33,117 @@ struct HostAdapterIntegrationTests {
                 provenance: try makeHostProvenance(databaseURL: databaseURL)
             )
             let receipt = try await runtime.bootstrap()
-            #expect(receipt.schemaVersion == 66)
+            #expect(receipt.schemaVersion == 67)
             let messages = try await runtime.conversationMessages(conversationID: conversationID)
             #expect(messages.map(\.id) == [messageID])
             #expect(messages.first?.content == "Saved before the update.")
             _ = try await runtime.shutdown(cancelActive: false)
+        }
+    }
+
+    @Test("Both released v66 session stores retain messages and converge on the shared schema", arguments: [false, true])
+    func migrateBothVersion66Shapes(ipad: Bool) async throws {
+        try await withSelfCoreTempDirectory { root in
+            let file = root.appendingPathComponent("session.sqlite")
+            let conversationID = UUID()
+            let messageID = UUID()
+            let runID = UUID()
+            let eventID = UUID()
+            let grantID = UUID()
+            let candidateID = UUID()
+            try Self.seedVersion63(file, conversationID: conversationID, messageID: messageID)
+            let old = try DatabaseQueue(path: file.path)
+            var migrator = DatabaseMigrator()
+            DatabaseManager.registerMigrations(into: &migrator)
+            try migrator.migrate(old, upTo: ipad ? "v65" : "v66")
+            if ipad {
+                try await old.write { db in
+                    try db.execute(sql: """
+                        ALTER TABLE memory_candidates ADD COLUMN origin_conversation_id TEXT;
+                        ALTER TABLE memory_candidates ADD COLUMN origin_workspace_id TEXT;
+                        INSERT INTO grdb_migrations (identifier) VALUES ('v66');
+                        PRAGMA user_version = 66;
+                        """)
+                }
+            }
+            try await old.write { db in
+                let date = PersistenceCodec.encode(Date())
+                try db.execute(sql: """
+                    INSERT INTO runs (id, conversation_id, state, goal, started_at, ended_at)
+                    VALUES (?, ?, 'completed', 'Existing goal', ?, ?)
+                    """, arguments: [runID.uuidString, conversationID.uuidString, date, date])
+                try db.execute(sql: """
+                    INSERT INTO run_events (id, run_id, sequence, kind, payload_json, created_at)
+                    VALUES (?, ?, 1, 'approval', '{"decision":"allowOnce"}', ?)
+                    """, arguments: [eventID.uuidString, runID.uuidString, date])
+                if ipad {
+                    try db.execute(sql: """
+                        INSERT INTO approval_grants (id, tool_name, paths_json, policy_name, decided_at)
+                        VALUES (?, 'workspace.read', '["report.txt"]', 'human', ?)
+                        """, arguments: [grantID.uuidString, date])
+                } else {
+                    try db.execute(sql: """
+                        INSERT INTO approval_grants (id, tool_name, paths_json, policy_name, decided_at,
+                            conversation_id, authorization_identity)
+                        VALUES (?, 'workspace.read', '["report.txt"]', 'human', ?, ?, 'fixture-authority')
+                        """, arguments: [grantID.uuidString, date, conversationID.uuidString])
+                }
+                let evidence = "[{\"messageID\":\"\(messageID.uuidString)\"}]"
+                try db.execute(sql: """
+                    INSERT INTO memory_candidates (id, scope, content, confidence, stability, importance,
+                        sensitivity, origin, evidence_json, status, created_at, updated_at)
+                    VALUES (?, 'user', 'Existing preference', 1., 1., 1., 'normal', 'derived', ?, 'pending', ?, ?)
+                    """, arguments: [candidateID.uuidString, evidence, date, date])
+                if ipad {
+                    try db.execute(sql: "UPDATE memory_candidates SET origin_conversation_id = ? WHERE id = ?",
+                                   arguments: [conversationID.uuidString, candidateID.uuidString])
+                }
+            }
+            try old.close()
+
+            let runtime = try FloeMacSelfRuntime(databaseURL: file, owner: .init(displayName: "ParityFixture"),
+                                                  provenance: try makeHostProvenance(databaseURL: file))
+            #expect(try await runtime.bootstrap().schemaVersion == 67)
+            let messages = try await runtime.conversationMessages(conversationID: conversationID)
+            #expect(messages.first?.id == messageID)
+            #expect(messages.first?.content == "Saved before the update.")
+            let output = root.appendingPathComponent("conversation.jsonl")
+            try await runtime.exportStructuredConversation(conversationID: conversationID, to: output)
+            let rows = try String(contentsOf: output, encoding: .utf8).split(separator: "\n").map { line in
+                try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+            }
+            #expect(rows.first?["format"] as? String == "floe.task.jsonl")
+            #expect(rows.first?["version"] as? Int == 1)
+            #expect(rows.first(where: { $0["type"] as? String == "message" })?["id"] as? String == messageID.uuidString)
+            let savedEvent = rows.first { $0["type"] as? String == "event" }
+            #expect(savedEvent?["id"] as? String == eventID.uuidString)
+            #expect(savedEvent?["kind"] as? String == "approval")
+            #expect((savedEvent?["payload"] as? [String: String])?["decision"] == "allowOnce")
+            #expect(rows.last?["type"] as? String == "exportComplete")
+            _ = try await runtime.shutdown(cancelActive: false)
+
+            let reopened = try DatabaseQueue(path: file.path)
+            let both = try await reopened.read { db in
+                let grants = Set(try db.columns(in: "approval_grants").map(\.name))
+                let memory = Set(try db.columns(in: "memory_candidates").map(\.name))
+                let grant = try Row.fetchOne(db, sql: """
+                    SELECT paths_json, conversation_id, authorization_identity FROM approval_grants WHERE id = ?
+                    """, arguments: [grantID.uuidString])
+                let paths: String? = grant?["paths_json"]
+                let owner: String? = grant?["conversation_id"]
+                let identity: String? = grant?["authorization_identity"]
+                let origin = try String.fetchOne(db, sql: """
+                    SELECT origin_conversation_id FROM memory_candidates WHERE id = ?
+                    """, arguments: [candidateID.uuidString])
+                return grants.isSuperset(of: ["conversation_id", "authorization_identity"]) &&
+                    memory.isSuperset(of: ["origin_conversation_id", "origin_workspace_id"]) &&
+                    paths == "[\"report.txt\"]" &&
+                    owner == (ipad ? nil : conversationID.uuidString) &&
+                    identity == (ipad ? nil : "fixture-authority") &&
+                    origin == conversationID.uuidString
+            }
+            #expect(both)
+            try reopened.close()
         }
     }
 
@@ -135,7 +241,7 @@ struct HostAdapterIntegrationTests {
                 )
                 let error = await selfCoreError { _ = try await runtime.bootstrap() }
                 if futureVersion {
-                    #expect(error == .schemaMismatch(expected: 66, actual: 999))
+                    #expect(error == .schemaMismatch(expected: 67, actual: 999))
                 } else {
                     #expect(error == .authoritySchemaUnsupported("unknown_migration"))
                 }
@@ -147,7 +253,7 @@ struct HostAdapterIntegrationTests {
                     let admission = try db.tableExists("floe_mac_self_admission")
                     return (version, future, admission)
                 }
-                #expect(observed.0 == (futureVersion ? 999 : 66))
+                #expect(observed.0 == (futureVersion ? 999 : 67))
                 #expect(observed.1 == (futureVersion ? 0 : 1))
                 #expect(!observed.2)
                 try await reopened.close()

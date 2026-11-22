@@ -43,6 +43,7 @@ struct MacVideoWorkbenchView: View {
     @State private var referenceImageURL: URL?
     @State private var exportFailed = false
     @State private var routeFailed = false
+    @State private var editSession: MacMediaEditSession?
 
     private var selection: MacVideoGeneration.JobItem? {
         videos.history.first(where: { $0.id == selectedID }) ?? videos.history.first
@@ -141,6 +142,11 @@ struct MacVideoWorkbenchView: View {
                                     }
                                     .accessibilityIdentifier("mac.creative.saveToTask")
                                 }
+                                if let url = videos.videoURL(for: item) {
+                                    Button(MacMediaEditStrings.editVideo) { openEditor(for: item, url: url) }
+                                        .disabled(videos.isWorking(on: item.id))
+                                        .accessibilityIdentifier("mac.videos.edit")
+                                }
                                 Button(MacVideoStrings.saveAs) { export(item) }
                                     .disabled(videos.videoURL(for: item) == nil)
                             }
@@ -171,6 +177,19 @@ struct MacVideoWorkbenchView: View {
         .alert(MacCanvasText.routeFailed, isPresented: $routeFailed) {
             Button("OK", role: .cancel) {}
         }
+        .sheet(item: $editSession) { session in
+            MacMediaEditorView(session: session)
+        }
+    }
+
+    /// Opens the reusable trim editor on a ready clip. Routes are captured
+    /// now so the edited result returns to the owner that owned the clip
+    /// when editing started.
+    private func openEditor(for item: MacVideoGeneration.JobItem, url: URL) {
+        editSession = MacMediaEditSession(
+            source: .init(url: url, kind: .video, title: item.prompt),
+            saveToTask: saveToTask,
+            addToCanvas: addToCanvas)
     }
 
     // MARK: - Supported video options (shared contract)

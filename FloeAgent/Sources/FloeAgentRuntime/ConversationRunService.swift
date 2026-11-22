@@ -1652,6 +1652,7 @@ public actor ConversationRunService {
             if let queuedMs = timing.queuedMs {
                 persisted["queuedMs"] = String(queuedMs)
             }
+            if let code = result.exitStatus { persisted["exitStatus"] = String(code) }
             if !result.artifacts.isEmpty,
                let data = try? JSONEncoder().encode(result.artifacts),
                let encoded = String(data: data, encoding: .utf8) {

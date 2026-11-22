@@ -22,6 +22,8 @@ public struct FloeMacSelfRunContext: Sendable, Hashable {
     public let projectInstructions: String?
     public let workspaceNotes: [String]
     public let workspaceListing: String?
+    public let activeSkillIDs: Set<String>
+    public let skillInstructions: String?
 
     public init(
         workspaceName: String? = nil,
@@ -29,7 +31,9 @@ public struct FloeMacSelfRunContext: Sendable, Hashable {
         executionTarget: String? = nil,
         projectInstructions: String? = nil,
         workspaceNotes: [String] = [],
-        workspaceListing: String? = nil
+        workspaceListing: String? = nil,
+        activeSkillIDs: Set<String> = [],
+        skillInstructions: String? = nil
     ) {
         self.workspaceName = workspaceName
         self.selectedRelativePath = selectedRelativePath
@@ -37,6 +41,8 @@ public struct FloeMacSelfRunContext: Sendable, Hashable {
         self.projectInstructions = projectInstructions
         self.workspaceNotes = workspaceNotes
         self.workspaceListing = workspaceListing
+        self.activeSkillIDs = activeSkillIDs
+        self.skillInstructions = skillInstructions
     }
 }
 
@@ -409,6 +415,11 @@ enum FloeMacSelfRequestValidator {
             guard instructions.utf8.count <= maximumProjectInstructionsBytes else {
                 throw FloeMacSelfCoreError.invalidRequest("the project instructions exceed the bounded context size")
             }
+        }
+        guard context.activeSkillIDs.count <= 64,
+              context.activeSkillIDs.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 }),
+              (context.skillInstructions?.utf8.count ?? 0) <= maximumProjectInstructionsBytes else {
+            throw FloeMacSelfCoreError.invalidRequest("skill context exceeds the bounded context size")
         }
         if let listing = context.workspaceListing {
             guard listing.utf8.count <= maximumWorkspaceListingBytes else {

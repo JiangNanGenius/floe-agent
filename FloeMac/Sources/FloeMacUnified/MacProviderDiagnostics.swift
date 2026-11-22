@@ -9,7 +9,8 @@ import Foundation
 /// provider error body, endpoint, account and credentials never enter it.
 struct MacProviderDiagnostic: Sendable {
     enum Result: String, Sendable {
-        case response, authentication, quotaOrRateLimit, modelUnavailable, network, rejected, invalidResponse, cancelled
+        case response, toolResponse, noToolCall, authentication, quotaOrRateLimit
+        case modelUnavailable, network, rejected, invalidResponse, cancelled
     }
 
     let result: Result
@@ -19,6 +20,8 @@ struct MacProviderDiagnostic: Sendable {
     var message: String {
         switch result {
         case .response: MacPermissionsText.t("模型调用成功。", "The model returned a response.")
+        case .toolResponse: MacPermissionsText.t("模型返回了有效的工具调用。", "The model returned a valid tool call.")
+        case .noToolCall: MacPermissionsText.t("模型没有返回可验证的工具调用。", "The model did not return a verifiable tool call.")
         case .authentication: MacPermissionsText.t("供应商拒绝访问。请检查密钥和模型权限。", "Access was refused. Check the API key and model permissions.")
         case .quotaOrRateLimit: MacPermissionsText.t("请求受限。请检查余额、订阅和调用频率。", "The request was limited. Check quota, subscription, and request rate.")
         case .modelUnavailable: MacPermissionsText.t("模型或接口不存在。请检查模型 ID 和接口地址。", "The model or endpoint was not found. Check the model ID and endpoint.")
@@ -50,9 +53,15 @@ struct MacProviderDiagnostic: Sendable {
     }
 
     static func verify(provider: ProviderProfile, model: ModelProfile, credentials: ProviderCredentials,
-                       adapter: any ProviderAdapter) async -> Self {
-        await withTaskGroup(of: Self.self) { group in
+                       adapter: any ProviderAdapter, testsTools: Bool = false) async -> Self {
+        return await withTaskGroup(of: Self.self) { group in
             group.addTask {
+                if testsTools {
+                    let outcome = await NativeToolCapabilityProbe.run(adapter: adapter, provider: provider,
+                        model: model, credentials: credentials)
+                    guard !Task.isCancelled else { return .init(result: .cancelled) }
+                    return .init(result: outcome == .verified ? .toolResponse : .noToolCall)
+                }
                 let request = ProviderStreamRequest(provider: provider, model: model,
                     messages: [("user", "Reply with OK.")], ephemeralTransport: true)
                 var receivedText = false
@@ -62,7 +71,8 @@ struct MacProviderDiagnostic: Sendable {
                         case .textDelta(let delta):
                             if !delta.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { receivedText = true }
                         case .completed(let completion):
-                            return .init(result: receivedText && completion.stopReason != .cancelled ? .response : .invalidResponse)
+                            guard completion.stopReason != .cancelled else { return .init(result: .cancelled) }
+                            return .init(result: receivedText ? .response : .invalidResponse)
                         case .error(let error):
                             if ProviderConnectionProbe.isInactiveVolcenginePlan(provider: provider, status: error.httpStatus, body: error.providerMessage) {
                                 return .init(result: .quotaOrRateLimit, httpStatus: error.httpStatus)

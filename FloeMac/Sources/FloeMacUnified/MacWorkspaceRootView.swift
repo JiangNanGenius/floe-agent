@@ -17,13 +17,31 @@ private enum MacWorkspaceDestination: Hashable {
     case taskCenter, projectTasks(UUID), space(MacSpacePage), creative, images, browser, conversation(UUID)
 }
 
-private enum MacTaskInspector: Equatable {
-    case files, browser(UUID), activity(UUID), terminal(UUID)
+private enum MacTaskInspector: Hashable {
+    case files, browser(UUID), changes(UUID), terminal(UUID), childAgents(UUID), progress(UUID)
+
+    var ownerID: UUID? {
+        switch self {
+        case .files: nil
+        case .browser(let id), .changes(let id), .terminal(let id), .childAgents(let id), .progress(let id): id
+        }
+    }
 }
 
 private struct MacTaskPermissionsPresentation: Identifiable {
     let id: UUID
     let isDraft: Bool
+}
+
+private struct MacTaskSchedulePresentation: Identifiable {
+    let id: UUID
+    let projectID: UUID?
+}
+
+struct MacTaskConnectionPresentation: Identifiable {
+    let owner: MacTaskRemoteConnectionsOwner
+    let catalog: MacRemoteConnectionsCatalog
+    var id: UUID { owner.taskID }
 }
 
 struct MacWorkspaceRootView: View {
@@ -41,6 +59,7 @@ struct MacWorkspaceRootView: View {
     let openPermissionSettings: () -> Void
     let openToolbox: (String) -> Void
     let openTerminal: (UUID, WorkspaceRecord) throws -> MacTaskTerminalOwner?
+    let openConnections: (MacTaskTerminalOwner) -> MacTaskConnectionPresentation?
     let settingsContent: () -> AnyView
     let imageContent: (((URL) -> Bool)?) -> AnyView
     let creativeContent: (((URL) async -> Bool)?) -> AnyView
@@ -71,8 +90,13 @@ struct MacWorkspaceRootView: View {
     @State private var restoredInitialDestination = false
     @State private var inspector: MacTaskInspector?
     @State private var currentTerminal: MacTaskTerminalOwner?
+    @State private var currentConnections: MacTaskConnectionPresentation?
+    @State private var remoteSheet: MacTaskConnectionPresentation?
     @State private var showTerminalError = false
     @State private var taskPermissions: MacTaskPermissionsPresentation?
+    @State private var taskSchedule: MacTaskSchedulePresentation?
+    @State private var contextUsage: ThreadUsageSummary?
+    @State private var showsContextUsage = false
     @State private var browserExpanded = false
     @State private var compactDetail = false
     @State private var inspectorWidth: CGFloat = 340
@@ -130,6 +154,14 @@ struct MacWorkspaceRootView: View {
         .sheet(isPresented: $workspace.isSettingsPresented, content: settingsContent)
         .sheet(item: $taskPermissions) { presentation in
             MacTaskPermissionsSheet(workspace: workspace, selectionID: presentation.id, isDraft: presentation.isDraft)
+        }
+        .sheet(item: $taskSchedule) { presentation in
+            MacTaskScheduleView(center: workspace.taskSchedules, workspace: workspace, projectID: presentation.projectID,
+                                originTaskID: presentation.id, openTask: openTask)
+        }
+        .sheet(item: $remoteSheet) { presentation in
+            MacRemoteConnectionsView(owner: presentation.owner, catalog: presentation.catalog)
+                .frame(width: 800, height: 570)
         }
         .onChange(of: workspace.draftSelectionID) { _, selection in
             if taskPermissions?.id != selection { taskPermissions = nil }
@@ -224,9 +256,9 @@ struct MacWorkspaceRootView: View {
             #endif
             if newDestination == nil { destination = .taskCenter }
             if !showsTask { inspector = nil }
-            if case .browser(let owner) = inspector, owner != visibleTaskOwner { inspector = nil }
-            if case .activity(let owner) = inspector, owner != destinationConversationID { inspector = nil }
-            if case .terminal(let owner) = inspector, owner != visibleTaskOwner { inspector = nil; currentTerminal = nil }
+            if let owner = inspector?.ownerID, owner != visibleTaskOwner { closeInspector() }
+            showsContextUsage = false
+            contextUsage = nil
             guard remembersFileRoot else { return }
             if case .conversation(let id) = newDestination { lastConversation = id.uuidString }
             if case .newTask = newDestination { lastConversation = "" }
@@ -347,38 +379,80 @@ struct MacWorkspaceRootView: View {
     private var inspectorPane: some View {
         ZStack {
             filesPane
-            if showsTask, let inspector {
-                switch inspector {
-                case .files: EmptyView()
-                case .browser(let owner):
-                    browserDetail(owner: owner, close: closeInspector)
-                case .activity(let id):
-                    VStack(spacing: 0) {
-                        inspectorHeader(workspaceText("执行进度与文件变更", "Progress and File Changes"))
-                        if workspace.selectedID == id, !workspace.isLoadingHistory {
-                            MacTaskActivityInspectorView(
-                                snapshot: .init(runs: workspace.transcriptRuns, events: workspace.transcriptEventsByRun),
-                                artifactReader: readTaskChange
-                            )
-                                .id(id)
-                        } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
-                    }
-                case .terminal(let owner):
-                    if let currentTerminal, currentTerminal.taskID == owner {
-                        VStack(spacing: 0) {
-                            inspectorHeader(workspaceText("终端", "Terminal"))
-                            MacTaskTerminalInspector(owner: currentTerminal).id(owner)
+            if showsTask, let inspector { taskInspector(inspector) }
+        }
+    }
+
+    @ViewBuilder
+    private func taskInspector(_ panel: MacTaskInspector) -> some View {
+        switch panel {
+        case .files:
+            EmptyView()
+        case .browser(let owner):
+            browserDetail(owner: owner, close: closeInspector)
+        case .changes(let id):
+            taskActivity(id, content: .changes)
+        case .progress(let id):
+            taskActivity(id, content: .progress)
+        case .childAgents(let id):
+            VStack(spacing: 0) {
+                inspectorHeader(FloeTaskInspectorItem.childAgents.titleKey)
+                MacChildTasksView(controller: workspace.childSubagents, conversationID: id, isInspector: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        case .terminal(let owner):
+            if let currentTerminal, currentTerminal.taskID == owner {
+                VStack(spacing: 0) {
+                    inspectorHeader(FloeTaskInspectorItem.terminal.titleKey) {
+                        if let currentConnections, currentConnections.id == owner {
+                            Button(workspaceText("远程主机", "Remote Hosts"), systemImage: "network") {
+                                remoteSheet = currentConnections
+                            }
+                            .accessibilityIdentifier("workspace.terminal.remoteHosts")
                         }
                     }
+                    MacTaskTerminalInspector(owner: currentTerminal, connections: currentConnections?.owner, catalog: currentConnections?.catalog)
+                        .id(owner)
+                        .task { await currentConnections?.catalog.reload() }
                 }
             }
         }
     }
 
-    private func inspectorHeader(_ title: String) -> some View {
+    private func taskActivity(_ id: UUID, content: MacTaskActivityInspectorView.Content) -> some View {
+        let title = content == .changes ? FloeTaskInspectorItem.changes.titleKey : FloeTaskInspectorItem.progress.titleKey
+        let reader: MacTaskActivityArtifactReader?
+        if content == .changes {
+            reader = { receipt in try readTaskChange(receipt) }
+        } else {
+            reader = nil
+        }
+        return VStack(spacing: 0) {
+            inspectorHeader(title)
+            if workspace.selectedID == id, !workspace.isLoadingHistory {
+                if content == .progress, let output = workspace.liveShellOutput(for: id).last {
+                    MacLiveShellOutput(output: output, stop: workspace.stop)
+                }
+                MacTaskActivityInspectorView(
+                    snapshot: .init(runs: workspace.transcriptRuns, events: workspace.transcriptEventsByRun),
+                    content: content, artifactReader: reader
+                )
+                .id(inspector)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private func inspectorHeader(_ title: LocalizedStringKey) -> some View {
+        inspectorHeader(title) { EmptyView() }
+    }
+
+    private func inspectorHeader<Actions: View>(_ title: LocalizedStringKey, @ViewBuilder actions: () -> Actions) -> some View {
         HStack {
             Text(title).font(.headline)
             Spacer()
+            actions()
             Button(action: closeInspector) { Image(systemName: "sidebar.trailing") }
                 .accessibilityLabel(workspaceText("隐藏检查器", "Hide Inspector"))
         }.padding(10)
@@ -1168,18 +1242,19 @@ struct MacWorkspaceRootView: View {
             }
             if showsTask && !inspectorTakesDetail {
                 Menu {
-                    Button("mac.workspace.files", systemImage: "folder") { inspector = .files }
-                        .accessibilityIdentifier("workspace.files.open")
-                    Button(workspaceText("浏览器", "Browser"), systemImage: "safari", action: showWorkbenchBrowser)
-                        .accessibilityIdentifier("workspace.browser.open")
-                    Button(workspaceText("终端", "Terminal"), systemImage: "terminal", action: showTaskTerminal)
-                        .disabled(!currentTaskFileRootUsable)
-                        .accessibilityIdentifier("workspace.terminal.open")
-                    if let id = destinationConversationID {
-                        Button(workspaceText("执行进度与文件变更", "Progress and File Changes"), systemImage: "chart.bar") {
-                            inspector = .activity(id)
+                    ForEach(FloeTaskInspectorItem.allCases) { item in
+                        if destinationConversationID != nil || [.workspaceFiles, .browser, .terminal].contains(item) {
+                            Button(item.titleKey, systemImage: item.icon) { openInspector(item) }
+                                .disabled(item == .terminal && !currentTaskFileRootUsable)
+                                .accessibilityIdentifier(inspectorEntryID(item))
                         }
-                        .accessibilityIdentifier("workspace.activity.open")
+                    }
+                    if let id = destinationConversationID {
+                        Button(workspaceText("定时任务", "Scheduled Tasks"), systemImage: "calendar.badge.clock") {
+                            let project = workspace.selectedConversationWorkspace.flatMap { $0.kind == .project ? $0.id : nil }
+                            taskSchedule = MacTaskSchedulePresentation(id: id, projectID: project)
+                        }
+                        .accessibilityIdentifier("workspace.task.schedules")
                     }
                     if showsTaskInspector {
                         Divider()
@@ -1196,6 +1271,24 @@ struct MacWorkspaceRootView: View {
                 .help(workspaceText("任务检查器", "Task Inspector"))
                 .accessibilityLabel(workspaceText("任务检查器", "Task Inspector"))
                 .accessibilityIdentifier("workspace.inspector.menu")
+            }
+            if let id = destinationConversationID, !inspectorTakesDetail, workspace.hasContextWindow(for: id) {
+                Button {
+                    showsContextUsage.toggle()
+                } label: {
+                    ContextUsageRing(fraction: contextUsage?.contextFraction ?? 0)
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("chat.thread_detail_view.context_window")
+                .help("chat.thread_detail_view.context_window")
+                .popover(isPresented: $showsContextUsage) {
+                    Group {
+                        if let contextUsage { ContextUsageDetails(summary: contextUsage) }
+                        else { ProgressView().padding() }
+                    }
+                    .task(id: workspace.transcriptLiveRunID) { contextUsage = await workspace.contextUsage(for: id) }
+                }
             }
             if case .conversation = destination, !inspectorTakesDetail {
                 Button(action: findInActiveView) {
@@ -1558,6 +1651,9 @@ struct MacWorkspaceRootView: View {
 
     private func closeInspector() {
         inspector = nil
+        currentTerminal = nil
+        currentConnections = nil
+        remoteSheet = nil
         fileFindRequest = nil
     }
 
@@ -1611,11 +1707,32 @@ struct MacWorkspaceRootView: View {
         if workspace.conversations.contains(where: { $0.id == id }) { openTask(id) }
     }
 
+    private func openInspector(_ item: FloeTaskInspectorItem) {
+        switch item {
+        case .workspaceFiles: inspector = .files
+        case .browser: showWorkbenchBrowser()
+        case .terminal: showTaskTerminal()
+        case .changes: inspector = destinationConversationID.map(MacTaskInspector.changes)
+        case .childAgents: inspector = destinationConversationID.map(MacTaskInspector.childAgents)
+        case .progress: inspector = destinationConversationID.map(MacTaskInspector.progress)
+        }
+    }
+
+    private func inspectorEntryID(_ item: FloeTaskInspectorItem) -> String {
+        switch item {
+        case .workspaceFiles: "workspace.files.open"
+        case .browser: "workspace.browser.open"
+        case .terminal: "workspace.terminal.open"
+        default: "thread.inspector.open.\(item.rawValue)"
+        }
+    }
+
     private func showTaskTerminal() {
         guard let id = visibleTaskOwner, let root = currentTaskFileRecord else { return }
         do {
             guard let owner = try openTerminal(id, root) else { return }
             currentTerminal = owner
+            currentConnections = workspace.selectedTaskPolicy?.remoteExecutionAllowed == false ? nil : openConnections(owner)
             inspector = .terminal(id)
         } catch { showTerminalError = true }
     }

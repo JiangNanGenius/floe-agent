@@ -59,34 +59,6 @@ import FloeAgentRuntime
     }
 }
 
-struct ThreadUsageSummary: Equatable {
-    var inputTokens: Int
-    var outputTokens: Int
-    var contextTokens: Int
-    var contextWindowTokens: Int
-    var isEstimatedLive: Bool
-    var cacheReadTokens: Int?
-    var cacheWriteTokens: Int?
-    var reasoningTokens: Int?
-    var tokensPerSecond: Double?
-    var timeToFirstTokenMs: Int?
-    var totalDurationMs: Int?
-
-    var totalTokens: Int {
-        inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
-    }
-    var contextFraction: Double {
-        guard contextWindowTokens > 0 else { return 0 }
-        return min(1, Double(contextTokens) / Double(contextWindowTokens))
-    }
-    var cacheHitRate: Double? {
-        guard let cacheReadTokens else { return nil }
-        let cacheable = inputTokens + cacheReadTokens + (cacheWriteTokens ?? 0)
-        guard cacheable > 0 else { return nil }
-        return Double(cacheReadTokens) / Double(cacheable)
-    }
-}
-
 struct ImportantFileShortcut: Identifiable, Equatable {
     var id: String { path }
     let path: String

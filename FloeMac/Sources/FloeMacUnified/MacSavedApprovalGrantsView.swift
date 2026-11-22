@@ -34,6 +34,8 @@ struct MacSavedApprovalGrantsView: View {
                         }
                         Text(verbatim: ([operation, scope, project, owner].compactMap { $0 }).joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary)
+                        Text(grant.decidedAt, format: .dateTime.year().month().day().hour().minute())
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("mac.permissions.revoke", role: .destructive) {

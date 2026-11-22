@@ -2,6 +2,7 @@
 
 import Foundation
 import FloeCore
+import FloeModels
 import Crypto
 
 /// Removed execution names cannot be reactivated by stale or dynamic registration.
@@ -27,6 +28,20 @@ public enum RetiredExecutionTools {
         let canonical = ToolAliasTable.canonical(name)
         return names.contains(canonical)
             || names.contains { $0.replacingOccurrences(of: ".", with: "_") == canonical }
+    }
+}
+
+public extension TaskPolicy {
+    /// Scope ceilings shared by the iPad and native Mac tool catalogs. The
+    /// host resolves any guest-specific exception before requesting a match.
+    func allowsToolEffect(_ tool: ToolCatalog.Descriptor, allowsGuestNetworkReview: Bool = false) -> Bool {
+        if approvalMode == "readOnly", tool.effect != .readOnly { return false }
+        if networkAllowed == false, tool.riskLabels.contains(.networkAccess), !allowsGuestNetworkReview { return false }
+        if browserControlAllowed == false, tool.name.hasPrefix("browser.") { return false }
+        if credentialsAllowed == false, tool.riskLabels.contains(.accessesCredentials) { return false }
+        if remoteExecutionAllowed == false,
+           !tool.riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem]) { return false }
+        return true
     }
 }
 

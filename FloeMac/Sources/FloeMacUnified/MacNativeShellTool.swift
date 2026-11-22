@@ -2,8 +2,20 @@
 import Darwin
 import Foundation
 import FloeAgentRuntime
+import FloeCore
 import FloeModels
 import FloeTools
+
+public struct MacShellOutputUpdate: Sendable, Identifiable {
+    let conversationID: UUID
+    let runID: UUID
+    public let id: String
+    let text: String
+    let truncated: Bool
+    let scope: MacNativeShellTool.Access
+    let risk: MacNativeCommandPolicy.Risk
+    let approval: ToolApprovalOrigin
+}
 
 struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
     enum Access: String, Codable, Sendable { case workspace, host }
@@ -25,6 +37,7 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
     static let isSideEffecting = true
     static let sandbox = "/usr/bin/sandbox-exec"
     let root: MacAgentWorkspaceRoot
+    var observe: (@Sendable (MacShellOutputUpdate) async -> Void)? = nil
 
     enum ShellError: LocalizedError {
         case invalid, scope, sandbox, spawn(Int32), read
@@ -66,14 +79,28 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
             }
         } else if !FileManager.default.isExecutableFile(atPath: Self.sandbox) { throw ShellError.sandbox }
 
-        return try await Task.detached(priority: .userInitiated) {
+        let (updates, writer) = AsyncStream<MacShellOutputUpdate>.makeStream(bufferingPolicy: .bufferingNewest(4))
+        let relay = Task {
+            for await update in updates { await observe?(update) }
+        }
+        defer { writer.finish(); relay.cancel() }
+        let result = try await Task.detached(priority: .userInitiated) {
             let cwd = args.cwd ?? "."
             // Pin the working directory rather than using a path-based chdir after approval.
             let probe = cwd == "." ? ".floe-cwd-pin" : cwd + "/.floe-cwd-pin"
             return try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physical, relative: probe, root: root) { pin in
-                try invoke(args, access: access, context: context, workingFD: pin.parentFileDescriptor, workspace: physical)
+                try invoke(args, access: access, context: context, workingFD: pin.parentFileDescriptor, workspace: physical) { output, clipped in
+                    guard observe != nil, let conversationID = context.conversationID, let callID = context.toolCallID,
+                          let approval = context.approvalOrigin else { return }
+                    writer.yield(.init(conversationID: conversationID, runID: context.runID, id: callID,
+                        text: SecretRedactor.redact(output), truncated: clipped, scope: access,
+                        risk: MacNativeCommandPolicy.commandRisk(args.command ?? args.script ?? ""), approval: approval))
+                }
             }
         }.value
+        writer.finish()
+        await relay.value
+        return result
     }
 
     // A separate app-owned temporary directory per command avoids granting access to the user's global temp files.
@@ -95,7 +122,8 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
     (allow file-read* file-write* (subpath (param "WORKSPACE")) (subpath (param "TEMP")))
     """
 
-    private func invoke(_ args: Arguments, access: Access, context: ToolContext, workingFD: Int32, workspace: String) throws -> ToolExecutionOutput {
+    private func invoke(_ args: Arguments, access: Access, context: ToolContext, workingFD: Int32, workspace: String,
+                        onOutput: (String, Bool) -> Void) throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         var scratch = Array((NSTemporaryDirectory() + "/floe-command.XXXXXX").utf8CString)
         guard mkdtemp(&scratch) != nil else { throw ShellError.sandbox }
@@ -145,9 +173,25 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
         let cap = args.maxOutputBytes ?? 16_384
         var bytes = Data(), truncated = false, timedOut = false, eof = false
         var buffer = [UInt8](repeating: 0, count: 8192)
+        let previewLimit = min(8192, cap)
+        var nextPreview = ContinuousClock.now
+        var priorPreviewBytes = 0
+        var priorPreviewTruncated = false
+        func publishPreview(force: Bool = false) {
+            let count = min(previewLimit, bytes.count)
+            let clipped = truncated || bytes.count > previewLimit
+            let now = ContinuousClock.now
+            guard force || now >= nextPreview,
+                  count != priorPreviewBytes || clipped != priorPreviewTruncated else { return }
+            priorPreviewBytes = count
+            priorPreviewTruncated = clipped
+            nextPreview = now + .milliseconds(250)
+            onOutput(String(decoding: bytes.prefix(count), as: UTF8.self), clipped)
+        }
         // Keep the leader unreaped until its group has been stopped, so pid/pgid cannot be recycled.
         while !eof {
             try context.cancellation.throwIfCancelled()
+            publishPreview()
             if ContinuousClock.now >= until { timedOut = true; break }
             var item = pollfd(fd: output[0], events: Int16(POLLIN), revents: 0)
             let available = Darwin.poll(&item, 1, 75)
@@ -161,6 +205,7 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
             bytes.append(contentsOf: buffer.prefix(keep))
             truncated = truncated || keep < n
         }
+        publishPreview(force: true)
         // A command may close its output and keep running. Continue observing cancellation and its deadline.
         while !timedOut {
             try context.cancellation.throwIfCancelled()

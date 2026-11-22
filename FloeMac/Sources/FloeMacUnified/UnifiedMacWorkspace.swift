@@ -5,6 +5,7 @@ import Combine
 import FloeMacSelfCore
 import FloeMacToolbox
 import FloeModels
+import FloeTools
 import SwiftUI
 
 @MainActor
@@ -17,6 +18,7 @@ private final class WorkbenchTerminalAdmission: MacTaskTerminalAdmission {
     private let activity: BridgeUpdateActivity
     weak var workspace: HostAgentWorkspace?
     private var leases: [Key: BridgeUpdateActivity.Lease] = [:]
+    private var vncLeases: [UUID: BridgeUpdateActivity.Lease] = [:]
     var isClosing = false
 
     init(activity: BridgeUpdateActivity) { self.activity = activity }
@@ -29,6 +31,17 @@ private final class WorkbenchTerminalAdmission: MacTaskTerminalAdmission {
 
     func release(for destination: MacTaskTerminalDestination, taskID: UUID) async {
         if let lease = leases.removeValue(forKey: Key(task: taskID, destination: destination)) { activity.finish(lease) }
+    }
+
+    func acquireVNC(taskID: UUID) async throws {
+        guard !isClosing, workspace?.isTerminating == false, vncLeases[taskID] == nil else {
+            throw CocoaError(.userCancelled)
+        }
+        vncLeases[taskID] = try activity.begin(.maintenance)
+    }
+
+    func releaseVNC(taskID: UUID) async {
+        if let lease = vncLeases.removeValue(forKey: taskID) { activity.finish(lease) }
     }
 }
 
@@ -61,6 +74,9 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
 
     private let activity: BridgeUpdateActivity
     private let taskTerminals = MacTaskTerminalStore()
+    private let taskConnections = MacTaskRemoteConnectionsStore()
+    private var remoteCatalog: MacRemoteConnectionsCatalog?
+    private var remoteDatabase: MacRemoteDatabase?
     private var terminalFolderAccess: [UUID: TaskTerminalFolderAccess] = [:]
     private let terminalAdmission: WorkbenchTerminalAdmission
     private let testSupport: URL?
@@ -118,9 +134,16 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                                                useKeychain: testSupport == nil, preferences: preferences,
                                                admitWork: admitWork)
             if testSupport == nil { workspace.taskNotifications = MacTaskNotifications.shared }
+            let remoteStorage = MacRemoteDatabase { [weak workspace] in
+                guard let workspace else { throw CocoaError(.userCancelled) }
+                return try await workspace.remoteDataStores()
+            }
+            remoteDatabase = remoteStorage
+            remoteCatalog = MacRemoteConnectionsCatalog(store: remoteStorage)
             terminalAdmission.workspace = workspace
             workspace.endTaskTerminal = { [weak self] id in
                 guard let self else { return true }
+                guard await taskConnections.stopAndRemove(taskID: id) else { return false }
                 guard await taskTerminals.stopAndRemove(taskID: id) else { return false }
                 terminalFolderAccess.removeValue(forKey: id)
                 return true
@@ -132,6 +155,23 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                                                        appVersion: version)
                 workspace.officialCatalogs = catalogs
                 workspace.webSearch.officialCatalogs = catalogs
+                let extensions = directory.appendingPathComponent("WorkbenchTools", isDirectory: true)
+                workspace.workbenchSkills = MacWorkbenchSkillsService(
+                    catalogSource: MacWorkbenchCatalogSnapshotSource(
+                        snapshotURL: extensions.appendingPathComponent("SkillCatalog.json")
+                    ),
+                    store: MacWorkbenchDatabaseSkills { [weak workspace] in
+                        guard let workspace else { throw CocoaError(.userCancelled) }
+                        return try await workspace.installedSkillStore()
+                    },
+                    installationRoot: extensions.appendingPathComponent("Skills", isDirectory: true),
+                    appVersion: version,
+                    admitWork: admitWork
+                )
+                workspace.workbenchConnectors = MacWorkbenchConnectorsService(
+                    store: MacWorkbenchFileConnectorStore(url: extensions.appendingPathComponent("Connector.json")),
+                    registry: ToolRunnerRegistry()
+                )
             }
             let drafts = MacWorkspaceDraftStore(directory: directory?.appendingPathComponent("Drafts", isDirectory: true))
             draftStore = drafts
@@ -183,6 +223,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                 openModelSettings: openModelSettings, openPermissionSettings: openPermissionSettings,
                 openToolbox: { [weak self] toolID in self?.openToolbox(toolID: toolID) },
                 openTerminal: { [weak self] id, record in try self?.terminalOwner(for: id, record: record) },
+                openConnections: { [weak self] terminal in self?.connections(for: terminal) },
                 settingsContent: settingsContent,
                 imageContent: { attach in
                     if let images {
@@ -311,6 +352,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         agent.cancelModelDiscovery()
         guard await closeToolbox(promptForScannerDraft: true) else { return false }
         guard await closeTaskTerminals() else { throw CloseError.agentBusy }
+        await agent.workbenchConnectors?.disconnect()
         do { try await agent.finishTermination() }
         catch { throw CloseError.runtimeCloseFailed }
         agent.isSettingsPresented = false
@@ -329,6 +371,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         temporaryChat = nil
         browser?.reset()
         browser = nil
+        remoteCatalog = nil
+        remoteDatabase = nil
         self.agent = nil
         return true
     }
@@ -349,10 +393,26 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     func closeTaskTerminals() async -> Bool {
         terminalAdmission.isClosing = true
         defer { terminalAdmission.isClosing = false }
+        guard await taskConnections.stopAll() else { return false }
         let closed = await taskTerminals.stopAll()
         let remaining = Set(taskTerminals.activeTaskIDs)
         terminalFolderAccess = terminalFolderAccess.filter { remaining.contains($0.key) }
         return closed
+    }
+
+    private func connections(for terminal: MacTaskTerminalOwner) -> MacTaskConnectionPresentation? {
+        guard let remoteCatalog, let remoteDatabase, agent?.isTerminating == false else { return nil }
+        let owner = taskConnections.owner(taskID: terminal.taskID, terminalOwner: terminal,
+                                          catalog: remoteCatalog, registry: remoteDatabase)
+        guard owner.terminalOwner === terminal else { return nil }
+        if owner.vncAdmission == nil {
+            owner.vncAdmission = .init(acquire: { [terminalAdmission] id in
+                try await terminalAdmission.acquireVNC(taskID: id)
+            }, release: { [terminalAdmission] id in
+                await terminalAdmission.releaseVNC(taskID: id)
+            })
+        }
+        return .init(owner: owner, catalog: remoteCatalog)
     }
 
     func openSpace(_ page: MacSpacePage) {

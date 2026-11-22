@@ -735,6 +735,15 @@
 "mac.composer.done" = "Done";
 
 "mac.settings.webSearch" = "Web Search";
+"mac.settings.skills" = "Skills";
+"mac.settings.connectors" = "Connectors";
+"mac.settings.diagnostics" = "Diagnostics";
+"mac.settings.toolsUnavailable" = "Tools Unavailable";
+"mac.settings.appVersion" = "App version";
+"mac.settings.taskStore" = "Local tasks";
+"mac.settings.storeReady" = "Ready";
+"mac.settings.storeUnavailable" = "Unavailable";
+"mac.settings.enabledModels" = "Enabled models";
 
 "providers.models_section" = "Models";
 "settings.diagnostics.providers" = "Providers";

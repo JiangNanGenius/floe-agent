@@ -3938,17 +3938,12 @@ final class ConversationCenter: ObservableObject {
                    CapabilityExecutionRouter.decision(for: descriptor.name).backend == .linuxGuest {
                     names.remove(descriptor.name)
                 }
-                let risks = Set(descriptor.riskLabels)
                 let guestCommandReview = linuxCacheCleanupProfile != nil
                     && runExecutionBinding?.target.backend == .linuxVM
                     && LinuxCacheCleanupScope.usesGuestCommandReview(descriptor.name)
-                let denied = (taskPolicy.networkAllowed == false && risks.contains(.networkAccess) && !guestCommandReview)
-                    || (taskPolicy.approvalMode == "readOnly" && descriptor.effect != .readOnly)
-                    || (taskPolicy.browserControlAllowed == false && descriptor.name.hasPrefix("browser."))
-                    || (taskPolicy.credentialsAllowed == false && risks.contains(.accessesCredentials))
-                    || (taskPolicy.remoteExecutionAllowed == false
-                        && !risks.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem]))
-                if denied { names.remove(descriptor.name) }
+                if !taskPolicy.allowsToolEffect(descriptor, allowsGuestNetworkReview: guestCommandReview) {
+                    names.remove(descriptor.name)
+                }
             }
             return names
         }()

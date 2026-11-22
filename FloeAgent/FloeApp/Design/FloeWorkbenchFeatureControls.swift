@@ -225,3 +225,106 @@ struct FloeBrowserTabStrip: View {
         .frame(height: 44)
     }
 }
+
+struct ThreadUsageSummary: Equatable {
+    var inputTokens: Int
+    var outputTokens: Int
+    var contextTokens: Int
+    var contextWindowTokens: Int
+    var isEstimatedLive: Bool
+    var cacheReadTokens: Int?
+    var cacheWriteTokens: Int?
+    var reasoningTokens: Int?
+    var tokensPerSecond: Double?
+    var timeToFirstTokenMs: Int?
+    var totalDurationMs: Int?
+
+    var totalTokens: Int {
+        inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+    }
+    var contextFraction: Double {
+        guard contextWindowTokens > 0 else { return 0 }
+        return min(1, Double(contextTokens) / Double(contextWindowTokens))
+    }
+    var cacheHitRate: Double? {
+        guard let cacheReadTokens else { return nil }
+        let cacheable = inputTokens + cacheReadTokens + (cacheWriteTokens ?? 0)
+        guard cacheable > 0 else { return nil }
+        return Double(cacheReadTokens) / Double(cacheable)
+    }
+}
+
+struct ContextUsageRing: View {
+    let fraction: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.secondary.opacity(0.22), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: min(max(fraction, 0), 1))
+                .stroke(
+                    fraction > 0.85 ? FloeTheme.pending : FloeTheme.primary,
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 20, height: 20)
+        .contentShape(Circle())
+    }
+}
+
+struct ContextUsageDetails: View {
+    let summary: ThreadUsageSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("chat.thread_detail_view.context_window", systemImage: "circle.dotted")
+                .font(.headline)
+            Text("\(summary.contextTokens > 0 ? TokenUnitFormatter.string(summary.contextTokens) : "—") / \(TokenUnitFormatter.string(summary.contextWindowTokens))")
+                .font(.title3.monospacedDigit().weight(.semibold))
+            if summary.contextTokens > 0 {
+                ProgressView(value: summary.contextFraction)
+                    .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
+                Text(FloeL10n.l("chat.thread_detail_view.this_turn_input_output", TokenUnitFormatter.string(summary.inputTokens), TokenUnitFormatter.string(summary.outputTokens)))
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("chat.context_usage.pending")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 240)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+enum FloeTaskInspectorItem: String, Identifiable, CaseIterable {
+    case changes, workspaceFiles, browser, terminal, childAgents, progress
+
+    var id: Self { self }
+
+    var titleKey: LocalizedStringKey {
+        switch self {
+        case .changes: "chat.thread_detail_view.changes"
+        case .workspaceFiles: "tab.files"
+        case .browser: "browser.title"
+        case .terminal: "chat.thread_detail_view.terminal_host"
+        case .childAgents: "chat.thread_detail_view.subagents"
+        case .progress: "chat.thread_detail_view.progress"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .changes: "arrow.triangle.2.circlepath"
+        case .workspaceFiles: "folder"
+        case .browser: "safari"
+        case .terminal: "terminal"
+        case .childAgents: "person.2"
+        case .progress: "chart.bar"
+        }
+    }
+}

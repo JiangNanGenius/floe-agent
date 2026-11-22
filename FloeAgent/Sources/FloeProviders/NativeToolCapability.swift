@@ -74,6 +74,40 @@ public enum ModelCatalogMerger {
     }
 }
 
+/// The provider editor's selection remains tentative until the account is
+/// saved. Refresh adds candidates while preserving the selected local IDs.
+public struct ProviderModelSelection: Sendable, Equatable {
+    public private(set) var candidates: [ModelProfile]
+    public private(set) var selectedIDs: Set<UUID>
+
+    public init(candidates: [ModelProfile], selectedIDs: Set<UUID>) {
+        self.candidates = candidates
+        self.selectedIDs = selectedIDs
+    }
+
+    public var selectedModels: [ModelProfile] {
+        candidates.filter { selectedIDs.contains($0.id) }
+    }
+
+    public mutating func mergeDiscovered(_ models: [ModelProfile]) {
+        candidates = ModelCatalogMerger.merge(existing: candidates, discovered: models)
+    }
+
+    public mutating func setSelected(_ id: UUID, _ isSelected: Bool) {
+        if isSelected { selectedIDs.insert(id) }
+        else { selectedIDs.remove(id) }
+    }
+
+    public func matching(_ query: String) -> [ModelProfile] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return candidates }
+        return candidates.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query)
+                || $0.remoteModelID.localizedCaseInsensitiveContains(query)
+        }
+    }
+}
+
 /// Explicit capability probe. It offers one inert function whose only input is
 /// a nonce, then accepts *only* the provider adapter's structured tool event as
 /// proof. Text that looks like a function call is deliberately ignored.
@@ -105,7 +139,8 @@ public enum NativeToolCapabilityProbe {
                 name: toolName,
                 description: "Verifies native structured function calling. It performs no action.",
                 parametersJSON: schema
-            )]
+            )],
+            ephemeralTransport: true
         )
 
         do {

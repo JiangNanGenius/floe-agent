@@ -115,7 +115,10 @@ private struct MacTaskActivityDiffSheet: Identifiable {
 /// matched their recorded receipt — never from a synthesized or re-read
 /// source.
 struct MacTaskActivityInspectorView: View {
+    enum Content: Equatable { case progress, changes }
+
     let snapshot: MacTaskActivitySnapshot
+    let content: Content
     var artifactReader: MacTaskActivityArtifactReader?
     var onVerifiedReceipt: ((FloeTaskActivityChange, String) -> Void)? = nil
 
@@ -133,31 +136,32 @@ struct MacTaskActivityInspectorView: View {
                         .accessibilityIdentifier("mac.taskActivity.error")
                 }
             }
-            Section(MacTaskActivityText.progress) {
-                if model.runs.isEmpty && !model.isLoading {
-                    Text(MacTaskActivityText.noRunProgress)
-                        .foregroundStyle(.secondary)
+            if content == .progress {
+                Section(MacTaskActivityText.progress) {
+                    if model.runs.isEmpty && !model.isLoading {
+                        Text(MacTaskActivityText.noRunProgress)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(model.runs) { run in
+                        FloeRunProgressRow(run: run)
+                    }
                 }
-                ForEach(model.runs) { run in
-                    FloeRunProgressRow(run: run)
-                }
-            }
-            Section(MacTaskActivityText.changes) {
-                if model.changes.isEmpty && !model.isLoading {
-                    Text(MacTaskActivityText.noFileChanges)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(model.changes) { change in
-                    // Enabled exactly when the digest-verified diff exists;
-                    // without a verified artifact the row is honestly inert.
-                    FloeTaskActivityChangeRow(
-                        change: change,
-                        isEnabled: model.verifiedDiffs[change.id] != nil
-                    ) { openDiff(change) }
-                    if unavailableChangeID == change.id {
-                        Text(MacTaskActivityText.diffUnavailable)
-                            .font(.caption)
-                            .foregroundStyle(FloeTheme.pending)
+            } else {
+                Section(MacTaskActivityText.changes) {
+                    if model.changes.isEmpty && !model.isLoading {
+                        Text(MacTaskActivityText.noFileChanges)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(model.changes) { change in
+                        FloeTaskActivityChangeRow(
+                            change: change,
+                            isEnabled: model.verifiedDiffs[change.id] != nil
+                        ) { openDiff(change) }
+                        if unavailableChangeID == change.id {
+                            Text(MacTaskActivityText.diffUnavailable)
+                                .font(.caption)
+                                .foregroundStyle(FloeTheme.pending)
+                        }
                     }
                 }
             }
@@ -189,6 +193,46 @@ struct MacTaskActivityInspectorView: View {
         }
         unavailableChangeID = nil
         presentedDiff = MacTaskActivityDiffSheet(change: change, text: text)
+    }
+}
+
+struct MacLiveShellOutput: View {
+    let output: MacShellOutputUpdate
+    let stop: () -> Void
+
+    private var approval: String {
+        switch output.approval {
+        case .humanCard: MacPermissionsText.t("人工批准", "Approved by You")
+        case .policy("full-access"): MacPermissionsText.t("完全访问", "Full Access")
+        case .policy("approval-model"): MacPermissionsText.t("审批模型", "Approval Model")
+        case .policy: MacPermissionsText.t("任务策略", "Task Policy")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label(MacPermissionsText.t("命令输出", "Command Output"), systemImage: "terminal")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button(MacPermissionsText.t("停止任务", "Stop Task"), action: stop)
+            }
+            let scope = output.scope == .host ? MacPermissionsText.t("本机", "This Mac") : MacPermissionsText.t("工作区", "Workspace")
+            Text([output.risk.title, scope, approval].joined(separator: " · "))
+                .font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                Text(verbatim: output.text)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 128)
+            if output.truncated {
+                Text(MacPermissionsText.t("预览已截断", "Preview Truncated")).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .accessibilityIdentifier("workspace.command.output")
     }
 }
 

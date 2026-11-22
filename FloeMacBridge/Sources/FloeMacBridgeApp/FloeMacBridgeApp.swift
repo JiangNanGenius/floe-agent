@@ -143,7 +143,9 @@ private struct BridgeMenuView: View {
 
 @MainActor
 final class BridgeAppModel: ObservableObject {
-    enum SettingsPane: String, CaseIterable { case general, models, auxiliary, webSearch, usage, permissions, bridge }
+    enum SettingsPane: String, CaseIterable {
+        case general, models, auxiliary, webSearch, skills, connectors, usage, permissions, diagnostics, bridge
+    }
 
     @Published var error: String?
     @Published var clients: [(String, String)] = []
@@ -787,8 +789,22 @@ private struct UnifiedMacSettingsView: View {
             UsageStatisticsView(loadStatistics: workspace.usageStatistics)
         case .webSearch:
             MacSearchSettingsView(settings: workspace.webSearch)
+        case .skills:
+            if let service = workspace.workbenchSkills {
+                MacWorkbenchSkillsView(service: service)
+            } else {
+                ContentUnavailableView("mac.settings.toolsUnavailable", systemImage: "shippingbox")
+            }
+        case .connectors:
+            if let service = workspace.workbenchConnectors {
+                MacWorkbenchConnectorsView(service: service)
+            } else {
+                ContentUnavailableView("mac.settings.toolsUnavailable", systemImage: "point.3.connected.trianglepath.dotted")
+            }
         case .permissions:
             MacPermissionsSettingsView(workspace: workspace, bridge: model)
+        case .diagnostics:
+            MacWorkbenchDiagnosticsView(workspace: workspace)
         case .bridge:
             BridgeSettingsView(model: model, showsUpdates: false)
         }
@@ -856,6 +872,36 @@ private struct HostAgentGeneralSettings: View {
     }
 }
 
+private struct MacWorkbenchDiagnosticsView: View {
+    @ObservedObject var workspace: HostAgentWorkspace
+
+    var body: some View {
+        Form {
+            Section("mac.settings.diagnostics") {
+                LabeledContent("mac.settings.appVersion") {
+                    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+                    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+                    Text("\(version) (\(build))").monospacedDigit().textSelection(.enabled)
+                }
+                LabeledContent("mac.settings.taskStore") {
+                    if workspace.isReady {
+                        Label("mac.settings.storeReady", systemImage: "checkmark.circle")
+                    } else if workspace.storageErrorKind != nil {
+                        Label("mac.settings.storeUnavailable", systemImage: "exclamationmark.circle")
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                LabeledContent("mac.settings.enabledModels") {
+                    Text(workspace.providers.filter { $0.profile.isEnabled && $0.model.isEnabled }.count.formatted())
+                        .monospacedDigit()
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
 private extension BridgeAppModel.SettingsPane {
     var title: LocalizedStringKey {
         switch self {
@@ -864,7 +910,10 @@ private extension BridgeAppModel.SettingsPane {
         case .auxiliary: "mac.aux.title"
         case .usage: "settings.section.usage"
         case .webSearch: "mac.settings.webSearch"
+        case .skills: "mac.settings.skills"
+        case .connectors: "mac.settings.connectors"
         case .permissions: "Permissions"
+        case .diagnostics: "mac.settings.diagnostics"
         case .bridge: "host.role.bridge"
         }
     }
@@ -876,7 +925,10 @@ private extension BridgeAppModel.SettingsPane {
         case .auxiliary: "辅助模型 通用辅助 视觉 推理 审批模型 Auxiliary Models vision reasoning reviewer"
         case .usage: "用量统计 模型 供应商 任务 Usage Statistics Tokens Models Providers"
         case .webSearch: "网页 联网 搜索 供应商 浏览器 Web Search Providers Brave Tavily Volcengine DeepSeek"
+        case .skills: "技能 技能库 Skills Catalog"
+        case .connectors: "连接器 外部工具 MCP Connectors tools"
         case .permissions: "权限 审批 自动审批 完全访问 命令 执行 屏幕录制 辅助功能 磁盘 Kimi CU Permissions approvals command access disk screen"
+        case .diagnostics: "诊断 版本 本地数据 Diagnostics version storage"
         case .bridge: "桥接 配对 更新 存储 Bridge pairing updates storage OTA"
         }
     }
@@ -888,7 +940,10 @@ private extension BridgeAppModel.SettingsPane {
         case .auxiliary: "photo.badge.plus"
         case .usage: "chart.bar"
         case .webSearch: "magnifyingglass"
+        case .skills: "shippingbox"
+        case .connectors: "point.3.connected.trianglepath.dotted"
         case .permissions: "checkmark.shield"
+        case .diagnostics: "stethoscope"
         case .bridge: "server.rack"
         }
     }

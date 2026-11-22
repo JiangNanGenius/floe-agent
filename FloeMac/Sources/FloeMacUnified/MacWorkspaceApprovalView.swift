@@ -52,6 +52,7 @@ struct MacWorkspaceApprovalView: View {
     }
 
     private var action: String {
+        if let extensionAction = approval.extensionAction { return extensionAction.title }
         if let review = MacNativeCommandPolicy.review(approval.toolCall) {
             let target = review.host ? MacPermissionsText.t("本机", "This Mac") : MacPermissionsText.t("工作区", "Workspace")
             return review.risk.title + " · " + target
@@ -77,16 +78,20 @@ struct MacWorkspaceApprovalView: View {
     }
 
     @ViewBuilder private var fileEvidence: some View {
-        if approval.canAllow, approval.path != nil, MacAgentWorkspaceTools.writeToolNames.contains(approval.toolName),
-           approval.toolName != MacAgentWorkspaceTools.createDirectoryToolName {
+        if approval.canAllow, let path = approval.path, MacAgentWorkspaceTools.canRememberFile(path),
+           FloeMacSelfApprovalGrants.canRemember(toolName: approval.toolName) {
             Picker("mac.permissions.remember", selection: selectedScope) {
                 Text("mac.permissions.once").tag(nil as FloeMacFileGrantScope?)
                 Text("mac.permissions.taskFile").tag(Optional(FloeMacFileGrantScope.task))
-                Text("mac.permissions.projectFile").tag(Optional(FloeMacFileGrantScope.workspace))
+                if workspace.workspaces.contains(where: { $0.id == approval.workspaceID && $0.kind == .project }) {
+                    Text("mac.permissions.projectFile").tag(Optional(FloeMacFileGrantScope.workspace))
+                }
             }.pickerStyle(.menu).controlSize(.small)
         }
         if let detail = MacNativeCommandPolicy.preview(approval.toolCall) {
             ScrollView { preview(detail) }.frame(maxHeight: 135)
+        } else if approval.extensionAction != nil, let details = approval.text {
+            ScrollView { preview(details) }.frame(maxHeight: 135)
         } else if let action = MacTaskActionPreview(approval.toolCall) {
             ScrollView { preview(action.detail) }.frame(maxHeight: 135)
         } else if MacTaskBrowserApproval.applies(to: approval.toolCall), let text = approval.text {

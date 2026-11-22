@@ -1132,18 +1132,12 @@ struct ThreadDetailView: View {
                 }
                 Divider()
                 }
-                if !viewModel.isTemporary {
-                    // Task inspectors bind workspace/browser/terminal/change
-                    // resources; a casual temporary chat owns none of those
-                    // and must not surface bindings it never made. The run
-                    // progress readout and inspector chrome stay available.
-                    inspectorButton("chat.thread_detail_view.changes", icon: "arrow.triangle.2.circlepath", content: .changes)
-                    inspectorButton("tab.files", icon: "folder", content: .workspaceFiles)
-                    inspectorButton("browser.title", icon: "safari", content: .browser)
-                    inspectorButton("chat.thread_detail_view.terminal_host", icon: "terminal", content: .terminal)
-                    inspectorButton("chat.thread_detail_view.subagents", icon: "person.2", content: .childAgents)
+                ForEach(FloeTaskInspectorItem.allCases) { item in
+                    if (!viewModel.isTemporary || item == .progress),
+                       let content = AppRouter.InspectorContent(rawValue: item.rawValue) {
+                        inspectorButton(item.titleKey, icon: item.icon, content: content)
+                    }
                 }
-                inspectorButton("chat.thread_detail_view.progress", icon: "chart.bar", content: .progress)
                 if router.inspectorVisible {
                     Divider()
                     Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.right") { router.hideInspector() }
@@ -1655,53 +1649,6 @@ private struct ThreadUsageFooter: View {
         value.map {
             "\((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2))))s"
         } ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
-    }
-}
-
-private struct ContextUsageRing: View {
-    let fraction: Double
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(.secondary.opacity(0.22), lineWidth: 3)
-            Circle()
-                .trim(from: 0, to: min(max(fraction, 0), 1))
-                .stroke(
-                    fraction > 0.85 ? FloeTheme.pending : FloeTheme.primary,
-                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-        }
-        .frame(width: 20, height: 20)
-        .contentShape(Circle())
-    }
-}
-
-private struct ContextUsageDetails: View {
-    let summary: ThreadUsageSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("chat.thread_detail_view.context_window", systemImage: "circle.dotted")
-                .font(.headline)
-            Text("\(summary.contextTokens > 0 ? TokenUnitFormatter.string(summary.contextTokens) : "—") / \(TokenUnitFormatter.string(summary.contextWindowTokens))")
-                .font(.title3.monospacedDigit().weight(.semibold))
-            if summary.contextTokens > 0 {
-                ProgressView(value: summary.contextFraction)
-                    .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
-                Text(FloeL10n.l("chat.thread_detail_view.this_turn_input_output", TokenUnitFormatter.string(summary.inputTokens), TokenUnitFormatter.string(summary.outputTokens)))
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("chat.context_usage.pending")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(16)
-        .frame(minWidth: 240)
-        .accessibilityElement(children: .combine)
     }
 }
 

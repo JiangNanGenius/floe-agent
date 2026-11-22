@@ -32,6 +32,7 @@ struct MacCreativeWorkbenchView: View {
     @State private var editingCanvas = false
     @State private var showsCanvasStart = false
     @State private var mediaToPlace: MediaToPlace?
+    @State private var mediaEdit: MacMediaEditSession?
     @State private var trashID: UUID?
     @State private var query = ""
     @State private var dragID: UUID?
@@ -112,6 +113,9 @@ struct MacCreativeWorkbenchView: View {
                     }.keyboardShortcut(.defaultAction).disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.padding(20)
+        }
+        .sheet(item: $mediaEdit) { session in
+            MacMediaEditorView(session: session)
         }
         .sheet(isPresented: $showsCanvasStart) {
             VStack(spacing: 0) {
@@ -521,6 +525,12 @@ struct MacCreativeWorkbenchView: View {
         Menu {
             Button(MacCanvasText.connectFrom) { connect.begin(from: node.id) }
             if editable {
+                if (node.kind == .image || node.kind == .video), let url = library.assetURL(node) {
+                    Button(node.kind == .image ? MacMediaEditStrings.editImage : MacMediaEditStrings.editVideo) {
+                        openMediaEditor(node: node, url: url)
+                    }
+                    .accessibilityIdentifier("mac.canvas.editNode")
+                }
                 if node.kind == .image, let url = library.assetURL(node) {
                     if images.maximumReferenceImages > 0 {
                         Button("mac.creative.useImageReference") { reference = url; page = .image }
@@ -598,6 +608,27 @@ struct MacCreativeWorkbenchView: View {
         do { try operation() } catch { library.error = error.localizedDescription }
     }
     private func add(_ file: URL, kind: CanvasNodeKind, title: String) { perform { try library.addMedia(file, kind: kind, title: title) } }
+
+    /// Opens the reusable media editor on a canvas node. The owning canvas
+    /// is captured now: an edited result may only join that same canvas
+    /// (as a new node; the source node and its asset are never mutated),
+    /// and the task route captured by this view stays the task owner from
+    /// the moment editing started.
+    private func openMediaEditor(node: CanvasNode, url: URL) {
+        let ownerCanvasID = library.selectedID
+        let nodeKind = node.kind
+        let title = node.title ?? url.deletingPathExtension().lastPathComponent
+        mediaEdit = MacMediaEditSession(
+            source: .init(url: url, kind: nodeKind == .video ? .video : .image, title: title),
+            saveToTask: saveToTask,
+            addToCanvas: { output in
+                guard library.selectedID == ownerCanvasID else {
+                    library.error = MacCanvasText.routeFailed
+                    return
+                }
+                add(output, kind: nodeKind, title: output.deletingPathExtension().lastPathComponent)
+            })
+    }
 
     private func routeToCanvas(_ url: URL, kind: CanvasNodeKind) {
         mediaToPlace = MediaToPlace(url: url, kind: kind)

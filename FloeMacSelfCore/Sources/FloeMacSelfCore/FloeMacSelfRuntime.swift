@@ -902,6 +902,7 @@ public actor FloeMacSelfRuntime {
                             ? "macOS native host"
                             : "macOS chat (tools disabled)")),
                 availableToolNames: availableToolNames,
+                skillInstructions: availableToolNames.contains("skill.read") ? request.context.skillInstructions : nil,
                 contentOverlay: .empty,
                 workspaceAttachmentPaths: [],
                 workspaceNotes: request.context.workspaceNotes,
@@ -952,6 +953,8 @@ public actor FloeMacSelfRuntime {
             )
             configuration.supportsColdApprovalRecovery = true
             configuration.recordsToolDecisionEvents = true
+            configuration.activeSkillIDs = availableToolNames.contains("skill.read")
+                ? request.context.activeSkillIDs : []
 
             if let childSubagentRuntime, await childSubagentRuntime.isBound(runID) {
                 // Per-(run, conversation) child lifecycle wiring: settle
@@ -3164,6 +3167,30 @@ public actor FloeMacSelfRuntime {
         try ensureOpen()
         try requireAuthority()
         return SQLiteTaskScheduleStore(database: database)
+    }
+
+    public func recentScheduleRuns() async throws -> [RecentRunSummary] {
+        try ensureOpen()
+        try requireAuthority()
+        return try await SQLiteRunStore(database: database).recentRunSummaries()
+    }
+
+    public func remoteDataStores() throws -> (hosts: RemoteHostStore, sessions: SQLiteRemoteSessionRegistry) {
+        try ensureOpen()
+        try requireAuthority()
+        return (RemoteHostStore(database: database), SQLiteRemoteSessionRegistry(database: database))
+    }
+
+    public func installedSkillStore() throws -> SQLiteSkillStore {
+        try ensureOpen()
+        try requireAuthority()
+        return SQLiteSkillStore(database: database)
+    }
+
+    public func isCompletedScheduleRun(_ id: UUID) async throws -> Bool {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().runs.run(id: id)?.state == "completed"
     }
 
     public func approvalGrantStore() throws -> FloeMacSelfApprovalGrants {

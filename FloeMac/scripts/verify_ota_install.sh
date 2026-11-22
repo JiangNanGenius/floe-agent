@@ -17,15 +17,16 @@ root="$mac_root/../Local/Scratch"
 mkdir -p "$root"
 evidence="$(mktemp -d "$root/floe-ota-verification.XXXXXX")"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+sdk="$(xcrun --sdk macosx --show-sdk-path)"
 
 [[ -f "$products/libFloeMacBridgeProtocol.a" && -d "$installed_framework" && -d "$frameworks" ]] || {
     echo "Build the Mac OTA Debug application and its pinned Sparkle dependency first." >&2
     exit 2
 }
 
-xcrun clang -c -fobjc-arc -target arm64-apple-macos15 -isysroot "$(xcrun --sdk macosx --show-sdk-path)" \
+xcrun clang -c -fobjc-arc -target arm64-apple-macos15 -isysroot "$sdk" \
     -F "$frameworks" "$source/FixtureDriver.m" -o "$evidence/FixtureDriver.o" > "$evidence/clang.log" 2>&1
-xcrun swiftc -parse-as-library -swift-version 6 -target arm64-apple-macos15 \
+xcrun swiftc -parse-as-library -swift-version 6 -target arm64-apple-macos15 -sdk "$sdk" \
     -F "$frameworks" -I "$products" -import-objc-header "$source/FixtureDriver.h" \
     -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' \
     "$source/FixtureMain.swift" "$bridge/Sources/FloeMacBridgeApp/BridgeUpdateActivity.swift" \

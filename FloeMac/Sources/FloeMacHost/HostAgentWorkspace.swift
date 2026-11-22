@@ -11,6 +11,8 @@ import FloeSecurity
 import Foundation
 import UniformTypeIdentifiers
 #if FLOE_UNIFIED_MAC
+import FloeSkills
+import FloeTools
 import LocalAuthentication
 #endif
 
@@ -132,6 +134,13 @@ enum HostAgentMode: String, CaseIterable {
     }
 }
 
+struct HostExtensionApproval: Equatable {
+    let title: String
+    let target: String?
+    let riskLabels: Set<String>
+    let changesState: Bool
+}
+
 struct HostAgentApproval: Equatable {
     let conversationID: UUID
     let runID: UUID
@@ -142,12 +151,14 @@ struct HostAgentApproval: Equatable {
     let path: String?
     let text: String?
     let previousText: String?
+    let extensionAction: HostExtensionApproval?
     var callID: String { toolCall.id }
     var toolName: String { toolCall.toolName }
     var canAllow: Bool {
         #if FLOE_UNIFIED_MAC
         if MacNativeCommandPolicy.review(toolCall) != nil || MacTaskActionPreview(toolCall) != nil
             || MacTaskBrowserApproval.applies(to: toolCall) { return true }
+        if extensionAction != nil, text != nil { return true }
         if toolName == WorkspaceOutputPublication.name,
            let args = try? JSONDecoder().decode(WorkspaceOutputPublication.Arguments.self, from: toolCall.argumentsJSON),
            let relative = try? MacAgentWorkspacePinSupport.standardizedRelativePath(args.path) {
@@ -168,6 +179,7 @@ struct HostAgentApproval: Equatable {
         let conversationAction = MacTaskActionPreview(toolCall)
         let riskLabels: Set<String>
         switch toolName {
+        case _ where extensionAction != nil: riskLabels = extensionAction?.riskLabels ?? []
         case MacNativeShellTool.name: riskLabels = ["executesLocalCode", "writesFiles"]
         case MacDesktopControl.name: riskLabels = ["controlsGUI"]
         case "browser.download": riskLabels = ["networkAccess", "writesFiles"]
@@ -179,7 +191,7 @@ struct HostAgentApproval: Equatable {
         let displayReason = reason == "Human approval policy requires explicit user decision" ? "" : reason
         return PendingApproval(runID: runID, conversationID: conversationID, toolCall: toolCall,
                                reason: displayReason, riskLabels: riskLabels,
-                               isSideEffecting: conversationAction?.changesState ?? !riskLabels.isEmpty,
+                               isSideEffecting: extensionAction?.changesState ?? conversationAction?.changesState ?? !riskLabels.isEmpty,
                                requestedAt: requestedAt, workspaceID: workspaceID)
     }
     #endif
@@ -290,6 +302,7 @@ final class HostAgentWorkspace: ObservableObject {
         var modelID: UUID?
         #if FLOE_UNIFIED_MAC
         var approvalContext: MacProjectApprovalContext?
+        var extensionApprovals: [String: HostExtensionApproval] = [:]
         var approvalMode: TaskApprovalMode = .ask
         var usesDefaultApproval = false
         var notificationPolicy: TaskNotificationPolicy = .stages
@@ -599,6 +612,8 @@ final class HostAgentWorkspace: ObservableObject {
     weak var taskImages: MacImageGeneration?
     weak var taskVideos: MacVideoGeneration?
     var makeTaskBrowserTools: ((UUID, URL) -> [AnyAgentTool])?
+    var workbenchSkills: MacWorkbenchSkillsService?
+    var workbenchConnectors: MacWorkbenchConnectorsService?
     var endTaskBrowserRun: ((UUID) -> Void)?
     let webSearch: MacSearchSettings
     private let networkStatus = NetworkStatusMonitor()
@@ -799,6 +814,23 @@ final class HostAgentWorkspace: ObservableObject {
     var messages: [PersistedMessage] { transcriptPager.messages }
     var hasEarlierMessages: Bool { transcriptPager.hasEarlierMessages }
     var transcriptLiveRunID: UUID? { activeRun?.identity.runID }
+
+    private var shellOutputByConversation: [UUID: [MacShellOutputUpdate]] = [:]
+
+    func liveShellOutput(for conversationID: UUID) -> [MacShellOutputUpdate] {
+        guard selectedID == conversationID else { return [] }
+        return shellOutputByConversation[conversationID] ?? []
+    }
+
+    private func receiveShellOutput(_ update: MacShellOutputUpdate) {
+        guard liveRuns[update.conversationID]?.handle?.identity.runID == update.runID,
+              liveRuns[update.conversationID]?.stopping == false else { return }
+        if selectedID == update.conversationID { objectWillChange.send() }
+        var outputs = shellOutputByConversation[update.conversationID] ?? []
+        outputs.removeAll { $0.id == update.id }
+        outputs.append(update)
+        shellOutputByConversation[update.conversationID] = Array(outputs.suffix(4))
+    }
     var transcriptRuns: [RunRecord] {
         let visible = Set(messages.compactMap(\.runID))
             .union([transcriptLiveRunID ?? transcriptPager.runs.first?.id].compactMap { $0 })
@@ -1047,6 +1079,54 @@ final class HostAgentWorkspace: ObservableObject {
         HostProviderAccount.providerCatalog
         #endif
     }
+
+    #if FLOE_UNIFIED_MAC
+    /// Commits the provider connection and the chosen models together, with
+    /// stable saved IDs and connection-specific credential validation.
+    func saveProviderModels(accountID: UUID?, draft: MacProviderDraft, selection: ProviderModelSelection) -> Bool {
+        updateProviderStore { store in
+            let index = try accountID.map { try store.accountIndex($0) }
+            let existing = index.map { store.accounts[$0] }
+            let selected = selection.selectedModels
+            guard existing != nil || !selected.isEmpty else { throw ProviderStoreError.missingRecord }
+            var updated = try HostProviderAccount.configured(name: draft.name, endpoint: draft.endpoint,
+                protocolKind: draft.protocolKind, apiKey: draft.key, presetID: draft.savedPresetID,
+                allowsPlainHTTP: draft.allowsPlainHTTP, catalog: configuredProviderCatalog)
+            updated.initialRole = existing?.initialRole ?? draft.role
+            if let existing { updated.profile = existing.profileForEdit(updated.profile) }
+            let selectedRemoteIDs = Set(selected.map(\.remoteModelID))
+            updated.models = existing?.models.filter {
+                !draft.role.groups($0) && !selectedRemoteIDs.contains($0.remoteModelID)
+            } ?? []
+            for var model in selected {
+                let original = existing?.models.first { $0.remoteModelID == model.remoteModelID }
+                if let original {
+                    model.id = original.id
+                    model.isEnabled = original.isEnabled
+                }
+                model.providerID = updated.id
+                if original.map({ draft.role.groups($0) }) != true { draft.role.configureNewModel(&model) }
+                if draft.role == .conversation, model.remoteModelID == draft.modelID {
+                    for (capability, enabled) in [(ModelCapabilities.vision, draft.supportsImages), (.tools, draft.supportsTools)]
+                        where draft.editedCapabilities.contains(capability) {
+                        if enabled { model.capabilities.insert(capability) }
+                        else { model.capabilities.remove(capability) }
+                    }
+                    model.explicitCapabilities = (model.explicitCapabilities ?? []).union(draft.editedCapabilities)
+                    model.limits = draft.limits
+                    if draft.editedCapabilities.contains(.approval) {
+                        var record = updated.record(model)
+                        record.setApprovalEligibility(draft.supportsApproval)
+                        model = record.model
+                    }
+                }
+                updated.models.append(model)
+            }
+            if let index { store.accounts[index] = updated }
+            else { store.accounts.append(updated) }
+        }
+    }
+    #endif
 
     /// Media-only accounts leave the currently selected chat model in place.
     @discardableResult
@@ -2136,6 +2216,63 @@ final class HostAgentWorkspace: ObservableObject {
         return beginSend(schedule.prompt, runtime: runtime, provider: provider.binding(), workspaceID: schedule.workspaceID,
                          mode: .agent, scheduled: .init(schedule: schedule, occurrence: occurrence, store: store))
     }
+
+    func recentScheduleRuns() async -> [RecentRunSummary] {
+        (try? await runtime?.recentScheduleRuns()) ?? []
+    }
+
+    func remoteDataStores() async throws -> MacRemoteDatabase.Storage {
+        guard let runtime, isReady else { throw CocoaError(.userCancelled) }
+        return try await runtime.remoteDataStores()
+    }
+
+    func installedSkillStore() async throws -> SQLiteSkillStore {
+        guard let runtime, isReady, !isTerminating else { throw CocoaError(.userCancelled) }
+        return try await runtime.installedSkillStore()
+    }
+
+    private static func skillTools(for service: MacWorkbenchSkillsService, allowsNetwork: Bool) -> [AnyAgentTool] {
+        let manager = service.makeManager()
+        let catalog = allowsNetwork ? service.makeCatalogProvider() : nil
+        return [
+            AnyAgentTool(SkillListTool(manager: manager)),
+            AnyAgentTool(SkillSearchTool(manager: manager, catalog: catalog)),
+            AnyAgentTool(SkillReadTool(manager: manager, catalog: catalog)),
+            AnyAgentTool(SkillManageTool(manager: manager))
+        ]
+    }
+
+    func isCompletedScheduleRun(_ id: UUID) async throws -> Bool {
+        try await runtime?.isCompletedScheduleRun(id) == true
+    }
+
+    private func contextModel(for id: UUID) -> ModelProfile? {
+        guard selectedID == id else { return nil }
+        let lastRun = transcriptRuns.max { $0.startedAt < $1.startedAt }
+        let modelID = visibleRun?.modelID ?? lastRun?.modelID
+        return providers.first { $0.model.id == modelID }?.model ?? composerProvider?.model
+    }
+
+    func hasContextWindow(for id: UUID) -> Bool {
+        (contextModel(for: id)?.limits.contextTokens ?? 0) > 0
+    }
+
+    func contextUsage(for id: UUID) async -> ThreadUsageSummary? {
+        guard let model = contextModel(for: id), model.limits.contextTokens > 0 else { return nil }
+        let runID = transcriptLiveRunID ?? transcriptRuns.max { $0.startedAt < $1.startedAt }?.id
+        let records: [RunUsageRecord]
+        if let runID { records = (try? await runtime?.runUsage(runID: runID)) ?? [] }
+        else { records = [] }
+        guard selectedID == id, !Task.isCancelled else { return nil }
+        let latest = records.last
+        let usage = latest.map {
+            $0.inputTokens + $0.outputTokens + ($0.cacheReadTokens ?? 0) + ($0.cacheWriteTokens ?? 0)
+        } ?? 0
+        return ThreadUsageSummary(inputTokens: records.reduce(0) { $0 + $1.inputTokens },
+                                  outputTokens: records.reduce(0) { $0 + $1.outputTokens },
+                                  contextTokens: usage, contextWindowTokens: model.limits.contextTokens,
+                                  isEstimatedLive: latest?.isEstimated ?? false)
+    }
     #endif
 
     /// `queuedAttachments` carries the durable refs of a queued row being
@@ -2237,6 +2374,7 @@ final class HostAgentWorkspace: ObservableObject {
                 liveSnapshotVersions.removeValue(forKey: taskID)
                 liveRuns.removeValue(forKey: taskID)
                 #if FLOE_UNIFIED_MAC
+                shellOutputByConversation.removeValue(forKey: taskID)
                 if (finishedNormally && queuedInputs[taskID]?.isEmpty == false) || (queued != nil && !admitted) {
                     Task {
                         if let queued, !admitted, let store = try? await runtime.runningInputStore() {
@@ -2317,6 +2455,7 @@ final class HostAgentWorkspace: ObservableObject {
                     toolWorkspace = nil
                 }
                 let delegationRegistry = delegationRunID == nil ? nil : childSubagents.childRegistry
+                var skillScope = MacWorkbenchSkillScope.none
                 if let toolWorkspace, mode != .chat || provider.model.capabilities.contains(.tools) {
                     let grants = try await runtime.approvalGrantStore()
                     let conversations = mode == .chat ? nil : try await runtime.conversationToolCapability()
@@ -2330,17 +2469,53 @@ final class HostAgentWorkspace: ObservableObject {
                             return try await runtime.conversationAttachment(id: attachment, conversationID: taskID)
                         }
                     }
-                    tools = try MacAgentWorkspaceTools.binding(workspace: toolWorkspace,
+                    var extensionTools: [AnyAgentTool] = []
+                    if mode != .chat, let workbenchSkills {
+                        extensionTools = Self.skillTools(for: workbenchSkills, allowsNetwork: taskPolicy.networkAllowed != false)
+                    }
+                    if !readOnly, mode != .chat {
+                        extensionTools.append(contentsOf: workbenchConnectors?.publishedTools ?? [])
+                    }
+                    let binding = try MacAgentWorkspaceTools.binding(workspace: toolWorkspace,
                         privateTaskRootBase: personalTaskLeaseBase, runOutputArtifactRoot: runOutputArtifactRoot, readOnly: readOnly,
-                        chatOnly: mode == .chat, delegationRegistry: delegationRegistry,
+                        chatOnly: mode == .chat, taskPolicy: taskPolicy, delegationRegistry: delegationRegistry,
                         search: webSearch.access, conversations: conversations, imageTools: images, videoTools: videoTools,
-                        browserTools: { root in self.makeTaskBrowserTools?(taskID, root) ?? [] }) { root, identities in
+                        browserTools: { root in self.makeTaskBrowserTools?(taskID, root) ?? [] },
+                        extensionTools: extensionTools,
+                        observeShellOutput: { [weak self] update in await self?.receiveShellOutput(update) }
+                    ) { root, identities in
                         let context = MacProjectApprovalContext(grants: grants, workspaceID: toolWorkspace.id,
                             conversationID: taskID, root: root, identities: identities,
                             primaryIsOnDevice: provider.provider.id == ProviderProfile.onDeviceProviderID, networkStatus: self.networkStatus)
                         self.liveRuns[taskID]?.approvalContext = context
                         self.liveRuns[taskID]?.approvalMode = approvalMode
                         return context.policy(approvalMode, reviewer: self.reviewer)
+                    }
+                    tools = binding.allowedToolNames.isEmpty ? nil : binding
+                    var extensionApprovals: [String: HostExtensionApproval] = [:]
+                    let server = workbenchConnectors?.configuration?.server
+                    var connectorNames: [String: String] = [:]
+                    if let server, let discovered = workbenchConnectors?.discoveredTools {
+                        for tool in discovered {
+                            let name = MCPRemoteToolSource.namespacedName(prefix: server.namespacePrefix + "_",
+                                                                         remoteName: tool.remoteName)
+                            connectorNames[name] = String(SecretRedactor.redact(tool.remoteName).prefix(128))
+                        }
+                    }
+                    for tool in extensionTools where binding.allowedToolNames.contains(tool.descriptor.name) {
+                        let descriptor = tool.descriptor
+                        let connectorTool = connectorNames[descriptor.name]
+                        extensionApprovals[descriptor.name] = .init(
+                            title: connectorTool.map { MacPermissionsText.t("调用 \($0)", "Run \($0)") }
+                                ?? MacPermissionsText.t("管理技能", "Manage Skill"),
+                            target: connectorTool != nil ? server?.endpoint.host() : nil,
+                            riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
+                            changesState: descriptor.isSideEffecting
+                        )
+                    }
+                    liveRuns[taskID]?.extensionApprovals = extensionApprovals
+                    if binding.allowedToolNames.contains(SkillReadTool.name), let workbenchSkills {
+                        skillScope = await workbenchSkills.runtimeScope()
                     }
                 } else {
                     tools = nil
@@ -2360,10 +2535,16 @@ final class HostAgentWorkspace: ObservableObject {
                         runtime: runtime
                     )
                 }
+                let runContext = FloeMacSelfRunContext(
+                    workspaceName: toolWorkspace?.name,
+                    activeSkillIDs: Set(skillScope.skillIDs.sorted().filter { $0.utf8.count <= 128 }.prefix(64)),
+                    skillInstructions: skillScope.instructions.map { String(decoding: $0.utf8.prefix(8192), as: UTF8.self) }
+                )
                 #else
                 let launchPolicy = DraftTaskPolicy()
                 let toolWorkspace = selectedProject
                 tools = nil
+                let runContext = FloeMacSelfRunContext(workspaceName: toolWorkspace?.name)
                 #endif
                 let acceptedExecution: FloeMacSelfAcceptedPlanExecution?
                 if let acceptedPlan, let currentID {
@@ -2388,7 +2569,7 @@ final class HostAgentWorkspace: ObservableObject {
                     mode: acceptedExecution?.conversationMode ?? mode.runtimeMode,
                     initialPolicy: launchPolicy,
                     runID: checkpointRunID ?? acceptedExecution?.runID ?? queued?.id ?? delegationRunID,
-                    context: FloeMacSelfRunContext(workspaceName: toolWorkspace?.name),
+                    context: runContext,
                     attachments: drafts.map {
                         FloeMacSelfSessionAttachment(
                             id: $0.id,
@@ -2534,7 +2715,11 @@ final class HostAgentWorkspace: ObservableObject {
                 finishedNormally = terminal?.confirmed == true && terminal?.outcome == .completed && liveRuns[taskID]?.stopping != true
                 #if FLOE_UNIFIED_MAC
                 endTaskBrowserRun?(handle.identity.runID)
-                if let scheduled { await taskSchedules.finishRun(scheduled.occurrence, terminal: terminal, store: scheduled.store) }
+                if let scheduled {
+                    await taskSchedules.finishRun(scheduled.occurrence, terminal: terminal, store: scheduled.store)
+                } else if finishedNormally {
+                    await taskSchedules.upstreamCompleted(handle.identity.runID)
+                }
                 notifyTerminal(terminal, taskID: taskID)
                 if finishedNormally, currentID == nil, scheduled == nil, let titleHelper, providers.contains(where: { $0.model.id == provider.model.id }) {
                     scheduleTaskTitle(taskID, prompt: text, helper: titleHelper, primary: provider, runtime: runtime)
@@ -3053,9 +3238,16 @@ final class HostAgentWorkspace: ObservableObject {
         }
         let call = request.toolCall
         let preview: (path: String?, text: String?, previousText: String?)
+        let extensionAction: HostExtensionApproval?
         #if FLOE_UNIFIED_MAC
+        extensionAction = liveRuns[taskID]?.extensionApprovals[call.toolName]
         let decoder = JSONDecoder()
-        if let mutation = MacAgentWorkspaceMutationPreview.preview(of: call) {
+        if let extensionAction, case .local = call.scope,
+           let arguments = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
+           let formatted = try? JSONSerialization.data(withJSONObject: arguments, options: [.prettyPrinted, .sortedKeys]) {
+            let details = SecretRedactor.redact(String(decoding: formatted, as: UTF8.self))
+            preview = (extensionAction.target, String(details.prefix(24_000)), nil)
+        } else if let mutation = MacAgentWorkspaceMutationPreview.preview(of: call) {
             preview = mutation
         } else if let browser = MacTaskBrowserApproval.preview(call) {
             preview = (browser.path, browser.text, nil)
@@ -3073,13 +3265,15 @@ final class HostAgentWorkspace: ObservableObject {
             }
         }
         #else
+        extensionAction = nil
         preview = (nil, nil, nil)
         #endif
         let card = HostAgentApproval(conversationID: handle.identity.conversationID,
                                      runID: handle.identity.runID, workspaceID: handle.identity.workspaceID,
                                      requestedAt: request.requestedAt,
                                      toolCall: call, reason: request.reason, path: preview.path,
-                                     text: preview.text, previousText: preview.previousText)
+                                     text: preview.text, previousText: preview.previousText,
+                                     extensionAction: extensionAction)
         if liveRuns[taskID]?.approval != card { liveRuns[taskID]?.approval = card }
     }
 
@@ -3106,7 +3300,7 @@ final class HostAgentWorkspace: ObservableObject {
         #if FLOE_UNIFIED_MAC
         if result == .accepted, allow, let scope, let context, context.conversationID == taskID,
            context.workspaceID == approval.workspaceID, let path = approval.path,
-           MacAgentWorkspaceTools.writeToolNames.contains(approval.toolName), MacAgentWorkspaceTools.canRememberFile(path),
+           FloeMacSelfApprovalGrants.canRemember(toolName: approval.toolName), MacAgentWorkspaceTools.canRememberFile(path),
            let identity = context.identities[approval.toolName] {
             do {
                 try await context.grants.remember(scope: scope, workspaceID: context.workspaceID,
@@ -3994,7 +4188,8 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func testProviderModel(endpoint: String, protocolKind: ModelProtocol, modelID: String, key: String,
-                           allowsPlainHTTP: Bool, providerID: UUID?, presetID: ProviderTemplateID?) async -> MacProviderDiagnostic {
+                           allowsPlainHTTP: Bool, providerID: UUID?, presetID: ProviderTemplateID?,
+                           testsTools: Bool = false) async -> MacProviderDiagnostic {
         guard isReady, !isTerminating, let release = admit() else { return .init(result: .cancelled) }
         defer { release() }
         let id = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4003,10 +4198,11 @@ final class HostAgentWorkspace: ObservableObject {
             allowsPlainHTTP: allowsPlainHTTP, catalog: modelProviderCatalog) else { return .init(result: .rejected) }
         account.profile.nonSecretHeaders = savedHeaders(for: providerID, endpoint: account.profile.baseURL)
         let model = ModelProfile(providerID: account.profile.id, remoteModelID: id, displayName: id,
-                                 limits: .init(contextTokens: 1024, maxOutputTokens: 64), capabilities: [.text])
+                                 limits: .init(contextTokens: 1024, maxOutputTokens: 128),
+                                 capabilities: testsTools ? [.text, .tools] : [.text])
         return await MacProviderDiagnostic.verify(provider: account.profile, model: model,
             credentials: .init(apiKey: account.apiKey.isEmpty ? nil : account.apiKey),
-            adapter: ProviderAdapterFactory().adapter(for: account.profile))
+            adapter: ProviderAdapterFactory().adapter(for: account.profile), testsTools: testsTools)
     }
     #endif
 

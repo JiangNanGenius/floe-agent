@@ -105,6 +105,10 @@ final class UnifiedMacSmoke {
             await exerciseTaskLifecycle(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--extension-tools-only"), let endpoint = projectTaskFixtureEndpoint, endpoint.host == "127.0.0.1" {
+            await exerciseExtensionTools(model, endpoint: endpoint)
+            return
+        }
         if CommandLine.arguments.contains("--task-terminals-only") {
             await exerciseTaskTerminals(model)
             return
@@ -918,7 +922,13 @@ final class UnifiedMacSmoke {
             cadence: .daily, scheduledAt: Date().addingTimeInterval(3600), anchorTimezone: "Etc/UTC")
         let missed = TaskScheduleRecord(title: "Fixture missed", prompt: "Respond to the manual make-up.",
             cadence: .once, scheduledAt: Date().addingTimeInterval(-600))
+        let firstKey = TaskSchedulePlanner.dedupeKey(for: once.scheduledAt, record: once)
+        let firstRunID = TaskScheduleOccurrence.stableID(scheduleID: once.id, dedupeKey: firstKey)
+        let dependent = TaskScheduleRecord(title: "Fixture dependent", prompt: "Respond to the following task.",
+            workspaceID: project.id, cadence: .afterSuccess, scheduledAt: Date(), upstreamRunID: firstRunID,
+            originConversationID: firstRunID)
         let stored = await center.save(once)
+        let dependentStored = await center.save(dependent)
         let recurringStored = await center.save(repeating)
         await center.setEnabled(repeating, enabled: false)
         let paused = center.records.first(where: { $0.id == repeating.id })?.isEnabled == false
@@ -927,10 +937,16 @@ final class UnifiedMacSmoke {
         let missedStored = await center.save(missed)
         let deadline = ContinuousClock.now + .seconds(13)
         while ContinuousClock.now < deadline && (!center.recent.contains(where: { $0.scheduleID == once.id && $0.state == .completed })
-            || !center.recent.contains(where: { $0.scheduleID == missed.id && $0.state == .skipped })) {
+            || !center.recent.contains(where: { $0.scheduleID == missed.id && $0.state == .skipped })
+            || !center.recent.contains(where: { $0.scheduleID == dependent.id && $0.state == .completed })) {
             try? await Task.sleep(for: .milliseconds(60))
         }
         let result = center.recent.filter { $0.scheduleID == once.id }
+        await center.upstreamCompleted(firstRunID)
+        let followups = center.recent.filter { $0.scheduleID == dependent.id }
+        let directed = dependentStored && followups.count == 1 && followups.first?.state == .completed
+            && followups.first?.dedupeKey == "upstream:\(firstRunID.uuidString)"
+        let linked = await center.linkedSchedules(for: firstRunID).contains(dependent.id)
         let correctSelection = agent.selectedID == original
         var projectOwner = false
         if let id = result.first?.conversationID {
@@ -954,12 +970,39 @@ final class UnifiedMacSmoke {
             }
             notificationRoutes = agent.selectedID == scheduledID
         }
-        func probe(_ name: String) async -> MacProviderDiagnostic {
+        func probe(_ name: String, tools: Bool = false) async -> MacProviderDiagnostic {
             await agent.testProviderModel(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions, modelID: name,
-                                          key: "", allowsPlainHTTP: true, providerID: nil, presetID: nil)
+                                          key: "", allowsPlainHTTP: true, providerID: nil, presetID: nil, testsTools: tools)
         }
         let successful = await probe("model-replies")
         let limited = await probe("model-limited")
+        let toolProbe = await probe("model-tool", tools: true)
+        let account = MacProviderDraft(name: "Model list fixture", endpoint: endpoint.absoluteString, allowsPlainHTTP: true)
+        let candidates = ["fixture-list-a", "fixture-list-b", "fixture-list-skipped"].map { id in
+            ModelProfile(providerID: account.candidateProviderID, remoteModelID: id, displayName: id,
+                         limits: .init(contextTokens: 4096, maxOutputTokens: 256), capabilities: [.text, .tools])
+        }
+        var selection = ProviderModelSelection(candidates: candidates, selectedIDs: [])
+        for model in candidates.prefix(2) { selection.setSelected(model.id, true) }
+        selection.mergeDiscovered(candidates)
+        let modelsSaved = agent.saveProviderModels(accountID: nil, draft: account, selection: selection)
+        let storedAccount = agent.accounts.first { $0.name == "Model list fixture" }
+        let validSelection = modelsSaved && Set(storedAccount?.models.map(\.id) ?? []) == selection.selectedIDs
+            && selection.matching("skipped").count == 1
+        var structuredCompatibility = false
+        if let taskID = result.first?.conversationID {
+            let exported = root.appendingPathComponent("fixture-conversation.jsonl")
+            if (try? await agent.exportStructuredConversation(conversationID: taskID, to: exported)) != nil,
+               let jsonl = try? String(contentsOf: exported, encoding: .utf8) {
+                let rows = jsonl.split(separator: "\n").compactMap {
+                    (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+                }
+                structuredCompatibility = rows.first?["format"] as? String == "floe.task.jsonl"
+                    && rows.first?["version"] as? Int == 1 && rows.last?["type"] as? String == "exportComplete"
+                    && rows.contains { $0["type"] as? String == "run" && $0["id"] as? String == firstRunID.uuidString }
+                    && rows.contains { $0["type"] as? String == "message" && $0["runID"] as? String == firstRunID.uuidString }
+            }
+        }
         var scheduleSheet = false
         MacWorkspaceTaskCenter.smokeSchedulesFrame = nil
         if clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame, screenshot: nil) {
@@ -979,12 +1022,67 @@ final class UnifiedMacSmoke {
                 }
             }
         }
+        let modelPicker = if let storedAccount, validSelection {
+            await openFixtureModelChoices(model, accountID: storedAccount.id,
+                                          expected: Set(selection.selectedModels.map(\.remoteModelID)))
+        } else { false }
         finish(["policy": policy, "calendarCompletedOnce": stored && result.count == 1 && result.first?.state == .completed,
                 "calendarStates": result.map(\.state.rawValue), "recurringPauseResume": recurringStored && paused && rearmed,
                 "recordedMissed": missedStored && recordedMiss, "manualMakeup": manual,
+                "afterSuccess": directed, "linkedSchedule": linked, "structuredCompatibility": structuredCompatibility,
                 "sameVisibleTask": correctSelection, "ownsProject": projectOwner, "notificationRoute": notificationRoutes, "scheduleSheet": scheduleSheet,
-                "modelProbe": successful.result == .response, "quotaProbe": limited.result == .quotaOrRateLimit,
-                "safeDiagnostic": !limited.exportText.contains("private-fixture-content") && !limited.exportText.contains(endpoint.absoluteString)])
+                "modelProbe": successful.result == .response, "toolProbe": toolProbe.result == .toolResponse,
+                "modelSelection": validSelection, "modelPicker": modelPicker, "quotaProbe": limited.result == .quotaOrRateLimit,
+                "safeDiagnostic": !limited.exportText.contains("private-fixture-content") && !limited.exportText.contains(endpoint.absoluteString),
+                "diagnostics": settingsDiagnostics])
+    }
+
+    private func openFixtureModelChoices(_ model: BridgeAppModel, accountID: UUID, expected: Set<String>) async -> Bool {
+        let accountKey = "\(ProviderCatalogServiceRole.conversation.rawValue).\(accountID.uuidString)"
+        MacProviderSettingsView.smokeManageModelsFrame = nil
+        MacProviderSettingsView.smokeModelChoices = []
+        model.openSettings(.models)
+        defer { model.closeSettingsWindow() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        var accountOpened = false
+        var listOpened = false
+        while ContinuousClock.now < deadline {
+            if let window = model.smokeAgentSettingsSheet, let content = window.contentView {
+                content.layoutSubtreeIfNeeded()
+                refreshButtonFrames(in: content)
+                if !accountOpened {
+                    accountOpened = pressAccessibilityButton(content, id: "settings.providers.account." + accountKey)
+                    if !accountOpened, let frame = MacProviderSettingsView.smokeAccountFrames[accountKey] {
+                        accountOpened = clickWindowLocation(.init(x: frame.midX, y: frame.midY), in: window)
+                    }
+                } else if !listOpened {
+                    listOpened = pressAccessibilityButton(content, id: "settings.providers.manageModels")
+                    if !listOpened, let frame = MacProviderSettingsView.smokeManageModelsFrame {
+                        listOpened = clickWindowLocation(.init(x: frame.midX, y: frame.midY), in: window)
+                    }
+                }
+                if listOpened && MacProviderSettingsView.smokeModelListMounted &&
+                    Set(MacProviderSettingsView.smokeModelChoices) == expected {
+                    for surface in [window.attachedSheet, window] + NSApp.windows.filter(\.isVisible).map(Optional.some) {
+                        if let view = surface?.contentView, accessibilityElement(view, id: "providers.models.search") != nil {
+                            capture(view, extension: "provider-model-list.png")
+                            _ = pressAccessibilityButton(view, id: "providers.models.done")
+                            return true
+                        }
+                    }
+                    if let view = window.attachedSheet?.contentView {
+                        capture(view, extension: "provider-model-list.png")
+                        return true
+                    }
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        settingsDiagnostics.append("Model list account=\(accountOpened) button=\(listOpened) mounted=\(MacProviderSettingsView.smokeModelListMounted) selection=\(MacProviderSettingsView.smokeModelChoices.count)")
+        if let view = model.smokeAgentSettingsSheet?.contentView {
+            capture(view, extension: "provider-model-list-failed.png")
+        }
+        return false
     }
 
     private func exerciseTaskTerminals(_ model: BridgeAppModel) async {
@@ -1024,6 +1122,50 @@ final class UnifiedMacSmoke {
         } catch {
             _ = await unified.closeTaskTerminals()
             finish(["terminalStarted": false, "diagnostic": String(describing: type(of: error))])
+        }
+    }
+
+    private func exerciseExtensionTools(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model), let connector = agent.workbenchConnectors else {
+            finish(["ready": false]); return
+        }
+        do {
+            let server = MCPServerConfiguration(displayName: "Fixture connector",
+                endpoint: endpoint.deletingLastPathComponent().appendingPathComponent("mcp"),
+                allowInsecureHTTP: true)
+            try await connector.configure(server: server)
+            let live = await connector.testDiscovery()
+            await connector.restore()
+            guard live.map(\.remoteName) == ["fixture_receipt"], connector.status == .ready(toolCount: 1),
+                  let tool = connector.publishedTools.first,
+                  agent.startNamedAgentFixture("Obtain the synthetic connector receipt.", modelID: "extension-fixture",
+                                               endpoint: endpoint, projectID: nil) else {
+                finish(["discovery": false, "diagnostics": String(describing: connector.status)]); return
+            }
+            let deadline = ContinuousClock.now + .seconds(12)
+            var approved = false
+            while agent.activeRunCount > 0 && ContinuousClock.now < deadline {
+                if !approved, agent.pendingApproval?.toolName == tool.descriptor.name {
+                    approved = clickApproval(in: agent, allow: true, screenshot: "connector-approval.png")
+                }
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            let called = agent.messages.contains { $0.content == "Connector receipt verified." }
+            let events: [RunEventRecord] = agent.transcriptEventsByRun.values.flatMap { $0 }
+            let details = events.compactMap { event -> String? in
+                switch event.kind {
+                case .toolResult, .terminal: return event.payloadJSON
+                default: return nil
+                }
+            }
+            if agent.activeRunCount > 0 { agent.stop() }
+            try await connector.revoke()
+            await connector.restore()
+            finish(["discovery": true, "approval": approved, "call": called,
+                    "revoked": connector.configuration == nil && connector.publishedTools.isEmpty,
+                    "details": details])
+        } catch {
+            finish(["configured": false, "diagnostics": String(describing: type(of: error))])
         }
     }
 

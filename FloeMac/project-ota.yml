@@ -37,6 +37,7 @@ targets:
       - path: ../FloeAgent/Sources/FloeWorkspace/WorkspaceTextMutationContract.swift
       - path: ../FloeAgent/FloeApp/Settings/UsageStatisticsView.swift
       - path: ../FloeAgent/FloeApp/Providers/ProviderCatalogAddView.swift
+      - path: ../FloeAgent/FloeApp/Providers/ModelPickerView.swift
       - path: ../FloeAgent/FloeApp/Browser/BrowserDownloadService.swift
       - path: ../FloeAgent/FloeApp/Browser/BrowserTaskControlContract.swift
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift

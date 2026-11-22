@@ -240,11 +240,14 @@ public enum MacAgentWorkspaceTools {
         runOutputArtifactRoot: URL? = nil,
         readOnly: Bool,
         chatOnly: Bool = false,
+        taskPolicy: TaskPolicy? = nil,
         delegationRegistry: SubagentRunnerRegistry? = nil,
         search: MacSearchAccess? = nil,
         conversations: FloeMacConversationToolCapability? = nil,
         imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [],
         browserTools: ((URL) -> [AnyAgentTool])? = nil,
+        extensionTools: [AnyAgentTool] = [],
+        observeShellOutput: (@Sendable (MacShellOutputUpdate) async -> Void)? = nil,
         approvalPolicy: ((URL, [String: String]) -> any ApprovalPolicy)? = nil
     ) throws -> FloeMacSelfToolBinding {
         let root: URL
@@ -269,11 +272,20 @@ public enum MacAgentWorkspaceTools {
             search: search,
             conversations: chatOnly ? nil : conversations,
             imageTools: imageTools, videoTools: videoTools,
-            browserTools: readOnly || chatOnly ? [] : browserTools?(root) ?? []
+            browserTools: readOnly || chatOnly ? [] : browserTools?(root) ?? [],
+            extensionTools: chatOnly ? [] : extensionTools,
+            observeShellOutput: observeShellOutput
         )
         let taskReadTools = Set(baseExecutor.allDescriptors.filter { ConversationToolAccess.plan.allows($0) }.map(\.name))
         var allowed = chatOnly ? taskReadTools.intersection(ConversationToolAccess.chatNames) : taskReadTools
         if !readOnly && !chatOnly { allowed.formUnion(baseExecutor.allDescriptors.map(\.name)) }
+        if let taskPolicy {
+            let permitted = baseExecutor.allDescriptors.filter { taskPolicy.allowsToolEffect($0) }.map(\.name)
+            allowed.formIntersection(permitted)
+            if !taskPolicy.filePaths.isEmpty || taskPolicy.networkAllowed == false {
+                allowed.remove(MacNativeShellTool.name)
+            }
+        }
         let executor: any ToolExecutor
         if let delegationRegistry, !chatOnly {
             allowed.formUnion(FloeMacDelegatingProjectToolExecutor.defaultDelegatingNames)
@@ -284,14 +296,13 @@ public enum MacAgentWorkspaceTools {
         } else {
             executor = baseExecutor
         }
-        let gate = (try? CatastrophicActionGate.withBundledPatterns())
-            ?? CatastrophicActionGate.failClosed(
-                reason: "Mac workspace tool gate corpus unavailable"
-            )
+        if let names = taskPolicy?.allowedToolNames { allowed.formIntersection(names) }
+        let gate = bundledApprovalGate
+            ?? CatastrophicActionGate.failClosed(reason: "Mac workspace tool gate corpus unavailable")
         let boundary = FloeMacSelfTaskBoundary(
             workspaceID: workspace.id,
             workspaceRootURL: root,
-            allowedWorkspacePaths: [],
+            allowedWorkspacePaths: taskPolicy?.filePaths ?? [],
             ownership: .nativeHost
         )
         let identities = Dictionary(uniqueKeysWithValues: baseExecutor.allDescriptors.map { ($0.name, $0.authorizationIdentity) })
@@ -314,6 +325,9 @@ public enum MacAgentWorkspaceTools {
             hostGate: hostGate
         )
     }
+
+    private static let bundledApprovalGate = try? CatastrophicActionGate.withBundledPatterns()
+    static var approvalGateAvailable: Bool { bundledApprovalGate != nil }
 
     /// Project roots resolve from the stored security-scoped bookmark; a
     /// stale or unresolvable bookmark, an empty bookmark, or a non-directory
@@ -2259,7 +2273,9 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
 
     public init(workspaceRootURL: URL, runOutputArtifactRoot: URL? = nil, readOnly: Bool = false, search: MacSearchAccess? = nil,
                 conversations: FloeMacConversationToolCapability? = nil,
-                imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [], browserTools: [AnyAgentTool] = []) {
+                imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [], browserTools: [AnyAgentTool] = [],
+                extensionTools: [AnyAgentTool] = [],
+                observeShellOutput: (@Sendable (MacShellOutputUpdate) async -> Void)? = nil) {
         let root = workspaceRootURL.resolvingSymlinksInPath().standardizedFileURL
         self.workspaceRootURL = root
         var table: [String: any MacAgentWorkspaceExecutable] = [
@@ -2282,7 +2298,7 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             for tool in videoTools { table[tool.descriptor.name] = tool }
             for tool in browserTools { table[tool.descriptor.name] = tool }
             if FileManager.default.isExecutableFile(atPath: MacNativeShellTool.sandbox) {
-                table[MacNativeShellTool.name] = MacNativeShellTool(root: MacAgentWorkspaceRoot(root))
+                table[MacNativeShellTool.name] = MacNativeShellTool(root: MacAgentWorkspaceRoot(root), observe: observeShellOutput)
             }
             for tool in MacNativeDesktopTools.available(rootURL: root) { table[tool.executionDescriptor.name] = tool }
             table[MacAgentWorkspaceTools.createFileToolName] = MacAgentWorkspaceCreateFileTool(rootURL: root)
@@ -2294,6 +2310,11 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             if let runOutputArtifactRoot {
                 table[WorkspaceOutputPublication.name] = MacWorkspacePublishOutputTool(
                     root: MacAgentWorkspaceRoot(root), artifactRoot: runOutputArtifactRoot)
+            }
+        }
+        for tool in extensionTools where table[tool.descriptor.name] == nil && tool.isAvailable() {
+            if !readOnly || ConversationToolAccess.plan.allows(tool.descriptor) {
+                table[tool.descriptor.name] = tool
             }
         }
         self.tools = table

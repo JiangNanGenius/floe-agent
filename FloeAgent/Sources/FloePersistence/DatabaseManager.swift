@@ -220,6 +220,7 @@ public actor DatabaseManager {
         V64BackgroundChildOwners.register(into: &migrator)
         V65TaskWorkspaceCleanupScope.register(into: &migrator)
         V66FileApprovalGrants.register(into: &migrator)
+        V67SessionSchemaAlignment.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

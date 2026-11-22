@@ -61,13 +61,29 @@ final class MacTaskScheduleCenter: ObservableObject {
         guard !launching.contains(draft.id), !running.contains(draft.id) else { return false }
         return await change { store in
             try await store.save(draft)
+            try await recoverUpstream(draft, store: store, at: Date())
         }
+    }
+
+    func linkedSchedules(for conversation: UUID) async -> Set<UUID> {
+        guard let store, let linked = try? await store.schedulesLinked(to: conversation) else { return [] }
+        return Set(linked.map(\.id))
+    }
+
+    func upstreamCompleted(_ runID: UUID) async {
+        guard let store else { return }
+        do {
+            _ = try await store.recordRunCompletion(runID: runID, succeeded: true, cancelled: false, summary: nil, at: Date())
+        } catch { showStorageError() }
     }
 
     func setEnabled(_ schedule: TaskScheduleRecord, enabled: Bool) async {
         await change { store in
             guard !launching.contains(schedule.id) else { return }
             try await store.setEnabled(id: schedule.id, enabled: enabled, at: Date())
+            if enabled, let saved = try await store.schedule(id: schedule.id) {
+                try await recoverUpstream(saved, store: store, at: Date())
+            }
         }
     }
 
@@ -93,14 +109,25 @@ final class MacTaskScheduleCenter: ObservableObject {
         if now.timeIntervalSince(lastClockCheck) > 15 { availableSince = now }
         lastClockCheck = now
         guard !reconciled || records.contains(where: { record in
-            guard record.isEnabled, let next = record.nextExpectedAt, next <= now else { return false }
-            return !launching.contains(record.id) && !running.contains(record.id)
+            guard record.isEnabled, !launching.contains(record.id), !running.contains(record.id) else { return false }
+            return record.cadence == .afterSuccess || (record.nextExpectedAt.map { $0 <= now } ?? false)
         }) else { return }
         await change { store in
             if !reconciled {
                 _ = try await store.reconcileInterruptedOccurrences(at: now)
                 try await refresh(store)
+                for record in records {
+                    try await recoverUpstream(record, store: store, at: now)
+                }
                 reconciled = true
+            }
+            for occurrence in try await store.pendingOccurrences(limit: 200) where occurrence.isUpstreamArmed {
+                guard !Task.isCancelled, !launching.contains(occurrence.scheduleID), !running.contains(occurrence.scheduleID),
+                      let record = try await store.schedule(id: occurrence.scheduleID),
+                      record.isEnabled, record.cadence == .afterSuccess,
+                      let upstream = record.upstreamRunID,
+                      occurrence.dedupeKey == "upstream:\(upstream.uuidString)" else { continue }
+                try await dispatch(record, occurrence: occurrence, store: store)
             }
             for schedule in try await store.due(at: now) {
                 guard !Task.isCancelled, !launching.contains(schedule.id), !running.contains(schedule.id),
@@ -122,6 +149,14 @@ final class MacTaskScheduleCenter: ObservableObject {
                 try await dispatch(schedule, occurrence: occurrence, store: store)
             }
         }
+    }
+
+    /// Reconcile a crash between upstream completion and schedule admission.
+    /// The store deduplicates by the concrete upstream run, including after a relaunch.
+    private func recoverUpstream(_ record: TaskScheduleRecord, store: SQLiteTaskScheduleStore, at date: Date) async throws {
+        guard record.isEnabled, record.cadence == .afterSuccess, let runID = record.upstreamRunID,
+              try await workspace?.isCompletedScheduleRun(runID) == true else { return }
+        _ = try await store.recordRunCompletion(runID: runID, succeeded: true, cancelled: false, summary: nil, at: date)
     }
 
     private func dispatch(_ schedule: TaskScheduleRecord, occurrence: TaskScheduleOccurrence,
@@ -167,10 +202,9 @@ final class MacTaskScheduleCenter: ObservableObject {
         do {
             let now = Date()
             if let terminal, terminal.confirmed {
-                if try await store.occurrence(runID: terminal.runID) != nil {
-                    _ = try await store.recordRunCompletion(runID: terminal.runID, succeeded: terminal.outcome == .completed,
-                                                            cancelled: terminal.outcome == .cancelled, summary: nil, at: now)
-                } else {
+                _ = try await store.recordRunCompletion(runID: terminal.runID, succeeded: terminal.outcome == .completed,
+                                                        cancelled: terminal.outcome == .cancelled, summary: nil, at: now)
+                if try await store.occurrence(runID: terminal.runID) == nil {
                     try await store.finishOccurrence(id: occurrence.id, state: .interrupted, summary: nil, errorText: nil, at: now)
                 }
             } else {

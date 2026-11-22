@@ -736,6 +736,15 @@
 "mac.composer.done" = "完成";
 
 "mac.settings.webSearch" = "网页搜索";
+"mac.settings.skills" = "技能";
+"mac.settings.connectors" = "连接器";
+"mac.settings.diagnostics" = "诊断";
+"mac.settings.toolsUnavailable" = "工具暂不可用";
+"mac.settings.appVersion" = "App 版本";
+"mac.settings.taskStore" = "本地任务";
+"mac.settings.storeReady" = "可用";
+"mac.settings.storeUnavailable" = "不可用";
+"mac.settings.enabledModels" = "已启用模型";
 
 "providers.models_section" = "模型";
 "settings.diagnostics.providers" = "供应商";

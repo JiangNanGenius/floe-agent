@@ -68,10 +68,14 @@ public final class MacTaskTerminalOwner: ObservableObject {
     public let workspaceURL: URL
 
     /// Local-workspace interactive PTY session (starts in `workspaceURL`).
-    fileprivate let localSession = MacTerminalSession()
+    /// Internal (not public) so the module's remote-connections glue can
+    /// render live state; sessions are still only started/stopped here.
+    let localSession = MacTerminalSession()
 
     /// Remote SSH session (interactive OpenSSH to a user-supplied host).
-    fileprivate let sshSession = MacTerminalSession()
+    /// Internal (not public) so the module's remote-connections glue can
+    /// render live state; sessions are still only started/stopped here.
+    let sshSession = MacTerminalSession()
 
     /// Optional admission/lease hooks injected by integration.
     public var admission: (any MacTaskTerminalAdmission)?
@@ -348,22 +352,37 @@ public final class MacTaskTerminalStore: ObservableObject {
 /// Embeddable terminal inspector for one task: segmented 本地工作区 / 远程 SSH
 /// destination picker, start-on-user-action only, explicit close, and no
 /// lifecycle side effects on navigation (the owner keeps sessions alive).
+///
+/// `connections`/`catalog` are optional: when the coordinator supplies them,
+/// the SSH pane can pick an explicitly saved host (delegating to the task's
+/// connection owner, which reuses this terminal owner so the PTY, the lease
+/// and the system host-key prompts behave exactly like the hand-typed path).
+/// When nil, the inspector keeps its original hand-typed-only behaviour.
 public struct MacTaskTerminalInspector: View {
 
     @ObservedObject public var owner: MacTaskTerminalOwner
     @ObservedObject private var localSession: MacTerminalSession
     @ObservedObject private var sshSession: MacTerminalSession
+    private let connections: MacTaskRemoteConnectionsOwner?
+    private let catalog: MacRemoteConnectionsCatalog?
 
     @State private var destination: MacTaskTerminalDestination = .local
     @State private var hostInput = ""
     @State private var userInput = ""
     @State private var portInput = ""
+    @State private var savedHostID: UUID?
     @State private var startError: String?
 
-    public init(owner: MacTaskTerminalOwner) {
+    public init(
+        owner: MacTaskTerminalOwner,
+        connections: MacTaskRemoteConnectionsOwner? = nil,
+        catalog: MacRemoteConnectionsCatalog? = nil
+    ) {
         self.owner = owner
         self.localSession = owner.localSession
         self.sshSession = owner.sshSession
+        self.connections = connections
+        self.catalog = catalog
     }
 
     public var body: some View {
@@ -449,20 +468,48 @@ public struct MacTaskTerminalInspector: View {
             switch sshSession.state {
             case .idle:
                 Form {
-                    TextField(MacTaskTerminalCopy.t("主机", "Host"), text: $hostInput)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("terminal.ssh.host")
-                    TextField(MacTaskTerminalCopy.t("用户名（可选）", "User (optional)"), text: $userInput)
-                        .textFieldStyle(.roundedBorder)
-                    TextField(MacTaskTerminalCopy.t("端口（可选）", "Port (optional)"), text: $portInput)
-                        .textFieldStyle(.roundedBorder)
-                    HStack {
-                        Spacer()
-                        Button(MacTaskTerminalCopy.t("连接", "Connect")) {
-                            Task { await connectSSH() }
+                    if let catalog, !catalog.hosts.isEmpty {
+                        Picker(MacTaskTerminalCopy.t("已保存的主机", "Saved host"), selection: $savedHostID) {
+                            Text(MacTaskTerminalCopy.t("手动输入", "Manual entry")).tag(nil as UUID?)
+                            ForEach(catalog.hosts.filter(\.hasSSHConnection), id: \.id) { host in
+                                Text(host.displayName).tag(host.id as UUID?)
+                            }
                         }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(hostInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("terminal.ssh.savedHost")
+                    }
+                    if savedHostID != nil {
+                        if let host = catalog?.hosts.first(where: { $0.id == savedHostID }) {
+                            LabeledContent(MacTaskTerminalCopy.t("目标", "Target")) {
+                                Text("\(host.user.isEmpty ? "" : "\(host.user)@")\(host.address):\(host.port)")
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        HStack {
+                            Spacer()
+                            Button(MacTaskTerminalCopy.t("连接", "Connect")) {
+                                Task { await connectSavedSSH() }
+                            }
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .disabled(connections == nil)
+                        }
+                    } else {
+                        TextField(MacTaskTerminalCopy.t("主机", "Host"), text: $hostInput)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("terminal.ssh.host")
+                        TextField(MacTaskTerminalCopy.t("用户名（可选）", "User (optional)"), text: $userInput)
+                            .textFieldStyle(.roundedBorder)
+                        TextField(MacTaskTerminalCopy.t("端口（可选）", "Port (optional)"), text: $portInput)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Spacer()
+                            Button(MacTaskTerminalCopy.t("连接", "Connect")) {
+                                Task { await connectSSH() }
+                            }
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .disabled(hostInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
                     }
                     if let startError {
                         Text(startError)
@@ -490,6 +537,29 @@ public struct MacTaskTerminalInspector: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func connectSavedSSH() async {
+        startError = nil
+        guard let connections, let hostID = savedHostID else {
+            startError = MacTaskTerminalCopy.t(
+                "此任务尚未启用已保存主机连接。",
+                "Saved-host connections are not enabled for this task."
+            )
+            return
+        }
+        do {
+            try await connections.connectSSH(hostID: hostID)
+        } catch let error as MacRemoteConnectionsError {
+            startError = error.message
+        } catch let error as MacSSHHostValidationError {
+            startError = error.message
+        } catch {
+            startError = MacTaskTerminalCopy.t(
+                "无法启动 SSH。请检查主机地址后重试。",
+                "Could not start SSH. Check the host address and try again."
+            )
+        }
     }
 
     private func connectSSH() async {
@@ -579,8 +649,30 @@ public struct MacTaskTerminalInspector: View {
             } label: {
                 Text(MacTaskTerminalCopy.t("新建会话", "New Session"))
             }
+            if kind == .ssh, let connections,
+               connections.lastSSHHostID != nil || connections.activeSSHHostID != nil {
+                Button {
+                    Task { await reconnectSavedSSH() }
+                } label: {
+                    Text(MacTaskTerminalCopy.t("重新连接上次的主机", "Reconnect Last Host"))
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func reconnectSavedSSH() async {
+        startError = nil
+        do {
+            try await connections?.reconnectSSH()
+        } catch let error as MacRemoteConnectionsError {
+            startError = error.message
+        } catch {
+            startError = MacTaskTerminalCopy.t(
+                "无法重新连接。请检查主机后重试。",
+                "Could not reconnect. Check the host and try again."
+            )
+        }
     }
 
     private func exitText(_ code: Int32?) -> String {

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import FloeModels
+import FloePersistence
 import SwiftUI
 
 struct MacTaskScheduleView: View {
     @ObservedObject var center: MacTaskScheduleCenter
     @ObservedObject var workspace: HostAgentWorkspace
     let projectID: UUID?
+    var originTaskID: UUID? = nil
     let openTask: (UUID) -> Void
 
     private struct Edit: Identifiable {
@@ -17,6 +19,18 @@ struct MacTaskScheduleView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var edit: Edit?
     @State private var deleting: TaskScheduleRecord?
+    @State private var linkedIDs: Set<UUID> = []
+
+    private var visibleRecords: [TaskScheduleRecord] {
+        guard let originTaskID else { return center.records }
+        return center.records.filter { $0.originConversationID == originTaskID || linkedIDs.contains($0.id) }
+    }
+
+    private var visibleRuns: [TaskScheduleOccurrence] {
+        guard let originTaskID else { return center.recent }
+        let schedules = Set(visibleRecords.map(\.id))
+        return center.recent.filter { $0.conversationID == originTaskID || schedules.contains($0.scheduleID) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,16 +52,16 @@ struct MacTaskScheduleView: View {
                 if let error = center.errorMessage { Text(error).foregroundStyle(.red) }
                 if let notifications = workspace.taskNotifications { MacNotificationAuthorizationRow(center: notifications) }
                 Section {
-                    ForEach(center.records) { record in planRow(record) }
-                    if center.records.isEmpty {
+                    ForEach(visibleRecords) { record in planRow(record) }
+                    if visibleRecords.isEmpty {
                         Text(MacPermissionsText.t("暂无定时任务", "No scheduled tasks yet")).foregroundStyle(.secondary)
                     }
                 } footer: {
                     Text(MacPermissionsText.t("Agent 运行时执行。错过的运行可从这里补跑。", "Runs while Agent is active. Run missed tasks here."))
                 }
-                if !center.recent.isEmpty {
+                if !visibleRuns.isEmpty {
                     Section(MacPermissionsText.t("最近运行", "Recent Runs")) {
-                        ForEach(center.recent) { occurrence in
+                        ForEach(visibleRuns) { occurrence in
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(center.records.first(where: { $0.id == occurrence.scheduleID })?.title ??
@@ -71,8 +85,12 @@ struct MacTaskScheduleView: View {
         }
         .frame(width: 690, height: 560)
         .task { await center.reload() }
+        .task(id: center.recent) {
+            if let originTaskID { linkedIDs = await center.linkedSchedules(for: originTaskID) }
+        }
         .sheet(item: $edit) { edit in
-            MacTaskScheduleEditor(center: center, workspace: workspace, editing: edit.record, projectID: projectID)
+            MacTaskScheduleEditor(center: center, workspace: workspace, editing: edit.record,
+                                  projectID: projectID, originTaskID: originTaskID)
         }
         .alert(MacPermissionsText.t("删除这个定时任务？", "Delete This Schedule?"),
                isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { record in
@@ -89,6 +107,8 @@ struct MacTaskScheduleView: View {
                     Text(next, format: .dateTime.day().month().hour().minute())
                         .font(.caption).foregroundStyle(.secondary)
                         .accessibilityIdentifier("mac.schedule.nextRun")
+                } else if record.isEnabled, record.cadence == .afterSuccess {
+                    Text(upstreamStatus(record)).font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text(MacPermissionsText.t("已暂停或结束", "Paused or Ended")).font(.caption).foregroundStyle(.secondary)
                 }
@@ -114,6 +134,13 @@ struct MacTaskScheduleView: View {
         .accessibilityIdentifier("mac.schedule.plan")
     }
 
+    private func upstreamStatus(_ record: TaskScheduleRecord) -> String {
+        if let run = center.recent.first(where: { $0.scheduleID == record.id && $0.isUpstreamArmed }) {
+            return status(run.state)
+        }
+        return MacPermissionsText.t("所选运行成功后执行", "Runs after the selected run succeeds")
+    }
+
     private func status(_ value: TaskScheduleOccurrenceState) -> String {
         switch value {
         case .pending, .claimed: MacPermissionsText.t("等待启动", "Waiting to Start")
@@ -131,6 +158,7 @@ private struct MacTaskScheduleEditor: View {
     @ObservedObject var center: MacTaskScheduleCenter
     @ObservedObject var workspace: HostAgentWorkspace
     let editing: TaskScheduleRecord?
+    let originTaskID: UUID?
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @State private var prompt = ""
@@ -139,15 +167,20 @@ private struct MacTaskScheduleEditor: View {
     @State private var cadence: TaskScheduleCadence = .once
     @State private var scheduledAt = Date().addingTimeInterval(300)
     @State private var hours = 6
+    @State private var upstreamRunID: UUID?
+    @State private var recentRuns: [RecentRunSummary] = []
     @State private var approval: TaskApprovalMode = .ask
     @State private var saving = false
     @State private var saveFailed = false
 
-    init(center: MacTaskScheduleCenter, workspace: HostAgentWorkspace, editing: TaskScheduleRecord?, projectID: UUID?) {
+    init(center: MacTaskScheduleCenter, workspace: HostAgentWorkspace, editing: TaskScheduleRecord?,
+         projectID: UUID?, originTaskID: UUID?) {
         self.center = center
         self.workspace = workspace
         self.editing = editing
+        self.originTaskID = originTaskID
         _workspaceID = State(initialValue: editing == nil ? projectID : editing?.workspaceID)
+        _upstreamRunID = State(initialValue: editing?.upstreamRunID)
     }
 
     var body: some View {
@@ -162,7 +195,8 @@ private struct MacTaskScheduleEditor: View {
                 Button("host.chat.save") { Task { await save() } }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(saving || center.isBusy || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(saving || center.isBusy || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || (cadence == .afterSuccess && upstreamRunID == nil))
                     .accessibilityIdentifier("mac.schedule.save")
             }
             .padding(.horizontal, 16)
@@ -177,7 +211,23 @@ private struct MacTaskScheduleEditor: View {
                             Text(project.name).tag(Optional(project.id))
                         }
                     }
-                    FloeTaskScheduleTimingFields(cadence: $cadence, scheduledAt: $scheduledAt, intervalHours: $hours)
+                    FloeTaskScheduleTimingFields(cadence: $cadence, scheduledAt: $scheduledAt,
+                                                 intervalHours: $hours, allowsAfterSuccess: true)
+                    if cadence == .afterSuccess {
+                        Picker(MacPermissionsText.t("跟随运行", "Upstream Run"), selection: $upstreamRunID) {
+                            Text(MacPermissionsText.t("选择一次运行", "Select a Run")).tag(UUID?.none)
+                            ForEach(recentRuns) { run in
+                                let title = run.conversationTitle.isEmpty ? MacPermissionsText.t("任务", "Task") : run.conversationTitle
+                                Text("\(title) · \(run.startedAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .tag(Optional(run.id))
+                            }
+                            if let upstreamRunID, !recentRuns.contains(where: { $0.id == upstreamRunID }) {
+                                Text(MacPermissionsText.t("已绑定的运行", "Previously Selected Run")).tag(Optional(upstreamRunID))
+                            }
+                        }
+                        Text(MacPermissionsText.t("所选运行成功后触发一次。", "Runs once after the selected run succeeds."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Section {
                     Picker(MacPermissionsText.t("模型", "Model"), selection: $modelID) {
@@ -196,6 +246,12 @@ private struct MacTaskScheduleEditor: View {
             }.formStyle(.grouped)
         }
         .frame(width: 550, height: 610)
+        .task {
+            recentRuns = await workspace.recentScheduleRuns()
+            if upstreamRunID == nil, let originTaskID {
+                upstreamRunID = recentRuns.first(where: { $0.conversationID == originTaskID })?.id
+            }
+        }
         .onAppear {
             guard let editing else { return }
             title = editing.title
@@ -214,7 +270,7 @@ private struct MacTaskScheduleEditor: View {
         defer { saving = false }
         if approval == .fullAccess, !(await workspace.authenticateScheduledFullAccess()) { return }
         let cleaned = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty, cadence != .afterSuccess else { saveFailed = true; return }
+        guard !cleaned.isEmpty, cadence != .afterSuccess || upstreamRunID != nil else { saveFailed = true; return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let now = Date()
         var record = editing ?? TaskScheduleRecord(title: "", prompt: cleaned, cadence: cadence, scheduledAt: scheduledAt)
@@ -229,6 +285,8 @@ private struct MacTaskScheduleEditor: View {
         record.scheduledAt = scheduledAt
         record.weekday = cadence == .weekly ? Calendar.current.component(.weekday, from: scheduledAt) : nil
         record.intervalSeconds = cadence == .interval ? hours * 3600 : nil
+        record.upstreamRunID = cadence == .afterSuccess ? upstreamRunID : nil
+        if editing == nil { record.originConversationID = originTaskID }
         record.anchorTimezone = editing?.anchorTimezone ?? TimeZone.current.identifier
         record.updatedAt = now
         let policy = DraftTaskPolicy(approvalMode: approval)

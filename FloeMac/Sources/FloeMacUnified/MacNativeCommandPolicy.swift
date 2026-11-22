@@ -7,7 +7,7 @@ import FloeSecurity
 /// Risk describes the command. The requested file boundary is a separate decision.
 /// Workspace execution is additionally confined by the shell runner at the OS level.
 struct MacNativeCommandPolicy: ApprovalPolicy, ApprovalReviewRouting {
-    enum Risk {
+    enum Risk: Sendable {
         case low, medium, high
 
         var title: String {
@@ -39,7 +39,7 @@ struct MacNativeCommandPolicy: ApprovalPolicy, ApprovalReviewRouting {
         }
         let access = object["access"] as? String ?? "workspace"
         let command = object["command"] as? String ?? object["script"] as? String ?? ""
-        let simple = Set(object.keys).isSubset(of: ["command", "script", "access", "timeout", "timeoutSeconds", "maxOutputBytes"])
+        let simple = Set(object.keys).isSubset(of: ["command", "script", "access", "cwd", "timeoutSeconds", "maxOutputBytes"])
             && !(object["command"] != nil && object["script"] != nil)
             && ["workspace", "host"].contains(access)
         let risk = simple ? commandRisk(command) : .high

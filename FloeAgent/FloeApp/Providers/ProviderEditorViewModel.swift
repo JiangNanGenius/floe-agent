@@ -1309,7 +1309,7 @@ final class ProviderEditorViewModel: ObservableObject {
     // MARK: - Models
 
     var selectedModels: [ModelProfile] {
-        candidateModels.filter { selectedModelIDs.contains($0.id) }
+        ProviderModelSelection(candidates: candidateModels, selectedIDs: selectedModelIDs).selectedModels
     }
 
     func toggleSelection(_ id: UUID) {
@@ -1328,12 +1328,10 @@ final class ProviderEditorViewModel: ObservableObject {
     /// button gesture.
     func setSelection(_ id: UUID, isSelected: Bool) {
         stagedSubscriptionModelIDs.remove(id)
-        if isSelected {
-            selectedModelIDs.insert(id)
-        } else {
-            selectedModelIDs.remove(id)
-            if defaultModelID == id { defaultModelID = nil }
-        }
+        var selection = ProviderModelSelection(candidates: candidateModels, selectedIDs: selectedModelIDs)
+        selection.setSelected(id, isSelected)
+        selectedModelIDs = selection.selectedIDs
+        if !isSelected && defaultModelID == id { defaultModelID = nil }
     }
 
     func updateModel(_ model: ModelProfile) {
@@ -1415,7 +1413,9 @@ final class ProviderEditorViewModel: ObservableObject {
             }
             return model
         }
-        candidateModels = ModelCatalogMerger.merge(existing: candidateModels, discovered: normalized)
+        var selection = ProviderModelSelection(candidates: candidateModels, selectedIDs: selectedModelIDs)
+        selection.mergeDiscovered(normalized)
+        candidateModels = selection.candidates
         for model in candidateModels where nativeToolStatusByModelID[model.id] != .verified {
             nativeToolStatusByModelID[model.id] = NativeToolCapabilityProbe.initialStatus(for: model)
         }

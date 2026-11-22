@@ -14,12 +14,20 @@ public struct FloeMacFileGrant: Identifiable, Sendable {
     public let conversationID: UUID?
     public let toolName: String
     public let path: String
+    public let decidedAt: Date
 }
 
 public actor FloeMacSelfApprovalGrants {
     private let store: SQLiteWorkspaceStore
     private static let namespace = "floe.mac.file-grant.v1."
-    private static let tools: Set<String> = ["workspace.createFile", "workspace.replaceText"]
+    private static let tools: Set<String> = [
+        "workspace.createFile", "workspace.replaceText", "workspace.writeFile",
+        "workspace.appendFile", "workspace.applyPatch", "workspace.createDirectory",
+    ]
+
+    public nonisolated static func canRemember(toolName: String) -> Bool {
+        tools.contains(toolName)
+    }
 
     public init(store: SQLiteWorkspaceStore) { self.store = store }
 
@@ -30,7 +38,7 @@ public actor FloeMacSelfApprovalGrants {
                   row.hostID == nil, row.paths.count == 1, let path = row.paths.first,
                   Self.tools.contains(row.toolName), !row.singleUse else { return nil }
             return FloeMacFileGrant(id: row.id, workspaceID: owner, conversationID: row.conversationID,
-                                    toolName: row.toolName, path: path)
+                                    toolName: row.toolName, path: path, decidedAt: row.decidedAt)
         }
     }
 
@@ -43,7 +51,9 @@ public actor FloeMacSelfApprovalGrants {
                          toolName: String, path: String, authorizationIdentity: String, workspaceRoot: URL) async throws {
         guard Self.tools.contains(toolName), !authorizationIdentity.isEmpty, Self.validPath(path),
               try await store.workspaceID(conversationID: conversationID) == workspaceID,
-              let binding = try await projectBinding(workspaceID, root: workspaceRoot) else { throw CocoaError(.fileWriteNoPermission) }
+              let workspace = try await store.workspace(id: workspaceID),
+              scope == .task || workspace.kind == .project,
+              let binding = try workspaceBinding(workspace, root: workspaceRoot) else { throw CocoaError(.fileWriteNoPermission) }
         let owner = scope == .task ? conversationID : nil
         // A repeated approval or a concurrent click is one row for the same operation.
         let key = [binding, workspaceID.uuidString, owner?.uuidString ?? "", toolName, path, authorizationIdentity]
@@ -57,13 +67,20 @@ public actor FloeMacSelfApprovalGrants {
             singleUse: false, policyName: binding, conversationID: owner, authorizationIdentity: authorizationIdentity))
     }
 
-    private func projectBinding(_ id: UUID, root: URL) async throws -> String? {
-        guard let project = try await store.workspace(id: id), project.kind == .project else { return nil }
+    private func workspaceBinding(_ workspace: WorkspaceRecord, root: URL) throws -> String? {
+        if workspace.kind == .privateTask {
+            let folder = root.deletingLastPathComponent().lastPathComponent + "/" + root.lastPathComponent
+            guard let internalPath = workspace.internalRelativePath, internalPath == folder, folder.hasPrefix("PrivateTasks/") else {
+                return nil
+            }
+            return Self.namespace + FloeDigest.sha256Hex(Data((workspace.id.uuidString + "\n" + root.standardizedFileURL.path).utf8))
+        }
+        guard workspace.kind == .project else { return nil }
         var stale = false
-        let resolved = try URL(resolvingBookmarkData: project.rootBookmark, options: [.withoutUI],
+        let resolved = try URL(resolvingBookmarkData: workspace.rootBookmark, options: [.withoutUI],
                                relativeTo: nil, bookmarkDataIsStale: &stale)
         guard !stale, resolved.resolvingSymlinksInPath().standardizedFileURL.path == root.standardizedFileURL.path else { return nil }
-        return Self.namespace + FloeDigest.sha256Hex(project.rootBookmark)
+        return Self.namespace + FloeDigest.sha256Hex(workspace.rootBookmark)
     }
 
     private static func validPath(_ path: String) -> Bool {
@@ -76,7 +93,8 @@ public actor FloeMacSelfApprovalGrants {
     fileprivate func matches(_ action: ProposedAction, workspaceID: UUID, conversationID: UUID,
                              root: URL, identities: [String: String]) async throws -> Bool {
         let call = action.toolCall
-        guard Self.tools.contains(call.toolName), action.riskLabels == ["writesFiles"],
+        guard Self.tools.contains(call.toolName), action.riskLabels.contains("writesFiles"),
+              action.riskLabels.isSubset(of: ["readsFiles", "writesFiles"]),
               case .local = call.scope, case .local = action.hostAndPathScope,
               let context = action.trustedContext, context.environmentClass == .localNative,
               context.workspaceRootPath == root.standardizedFileURL.path,
@@ -84,10 +102,11 @@ public actor FloeMacSelfApprovalGrants {
               let args = try JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
               let path = args["path"] as? String, Self.validPath(path),
               try await store.workspaceID(conversationID: conversationID) == workspaceID,
-              let binding = try await projectBinding(workspaceID, root: root) else { return false }
+              let workspace = try await store.workspace(id: workspaceID),
+              let binding = try workspaceBinding(workspace, root: root) else { return false }
         return try await store.fileApprovalGrants(workspaceID: workspaceID, toolName: call.toolName).contains {
             $0.policyName == binding && !$0.singleUse && $0.authorizationIdentity == identity &&
-                ($0.conversationID == nil || $0.conversationID == conversationID) &&
+                ($0.conversationID == conversationID || (workspace.kind == .project && $0.conversationID == nil)) &&
                 $0.paths.count == 1 && $0.paths.first?.utf8.elementsEqual(path.utf8) == true
         }
     }

@@ -6,9 +6,32 @@
 // when discovery is unsupported or returned nothing. Selecting/adding a
 // model stages it for save in the provider editor.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 import FloeCore
+import FloeProviders
+
+struct FloeProviderModelChoiceRow: View {
+    let model: ModelProfile
+    @Binding var selected: Bool
+
+    var body: some View {
+        Toggle(isOn: $selected) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName).font(FloeTheme.Typography.body)
+                Text(model.remoteModelID).font(FloeTheme.Typography.evidence).foregroundStyle(.secondary)
+            }
+        }
+        #if os(macOS)
+        .toggleStyle(.checkbox)
+        #endif
+        .tint(FloeTheme.primary)
+        .frame(minHeight: FloeTheme.minimumTarget)
+        .accessibilityIdentifier("providers.model.\(model.remoteModelID)")
+    }
+}
+
+#if canImport(UIKit)
 
 /// A sheet listing discovered models plus a manual-entry fallback.
 struct ModelPickerView: View {
@@ -20,11 +43,8 @@ struct ModelPickerView: View {
     @State private var searchText = ""
 
     private var filteredModels: [ModelProfile] {
-        guard !searchText.isEmpty else { return viewModel.candidateModels }
-        return viewModel.candidateModels.filter {
-            $0.displayName.localizedCaseInsensitiveContains(searchText)
-                || $0.remoteModelID.localizedCaseInsensitiveContains(searchText)
-        }
+        ProviderModelSelection(candidates: viewModel.candidateModels, selectedIDs: viewModel.selectedModelIDs)
+            .matching(searchText)
     }
 
     private var filteredOfficialPresets: [MediaModelDescriptor] {
@@ -74,28 +94,10 @@ struct ModelPickerView: View {
                     // Their presence is not evidence of account discovery.
                     Section("providers.models_section") {
                         ForEach(filteredModels) { model in
-                            Toggle(isOn: Binding(
+                            FloeProviderModelChoiceRow(model: model, selected: Binding(
                                 get: { viewModel.selectedModelIDs.contains(model.id) },
                                 set: { viewModel.setSelection(model.id, isSelected: $0) }
-                            )) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(model.displayName)
-                                            .font(FloeTheme.Typography.body)
-                                        Text(model.remoteModelID)
-                                            .font(FloeTheme.Typography.evidence)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                }
-                            }
-                            .tint(FloeTheme.primary)
-                            .frame(minHeight: FloeTheme.minimumTarget)
-                            .accessibilityIdentifier("providers.model.\(model.remoteModelID)")
-                            .accessibilityValue(
-                                viewModel.selectedModelIDs.contains(model.id)
-                                    ? "selected" : "not selected"
-                            )
+                            ))
                         }
                     }
                 }
@@ -167,4 +169,5 @@ struct ModelPickerView: View {
         }
     }
 }
+#endif
 #endif
