@@ -4,7 +4,7 @@
   <p><strong>面向 iOS、iPadOS 和 Android 的设备端 AI 工作台。</strong></p>
   <p>你的模型，你的文件，你的电脑。</p>
   <p>Floe Agent 是面向 iOS、iPadOS 和 Android 的开源 AI 智能体。把文档、代码与创作项目放进同一处，在自己的设备上运行真实的 Linux 环境。以 iPadOS 与 Apple Pencil 体验为核心，原生支持 iPhone，并提供 Android 特有的设备协作流程。</p>
-  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">floe-agent.com</a> · <a href="https://www.floe-agent.com/releases?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">版本与更新</a> · <a href="docs/README.md">文档中心</a> · <a href="docs/DISCLAIMER.zh-CN.md">免责声明</a></p>
+  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">floe-agent.com</a> · <a href="https://www.floe-agent.com/releases?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">版本与更新</a> · <a href="docs/README.md">文档中心</a> · <a href="https://discord.gg/qRJJAV8hzT">Discord 社区</a> · <a href="docs/DISCLAIMER.zh-CN.md">免责声明</a></p>
 </div>
 
 <p align="center">
