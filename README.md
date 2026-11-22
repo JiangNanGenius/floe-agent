@@ -4,7 +4,7 @@
   <p><strong>An on-device AI workspace for iOS, iPadOS and Android.</strong></p>
   <p>Your models. Your files. Your machines.</p>
   <p>Floe Agent is an open-source AI agent for iOS, iPadOS and Android. Work with documents, code and creative projects in one place, with a real Linux environment running on your device. Designed primarily for iPadOS and Apple Pencil, with native iPhone support and Android-specific device workflows.</p>
-  <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/en?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_en">floe-agent.com</a> · <a href="https://www.floe-agent.com/en/releases?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_en">Releases &amp; updates</a> · <a href="docs/README.md">Documentation</a> · <a href="docs/DISCLAIMER.md">Disclaimer</a></p>
+  <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/en?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_en">floe-agent.com</a> · <a href="https://www.floe-agent.com/en/releases?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_en">Releases &amp; updates</a> · <a href="docs/README.md">Documentation</a> · <a href="https://discord.gg/qRJJAV8hzT">Discord community</a> · <a href="docs/DISCLAIMER.md">Disclaimer</a></p>
 </div>
 
 <p align="center">
