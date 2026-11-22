@@ -13,7 +13,7 @@
 
 ## 本轮版本记录
 
-1.8.72（393）冻结在 `258c0c51ffe59cd287d7db9188de440cce0f95e8`，交付 Floe QA、GitHub 和 Feather。聊天在 Linux 升级时显示进度，升级完成并核验运行位置后继续原任务。2026-11-23 使用新版 iPad 宣传图重新提交正式 App Store 审核，Apple 状态为 `WAITING_FOR_REVIEW`，通过后自动发布。 [393 交付记录](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md)
+1.8.72（393）冻结在 `258c0c51ffe59cd287d7db9188de440cce0f95e8`，交付 Floe QA、GitHub 和 Feather。聊天在 Linux 升级时显示进度，升级完成并核验运行位置后继续原任务。2026-11-23 使用新版 iPad 宣传图重新提交正式 App Store 审核，Apple 状态为 `WAITING_FOR_REVIEW`，通过后自动发布。公开 TestFlight 已提交 `publictest1`，Apple 状态为 `WAITING_FOR_BETA_REVIEW`。 [393 交付记录](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md)
 
 1.8.71（392）冻结在 `bfde5af4017664df8f203f8f850e9ec4e4e1aa2d`，交付 Floe QA、GitHub 和 Feather。涵盖设置向导的空密钥提示、协议排版和选中状态可读性修复。 [392 交付记录](releases/builds/FLOE_1.8.71_BUILD392_DELIVERY.md)
 

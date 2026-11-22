@@ -5,6 +5,8 @@
 
 最新内部 TestFlight、GitHub 和 Feather 已核验为 1.8.72（393）。 / Build 393 is verified for internal TestFlight, GitHub and Feather. [交付记录 / Delivery](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md)
 
+同一构建已加入 `publictest1` 并提交公开 TestFlight 审核。Apple 显示「等待 Beta 审核」，通过后自动开放给测试者。 / Build 393 is awaiting external TestFlight review, with automatic distribution after approval. [公开测试 / Public beta](https://testflight.apple.com/join/nz6qeT2J)
+
 1.8.72（393）已带新版 iPad 宣传图重新提交 App Store 正式审核，Apple 显示「等待审核」。通过后自动发布。 / Apple shows build 393 as Waiting for Review with the updated iPad screenshot and automatic release after approval. [审核记录 / Review](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md#app-store-正式审核)
 
 ## 2026-11-19 iOS 1.8.45（366）

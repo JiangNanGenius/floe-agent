@@ -1,0 +1,11 @@
+Floe Agent 1.8.72 (393)
+
+No Floe account or Floe subscription is required. Local document and creative editors can be opened without a cloud AI provider. AI tasks and cloud transcription use the user's chosen provider and API key.
+
+To try the game workbench, open Space, choose New, then Game. Create a game project and use the starter project option or import a compatible project. Simple Edit opens supported maps and events. Run is available in the game workbench and in the IDE for a recognized game project. Some game formats require optional runtime resources, which can be prepared before running.
+
+Linux is an optional execution environment. A task waiting for a Linux upgrade shows its progress in chat and resumes after the environment and execution location have been verified. Local editors can be used without Linux.
+
+Other features are available from Space, including Music, Drawing and Image, 2D and 3D Design, Circuit Design, Map Editor, Chemistry, and Biology. In Notes, choose New or Import, then Meeting Notes, to access recording, transcripts, and playback. Cloud transcription requires a configured provider.
+
+The app supports iPad, iPhone, and the inner and outer layouts of iPhone Duo.
