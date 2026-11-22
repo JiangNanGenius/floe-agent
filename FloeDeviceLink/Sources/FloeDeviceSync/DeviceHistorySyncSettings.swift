@@ -13,7 +13,9 @@ public struct DeviceHistorySyncSettings: View {
     @State private var relayAddress = ""
     @State private var relayError = false
     @State private var proposed: DeviceHistoryPairingTicket?
+    #if os(macOS)
     @State private var selectedPeer: DeviceHistoryPeer?
+    #endif
 
     public init(center: DeviceHistorySyncCenter, showsEnableControl: Bool = true) {
         self.center = center
@@ -21,6 +23,18 @@ public struct DeviceHistorySyncSettings: View {
     }
 
     public var body: some View {
+        #if os(macOS)
+        pairingForm.sheet(item: $selectedPeer) { peer in
+            DeviceHistoryPeerSettings(center: center, peerID: peer.id, title: peer.name)
+        }
+        #else
+        pairingForm.navigationDestination(for: DeviceHistoryPeerRoute.self) { peer in
+            DeviceHistoryPeerSettings(center: center, peerID: peer.id, title: peer.name)
+        }
+        #endif
+    }
+
+    private var pairingForm: some View {
         Form {
             if showsEnableControl {
                 Section {
@@ -56,14 +70,17 @@ public struct DeviceHistorySyncSettings: View {
 
                 Section(label("已配对设备", "Paired Devices")) {
                     ForEach(center.peers) { peer in
+                        #if os(macOS)
                         Button {
                             selectedPeer = peer
                         } label: {
-                            LabeledContent(peer.name) {
-                                Text(label("已共享 \(peer.sharedConversations.count) 个会话",
-                                           "\(peer.sharedConversations.count) conversations shared"))
-                            }
+                            peerLabel(peer)
                         }
+                        #else
+                        NavigationLink(value: DeviceHistoryPeerRoute(id: peer.id, name: peer.name)) {
+                            peerLabel(peer)
+                        }
+                        #endif
                     }
                     Button(label("添加设备", "Add Device"), systemImage: "plus") {
                         peerName = ""
@@ -112,8 +129,12 @@ public struct DeviceHistorySyncSettings: View {
         .alert(label("请输入有效的 HTTPS 中继地址。", "Enter a valid HTTPS relay address."), isPresented: $relayError) {
             Button(label("好", "OK")) {}
         }
-        .sheet(item: $selectedPeer) { peer in
-            DeviceHistoryPeerSettings(center: center, peerID: peer.id, title: peer.name)
+    }
+
+    private func peerLabel(_ peer: DeviceHistoryPeer) -> some View {
+        LabeledContent(peer.name) {
+            Text(label("已共享 \(peer.sharedConversations.count) 个会话",
+                       "\(peer.sharedConversations.count) conversations shared"))
         }
     }
 
@@ -174,6 +195,11 @@ public struct DeviceHistorySyncSettings: View {
     }
 }
 
+private struct DeviceHistoryPeerRoute: Hashable {
+    let id: String
+    let name: String
+}
+
 private struct DeviceHistoryPeerSettings: View {
     @ObservedObject var center: DeviceHistorySyncCenter
     let peerID: String
@@ -184,66 +210,74 @@ private struct DeviceHistoryPeerSettings: View {
     @State private var confirmsRemoval = false
 
     var body: some View {
+        #if os(macOS)
         NavigationStack {
-            Form {
-                Section(label("共享给这台设备", "Share With This Device")) {
-                    ForEach(local) { task in
-                        Toggle(task.title, isOn: Binding(get: {
-                            center.peers.first(where: { $0.id == peerID })?.sharedConversations.contains(task.id) == true
-                        }, set: { enabled in
-                            Task { await center.share(task.id, with: peerID, enabled: enabled) }
-                        }))
-                        .disabled(center.busy)
+            details
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(label("完成", "Done")) { dismiss() }
                     }
-                    if local.isEmpty { Text(label("当前没有可共享的会话。", "No conversations to share.")).foregroundStyle(.secondary) }
                 }
-                Section(label("对方共享的会话", "Shared by This Device")) {
-                    Button(label("获取会话列表", "Get Conversation List"), systemImage: "arrow.clockwise") {
-                        Task { remote = await center.remoteConversations(from: peerID) }
-                    }.disabled(center.busy)
-                    if let remote {
-                        ForEach(remote) { task in
-                            LabeledContent(task.title) {
-                                Button(label("同步", "Sync")) {
-                                    Task { await center.receive(task.id, from: peerID) }
-                                }.disabled(center.busy)
-                            }
+        }
+        .frame(width: 565, height: 570)
+        #else
+        details
+        #endif
+    }
+
+    private var details: some View {
+        Form {
+            Section(label("对方共享的会话", "Shared by This Device")) {
+                Button(label("获取会话列表", "Get Conversation List"), systemImage: "arrow.clockwise") {
+                    Task { remote = await center.remoteConversations(from: peerID) }
+                }
+                .accessibilityIdentifier("deviceHistorySync.getConversations")
+                .disabled(center.busy)
+                if let remote {
+                    ForEach(remote) { task in
+                        LabeledContent(task.title) {
+                            Button(label("同步", "Sync")) {
+                                Task { await center.receive(task.id, from: peerID) }
+                            }.disabled(center.busy)
                         }
-                        if remote.isEmpty { Text(label("对方暂无共享会话。", "The other device hasn’t shared any conversations.")).foregroundStyle(.secondary) }
                     }
-                    if center.busy { ProgressView() }
-                    if case .received(let count) = center.status {
-                        Text(label("已同步 \(count) 条新消息。", "Synced \(count) new messages.")).foregroundStyle(.secondary)
-                    } else if center.status == .transferFailed {
-                        Text(label("同步失败，请检查对端状态。", "Sync failed. Check the other device.")).foregroundStyle(.secondary)
-                    } else if center.status == .conflict {
-                        Text(label("发现消息冲突，双方记录已保留。", "A message conflict was found. Both copies were preserved.")).foregroundStyle(.secondary)
-                    } else if center.status == .incompatibleVersion {
-                        Text(label("两台设备的同步版本不兼容。", "These devices use incompatible sync versions.")).foregroundStyle(.secondary)
-                    }
+                    if remote.isEmpty { Text(label("对方暂无共享会话。", "The other device hasn’t shared any conversations.")).foregroundStyle(.secondary) }
                 }
-                Section {
-                    Button(label("解除配对", "Unpair"), role: .destructive) { confirmsRemoval = true }
-                        .disabled(center.busy)
+                if center.busy { ProgressView() }
+                if case .received(let count) = center.status {
+                    Text(label("已同步 \(count) 条新消息。", "Synced \(count) new messages.")).foregroundStyle(.secondary)
+                } else if center.status == .transferFailed {
+                    Text(label("同步失败，请检查对端状态。", "Sync failed. Check the other device.")).foregroundStyle(.secondary)
+                } else if center.status == .conflict {
+                    Text(label("发现消息冲突，双方记录已保留。", "A message conflict was found. Both copies were preserved.")).foregroundStyle(.secondary)
+                } else if center.status == .incompatibleVersion {
+                    Text(label("两台设备的同步版本不兼容。", "These devices use incompatible sync versions.")).foregroundStyle(.secondary)
                 }
             }
-            .formStyle(.grouped)
-            .navigationTitle(title)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(label("完成", "Done")) { dismiss() }
+            Section(label("共享给这台设备", "Share With This Device")) {
+                ForEach(local) { task in
+                    Toggle(task.title, isOn: Binding(get: {
+                        center.peers.first(where: { $0.id == peerID })?.sharedConversations.contains(task.id) == true
+                    }, set: { enabled in
+                        Task { await center.share(task.id, with: peerID, enabled: enabled) }
+                    }))
+                    .disabled(center.busy)
                 }
+                if local.isEmpty { Text(label("当前没有可共享的会话。", "No conversations to share.")).foregroundStyle(.secondary) }
             }
-            .task { local = await center.localConversations() }
-            .confirmationDialog(label("解除与此设备的配对？", "Unpair This Device?"), isPresented: $confirmsRemoval) {
-                Button(label("解除配对", "Unpair"), role: .destructive) {
-                    Task { await center.remove(peerID); dismiss() }
-                }
+            Section {
+                Button(label("解除配对", "Unpair"), role: .destructive) { confirmsRemoval = true }
+                    .disabled(center.busy)
             }
         }
-        #if os(macOS)
-        .frame(width: 565, height: 570)
-        #endif
+        .formStyle(.grouped)
+        .navigationTitle(title)
+        .task { local = await center.localConversations() }
+        .confirmationDialog(label("解除与此设备的配对？", "Unpair This Device?"), isPresented: $confirmsRemoval) {
+            Button(label("解除配对", "Unpair"), role: .destructive) {
+                Task { await center.remove(peerID); dismiss() }
+            }
+        }
     }
 }
 
