@@ -62,12 +62,17 @@ internal const val MEETING_MAX_NOTES_CHARS = 1_000_000
 internal const val MEETING_MAX_TITLE_CHARS = 120
 internal const val MEETING_MAX_NAME_CHARS = 120
 internal const val MEETING_MAX_IMPORT_BYTES = 2L * 1024L * 1024L * 1024L
-internal const val MEETING_RECORDING_EXTENSION = "m4a"
 internal const val MEETING_RECORDING_MIME = "audio/mp4"
 internal const val MEETING_MAX_TRANSCRIPT_SEGMENTS = 2_000
 internal const val MEETING_MAX_TRANSCRIPT_TEXT_CHARS = 2_000
 internal const val MEETING_MAX_TRANSCRIPT_MILLIS = 12L * 60L * 60L * 1_000L
 internal const val MEETING_SNAPSHOTS_DIR = ".transcription"
+internal const val MEETING_LIVE_DIR = ".live"
+internal const val MEETING_LIVE_META_FILE = "live.json"
+internal const val MEETING_LIVE_SCHEMA_VERSION = 1
+internal const val MEETING_MAX_LIVE_META_BYTES = 8L * 1024L * 1024L
+internal const val MEETING_MAX_LIVE_FRAGMENTS = 4_000
+internal const val MEETING_RECORDING_WAV_MIME = "audio/wav"
 internal const val MEETING_SNAPSHOT_META_FILE = "snapshot.json"
 internal const val MEETING_SNAPSHOT_AUDIO_FILE = "source.audio"
 internal const val MEETING_MAX_SNAPSHOT_BYTES = MEETING_MAX_IMPORT_BYTES
@@ -212,6 +217,65 @@ internal data class StoredImport(
     val extension: String,
     val kind: MeetingMaterialKind,
 )
+
+/** One finalized local fragment queued for live cloud transcription. */
+internal data class MeetingLiveFragment(
+    val index: Int,
+    val fileName: String,
+    val startMillis: Long,
+    val durationMillis: Long,
+    val sampleRate: Int,
+    val channels: Int,
+    val sizeBytes: Long,
+) {
+    val endMillis: Long get() = startMillis + durationMillis
+}
+
+internal data class StoredLiveFragment(
+    val index: Int,
+    val fileName: String,
+    val startMillis: Long,
+    val durationMillis: Long,
+    val sampleRate: Int,
+    val channels: Int,
+    val sizeBytes: Long,
+    val state: String,
+    val segments: List<StoredTranscriptSegment>,
+    val failureCode: String?,
+    val failureReason: String?,
+    val retryable: Boolean,
+    val attempts: Int,
+    val updatedAtMillis: Long,
+)
+
+internal data class StoredLiveTranscription(
+    val schemaVersion: Int,
+    val meetingId: String,
+    val recordingId: String,
+    val sessionId: String,
+    val baseTranscriptionRevision: Long,
+    val language: String?,
+    val state: String,
+    val failureCode: String?,
+    val failureReason: String?,
+    val createdAtMillis: Long,
+    val updatedAtMillis: Long,
+    val fragments: List<StoredLiveFragment>,
+)
+
+/** One live session's manifest plus its trusted fragment directory. */
+internal data class MeetingLiveSession(
+    val transcript: MeetingLiveTranscript,
+    val directory: File,
+    val chunkSeconds: Int,
+    val recordingActive: Boolean,
+    val recordingCompleted: Boolean,
+)
+
+internal sealed interface MeetingLivePromotion {
+    data class Promoted(val receipt: MeetingTranscriptionReceipt) : MeetingLivePromotion
+    data object NoSpeech : MeetingLivePromotion
+}
 
 /** Verified playable source for one meeting transcription attempt. */
 internal data class MeetingTranscriptionSource(
@@ -410,7 +474,12 @@ internal class MeetingRepository(
             val id = MeetingIds.require(meetingId)
             val materialId = MeetingIds.require(recordingId)
             val dir = existingMeetingDirLocked(id)
-            recordingFileLocked(dir, materialId, final)
+            val stored = readMeetingLocked(dir, id)
+            val extension = stored.recordings
+                .firstOrNull { it.id == materialId }
+                ?.let { recordingExtension(it.mimeType) }
+                ?: "m4a"
+            recordingFileLocked(dir, materialId, final, extension)
         }
 
     suspend fun importDirectory(meetingId: String): File = mutex.withLock {
@@ -421,6 +490,7 @@ internal class MeetingRepository(
     suspend fun createRecordingDraft(
         meetingId: String,
         displayName: String,
+        liveAudio: Boolean = false,
         now: Long = clock(),
     ): StoredRecording = mutex.withLock {
         val id = MeetingIds.require(meetingId)
@@ -437,7 +507,7 @@ internal class MeetingRepository(
             durationMillis = 0L,
             sizeBytes = 0L,
             state = RECORDING_STARTING,
-            mimeType = MEETING_RECORDING_MIME,
+            mimeType = if (liveAudio) MEETING_RECORDING_WAV_MIME else MEETING_RECORDING_MIME,
             incompleteReason = null,
         )
         val updated = stored.copy(
@@ -498,8 +568,18 @@ internal class MeetingRepository(
         if (stored.recordings[index].state == RECORDING_COMPLETED) {
             return@withLock stored.recordings[index]
         }
-        val part = recordingFileLocked(dir, materialId, final = false)
-        val final = recordingFileLocked(dir, materialId, final = true)
+        val part = recordingFileLocked(
+            dir,
+            materialId,
+            final = false,
+            recordingExtension(stored.recordings[index].mimeType),
+        )
+        val final = recordingFileLocked(
+            dir,
+            materialId,
+            final = true,
+            recordingExtension(stored.recordings[index].mimeType),
+        )
         val existing = when {
             final.isFile && final.length() > 0 -> final
             part.isFile && part.length() > 0 -> part
@@ -541,7 +621,8 @@ internal class MeetingRepository(
             val materialId = MeetingIds.require(recordingId)
             val dir = existingMeetingDirLocked(id)
             val stored = readMeetingLocked(dir, id)
-            if (stored.recordings.none { it.id == materialId }) throw notFound(materialId)
+            val recording = stored.recordings.firstOrNull { it.id == materialId }
+                ?: throw notFound(materialId)
             if (activeSnapshots.values.any { it.meetingId == id && it.materialId == materialId }) {
                 throw meetingError(
                     MeetingErrorCode.CONFLICT,
@@ -556,8 +637,10 @@ internal class MeetingRepository(
                 revision = stored.revision + 1,
             )
             writeMeetingLocked(dir, updated)
-            runCatching { recordingFileLocked(dir, materialId, final = false).delete() }
-            runCatching { recordingFileLocked(dir, materialId, final = true).delete() }
+            val extension = recordingExtension(recording.mimeType)
+            runCatching { recordingFileLocked(dir, materialId, final = false, extension).delete() }
+            runCatching { recordingFileLocked(dir, materialId, final = true, extension).delete() }
+            runCatching { deleteLiveDirectoryLocked(dir, materialId) }
             refreshLocked()
             true
         }
@@ -606,7 +689,12 @@ internal class MeetingRepository(
                     detail = recording.incompleteReason,
                 )
             }
-            val file = recordingFileLocked(dir, materialId, final = true)
+            val file = recordingFileLocked(
+                dir,
+                materialId,
+                final = true,
+                recordingExtension(recording.mimeType),
+            )
             return ResolvedMaterial(material, file)
         }
         val imported = stored.imports.firstOrNull { it.id == materialId }
@@ -1044,6 +1132,1013 @@ internal class MeetingRepository(
         )
         refreshLocked()
     }
+
+    // ------------------------------------------------------------------
+    // While-recording live cloud transcription
+    // ------------------------------------------------------------------
+
+    /**
+     * Reads the newest durable live-transcript manifest for one meeting. A
+     * manifest whose recording no longer exists is ignored; it is never
+     * projected as a transcript for another take.
+     */
+    suspend fun liveTranscription(
+        meetingId: String,
+        recordingId: String? = null,
+    ): MeetingLiveTranscript? = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        if (recordingId != null) {
+            val key = MeetingIds.require(recordingId)
+            return@withLock readLiveTranscriptionLocked(dir, stored, key)
+        }
+        val root = existingLiveRootLocked(dir) ?: return@withLock null
+        val candidates = (root.listFiles() ?: emptyArray())
+            .asSequence()
+            .filter { it.isDirectory && MeetingIds.isValid(it.name) }
+            .filter { child -> !Files.isSymbolicLink(child.toPath()) }
+            .sortedByDescending { it.lastModified() }
+        for (child in candidates) {
+            val live = readLiveTranscriptionLocked(dir, stored, child.name) ?: continue
+            return@withLock live
+        }
+        null
+    }
+
+    /**
+     * Creates or reattaches the durable live manifest for one take. A new
+     * [sessionId] fences late results from an earlier process/session while
+     * preserving already-confirmed fragments and their real text.
+     */
+    internal suspend fun beginLiveTranscription(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+        chunkSeconds: Int,
+        now: Long = clock(),
+    ): MeetingLiveSession = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        require(chunkSeconds in MIN_LIVE_CHUNK_SECONDS..MAX_LIVE_CHUNK_SECONDS) {
+            "invalidLiveChunkSeconds"
+        }
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: throw notFound(materialId)
+        if (recording.state !in setOf(RECORDING_STARTING, RECORDING_ACTIVE, RECORDING_PAUSED)) {
+            throw meetingError(
+                MeetingErrorCode.INVALID_INPUT,
+                "Live transcription can only start with an active recording.",
+                detail = recording.state,
+            )
+        }
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = true)
+        val existing = readLiveManifestLocked(liveDir, id, materialId)
+        val baseRevision = existing?.baseTranscriptionRevision ?: stored.transcription.revision
+        val fragments = existing?.fragments ?: emptyList()
+        val next = StoredLiveTranscription(
+            schemaVersion = MEETING_LIVE_SCHEMA_VERSION,
+            meetingId = id,
+            recordingId = materialId,
+            sessionId = session,
+            baseTranscriptionRevision = baseRevision,
+            language = existing?.language,
+            state = LIVE_RECORDING,
+            failureCode = null,
+            failureReason = null,
+            createdAtMillis = existing?.createdAtMillis ?: now,
+            updatedAtMillis = now,
+            fragments = fragments,
+        )
+        writeLiveManifestLocked(liveDir, next)
+        MeetingLiveSession(
+            transcript = toPublicLive(next, recordingState = recording.state),
+            directory = liveDir,
+            chunkSeconds = chunkSeconds,
+            recordingActive = true,
+            recordingCompleted = false,
+        )
+    }
+
+    /**
+     * Appends one finalized local fragment. The fragment file must already be
+     * closed under [liveDirectory] and match the supplied measured timing.
+     * Repeating the same index is idempotent; a conflicting reuse is refused.
+     */
+    internal suspend fun appendLiveFragment(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+        fragment: MeetingLiveFragment,
+        now: Long = clock(),
+    ): MeetingLiveTranscript = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: throw notFound(materialId)
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId)
+            ?: throw meetingError(
+                MeetingErrorCode.NOT_FOUND,
+                "Live transcription is not prepared for this recording.",
+            )
+        if (live.sessionId != session) throw liveSessionChanged()
+        if (live.state == LIVE_CANCELLED || live.state == LIVE_COMPLETED) {
+            throw meetingError(
+                MeetingErrorCode.CONFLICT,
+                "Live transcription is not accepting fragments.",
+                retryable = false,
+                detail = live.state,
+            )
+        }
+        validateLiveFragment(liveDir, live, fragment)
+        val previous = live.fragments.firstOrNull { it.index == fragment.index }
+        if (previous != null) {
+            if (previous.fileName != fragment.fileName ||
+                previous.startMillis != fragment.startMillis ||
+                previous.durationMillis != fragment.durationMillis ||
+                previous.sizeBytes != fragment.sizeBytes
+            ) {
+                throw meetingError(
+                    MeetingErrorCode.CONFLICT,
+                    "A different live fragment already uses this index.",
+                    retryable = false,
+                    detail = "fragmentIndex",
+                )
+            }
+            return@withLock toPublicLive(live, recording.state)
+        }
+        if (live.fragments.size >= MEETING_MAX_LIVE_FRAGMENTS) {
+            throw meetingError(
+                MeetingErrorCode.TOO_LARGE,
+                "The live transcript has too many fragments.",
+                retryable = false,
+                detail = "liveFragments",
+            )
+        }
+        val entry = StoredLiveFragment(
+            index = fragment.index,
+            fileName = fragment.fileName,
+            startMillis = fragment.startMillis,
+            durationMillis = fragment.durationMillis,
+            sampleRate = fragment.sampleRate,
+            channels = fragment.channels,
+            sizeBytes = fragment.sizeBytes,
+            state = LIVE_FRAGMENT_PENDING,
+            segments = emptyList(),
+            failureCode = null,
+            failureReason = null,
+            retryable = false,
+            attempts = 0,
+            updatedAtMillis = now,
+        )
+        val updated = live.copy(
+            fragments = (live.fragments + entry).sortedBy { it.index },
+            state = if (live.state == LIVE_INTERRUPTED) LIVE_RECORDING else live.state,
+            updatedAtMillis = now,
+        )
+        writeLiveManifestLocked(liveDir, updated)
+        toPublicLive(updated, recording.state)
+    }
+
+    /** Confirms one fragment with real provider-timed segments (or none). */
+    internal suspend fun confirmLiveFragment(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+        fragmentIndex: Int,
+        segments: List<StoredTranscriptSegment>,
+        language: String?,
+        now: Long = clock(),
+    ): MeetingLiveTranscript = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: throw notFound(materialId)
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId)
+            ?: throw meetingError(MeetingErrorCode.NOT_FOUND, "Live transcription is not prepared.")
+        if (live.sessionId != session) throw liveSessionChanged()
+        if (live.state == LIVE_CANCELLED || live.state == LIVE_COMPLETED) {
+            throw meetingError(
+                MeetingErrorCode.CONFLICT,
+                "Live transcription is not accepting results.",
+                retryable = false,
+                detail = live.state,
+            )
+        }
+        val index = live.fragments.indexOfFirst { it.index == fragmentIndex }
+        if (index < 0) throw notFound("liveFragment:$fragmentIndex")
+        val current = live.fragments[index]
+        if (current.state == LIVE_FRAGMENT_CONFIRMED) {
+            return@withLock toPublicLive(live, recording.state)
+        }
+        val clean = normalizedTranscriptSegments(segments)
+        val confirmedSegments = live.fragments
+            .asSequence()
+            .filter { it.state == LIVE_FRAGMENT_CONFIRMED }
+            .sumOf { it.segments.size }
+        if (confirmedSegments + clean.size > MEETING_MAX_TRANSCRIPT_SEGMENTS) {
+            throw meetingError(
+                MeetingErrorCode.TOO_LARGE,
+                "The live transcript is too long.",
+                detail = "liveTranscriptSegments",
+            )
+        }
+        val fragments = live.fragments.toMutableList()
+        fragments[index] = current.copy(
+            state = LIVE_FRAGMENT_CONFIRMED,
+            segments = clean,
+            failureCode = null,
+            failureReason = null,
+            retryable = false,
+            attempts = current.attempts + 1,
+            updatedAtMillis = now,
+        )
+        val updated = live.copy(
+            fragments = fragments,
+            language = language?.trim()?.takeIf { it.isNotEmpty() }?.take(40) ?: live.language,
+            updatedAtMillis = now,
+        )
+        writeLiveManifestLocked(liveDir, updated)
+        toPublicLive(updated, recording.state)
+    }
+
+    internal suspend fun failLiveFragment(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+        fragmentIndex: Int,
+        failureCode: String?,
+        failureReason: String?,
+        retryable: Boolean,
+        now: Long = clock(),
+    ): MeetingLiveTranscript = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: throw notFound(materialId)
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId)
+            ?: throw meetingError(MeetingErrorCode.NOT_FOUND, "Live transcription is not prepared.")
+        if (live.sessionId != session) throw liveSessionChanged()
+        if (live.state == LIVE_CANCELLED || live.state == LIVE_COMPLETED) {
+            return@withLock toPublicLive(live, recording.state)
+        }
+        val index = live.fragments.indexOfFirst { it.index == fragmentIndex }
+        if (index < 0) throw notFound("liveFragment:$fragmentIndex")
+        val current = live.fragments[index]
+        if (current.state == LIVE_FRAGMENT_CONFIRMED) {
+            return@withLock toPublicLive(live, recording.state)
+        }
+        val fragments = live.fragments.toMutableList()
+        fragments[index] = current.copy(
+            state = LIVE_FRAGMENT_FAILED,
+            failureCode = failureCode?.take(64),
+            failureReason = failureReason?.take(160),
+            retryable = retryable,
+            attempts = current.attempts + 1,
+            updatedAtMillis = now,
+        )
+        val updated = live.copy(
+            state = LIVE_FAILED,
+            fragments = fragments,
+            failureCode = fragments[index].failureCode,
+            failureReason = fragments[index].failureReason,
+            updatedAtMillis = now,
+        )
+        writeLiveManifestLocked(liveDir, updated)
+        toPublicLive(updated, recording.state)
+    }
+
+    internal suspend fun setLiveTranscriptionState(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+        phase: MeetingLiveTranscriptPhase,
+        failureCode: String? = null,
+        failureReason: String? = null,
+        now: Long = clock(),
+    ): MeetingLiveTranscript = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: throw notFound(materialId)
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId)
+            ?: throw meetingError(MeetingErrorCode.NOT_FOUND, "Live transcription is not prepared.")
+        if (live.sessionId != session) throw liveSessionChanged()
+        val state = liveStateName(phase)
+        if (live.state == state && live.failureCode == failureCode &&
+            live.failureReason == failureReason
+        ) {
+            return@withLock toPublicLive(live, recording.state)
+        }
+        if (live.state in setOf(LIVE_CANCELLED, LIVE_COMPLETED)) {
+            return@withLock toPublicLive(live, recording.state)
+        }
+        val updated = live.copy(
+            state = state,
+            failureCode = failureCode?.take(64),
+            failureReason = failureReason?.take(160),
+            updatedAtMillis = now,
+        )
+        writeLiveManifestLocked(liveDir, updated)
+        toPublicLive(updated, recording.state)
+    }
+
+    /**
+     * Reconciles capture-written fragment sidecars after a process death.
+     * Missing sidecars are not invented: a fragment without measured timing
+     * cannot be aligned and is left out of the cloud queue.
+     */
+    internal suspend fun reconcileLiveTranscription(
+        meetingId: String,
+        recordingId: String,
+        now: Long = clock(),
+    ): MeetingLiveTranscript? = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: return@withLock null
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId) ?: return@withLock null
+        val known = live.fragments.map { it.index }.toHashSet()
+        val additions = ArrayList<StoredLiveFragment>()
+        (liveDir.listFiles() ?: emptyArray()).forEach { file ->
+            if (!file.isFile || Files.isSymbolicLink(file.toPath())) return@forEach
+            if (!LIVE_FRAGMENT_SIDECAR_PATTERN.matches(file.name)) return@forEach
+            val sidecar = runCatching { readMeetingLiveFragmentSidecar(file) }.getOrNull()
+                ?: return@forEach
+            if (sidecar.index >= MEETING_MAX_LIVE_FRAGMENTS) return@forEach
+            val wav = File(liveDir, sidecar.fileName)
+            val existing = live.fragments.firstOrNull { it.index == sidecar.index }
+            if (existing != null) {
+                if (existing.state == LIVE_FRAGMENT_CONFIRMED) {
+                    // The durable text is already committed; never resend or
+                    // retain the confirmed audio again.
+                    runCatching { wav.delete() }
+                    runCatching { file.delete() }
+                }
+                return@forEach
+            }
+            if (!wav.isFile || Files.isSymbolicLink(wav.toPath()) ||
+                wav.length() != sidecar.sizeBytes || wav.length() <= 44L
+            ) {
+                return@forEach
+            }
+            try {
+                validateLiveFragment(liveDir, live, sidecar)
+            } catch (_: Exception) {
+                return@forEach
+            }
+            known += sidecar.index
+            additions += StoredLiveFragment(
+                index = sidecar.index,
+                fileName = sidecar.fileName,
+                startMillis = sidecar.startMillis,
+                durationMillis = sidecar.durationMillis,
+                sampleRate = sidecar.sampleRate,
+                channels = sidecar.channels,
+                sizeBytes = sidecar.sizeBytes,
+                state = LIVE_FRAGMENT_PENDING,
+                segments = emptyList(),
+                failureCode = null,
+                failureReason = null,
+                retryable = false,
+                attempts = 0,
+                updatedAtMillis = now,
+            )
+        }
+        var updated = live
+        if (additions.isNotEmpty()) {
+            updated = live.copy(
+                fragments = (live.fragments + additions).sortedBy { it.index },
+                updatedAtMillis = now,
+            )
+        }
+        val missing = updated.fragments.map { entry ->
+            if (entry.state == LIVE_FRAGMENT_CONFIRMED) return@map entry
+            val file = File(liveDir, entry.fileName)
+            if (file.isFile && !Files.isSymbolicLink(file.toPath())) return@map entry
+            entry.copy(
+                state = LIVE_FRAGMENT_FAILED,
+                failureCode = "SOURCE_UNAVAILABLE",
+                failureReason = "fragmentMissing",
+                retryable = false,
+                updatedAtMillis = now,
+            )
+        }
+        if (missing != updated.fragments) updated = updated.copy(fragments = missing)
+        if (updated != live) writeLiveManifestLocked(liveDir, updated)
+        toPublicLive(updated, recording.state)
+    }
+
+    /**
+     * Reattaches an explicit retry to the existing manifest under a fresh
+     * session id. Confirmed fragments and their text are preserved; only
+     * failed fragments whose real audio file still exists become pending.
+     * This is never called automatically after a process restart.
+     */
+    internal suspend fun retryLiveTranscription(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+        chunkSeconds: Int,
+        now: Long = clock(),
+    ): MeetingLiveSession? = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        require(chunkSeconds in MIN_LIVE_CHUNK_SECONDS..MAX_LIVE_CHUNK_SECONDS) {
+            "invalidLiveChunkSeconds"
+        }
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: return@withLock null
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId) ?: return@withLock null
+        if (live.state == LIVE_COMPLETED) return@withLock null
+        val fragments = live.fragments.map { fragment ->
+            if (fragment.state != LIVE_FRAGMENT_FAILED ||
+                !File(liveDir, fragment.fileName).isFile
+            ) {
+                fragment
+            } else {
+                fragment.copy(
+                    state = LIVE_FRAGMENT_PENDING,
+                    failureCode = null,
+                    failureReason = null,
+                    updatedAtMillis = now,
+                )
+            }
+        }
+        val recordingActive = recording.state in ACTIVE_RECORDING_STATES
+        val next = live.copy(
+            sessionId = session,
+            state = if (recordingActive) LIVE_RECORDING else LIVE_DRAINING,
+            failureCode = null,
+            failureReason = null,
+            updatedAtMillis = now,
+            fragments = fragments,
+        )
+        writeLiveManifestLocked(liveDir, next)
+        MeetingLiveSession(
+            transcript = toPublicLive(next, recording.state),
+            directory = liveDir,
+            chunkSeconds = chunkSeconds,
+            recordingActive = recordingActive,
+            recordingCompleted = recording.state == RECORDING_COMPLETED,
+        )
+    }
+
+    /** Lowest ordered pending fragment for one live session. */
+    internal suspend fun nextPendingLiveFragment(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+    ): MeetingLiveFragment? = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        val dir = existingMeetingDirLocked(id)
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId) ?: return@withLock null
+        if (live.sessionId != session) throw liveSessionChanged()
+        val fragment = live.fragments
+            .asSequence()
+            .filter { it.state == LIVE_FRAGMENT_PENDING }
+            .sortedBy { it.index }
+            .firstOrNull() ?: return@withLock null
+        MeetingLiveFragment(
+            index = fragment.index,
+            fileName = fragment.fileName,
+            startMillis = fragment.startMillis,
+            durationMillis = fragment.durationMillis,
+            sampleRate = fragment.sampleRate,
+            channels = fragment.channels,
+            sizeBytes = fragment.sizeBytes,
+        )
+    }
+
+    internal suspend fun deleteLiveTranscription(
+        meetingId: String,
+        recordingId: String,
+    ) = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val dir = existingMeetingDirLocked(id)
+        runCatching { deleteLiveDirectoryLocked(dir, materialId) }
+    }
+
+    /**
+     * Atomically promotes every confirmed live fragment into the canonical
+     * meeting transcript. The canonical revision is a compare-and-swap: a
+     * transcript edited elsewhere is never overwritten and the live manifest
+     * is retained for an explicit retry. A recording that is not finalized
+     * and playable is never presented as a committed source.
+     */
+    internal suspend fun promoteLiveTranscription(
+        meetingId: String,
+        recordingId: String,
+        sessionId: String,
+        now: Long = clock(),
+    ): MeetingLivePromotion = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val materialId = MeetingIds.require(recordingId)
+        val session = MeetingIds.require(sessionId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val recording = stored.recordings.firstOrNull { it.id == materialId }
+            ?: throw notFound(materialId)
+        val extension = recordingExtension(recording.mimeType)
+        val finalFile = recordingFileLocked(dir, materialId, final = true, extension)
+        val liveDir = liveRecordingDirLocked(dir, materialId, create = false)
+        val live = readLiveManifestLocked(liveDir, id, materialId)
+            ?: throw meetingError(MeetingErrorCode.NOT_FOUND, "Live transcription is not prepared.")
+        if (live.sessionId != session) throw liveSessionChanged()
+        if (live.fragments.any {
+                it.state == LIVE_FRAGMENT_PENDING || it.state == LIVE_FRAGMENT_FAILED
+            }
+        ) {
+            throw meetingError(
+                MeetingErrorCode.CONFLICT,
+                "Unconfirmed live fragments remain.",
+                retryable = true,
+                detail = "liveFragmentsUnconfirmed",
+            )
+        }
+        if (recording.state != RECORDING_COMPLETED || recording.incompleteReason != null ||
+            !finalFile.isFile || finalFile.length() <= 0L
+        ) {
+            throw meetingError(
+                MeetingErrorCode.SOURCE_UNAVAILABLE,
+                "The recording is not finalized.",
+                retryable = true,
+                detail = recording.incompleteReason ?: recording.state,
+            )
+        }
+        val seen = HashSet<String>()
+        val deduplicated = live.fragments
+            .sortedBy { it.index }
+            .flatMap { it.segments }
+            .filter { segment ->
+                seen.add(
+                    "${segment.startMillis}|${segment.endMillis}|${segment.text}|${segment.speaker}",
+                )
+            }
+        val segments = normalizedTranscriptSegments(deduplicated)
+        if (segments.isEmpty()) {
+            markLiveCompletedLocked(liveDir, live, now)
+            runCatching { deleteLiveDirectoryLocked(dir, materialId) }
+            return@withLock MeetingLivePromotion.NoSpeech
+        }
+        val existing = stored.transcription
+        if (existing.revision != live.baseTranscriptionRevision) {
+            if (existing.materialId == materialId &&
+                sameTranscriptSegments(existing.segments, segments)
+            ) {
+                markLiveCompletedLocked(liveDir, live, now)
+                runCatching { deleteLiveDirectoryLocked(dir, materialId) }
+                return@withLock MeetingLivePromotion.Promoted(
+                    MeetingTranscriptionReceipt(
+                        meetingId = id,
+                        materialId = materialId,
+                        transcriptionRevision = existing.revision,
+                        segmentCount = existing.segments.size,
+                        updatedAtMillis = existing.updatedAtMillis ?: now,
+                        idempotent = true,
+                    ),
+                )
+            }
+            throw meetingError(
+                MeetingErrorCode.CONFLICT,
+                "The transcript changed in another edit.",
+                retryable = true,
+                detail = "expected=${live.baseTranscriptionRevision} actual=${existing.revision}",
+            )
+        }
+        if (existing.materialId == materialId &&
+            sameTranscriptSegments(existing.segments, segments)
+        ) {
+            markLiveCompletedLocked(liveDir, live, now)
+            runCatching { deleteLiveDirectoryLocked(dir, materialId) }
+            return@withLock MeetingLivePromotion.Promoted(
+                MeetingTranscriptionReceipt(
+                    meetingId = id,
+                    materialId = materialId,
+                    transcriptionRevision = existing.revision,
+                    segmentCount = existing.segments.size,
+                    updatedAtMillis = existing.updatedAtMillis ?: now,
+                    idempotent = true,
+                ),
+            )
+        }
+        val committedAt = maxOf(now, existing.updatedAtMillis ?: now)
+        val transcription = StoredTranscription(
+            schemaVersion = existing.schemaVersion.coerceIn(1, MEETING_SCHEMA_VERSION),
+            revision = existing.revision + 1L,
+            language = live.language?.take(40),
+            updatedAtMillis = committedAt,
+            materialId = materialId,
+            segments = segments,
+            lastAttempt = null,
+        )
+        writeMeetingLocked(
+            dir,
+            stored.copy(
+                transcription = transcription,
+                updatedAtMillis = maxOf(now, stored.updatedAtMillis),
+                revision = stored.revision + 1L,
+            ),
+        )
+        markLiveCompletedLocked(liveDir, live.copy(
+            baseTranscriptionRevision = existing.revision,
+        ), now)
+        runCatching { deleteLiveDirectoryLocked(dir, materialId) }
+        refreshLocked()
+        MeetingLivePromotion.Promoted(
+            MeetingTranscriptionReceipt(
+                meetingId = id,
+                materialId = materialId,
+                transcriptionRevision = transcription.revision,
+                segmentCount = segments.size,
+                updatedAtMillis = committedAt,
+                idempotent = false,
+            ),
+        )
+    }
+
+    private fun markLiveCompletedLocked(
+        liveDir: File,
+        live: StoredLiveTranscription,
+        now: Long,
+    ) {
+        runCatching {
+            writeLiveManifestLocked(
+                liveDir,
+                live.copy(state = LIVE_COMPLETED, updatedAtMillis = now),
+            )
+        }
+    }
+
+    private fun markLiveInterruptedLocked(meetingDir: File, recordingId: String, now: Long) {
+        val liveDir = liveRecordingDirLocked(meetingDir, recordingId, create = false)
+        if (!liveDir.isDirectory) return
+        val live = readLiveManifestLocked(liveDir, meetingDir.name, recordingId) ?: return
+        if (live.state != LIVE_RECORDING && live.state != LIVE_DRAINING) return
+        writeLiveManifestLocked(
+            liveDir,
+            live.copy(
+                state = LIVE_INTERRUPTED,
+                failureCode = "INTERRUPTED",
+                failureReason = "processInterrupted",
+                updatedAtMillis = now,
+            ),
+        )
+    }
+
+    private fun liveSessionChanged(): MeetingException = meetingError(
+        MeetingErrorCode.CONFLICT,
+        "The live transcription session changed.",
+        retryable = false,
+        detail = "liveSession",
+    )
+
+    private fun validateLiveFragment(
+        liveDir: File,
+        live: StoredLiveTranscription,
+        fragment: MeetingLiveFragment,
+    ) {
+        if (fragment.index !in 0 until MEETING_MAX_LIVE_FRAGMENTS) {
+            throw meetingError(
+                MeetingErrorCode.INVALID_INPUT,
+                "Invalid live fragment index.",
+                detail = fragment.index.toString(),
+            )
+        }
+        if (!LIVE_FRAGMENT_FILE_PATTERN.matches(fragment.fileName)) {
+            throw meetingError(
+                MeetingErrorCode.INVALID_INPUT,
+                "Invalid live fragment file.",
+                detail = fragment.fileName.take(80),
+            )
+        }
+        if (fragment.startMillis < 0L ||
+            fragment.durationMillis <= 0L ||
+            fragment.endMillis > MEETING_MAX_TRANSCRIPT_MILLIS
+        ) {
+            throw meetingError(
+                MeetingErrorCode.INVALID_INPUT,
+                "Invalid live fragment timing.",
+                detail = "fragmentTiming",
+            )
+        }
+        if (fragment.sampleRate !in 8_000..192_000 ||
+            fragment.channels !in 1..8
+        ) {
+            throw meetingError(
+                MeetingErrorCode.INVALID_INPUT,
+                "Invalid live fragment audio format.",
+                detail = "fragmentFormat",
+            )
+        }
+        val file = childFileLocked(liveDir, fragment.fileName, "liveFragment")
+        if (!file.isFile || Files.isSymbolicLink(file.toPath())) {
+            throw meetingError(
+                MeetingErrorCode.SOURCE_UNAVAILABLE,
+                "The live fragment file is unavailable.",
+                detail = fragment.fileName,
+            )
+        }
+        if (file.length() <= 44L || file.length() != fragment.sizeBytes) {
+            throw meetingError(
+                MeetingErrorCode.STORAGE_FAILURE,
+                "The live fragment file is incomplete.",
+                retryable = true,
+                detail = fragment.fileName,
+            )
+        }
+    }
+
+    private fun readLiveTranscriptionLocked(
+        meetingDir: File,
+        stored: StoredMeeting,
+        recordingId: String,
+    ): MeetingLiveTranscript? {
+        if (stored.recordings.none { it.id == recordingId }) return null
+        val recording = stored.recordings.firstOrNull { it.id == recordingId } ?: return null
+        val liveDir = liveRecordingDirLocked(meetingDir, recordingId, create = false)
+        val live = readLiveManifestLocked(liveDir, stored.id, recordingId) ?: return null
+        return toPublicLive(live, recording.state)
+    }
+
+    private fun readLiveManifestLocked(
+        liveDir: File,
+        expectedMeetingId: String,
+        expectedRecordingId: String,
+    ): StoredLiveTranscription? {
+        if (Files.isSymbolicLink(liveDir.toPath()) || !liveDir.isDirectory) return null
+        val file = File(liveDir, MEETING_LIVE_META_FILE)
+        if (Files.isSymbolicLink(file.toPath()) || !file.isFile) return null
+        if (file.length() <= 0L || file.length() > MEETING_MAX_LIVE_META_BYTES) return null
+        val obj = runCatching {
+            Json.parseToJsonElement(file.readText(Charsets.UTF_8)).jsonObject
+        }.getOrNull() ?: return null
+        return decodeLiveManifest(obj, expectedMeetingId, expectedRecordingId)
+    }
+
+    private fun writeLiveManifestLocked(liveDir: File, live: StoredLiveTranscription) {
+        val target = childFileLocked(liveDir, MEETING_LIVE_META_FILE, "liveMeta")
+        val temp = File(liveDir, "$MEETING_LIVE_META_FILE.tmp-${UUID.randomUUID()}")
+        try {
+            val bytes = encodeLiveManifest(live).toString().toByteArray(Charsets.UTF_8)
+            if (bytes.size > MEETING_MAX_LIVE_META_BYTES) {
+                throw meetingError(
+                    MeetingErrorCode.TOO_LARGE,
+                    "The live transcript is too large.",
+                    detail = "liveMeta",
+                )
+            }
+            FileOutputStream(temp).use { output ->
+                output.write(bytes)
+                output.fd.sync()
+            }
+            moveAtomically(temp, target)
+            fsyncDirectory(liveDir)
+        } catch (error: Exception) {
+            runCatching { temp.delete() }
+            if (error is MeetingException) throw error
+            throw storageFailure(error, "writeLive")
+        } finally {
+            if (temp.exists()) runCatching { temp.delete() }
+        }
+    }
+
+    private fun liveRootLocked(meetingDir: File, create: Boolean): File =
+        if (create) {
+            childDirectoryLocked(meetingDir, MEETING_LIVE_DIR, "liveRoot")
+        } else {
+            existingChildDirectoryLocked(meetingDir, MEETING_LIVE_DIR, "liveRoot")
+                ?: throw meetingError(MeetingErrorCode.NOT_FOUND, "Live transcription is not prepared.")
+        }
+
+    private fun existingLiveRootLocked(meetingDir: File): File? =
+        existingChildDirectoryLocked(meetingDir, MEETING_LIVE_DIR, "liveRoot")
+
+    private fun liveRecordingDirLocked(
+        meetingDir: File,
+        recordingId: String,
+        create: Boolean,
+    ): File {
+        val root = liveRootLocked(meetingDir, create = create)
+        if (create) return childDirectoryLocked(root, recordingId, "liveRecording")
+        existingChildDirectoryLocked(root, recordingId, "liveRecording")?.let { return it }
+        val unresolved = File(root, recordingId)
+        if (Files.isSymbolicLink(unresolved.toPath())) {
+            throw storageFailure(IOException("symlink"), "liveRecording")
+        }
+        return unresolved
+    }
+
+    private fun deleteLiveDirectoryLocked(meetingDir: File, recordingId: String) {
+        val root = existingLiveRootLocked(meetingDir) ?: return
+        val dir = existingChildDirectoryLocked(root, recordingId, "liveRecording") ?: return
+        deleteTreeNoFollow(dir.toPath(), rootDir.toPath())
+        runCatching { fsyncDirectory(root) }
+        if ((root.listFiles() ?: emptyArray()).isEmpty()) {
+            runCatching { root.delete() }
+        }
+    }
+
+    private fun liveStateName(phase: MeetingLiveTranscriptPhase): String = when (phase) {
+        MeetingLiveTranscriptPhase.RECORDING -> LIVE_RECORDING
+        MeetingLiveTranscriptPhase.DRAINING -> LIVE_DRAINING
+        MeetingLiveTranscriptPhase.COMPLETED -> LIVE_COMPLETED
+        MeetingLiveTranscriptPhase.FAILED -> LIVE_FAILED
+        MeetingLiveTranscriptPhase.CANCELLED -> LIVE_CANCELLED
+        MeetingLiveTranscriptPhase.INTERRUPTED -> LIVE_INTERRUPTED
+    }
+
+    private fun toPublicLive(
+        live: StoredLiveTranscription,
+        recordingState: String,
+    ): MeetingLiveTranscript {        val confirmed = live.fragments.count { it.state == LIVE_FRAGMENT_CONFIRMED }
+        val pending = live.fragments.count { it.state == LIVE_FRAGMENT_PENDING }
+        val failed = live.fragments.count { it.state == LIVE_FRAGMENT_FAILED }
+        val phase = when (live.state) {
+            LIVE_RECORDING ->
+                if (recordingState in ACTIVE_RECORDING_STATES) {
+                    MeetingLiveTranscriptPhase.RECORDING
+                } else {
+                    MeetingLiveTranscriptPhase.INTERRUPTED
+                }
+            LIVE_DRAINING -> MeetingLiveTranscriptPhase.DRAINING
+            LIVE_COMPLETED -> MeetingLiveTranscriptPhase.COMPLETED
+            LIVE_FAILED -> MeetingLiveTranscriptPhase.FAILED
+            LIVE_CANCELLED -> MeetingLiveTranscriptPhase.CANCELLED
+            else -> MeetingLiveTranscriptPhase.INTERRUPTED
+        }
+        val segments = live.fragments
+            .asSequence()
+            .filter { it.state == LIVE_FRAGMENT_CONFIRMED }
+            .sortedBy { it.index }
+            .flatMap { it.segments.asSequence() }
+            .map { segment ->
+                MeetingTranscriptSegment(
+                    id = segment.id,
+                    startMillis = segment.startMillis,
+                    endMillis = segment.endMillis,
+                    text = segment.text,
+                    speaker = segment.speaker,
+                )
+            }
+            .toList()
+        return MeetingLiveTranscript(
+            meetingId = live.meetingId,
+            recordingId = live.recordingId,
+            sessionId = live.sessionId,
+            phase = phase,
+            segments = segments,
+            confirmedFragments = confirmed,
+            pendingFragments = pending,
+            failedFragments = failed,
+            errorCode = live.failureCode,
+            errorReason = live.failureReason,
+            updatedAtMillis = live.updatedAtMillis,
+        )
+    }
+
+    private fun encodeLiveManifest(live: StoredLiveTranscription): JsonObject = buildJsonObject {
+        put("schemaVersion", live.schemaVersion)
+        put("meetingId", live.meetingId)
+        put("recordingId", live.recordingId)
+        put("sessionId", live.sessionId)
+        put("baseTranscriptionRevision", live.baseTranscriptionRevision)
+        putNullable("language", live.language)
+        put("state", live.state)
+        putNullable("failureCode", live.failureCode)
+        putNullable("failureReason", live.failureReason)
+        put("createdAtMillis", live.createdAtMillis)
+        put("updatedAtMillis", live.updatedAtMillis)
+        put("fragments", buildJsonArray {
+            live.fragments.forEach { fragment ->
+                add(buildJsonObject {
+                    put("index", fragment.index)
+                    put("fileName", fragment.fileName)
+                    put("startMillis", fragment.startMillis)
+                    put("durationMillis", fragment.durationMillis)
+                    put("sampleRate", fragment.sampleRate)
+                    put("channels", fragment.channels)
+                    put("sizeBytes", fragment.sizeBytes)
+                    put("state", fragment.state)
+                    putNullable("failureCode", fragment.failureCode)
+                    putNullable("failureReason", fragment.failureReason)
+                    put("retryable", fragment.retryable)
+                    put("attempts", fragment.attempts)
+                    put("updatedAtMillis", fragment.updatedAtMillis)
+                    put("segments", encodeStoredSegments(fragment.segments))
+                })
+            }
+        })
+    }
+
+    private fun decodeLiveManifest(
+        obj: JsonObject,
+        expectedMeetingId: String,
+        expectedRecordingId: String,
+    ): StoredLiveTranscription? {
+        if (obj.intOrNull("schemaVersion") != MEETING_LIVE_SCHEMA_VERSION) return null
+        if (obj.stringOrNull("meetingId") != expectedMeetingId) return null
+        if (obj.stringOrNull("recordingId") != expectedRecordingId) return null
+        val session = obj.stringOrNull("sessionId")?.takeIf { MeetingIds.isValid(it) } ?: return null
+        val state = obj.stringOrNull("state")?.takeIf { it in LIVE_STATES } ?: return null
+        val fragments = (obj["fragments"] as? JsonArray)?.mapNotNull { element ->
+            val value = element as? JsonObject ?: return@mapNotNull null
+            val index = value.intOrNull("index") ?: return@mapNotNull null
+            if (index !in 0 until MEETING_MAX_LIVE_FRAGMENTS) return@mapNotNull null
+            val fileName = value.stringOrNull("fileName") ?: return@mapNotNull null
+            if (!LIVE_FRAGMENT_FILE_PATTERN.matches(fileName)) return@mapNotNull null
+            val fragmentState = value.stringOrNull("state")
+                ?.takeIf { it in LIVE_FRAGMENT_STATES } ?: return@mapNotNull null
+            StoredLiveFragment(
+                index = index,
+                fileName = fileName,
+                startMillis = value.longOrNull("startMillis")?.coerceAtLeast(0L) ?: 0L,
+                durationMillis = value.longOrNull("durationMillis")?.coerceAtLeast(0L) ?: 0L,
+                sampleRate = value.intOrNull("sampleRate")?.coerceIn(1, 192_000) ?: 16_000,
+                channels = value.intOrNull("channels")?.coerceIn(1, 8) ?: 1,
+                sizeBytes = value.longOrNull("sizeBytes")?.coerceAtLeast(0L) ?: 0L,
+                state = fragmentState,
+                segments = decodeStoredSegments(value["segments"]),
+                failureCode = value.stringOrNull("failureCode")?.take(64),
+                failureReason = value.stringOrNull("failureReason")?.take(160),
+                retryable = value.booleanOrNull("retryable") == true,
+                attempts = value.intOrNull("attempts")?.coerceAtLeast(0) ?: 0,
+                updatedAtMillis = value.longOrNull("updatedAtMillis")?.coerceAtLeast(0L) ?: 0L,
+            )
+        } ?: emptyList()
+        if (fragments.map { it.index }.toSet().size != fragments.size) return null
+        return StoredLiveTranscription(
+            schemaVersion = MEETING_LIVE_SCHEMA_VERSION,
+            meetingId = expectedMeetingId,
+            recordingId = expectedRecordingId,
+            sessionId = session,
+            baseTranscriptionRevision = obj.longOrNull("baseTranscriptionRevision")
+                ?.coerceAtLeast(0L) ?: 0L,
+            language = obj.stringOrNull("language")?.take(40),
+            state = state,
+            failureCode = obj.stringOrNull("failureCode")?.take(64),
+            failureReason = obj.stringOrNull("failureReason")?.take(160),
+            createdAtMillis = obj.longOrNull("createdAtMillis")?.coerceAtLeast(0L) ?: 0L,
+            updatedAtMillis = obj.longOrNull("updatedAtMillis")?.coerceAtLeast(0L) ?: 0L,
+            fragments = fragments.sortedBy { it.index },
+        )
+    }
+
+    private fun encodeStoredSegments(segments: List<StoredTranscriptSegment>): JsonArray =
+        buildJsonArray {
+            segments.forEach { segment ->
+                add(buildJsonObject {
+                    put("id", segment.id)
+                    put("startMillis", segment.startMillis)
+                    put("endMillis", segment.endMillis)
+                    put("text", segment.text)
+                    putNullable("speaker", segment.speaker)
+                })
+            }
+        }
+
+    private fun decodeStoredSegments(element: kotlinx.serialization.json.JsonElement?): List<StoredTranscriptSegment> =
+        (element as? JsonArray)?.mapNotNull { item ->
+            val value = item as? JsonObject ?: return@mapNotNull null
+            val id = value.stringOrNull("id") ?: return@mapNotNull null
+            StoredTranscriptSegment(
+                id = id.take(160),
+                startMillis = value.longOrNull("startMillis")?.coerceAtLeast(0L) ?: 0L,
+                endMillis = value.longOrNull("endMillis")?.coerceAtLeast(0L) ?: 0L,
+                text = value.stringOrNull("text") ?: "",
+                speaker = value.stringOrNull("speaker")?.take(120),
+            )
+        } ?: emptyList()
 
     private fun toStoredAttempt(
         attempt: MeetingTranscriptionLastAttempt,
@@ -1599,14 +2694,16 @@ internal class MeetingRepository(
             var meetingRecovered = 0
             var meetingIncomplete = 0
             var meetingMissing = 0
+            val interruptedLive = ArrayList<String>()
             val recordings = stored.recordings.map { recording ->
                 if (recording.id in excludedRecordingIds || recording.state !in ACTIVE_RECORDING_STATES) {
                     return@map recording
                 }
-                val final = recordingFileLocked(dir, recording.id, final = true)
-                val part = recordingFileLocked(dir, recording.id, final = false)
+                val extension = recordingExtension(recording.mimeType)
+                val final = recordingFileLocked(dir, recording.id, final = true, extension)
+                val part = recordingFileLocked(dir, recording.id, final = false, extension)
                 changed = true
-                when {
+                val recovered = when {
                     final.isFile && final.length() > 0 -> {
                         val probed = runCatching { probe(final) }.getOrNull()
                         if (probed != null && probed.readable && (probed.hasAudio || probed.hasVideo)) {
@@ -1632,13 +2729,46 @@ internal class MeetingRepository(
                         }
                     }
                     part.isFile -> {
-                        meetingIncomplete++
-                        recording.copy(
-                            state = RECORDING_INCOMPLETE,
-                            sizeBytes = part.length(),
-                            durationMillis = maxOf(recording.durationMillis, recording.accumulatedMillis),
-                            incompleteReason = "interrupted",
-                        )
+                        // A PCM WAV written by the live-capture path has no
+                        // unfinalized container index: repairing its header
+                        // makes the retained capture playable, so adopt it
+                        // instead of discarding a valid interrupted take.
+                        val adopted = extension == "wav" &&
+                            repairPcmWavHeader(part) &&
+                            runCatching { moveAtomically(part, final) }.isSuccess &&
+                            final.isFile && final.length() > 44
+                        if (adopted) {
+                            val probed = runCatching { probe(final) }.getOrNull()
+                            if (probed != null && probed.readable && probed.hasAudio) {
+                                meetingRecovered++
+                                recording.copy(
+                                    state = RECORDING_COMPLETED,
+                                    durationMillis = if (probed.durationMillis > 0) {
+                                        probed.durationMillis
+                                    } else {
+                                        recording.accumulatedMillis
+                                    },
+                                    sizeBytes = final.length(),
+                                    incompleteReason = null,
+                                )
+                            } else {
+                                meetingIncomplete++
+                                recording.copy(
+                                    state = RECORDING_INCOMPLETE,
+                                    sizeBytes = final.length(),
+                                    durationMillis = maxOf(recording.durationMillis, recording.accumulatedMillis),
+                                    incompleteReason = "interruptedUnreadable",
+                                )
+                            }
+                        } else {
+                            meetingIncomplete++
+                            recording.copy(
+                                state = RECORDING_INCOMPLETE,
+                                sizeBytes = part.length(),
+                                durationMillis = maxOf(recording.durationMillis, recording.accumulatedMillis),
+                                incompleteReason = "interrupted",
+                            )
+                        }
                     }
                     else -> {
                         meetingMissing++
@@ -1650,6 +2780,8 @@ internal class MeetingRepository(
                         )
                     }
                 }
+                interruptedLive += recording.id
+                recovered
             }
             if (!changed) continue
             try {
@@ -1665,6 +2797,9 @@ internal class MeetingRepository(
                 // The retained files are unchanged; a later recovery can
                 // retry the metadata write. Do not report it as recovered.
                 continue
+            }
+            interruptedLive.forEach { recordingId ->
+                runCatching { markLiveInterruptedLocked(dir, recordingId, now) }
             }
             recovered += meetingRecovered
             incomplete += meetingIncomplete
@@ -1804,12 +2939,18 @@ internal class MeetingRepository(
             ?: throw storageFailure(IOException("missing"), "snapshot")
     }
 
-    internal fun recordingFileLocked(meetingDir: File, recordingId: String, final: Boolean): File {
+    internal fun recordingFileLocked(
+        meetingDir: File,
+        recordingId: String,
+        final: Boolean,
+        extension: String = "m4a",
+    ): File {
         val dir = recordingsDirLocked(meetingDir)
+        val safeExtension = if (extension == "wav") "wav" else "m4a"
         val name = if (final) {
-            "$recordingId.$MEETING_RECORDING_EXTENSION"
+            "$recordingId.$safeExtension"
         } else {
-            "$recordingId.$MEETING_RECORDING_EXTENSION.part"
+            "$recordingId.$safeExtension.part"
         }
         return childFileLocked(dir, name, "recordingFile")
     }
@@ -1976,6 +3117,16 @@ internal class MeetingRepository(
             materials = materials,
             recordings = materials.filter { it.kind == MeetingMaterialKind.RECORDING },
             imports = materials.filter { it.kind != MeetingMaterialKind.RECORDING },
+            liveTranscription = runCatching {
+                val root = existingLiveRootLocked(dir) ?: return@runCatching null
+                root.listFiles()
+                    ?.asSequence()
+                    ?.filter { it.isDirectory && MeetingIds.isValid(it.name) }
+                    ?.filter { child -> !Files.isSymbolicLink(child.toPath()) }
+                    ?.sortedByDescending { it.lastModified() }
+                    ?.mapNotNull { child -> readLiveTranscriptionLocked(dir, stored, child.name) }
+                    ?.firstOrNull()
+            }.getOrNull(),
         )
     }
 
@@ -1984,8 +3135,9 @@ internal class MeetingRepository(
         meetingId: String,
         recording: StoredRecording,
     ): MeetingMaterial {
-        val finalFile = recordingFileLocked(dir, recording.id, final = true)
-        val partFile = recordingFileLocked(dir, recording.id, final = false)
+        val extension = recordingExtension(recording.mimeType)
+        val finalFile = recordingFileLocked(dir, recording.id, final = true, extension)
+        val partFile = recordingFileLocked(dir, recording.id, final = false, extension)
         val existing = when {
             finalFile.isFile && finalFile.length() > 0 -> finalFile
             partFile.isFile && partFile.length() > 0 -> partFile
@@ -2347,6 +3499,36 @@ internal class MeetingRepository(
         private const val MAX_SNAPSHOT_META_BYTES = 64L * 1024L
         private val EXTENSION_PATTERN = Regex("^[a-z0-9]{1,8}$")
 
+        private const val MIN_LIVE_CHUNK_SECONDS = 10
+        private const val MAX_LIVE_CHUNK_SECONDS = 60
+
+        private const val LIVE_RECORDING = "RECORDING"
+        private const val LIVE_DRAINING = "DRAINING"
+        private const val LIVE_COMPLETED = "COMPLETED"
+        private const val LIVE_FAILED = "FAILED"
+        private const val LIVE_CANCELLED = "CANCELLED"
+        private const val LIVE_INTERRUPTED = "INTERRUPTED"
+
+        private const val LIVE_FRAGMENT_PENDING = "PENDING"
+        private const val LIVE_FRAGMENT_CONFIRMED = "CONFIRMED"
+        private const val LIVE_FRAGMENT_FAILED = "FAILED"
+
+        private val LIVE_STATES = setOf(
+            LIVE_RECORDING,
+            LIVE_DRAINING,
+            LIVE_COMPLETED,
+            LIVE_FAILED,
+            LIVE_CANCELLED,
+            LIVE_INTERRUPTED,
+        )
+        private val LIVE_FRAGMENT_STATES = setOf(
+            LIVE_FRAGMENT_PENDING,
+            LIVE_FRAGMENT_CONFIRMED,
+            LIVE_FRAGMENT_FAILED,
+        )
+        private val LIVE_FRAGMENT_FILE_PATTERN = Regex("^fragment-[0-9]{5}\\.wav$")
+        private val LIVE_FRAGMENT_SIDECAR_PATTERN = Regex("^fragment-[0-9]{5}\\.json$")
+
         private const val RECORDING_STARTING = "STARTING"
         private const val RECORDING_ACTIVE = "RECORDING"
         private const val RECORDING_PAUSED = "PAUSED"
@@ -2392,6 +3574,10 @@ internal class MeetingRepository(
 // ----------------------------------------------------------------------
 // Shared file helpers
 // ----------------------------------------------------------------------
+
+/** Storage extension for one recording. Unknown/legacy mime keeps `.m4a`. */
+internal fun recordingExtension(mimeType: String?): String =
+    if (mimeType == MEETING_RECORDING_WAV_MIME) "wav" else "m4a"
 
 internal fun moveAtomically(source: File, destination: File) {
     try {
@@ -2500,7 +3686,7 @@ private fun JsonObject.stringOrNull(key: String): String? {
 private fun JsonObject.requiredString(key: String): String =
     stringOrNull(key) ?: throw meetingError(MeetingErrorCode.INTERRUPTED, "Meeting metadata is missing $key.")
 
-private fun JsonObject.longOrNull(key: String): Long? {
+internal fun JsonObject.longOrNull(key: String): Long? {
     val element = this[key] ?: return null
     if (element is JsonNull) return null
     return (element as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
@@ -2509,7 +3695,7 @@ private fun JsonObject.longOrNull(key: String): Long? {
 private fun JsonObject.requiredLong(key: String): Long =
     longOrNull(key) ?: throw meetingError(MeetingErrorCode.INTERRUPTED, "Meeting metadata is missing $key.")
 
-private fun JsonObject.intOrNull(key: String): Int? {
+internal fun JsonObject.intOrNull(key: String): Int? {
     val element = this[key] ?: return null
     if (element is JsonNull) return null
     return (element as? JsonPrimitive)?.contentOrNull?.toIntOrNull()

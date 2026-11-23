@@ -78,6 +78,8 @@ import com.floe.android.host.meeting.MeetingDetail
 import com.floe.android.host.meeting.MeetingError
 import com.floe.android.host.meeting.MeetingErrorCode
 import com.floe.android.host.meeting.MeetingException
+import com.floe.android.host.meeting.MeetingLiveTranscript
+import com.floe.android.host.meeting.MeetingLiveTranscriptPhase
 import com.floe.android.host.meeting.MeetingManager
 import com.floe.android.host.meeting.MeetingMaterial
 import com.floe.android.host.meeting.MeetingMaterialKind
@@ -98,6 +100,8 @@ import com.floe.android.host.meetingexchange.MeetingExchange
 import com.floe.android.host.meetingexchange.MeetingExportFormat
 import com.floe.android.host.meetingexchange.MeetingExportPreparationResult
 import com.floe.android.host.meetingexchange.MeetingShareResult
+import com.floe.android.host.meetingtranscription.MeetingLiveState
+import com.floe.android.host.meetingtranscription.MeetingLiveTranscriptionManager
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionCancelResult
 import com.floe.android.host.meetingassistant.MeetingAssistantAction
 import com.floe.android.host.meetingassistant.MeetingAssistantAvailability
@@ -191,6 +195,17 @@ internal fun MeetingDestination(
     }
     val transcriptionState by transcriptionManager.state.collectAsState()
     val transcriptionCleanupFailure by transcriptionManager.cleanupFailure.collectAsState()
+    // While-recording owner. It is separate from the post-stop attempt, but
+    // both share the same canonical meeting store and cloud selection.
+    val liveTranscriptionManager = remember(applicationContext) {
+        MeetingLiveTranscriptionManager(
+            context = applicationContext,
+            currentEpoch = {
+                (applicationContext as? FloeApplication)?.runtimeHost?.nativeRootEpoch()
+            },
+        )
+    }
+    val liveTranscriptionState by liveTranscriptionManager.state.collectAsState()
     val recordingPreferences = remember(applicationContext) {
         applicationContext.getSharedPreferences("meeting-recording", android.content.Context.MODE_PRIVATE)
     }
@@ -199,6 +214,20 @@ internal fun MeetingDestination(
         autoTranscribe = enabled
         recordingPreferences.edit().putBoolean("auto-transcribe", enabled).apply()
         if (!enabled) transcriptionManager.clearRecordingFollowups()
+    }
+    var liveTranscriptionEnabled by remember {
+        mutableStateOf(recordingPreferences.getBoolean("live-transcribe", false))
+    }
+    val setLiveTranscription: (Boolean) -> Unit = { enabled ->
+        liveTranscriptionEnabled = enabled
+        recordingPreferences.edit().putBoolean("live-transcribe", enabled).apply()
+        if (!enabled && liveTranscriptionState.isActive) {
+            scope.launch {
+                if (!manager.recorder.cancelLiveTranscription()) {
+                    liveTranscriptionManager.cancel()
+                }
+            }
+        }
     }
     // The meeting assistant is ONE process-owned adapter over the existing
     // text-only task/run surface. It never creates a provider client or a
@@ -690,10 +719,14 @@ internal fun MeetingDestination(
         recordNoticeRes = null
         recordRetainedTake = null
         listRetainedTake = null
+        val liveOwnedTake = liveTranscriptionState.sessionId != null &&
+            liveTranscriptionState.recordingId == recorderState.recordingId
         scope.launch {
             try {
                 val material = manager.recorder.stop()
-                if (autoTranscribe) transcriptionManager.recordingStopped(material)
+                if (autoTranscribe && !liveOwnedTake) {
+                    transcriptionManager.recordingStopped(material)
+                }
                 if (selectedId == id) {
                     if (meetingStopSucceeded(material.status, material.isPlayable)) {
                         recordNoticeRes = R.string.meeting_ui_record_stopped
@@ -728,8 +761,36 @@ internal fun MeetingDestination(
             busyLabelRes = R.string.meeting_ui_record_starting,
             successRes = R.string.meeting_ui_record_started,
         ) {
-            manager.recorder.start(id)
+            manager.recorder.start(
+                meetingId = id,
+                liveCloudTranscription =
+                    liveTranscriptionEnabled && !liveTranscriptionState.isActive,
+            )
         }
+    }
+
+    fun cancelLiveTranscription(meetingId: String) {
+        if (meetingRecordingActive(recorderState.phase) &&
+            recorderState.meetingId == meetingId &&
+            recorderState.recordingId != null
+        ) {
+            scope.launch {
+                if (!manager.recorder.cancelLiveTranscription()) {
+                    liveTranscriptionManager.cancel()
+                }
+            }
+        } else if (liveTranscriptionState.meetingId == meetingId) {
+            liveTranscriptionManager.cancel()
+        }
+    }
+
+    fun retryLiveTranscription(meetingId: String) {
+        val recordingId = detail?.liveTranscription?.recordingId
+            ?: liveTranscriptionState
+                .takeIf { it.meetingId == meetingId }
+                ?.recordingId
+            ?: return
+        liveTranscriptionManager.retry(meetingId, recordingId)
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -959,6 +1020,8 @@ internal fun MeetingDestination(
         recordNoticeRes = null
         recordRetainedTake = null
         listRetainedTake = null
+        val liveOwnedTake = liveTranscriptionState.sessionId != null &&
+            liveTranscriptionState.recordingId == recorderState.recordingId
         scope.launch {
             try {
                 val material = manager.recorder.stop()
@@ -966,7 +1029,9 @@ internal fun MeetingDestination(
                 stoppingToLeave = false
                 refreshCatalogQuietly()
                 if (meetingStopSucceeded(material.status, material.isPlayable)) {
-                    if (autoTranscribe) transcriptionManager.recordingStopped(material)
+                    if (autoTranscribe && !liveOwnedTake) {
+                        transcriptionManager.recordingStopped(material)
+                    }
                     finishNavigation(target)
                 } else if (selectedId == null) {
                     // The stop left retained bytes. Stay on the list so the
@@ -1044,6 +1109,22 @@ internal fun MeetingDestination(
         transcriptionMaterialId = session.materialId
         loadDetail(id)
         refreshCatalogQuietly()
+    }
+
+    // Live fragments are durable in the meeting store. Reload the detail as
+    // they are confirmed, and again after promotion writes the canonical
+    // transcript; the page never fabricates transcript rows from live state.
+    LaunchedEffect(
+        selectedId,
+        liveTranscriptionState.phase,
+        liveTranscriptionState.confirmedFragments,
+        liveTranscriptionState.recordingId,
+    ) {
+        val id = selectedId ?: return@LaunchedEffect
+        val live = liveTranscriptionState
+        if (live.meetingId != id || live.recordingId == null) return@LaunchedEffect
+        loadDetail(id)
+        if (live.phase == MeetingLiveTranscriptPhase.COMPLETED) refreshCatalogQuietly()
     }
 
     ImeFirstBackHandler {
@@ -1145,6 +1226,15 @@ internal fun MeetingDestination(
                             transcriptionMaterialId = transcriptionMaterialId,
                             transcriptionMeetingTitle = transcriptionMeetingTitle,
                             onTranscriptionMaterialSelected = { transcriptionMaterialId = it },
+                            liveTranscriptionState = liveTranscriptionState,
+                            liveTranscriptionEnabled = liveTranscriptionEnabled,
+                            onLiveTranscriptionChange = setLiveTranscription,
+                            onCancelLiveTranscription = {
+                                selectedId?.let { cancelLiveTranscription(it) }
+                            },
+                            onRetryLiveTranscription = {
+                                selectedId?.let { retryLiveTranscription(it) }
+                            },
                             assistantState = assistantState,
                             assistantQuestion = assistantQuestion,
                             assistantAskOpen = assistantAskOpen,
@@ -1311,6 +1401,15 @@ internal fun MeetingDestination(
                 transcriptionMaterialId = transcriptionMaterialId,
                 transcriptionMeetingTitle = transcriptionMeetingTitle,
                 onTranscriptionMaterialSelected = { transcriptionMaterialId = it },
+                liveTranscriptionState = liveTranscriptionState,
+                liveTranscriptionEnabled = liveTranscriptionEnabled,
+                onLiveTranscriptionChange = setLiveTranscription,
+                onCancelLiveTranscription = {
+                    selectedId?.let { cancelLiveTranscription(it) }
+                },
+                onRetryLiveTranscription = {
+                    selectedId?.let { retryLiveTranscription(it) }
+                },
                 assistantState = assistantState,
                 assistantQuestion = assistantQuestion,
                 assistantAskOpen = assistantAskOpen,
@@ -1838,6 +1937,11 @@ private fun MeetingDetailHost(
     transcriptionMaterialId: String?,
     transcriptionMeetingTitle: String?,
     onTranscriptionMaterialSelected: (String) -> Unit,
+    liveTranscriptionState: MeetingLiveState,
+    liveTranscriptionEnabled: Boolean,
+    onLiveTranscriptionChange: (Boolean) -> Unit,
+    onCancelLiveTranscription: () -> Unit,
+    onRetryLiveTranscription: () -> Unit,
     assistantState: MeetingAssistantState?,
     assistantQuestion: String,
     assistantAskOpen: Boolean,
@@ -1996,6 +2100,10 @@ private fun MeetingDetailHost(
                             retainedTake = recordRetainedTake,
                             autoTranscribe = autoTranscribe,
                             onAutoTranscribeChange = onAutoTranscribeChange,
+                            liveTranscriptionEnabled = liveTranscriptionEnabled,
+                            liveTranscriptionState = liveTranscriptionState,
+                            onLiveTranscriptionChange = onLiveTranscriptionChange,
+                            onCancelLiveTranscription = onCancelLiveTranscription,
                             onStart = onStartRecording,
                             onPause = onPauseRecording,
                             onResume = onResumeRecording,
@@ -2030,6 +2138,12 @@ private fun MeetingDetailHost(
                                 transcriptionManager.acknowledgeCleanupFailure()
                             },
                             onOpenOtherMeeting = onOpenOtherMeeting,
+                            liveTranscription = detail.liveTranscription,
+                            liveState = liveTranscriptionState,
+                            recordingActive = meetingRecordingActive(recorderState.phase) &&
+                                recorderState.meetingId == meetingId,
+                            onCancelLiveTranscription = onCancelLiveTranscription,
+                            onRetryLiveTranscription = onRetryLiveTranscription,
                         )
                     }
                     item(key = "delete") {
@@ -2687,6 +2801,10 @@ private fun MeetingRecordingSection(
     retainedTake: MeetingMaterial?,
     autoTranscribe: Boolean,
     onAutoTranscribeChange: (Boolean) -> Unit,
+    liveTranscriptionEnabled: Boolean,
+    liveTranscriptionState: MeetingLiveState,
+    onLiveTranscriptionChange: (Boolean) -> Unit,
+    onCancelLiveTranscription: () -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -2861,6 +2979,73 @@ private fun MeetingRecordingSection(
                         text = stringResource(R.string.meeting_ui_record_auto_transcribe_note),
                         style = Floe.typography.metadata,
                         color = Floe.colors.tertiaryLabel,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeText(
+                        text = stringResource(R.string.meeting_ui_record_live_cloud),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.label,
+                        modifier = Modifier.weight(1f),
+                    )
+                    FloeInlineSwitch(
+                        checked = liveTranscriptionEnabled,
+                        onCheckedChange = onLiveTranscriptionChange,
+                        description = stringResource(R.string.meeting_ui_record_live_cloud),
+                        enabled = !active && !busy && !liveTranscriptionState.isActive,
+                    )
+                }
+                FloeText(
+                    text = stringResource(
+                        if (active) {
+                            R.string.meeting_ui_record_live_cloud_next
+                        } else {
+                            R.string.meeting_ui_record_live_cloud_note
+                        },
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.tertiaryLabel,
+                )
+                if (autoTranscribe && liveTranscriptionEnabled &&
+                    !liveTranscriptionState.isActive
+                ) {
+                    FloeText(
+                        text = stringResource(
+                            R.string.meeting_ui_record_live_cloud_replaces_auto,
+                        ),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.tertiaryLabel,
+                    )
+                }
+                val liveTake = liveTranscriptionState.recordingId != null &&
+                    liveTranscriptionState.recordingId == recorderState.recordingId
+                if (liveTake && liveTranscriptionState.isActive) {
+                    FloeStatusLine(
+                        icon = FloeIcons.InfoCircle,
+                        text = stringResource(
+                            R.string.meeting_ui_record_live_cloud_status,
+                            liveTranscriptionState.confirmedFragments,
+                            liveTranscriptionState.pendingFragments,
+                        ),
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_record_live_cloud_stop),
+                        onClick = onCancelLiveTranscription,
+                        enabled = !busy,
+                        tint = Floe.colors.pending,
+                    )
+                } else if (liveTake &&
+                    liveTranscriptionState.phase == MeetingLiveTranscriptPhase.FAILED
+                ) {
+                    FloeStatusLine(
+                        icon = FloeIcons.WarningTriangle,
+                        text = stringResource(R.string.meeting_ui_record_live_cloud_failed),
+                        color = Floe.colors.pending,
                     )
                 }
             }
@@ -3282,12 +3467,50 @@ private fun MeetingTranscriptionSection(
     onReloadMeeting: () -> Unit,
     onAcknowledgeCleanupFailure: () -> Unit,
     onOpenOtherMeeting: (String) -> Unit,
+    liveTranscription: MeetingLiveTranscript?,
+    liveState: MeetingLiveState,
+    recordingActive: Boolean,
+    onCancelLiveTranscription: () -> Unit,
+    onRetryLiveTranscription: () -> Unit,
 ) {
     val transcription = detail.transcription
     val playableMaterials = remember(detail.materials) {
         meetingTranscriptionPlayableMaterials(detail)
     }
+    val durableLive = liveTranscription?.takeIf {
+        it.meetingId == meetingId &&
+            (it.phase != MeetingLiveTranscriptPhase.COMPLETED ||
+                transcription.materialId != it.recordingId)
+    }
+    val runtimeLive = liveState.takeIf {
+        it.meetingId == meetingId && it.recordingId != null && it.sessionId != null &&
+            (durableLive == null || durableLive.recordingId == it.recordingId)
+    }
+    val liveRecordingId = runtimeLive?.recordingId ?: durableLive?.recordingId
+    val livePhase = runtimeLive?.phase
+        ?: durableLive?.phase?.let { durablePhase ->
+            if (durablePhase == MeetingLiveTranscriptPhase.RECORDING) {
+                MeetingLiveTranscriptPhase.INTERRUPTED
+            } else {
+                durablePhase
+            }
+        }
+    val liveSegments = runtimeLive?.segments?.takeIf { it.isNotEmpty() }
+        ?: durableLive?.segments
+        ?: emptyList()
+    val liveConfirmed = runtimeLive?.confirmedFragments ?: durableLive?.confirmedFragments ?: 0
+    val livePending = runtimeLive?.pendingFragments ?: durableLive?.pendingFragments ?: 0
+    val liveFailed = runtimeLive?.failedFragments ?: durableLive?.failedFragments ?: 0
+    val canonicalCoversLive = liveRecordingId != null &&
+        transcription.materialId == liveRecordingId &&
+        transcription.segments.isNotEmpty()
+    val liveVisible = liveRecordingId != null && livePhase != null &&
+        !canonicalCoversLive &&
+        (liveSegments.isNotEmpty() || livePending > 0 || liveFailed > 0 ||
+            livePhase != MeetingLiveTranscriptPhase.COMPLETED)
     val anyRunning = meetingTranscriptionIsRunning(state.phase)
+    val liveRunning = liveState.isActive && liveState.meetingId == meetingId
+    val otherLiveRunning = liveState.isActive && liveState.meetingId != meetingId
     val session = state.session
     val sameMeetingRunning = anyRunning && session?.meetingId == meetingId
     val otherMeetingRunning = anyRunning && session != null && session.meetingId != meetingId
@@ -3338,13 +3561,104 @@ private fun MeetingTranscriptionSection(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (transcription.segments.isEmpty() && playableMaterials.isEmpty()) {
+            if (liveVisible) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeText(
+                        text = stringResource(R.string.meeting_ui_live_transcript_title),
+                        style = Floe.typography.bodyEmphasized,
+                        modifier = Modifier.weight(1f),
+                    )
+                    livePhase?.let { phase ->
+                        FloeBadgePill(
+                            text = stringResource(meetingLivePhaseResource(phase)),
+                            tone = meetingLivePhaseTone(phase),
+                        )
+                    }
+                }
+                FloeText(
+                    text = liveStatusText(
+                        phase = livePhase,
+                        confirmed = liveConfirmed,
+                        pending = livePending,
+                        failed = liveFailed,
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                if (liveSegments.isNotEmpty()) {
+                    liveSegments.forEachIndexed { index, segment ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FloeText(
+                                    text = segment.speaker?.let {
+                                        stringResource(R.string.meeting_ui_transcription_speaker, it)
+                                    } ?: stringResource(R.string.meeting_ui_transcription_unknown_speaker),
+                                    style = Floe.typography.metadata,
+                                    color = Floe.colors.secondaryLabel,
+                                )
+                                FloeText(
+                                    text = stringResource(
+                                        R.string.meeting_ui_transcription_time,
+                                        meetingDurationLabel(segment.startMillis),
+                                        meetingDurationLabel(segment.endMillis),
+                                    ),
+                                    style = Floe.typography.evidence,
+                                    color = Floe.colors.tertiaryLabel,
+                                )
+                            }
+                            FloeText(segment.text, style = Floe.typography.body)
+                        }
+                        if (index != liveSegments.lastIndex) FloeDivider()
+                    }
+                }
+                if (livePhase == MeetingLiveTranscriptPhase.FAILED) {
+                    MeetingErrorBanner(
+                        text = stringResource(R.string.meeting_ui_live_transcript_failed),
+                    )
+                }
+                if (runtimeLive?.cancelUnconfirmed == true) {
+                    MeetingErrorBanner(
+                        text = stringResource(
+                            R.string.meeting_ui_live_transcript_cancel_unconfirmed,
+                        ),
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (livePhase == MeetingLiveTranscriptPhase.RECORDING ||
+                        livePhase == MeetingLiveTranscriptPhase.DRAINING
+                    ) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.meeting_ui_live_transcript_stop),
+                            onClick = onCancelLiveTranscription,
+                            tint = Floe.colors.pending,
+                        )
+                    } else if (livePhase != MeetingLiveTranscriptPhase.COMPLETED) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.meeting_ui_live_transcript_retry),
+                            onClick = onRetryLiveTranscription,
+                            enabled = !anyRunning && !recordingActive && !otherLiveRunning,
+                        )
+                    }
+                }
+                FloeDivider()
+            }
+            if (transcription.segments.isEmpty() &&
+                playableMaterials.isEmpty() &&
+                !liveVisible
+            ) {
                 MeetingInlineEmpty(
                     icon = FloeIcons.Document,
                     title = stringResource(R.string.meeting_ui_transcription_empty_title),
                     body = stringResource(R.string.meeting_ui_transcription_no_playable),
                 )
-            } else {
+            } else if (transcription.segments.isNotEmpty() || playableMaterials.isNotEmpty()) {
                 if (transcription.segments.isNotEmpty()) {
                     val sourceName = transcription.materialId?.let { id ->
                         detail.materials.firstOrNull { it.id == id }?.displayName
@@ -3424,7 +3738,7 @@ private fun MeetingTranscriptionSection(
                                     cancelTooLate = false
                                     onSelectMaterial(material.id)
                                 },
-                                enabled = !anyRunning && !checking,
+                                enabled = !anyRunning && !checking && !liveRunning,
                                 tint = if (material.id == selectedMaterialId) {
                                     Floe.colors.accent
                                 } else {
@@ -3590,7 +3904,7 @@ private fun MeetingTranscriptionSection(
                                                 startFailure = result.failure
                                         }
                                     },
-                                    enabled = meetingTranscriptionCanStart(
+                                    enabled = !liveRunning && meetingTranscriptionCanStart(
                                         detail = detail,
                                         selectedMaterialId = selectedMaterialId,
                                         readiness = readiness,
@@ -3714,7 +4028,7 @@ private fun MeetingTranscriptionSection(
                                         startFailure = result.failure
                                 }
                             },
-                            enabled = !checking,
+                            enabled = !checking && !liveRunning,
                         )
                     }
                 }
@@ -4392,6 +4706,57 @@ internal fun meetingMaterialTone(status: MeetingMaterialStatus): FloeBadgeTone =
     MeetingMaterialStatus.INCOMPLETE,
     MeetingMaterialStatus.MISSING,
     -> FloeBadgeTone.DESTRUCTIVE
+}
+
+internal fun meetingLivePhaseTone(phase: MeetingLiveTranscriptPhase): FloeBadgeTone = when (phase) {
+    MeetingLiveTranscriptPhase.RECORDING,
+    MeetingLiveTranscriptPhase.DRAINING,
+    -> FloeBadgeTone.ACCENT
+    MeetingLiveTranscriptPhase.COMPLETED -> FloeBadgeTone.SUCCESS
+    MeetingLiveTranscriptPhase.FAILED,
+    MeetingLiveTranscriptPhase.INTERRUPTED,
+    -> FloeBadgeTone.DESTRUCTIVE
+    MeetingLiveTranscriptPhase.CANCELLED -> FloeBadgeTone.PENDING
+}
+
+private fun meetingLivePhaseResource(phase: MeetingLiveTranscriptPhase): Int = when (phase) {
+    MeetingLiveTranscriptPhase.RECORDING -> R.string.meeting_ui_live_phase_recording
+    MeetingLiveTranscriptPhase.DRAINING -> R.string.meeting_ui_live_phase_draining
+    MeetingLiveTranscriptPhase.COMPLETED -> R.string.meeting_ui_live_phase_completed
+    MeetingLiveTranscriptPhase.FAILED -> R.string.meeting_ui_live_phase_failed
+    MeetingLiveTranscriptPhase.CANCELLED -> R.string.meeting_ui_live_phase_cancelled
+    MeetingLiveTranscriptPhase.INTERRUPTED -> R.string.meeting_ui_live_phase_interrupted
+}
+
+@Composable
+private fun liveStatusText(
+    phase: MeetingLiveTranscriptPhase?,
+    confirmed: Int,
+    pending: Int,
+    failed: Int,
+): String = when {
+    pending > 0 -> stringResource(
+        R.string.meeting_ui_live_transcript_pending,
+        confirmed,
+        pending,
+    )
+    failed > 0 -> stringResource(
+        R.string.meeting_ui_live_transcript_failed_meta,
+        confirmed,
+        failed,
+    )
+    confirmed > 0 -> stringResource(R.string.meeting_ui_live_transcript_meta, confirmed)
+    phase == MeetingLiveTranscriptPhase.RECORDING ->
+        stringResource(R.string.meeting_ui_live_transcript_waiting)
+    phase == MeetingLiveTranscriptPhase.DRAINING ->
+        stringResource(R.string.meeting_ui_live_transcript_draining)
+    phase == MeetingLiveTranscriptPhase.COMPLETED ->
+        stringResource(R.string.meeting_ui_live_transcript_completed)
+    phase == MeetingLiveTranscriptPhase.CANCELLED ->
+        stringResource(R.string.meeting_ui_live_transcript_cancelled)
+    phase == MeetingLiveTranscriptPhase.INTERRUPTED ->
+        stringResource(R.string.meeting_ui_live_transcript_interrupted)
+    else -> stringResource(R.string.meeting_ui_live_transcript_failed)
 }
 
 /**

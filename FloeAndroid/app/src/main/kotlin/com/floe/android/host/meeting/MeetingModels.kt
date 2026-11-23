@@ -50,6 +50,14 @@ data class MeetingDetail(
     val materials: List<MeetingMaterial>,
     val recordings: List<MeetingMaterial>,
     val imports: List<MeetingMaterial>,
+    /**
+     * Durable while-recording cloud transcript for one take, when the user
+     * opted into live transcription. It is NOT the committed meeting
+     * transcript: confirmed fragments are real provider output with absolute
+     * capture offsets, and the committed transcript is only written after the
+     * recording is finalized and every fragment has settled.
+     */
+    val liveTranscription: MeetingLiveTranscript? = null,
 )
 
 /** Attribution of one audio or video file to a meeting. */
@@ -147,6 +155,46 @@ data class MeetingTranscriptSegment(
     val speaker: String?,
 )
 
+/** Observable state of one while-recording cloud transcription queue. */
+enum class MeetingLiveTranscriptPhase {
+    RECORDING,
+    DRAINING,
+    COMPLETED,
+    FAILED,
+    CANCELLED,
+    INTERRUPTED,
+}
+
+/**
+ * Durable receipt for the live portion of one recording.
+ *
+ * Only [segments] that a provider actually returned with timing are present.
+ * [pendingFragments] are finalized local audio fragments that have not been
+ * confirmed by the cloud service; [failedFragments] were attempted and kept
+ * for an explicit retry. This object never claims an unconfirmed fragment is
+ * transcribed and never contains invented text.
+ */
+data class MeetingLiveTranscript(
+    val meetingId: String,
+    val recordingId: String,
+    val sessionId: String,
+    val phase: MeetingLiveTranscriptPhase,
+    val segments: List<MeetingTranscriptSegment>,
+    val confirmedFragments: Int,
+    val pendingFragments: Int,
+    val failedFragments: Int,
+    val errorCode: String?,
+    val errorReason: String?,
+    val updatedAtMillis: Long,
+) {
+    val isActive: Boolean
+        get() = phase == MeetingLiveTranscriptPhase.RECORDING ||
+            phase == MeetingLiveTranscriptPhase.DRAINING
+
+    val hasUnfinishedFragments: Boolean
+        get() = pendingFragments > 0 || failedFragments > 0
+}
+
 /** Observable state of the single process-wide recording owner. */
 data class MeetingRecordingState(
     val phase: MeetingRecordingPhase,
@@ -174,11 +222,25 @@ enum class MeetingRecordingPhase { IDLE, STARTING, RECORDING, PAUSED, STOPPING, 
 interface MeetingRecorder {
     val state: StateFlow<MeetingRecordingState>
 
-    suspend fun start(meetingId: String): MeetingMaterial
+    /**
+     * Starts one take. [liveCloudTranscription] is an explicit per-take opt-in
+     * to stream finalized PCM fragments to the already-configured cloud
+     * transcription service while recording. It defaults to false, which
+     * keeps the ordinary MediaRecorder path byte-for-byte unchanged. The
+     * local recording remains authoritative in either mode.
+     */
+    suspend fun start(
+        meetingId: String,
+        liveCloudTranscription: Boolean = false,
+    ): MeetingMaterial
+
     suspend fun pause(): MeetingMaterial
     suspend fun resume(): MeetingMaterial
     suspend fun stop(): MeetingMaterial
     suspend fun discard(): MeetingMaterial?
+
+    /** Stops only the live cloud queue; capture continues locally. */
+    suspend fun cancelLiveTranscription(): Boolean = false
 }
 
 /** Public playback control for one app-owned material file. */

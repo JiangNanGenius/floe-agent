@@ -118,6 +118,34 @@
     <string name="meeting_ui_playback_now">Playing “%1$s”</string>
     <string name="meeting_ui_playback_position">%1$s / %2$s</string>
     <string name="meeting_ui_playback_failed">Playback failed.</string>
+    <!-- While-recording live cloud transcription -->
+    <string name="meeting_ui_record_live_cloud">Live cloud transcript</string>
+    <string name="meeting_ui_record_live_cloud_note">While recording, finalized audio segments are sent to your configured cloud transcription service. Off by default; the local recording is kept even if transcription fails.</string>
+    <string name="meeting_ui_record_live_cloud_next">Live transcription applies to the next recording. This take keeps its current setting.</string>
+    <string name="meeting_ui_record_live_cloud_status">Live transcript: %1$d confirmed · %2$d waiting</string>
+    <string name="meeting_ui_record_live_cloud_stop">Stop live transcript</string>
+    <string name="meeting_ui_record_live_cloud_replaces_auto">When both are on, live transcription handles this take and the whole-recording automatic transcript is skipped.</string>
+    <string name="meeting_ui_record_live_cloud_failed">Live transcription could not continue. The recording is still captured locally.</string>
+    <string name="meeting_ui_live_transcript_title">Live transcript</string>
+    <string name="meeting_ui_live_transcript_meta">%1$d confirmed fragments</string>
+    <string name="meeting_ui_live_transcript_pending">%1$d confirmed · %2$d waiting for the cloud service</string>
+    <string name="meeting_ui_live_transcript_failed_meta">%1$d confirmed · %2$d not transcribed</string>
+    <string name="meeting_ui_live_transcript_waiting">Waiting for the first confirmed fragment.</string>
+    <string name="meeting_ui_live_transcript_draining">Finishing the remaining fragments…</string>
+    <string name="meeting_ui_live_transcript_completed">Live transcript saved to this meeting.</string>
+    <string name="meeting_ui_live_transcript_cancelled">Live transcription stopped. Confirmed fragments are kept.</string>
+    <string name="meeting_ui_live_transcript_interrupted">The recording ended before live transcription finished.</string>
+    <string name="meeting_ui_live_transcript_cancel_unconfirmed">Live transcription stopped locally, but the cloud service did not confirm it stopped. Check the transcript before retrying.</string>
+    <string name="meeting_ui_live_transcript_failed">Live transcription stopped before all fragments were confirmed.</string>
+    <string name="meeting_ui_live_transcript_stop">Stop live transcript</string>
+    <string name="meeting_ui_live_transcript_retry">Retry unfinished fragments</string>
+    <string name="meeting_ui_live_phase_recording">Live</string>
+    <string name="meeting_ui_live_phase_draining">Saving</string>
+    <string name="meeting_ui_live_phase_completed">Saved</string>
+    <string name="meeting_ui_live_phase_failed">Failed</string>
+    <string name="meeting_ui_live_phase_cancelled">Stopped</string>
+    <string name="meeting_ui_live_phase_interrupted">Interrupted</string>
+
     <string name="meeting_ui_transcription_section">Transcription</string>
     <string name="meeting_ui_transcription_empty_title">No transcript yet</string>
     <string name="meeting_ui_transcription_empty_body">No transcript has been written to this meeting yet.</string>

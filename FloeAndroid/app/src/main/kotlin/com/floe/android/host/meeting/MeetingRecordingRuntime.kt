@@ -10,6 +10,9 @@ package com.floe.android.host.meeting
 import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
+import com.floe.android.FloeApplication
+import com.floe.android.host.meetingtranscription.MeetingLiveStartOutcome
+import com.floe.android.host.meetingtranscription.MeetingLiveTranscriptionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.UUID
 
 internal object MeetingRecordingRuntime {
     private val _state = MutableStateFlow(
@@ -49,6 +53,9 @@ internal object MeetingRecordingRuntime {
 
     @Volatile
     private var pendingStartCancellation: String? = null
+
+    @Volatile
+    private var pendingLiveCancellation: String? = null
 
     /** Set by the foreground service; invoked on the main thread on a recorder error. */
     @Volatile
@@ -110,7 +117,12 @@ internal object MeetingRecordingRuntime {
         return emptySet()
     }
 
-    suspend fun begin(context: Context, meetingId: String, recordingId: String): Boolean =
+    suspend fun begin(
+        context: Context,
+        meetingId: String,
+        recordingId: String,
+        liveCloudTranscription: Boolean = false,
+    ): Boolean =
         transition.withLock {
         if (pendingStartCancellation == recordingId) pendingStartCancellation = null
         if (session != null) return false
@@ -150,46 +162,133 @@ internal object MeetingRecordingRuntime {
                 reason = "cancelledStart",
             )
         }
-        val recorder = try {
-            createRecorder(app)
+        val material = try {
+            withContext(Dispatchers.IO) { repository.material(meetingId, recordingId) }
         } catch (error: Exception) {
             return failStart(
                 repository,
                 meetingId,
                 recordingId,
-                recorderFailure(error, "The microphone is unavailable."),
+                storageFailure(error, "recordingMaterial"),
                 startedAtMillis = null,
                 elapsedMillis = 0L,
             )
         }
-        try {
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            recorder.setAudioChannels(1)
-            recorder.setAudioSamplingRate(RECORDING_SAMPLE_RATE)
-            recorder.setAudioEncodingBitRate(RECORDING_BIT_RATE)
-            recorder.setOutputFile(part.absolutePath)
-            recorder.setOnErrorListener { _, what, extra ->
-                onRecorderError(recordingId, what, extra)
+        val liveAudio = liveCloudTranscription &&
+            material.mimeType == MEETING_RECORDING_WAV_MIME
+        var recorder: MediaRecorder? = null
+        var capture: MeetingPcmCapture? = null
+        var liveManager: MeetingLiveTranscriptionManager? = null
+        if (liveAudio) {
+            val manager = liveManager(app)
+            val sessionId = UUID.randomUUID().toString()
+            val started = runCatching {
+                manager.start(
+                    meetingId = meetingId,
+                    recordingId = recordingId,
+                    sessionId = sessionId,
+                    chunkSeconds = LIVE_CHUNK_SECONDS,
+                )
+            }.getOrElse { error ->
+                MeetingLiveStartOutcome.Unavailable(
+                    com.floe.android.host.meetingtranscription.meetingTranscriptionFailureOf(error),
+                )
             }
-            recorder.prepare()
-            recorder.start()
-        } catch (error: Exception) {
-            runCatching { recorder.release() }
-            return failStart(
-                repository,
-                meetingId,
-                recordingId,
-                recorderFailure(error, "The microphone could not start."),
-                startedAtMillis = null,
-                elapsedMillis = 0L,
-            )
+            var session = (started as? MeetingLiveStartOutcome.Started)?.session
+            if (pendingLiveCancellation == recordingId) {
+                pendingLiveCancellation = null
+                manager.discard(meetingId, recordingId)
+                session = null
+            }
+            if (session == null) {
+                // A cloud/configuration failure must not turn the microphone
+                // away: the canonical WAV still records locally.
+                val failure = (started as? MeetingLiveStartOutcome.Unavailable)?.failure
+                    ?: com.floe.android.host.meetingtranscription.MeetingTranscriptionFailure(
+                        com.floe.android.host.meetingtranscription.MeetingTranscriptionFailureCode.INTERNAL,
+                        "liveUnavailable",
+                    )
+                manager.recordUnavailable(meetingId, recordingId, failure)
+            } else {
+                liveManager = manager
+            }
+            val fragmentDirectory = session?.directory
+            val captureManager = liveManager
+            capture = try {
+                MeetingPcmCapture(
+                    canonicalFile = part,
+                    fragmentDirectory = fragmentDirectory,
+                    chunkSeconds = session?.chunkSeconds ?: LIVE_CHUNK_SECONDS,
+                    onFragment = { fragment ->
+                        // This callback runs at a finalized-fragment boundary.
+                        // Wait for the durable queue write before capture
+                        // finalization can promote and delete that queue.
+                        captureManager?.let { manager ->
+                            runBlocking { manager.enqueueFragment(fragment) }
+                        }
+                    },
+                    onError = { detail -> onCaptureError(recordingId, detail) },
+                ).also { it.start() }
+            } catch (error: Exception) {
+                runCatching { part.delete() }
+                liveManager?.discard(meetingId, recordingId)
+                return failStart(
+                    repository,
+                    meetingId,
+                    recordingId,
+                    recorderFailure(error, "The microphone could not start."),
+                    startedAtMillis = null,
+                    elapsedMillis = 0L,
+                )
+            }
+        } else {
+            val created = try {
+                createRecorder(app)
+            } catch (error: Exception) {
+                return failStart(
+                    repository,
+                    meetingId,
+                    recordingId,
+                    recorderFailure(error, "The microphone is unavailable."),
+                    startedAtMillis = null,
+                    elapsedMillis = 0L,
+                )
+            }
+            recorder = created
+            try {
+                created.setAudioSource(MediaRecorder.AudioSource.MIC)
+                created.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                created.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                created.setAudioChannels(1)
+                created.setAudioSamplingRate(RECORDING_SAMPLE_RATE)
+                created.setAudioEncodingBitRate(RECORDING_BIT_RATE)
+                created.setOutputFile(part.absolutePath)
+                created.setOnErrorListener { _, what, extra ->
+                    onRecorderError(recordingId, what, extra)
+                }
+                created.prepare()
+                created.start()
+            } catch (error: Exception) {
+                runCatching { created.release() }
+                return failStart(
+                    repository,
+                    meetingId,
+                    recordingId,
+                    recorderFailure(error, "The microphone could not start."),
+                    startedAtMillis = null,
+                    elapsedMillis = 0L,
+                )
+            }
         }
         if (pendingStartCancellation == recordingId) {
             pendingStartCancellation = null
-            runCatching { recorder.stop() }
-            runCatching { recorder.release() }
+            if (capture != null) {
+                runCatching { capture?.stop(discard = false) }
+            } else {
+                runCatching { recorder?.stop() }
+                runCatching { recorder?.release() }
+            }
+            liveManager?.discard(meetingId, recordingId)
             return failStart(
                 repository,
                 meetingId,
@@ -207,7 +306,9 @@ internal object MeetingRecordingRuntime {
             recordingId = recordingId,
             partFile = part,
             recorder = recorder,
+            capture = capture,
             timeline = timeline,
+            liveManager = liveManager,
         )
         return try {
             withContext(Dispatchers.IO) {
@@ -230,8 +331,13 @@ internal object MeetingRecordingRuntime {
             true
         } catch (error: Exception) {
             session = null
-            runCatching { recorder.stop() }
-            runCatching { recorder.release() }
+            if (capture != null) {
+                runCatching { capture?.stop(discard = true) }
+            } else {
+                runCatching { recorder?.stop() }
+                runCatching { recorder?.release() }
+            }
+            liveManager?.discard(meetingId, recordingId)
             withContext(Dispatchers.IO) {
                 runCatching {
                     repository.failRecordingStart(meetingId, recordingId, "metadataStartFailed")
@@ -254,7 +360,15 @@ internal object MeetingRecordingRuntime {
         if (_state.value.phase != MeetingRecordingPhase.RECORDING) throw recordingNotActive()
         val now = System.currentTimeMillis()
         try {
-            current.recorder.pause()
+            val capture = current.capture
+            if (capture != null) {
+                val paused = withContext(Dispatchers.IO) { capture.pause() }
+                if (!paused) {
+                    throw IllegalStateException("pauseFailed")
+                }
+            } else {
+                current.recorder?.pause()
+            }
         } catch (error: Exception) {
             finalizeSession(context, current, "pauseFailed")
             throw recorderFailureException(error, "The recording could not be paused.")
@@ -292,7 +406,14 @@ internal object MeetingRecordingRuntime {
         if (_state.value.phase != MeetingRecordingPhase.PAUSED) throw recordingNotActive()
         val now = System.currentTimeMillis()
         try {
-            current.recorder.resume()
+            val capture = current.capture
+            if (capture != null) {
+                if (!capture.resume()) {
+                    throw IllegalStateException("resumeFailed")
+                }
+            } else {
+                current.recorder?.resume()
+            }
         } catch (error: Exception) {
             finalizeSession(context, current, "resumeFailed")
             throw recorderFailureException(error, "The recording could not resume.")
@@ -336,12 +457,38 @@ internal object MeetingRecordingRuntime {
         finalizeSession(context, current, detail)
     }
 
+    /**
+     * Stops only the live cloud queue. The canonical microphone capture keeps
+     * running; already-confirmed text and unconfirmed fragment files are kept
+     * for an explicit retry.
+     */
+    suspend fun cancelLiveCloudTranscription(context: Context) = transition.withLock {
+        val current = session
+        if (current == null) {
+            val snapshot = _state.value
+            if (snapshot.phase == MeetingRecordingPhase.STARTING &&
+                snapshot.recordingId != null
+            ) {
+                pendingLiveCancellation = snapshot.recordingId
+            }
+            return@withLock
+        }
+        current.capture?.disableLiveFragments()
+        current.liveManager?.cancel()
+    }
+
     suspend fun discard(context: Context) = transition.withLock {
         val current = session ?: throw recordingNotActive()
         val elapsed = current.timeline.stop(System.currentTimeMillis())
         session = null
-        runCatching { current.recorder.stop() }
-        runCatching { current.recorder.release() }
+        val capture = current.capture
+        if (capture != null) {
+            runCatching { withContext(Dispatchers.IO) { capture.stop(discard = true) } }
+        } else {
+            runCatching { current.recorder?.stop() }
+            runCatching { current.recorder?.release() }
+        }
+        current.liveManager?.discard(current.meetingId, current.recordingId)
         val repository = MeetingStoreRegistry.get(context.applicationContext).repository
         _state.value = _state.value.copy(
             phase = MeetingRecordingPhase.STOPPING,
@@ -393,12 +540,19 @@ internal object MeetingRecordingRuntime {
         val now = System.currentTimeMillis()
         val elapsed = current.timeline.stop(now)
         var stopped = false
-        try {
-            current.recorder.stop()
-            stopped = true
-        } catch (_: Exception) {
+        val capture = current.capture
+        if (capture != null) {
+            stopped = runCatching {
+                runBlocking(Dispatchers.IO) { capture.stop() }
+            }.getOrDefault(false) || current.partFile.length() > 44L
+        } else {
+            try {
+                current.recorder?.stop()
+                stopped = true
+            } catch (_: Exception) {
+            }
+            runCatching { current.recorder?.release() }
         }
-        runCatching { current.recorder.release() }
         val repository = MeetingStoreRegistry.get(context.applicationContext).repository
         var completed = false
         runCatching {
@@ -454,6 +608,11 @@ internal object MeetingRecordingRuntime {
                 }
             }
         }
+        if (completed) {
+            current.liveManager?.captureStopped(true)
+        } else {
+            current.liveManager?.captureStopped(false)
+        }
         _state.value = if (completed) {
             MeetingRecordingState(
                 phase = MeetingRecordingPhase.COMPLETED,
@@ -489,13 +648,23 @@ internal object MeetingRecordingRuntime {
         )
         var stopped = false
         var stopError: Throwable? = null
-        try {
-            current.recorder.stop()
-            stopped = true
-        } catch (error: Exception) {
-            stopError = error
+        val capture = current.capture
+        if (capture != null) {
+            stopped = try {
+                withContext(Dispatchers.IO) { capture.stop() }
+            } catch (error: Exception) {
+                stopError = error
+                false
+            }
+        } else {
+            try {
+                current.recorder?.stop()
+                stopped = true
+            } catch (error: Exception) {
+                stopError = error
+            }
+            runCatching { current.recorder?.release() }
         }
-        runCatching { current.recorder.release() }
         val repository = MeetingStoreRegistry.get(context.applicationContext).repository
         var completed = false
         var size = current.partFile.length()
@@ -536,6 +705,7 @@ internal object MeetingRecordingRuntime {
                             elapsedMillis = elapsed,
                             error = null,
                         )
+                        current.liveManager?.captureStopped(true)
                     } catch (error: Exception) {
                         finalFileFailure(context, current, elapsed, storageFailure(error, "recordingStopMetadata"))
                     }
@@ -580,6 +750,7 @@ internal object MeetingRecordingRuntime {
             elapsedMillis = elapsed,
             error = failure,
         )
+        current.liveManager?.captureStopped(false)
     }
 
     private suspend fun finalFileFailure(
@@ -600,6 +771,7 @@ internal object MeetingRecordingRuntime {
             elapsedMillis = elapsed,
             error = failure.error,
         )
+        current.liveManager?.captureStopped(false)
     }
 
     private fun startCancelledFailure(): MeetingException = meetingError(
@@ -686,12 +858,35 @@ internal object MeetingRecordingRuntime {
     private fun recorderFailureException(error: Throwable, fallback: String): MeetingException =
         recorderFailure(error, fallback)
 
+    private fun liveManager(context: Context): MeetingLiveTranscriptionManager =
+        MeetingLiveTranscriptionManager(context) {
+            (context.applicationContext as? FloeApplication)?.runtimeHost?.nativeRootEpoch()
+        }
+
+    private fun onCaptureError(expectedRecordingId: String, detail: String) {
+        val current = session
+        if (current == null || current.recordingId != expectedRecordingId) return
+        if (errorDispatched) return
+        errorDispatched = true
+        _state.value = _state.value.copy(
+            error = MeetingError(
+                code = MeetingErrorCode.RECORDING_FAILED,
+                message = "The microphone stopped unexpectedly.",
+                retryable = true,
+                detail = detail.take(160),
+            ),
+        )
+        errorHandler?.invoke()
+    }
+
     private class Session(
         val meetingId: String,
         val recordingId: String,
         val partFile: File,
-        val recorder: MediaRecorder,
+        val recorder: MediaRecorder?,
+        val capture: MeetingPcmCapture?,
         val timeline: MeetingRecordingTimeline,
+        val liveManager: MeetingLiveTranscriptionManager? = null,
     )
 
     val ACTIVE_PHASES = setOf(
@@ -701,6 +896,7 @@ internal object MeetingRecordingRuntime {
         MeetingRecordingPhase.STOPPING,
     )
 
+    private const val LIVE_CHUNK_SECONDS = 30
     private const val RECORDING_SAMPLE_RATE = 44_100
     private const val RECORDING_BIT_RATE = 96_000
     private const val DESTROY_PERSIST_TIMEOUT_MILLIS = 3_000L

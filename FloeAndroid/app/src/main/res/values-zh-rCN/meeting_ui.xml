@@ -117,6 +117,34 @@
     <string name="meeting_ui_playback_now">正在播放“%1$s”</string>
     <string name="meeting_ui_playback_position">%1$s / %2$s</string>
     <string name="meeting_ui_playback_failed">播放失败。</string>
+    <!-- While-recording live cloud transcription -->
+    <string name="meeting_ui_record_live_cloud">实时云端转写</string>
+    <string name="meeting_ui_record_live_cloud_note">录音过程中，已完成的音频片段会发送到你配置的云端转写服务。默认关闭；即使转写失败，本地录音仍会保留。</string>
+    <string name="meeting_ui_record_live_cloud_next">实时转写仅对下一次录音生效，本次录音保持当前设置。</string>
+    <string name="meeting_ui_record_live_cloud_status">实时转写：已确认 %1$d 段 · 等待 %2$d 段</string>
+    <string name="meeting_ui_record_live_cloud_stop">停止实时转写</string>
+    <string name="meeting_ui_record_live_cloud_replaces_auto">两者同时开启时，本次录音使用实时转写，停止后不会再自动执行整段录音转写。</string>
+    <string name="meeting_ui_record_live_cloud_failed">实时转写无法继续，录音仍在本地正常进行。</string>
+    <string name="meeting_ui_live_transcript_title">实时转写</string>
+    <string name="meeting_ui_live_transcript_meta">已确认 %1$d 个片段</string>
+    <string name="meeting_ui_live_transcript_pending">已确认 %1$d 个 · %2$d 个正在等待云端服务</string>
+    <string name="meeting_ui_live_transcript_failed_meta">已确认 %1$d 个 · %2$d 个未转写</string>
+    <string name="meeting_ui_live_transcript_waiting">正在等待第一个确认的片段。</string>
+    <string name="meeting_ui_live_transcript_draining">正在处理剩余片段…</string>
+    <string name="meeting_ui_live_transcript_completed">实时转写已保存到本次会议。</string>
+    <string name="meeting_ui_live_transcript_cancelled">实时转写已停止，已确认的片段仍然保留。</string>
+    <string name="meeting_ui_live_transcript_interrupted">录音在实时转写完成前结束。</string>
+    <string name="meeting_ui_live_transcript_cancel_unconfirmed">实时转写已在本地停止，但云端服务未确认停止。重试前请检查已转写内容。</string>
+    <string name="meeting_ui_live_transcript_failed">实时转写在所有片段确认前停止。</string>
+    <string name="meeting_ui_live_transcript_stop">停止实时转写</string>
+    <string name="meeting_ui_live_transcript_retry">重试未完成片段</string>
+    <string name="meeting_ui_live_phase_recording">实时</string>
+    <string name="meeting_ui_live_phase_draining">保存中</string>
+    <string name="meeting_ui_live_phase_completed">已保存</string>
+    <string name="meeting_ui_live_phase_failed">失败</string>
+    <string name="meeting_ui_live_phase_cancelled">已停止</string>
+    <string name="meeting_ui_live_phase_interrupted">已中断</string>
+
     <string name="meeting_ui_transcription_section">转写</string>
     <string name="meeting_ui_transcription_empty_title">暂无逐字稿</string>
     <string name="meeting_ui_transcription_empty_body">此会议还没有逐字稿。</string>

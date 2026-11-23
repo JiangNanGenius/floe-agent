@@ -61,6 +61,7 @@ class MeetingRecordingService : Service() {
             ACTION_RESUME -> handleControl(intent) { context -> MeetingRecordingRuntime.resume(context) }
             ACTION_STOP -> handleStop(intent)
             ACTION_DISCARD -> handleDiscard(intent)
+            ACTION_CANCEL_LIVE -> handleCancelLive(intent)
             else -> if (!MeetingRecordingRuntime.isActive) finishForeground(commandGeneration)
         }
         return START_NOT_STICKY
@@ -113,7 +114,12 @@ class MeetingRecordingService : Service() {
             return
         }
         scope.launch {
-            val started = MeetingRecordingRuntime.begin(applicationContext, meetingId, recordingId)
+            val started = MeetingRecordingRuntime.begin(
+                context = applicationContext,
+                meetingId = meetingId,
+                recordingId = recordingId,
+                liveCloudTranscription = intent.getBooleanExtra(EXTRA_LIVE_CLOUD, false),
+            )
             if (!started) {
                 val state = MeetingRecordingRuntime.state.value
                 val handledByThisStart = state.phase == MeetingRecordingPhase.FAILED &&
@@ -226,6 +232,21 @@ class MeetingRecordingService : Service() {
         scope.launch {
             runCatching { MeetingRecordingRuntime.discard(applicationContext) }
             finishForeground(generation)
+        }
+    }
+
+    private fun handleCancelLive(intent: Intent) {
+        if (!matchesActiveIntent(intent)) {
+            if (!MeetingRecordingRuntime.isActive) finishForeground(commandGeneration)
+            return
+        }
+        reassertForeground()
+        scope.launch {
+            runCatching { MeetingRecordingRuntime.cancelLiveCloudTranscription(applicationContext) }
+            MeetingRecordingNotifications.update(
+                this@MeetingRecordingService,
+                MeetingRecordingRuntime.state.value,
+            )
         }
     }
 
@@ -359,6 +380,8 @@ class MeetingRecordingService : Service() {
         internal const val ACTION_DISCARD = "com.floe.android.host.meeting.RECORD_DISCARD"
         internal const val EXTRA_MEETING_ID = "com.floe.android.host.meeting.extra.MEETING_ID"
         internal const val EXTRA_RECORDING_ID = "com.floe.android.host.meeting.extra.RECORDING_ID"
+        internal const val EXTRA_LIVE_CLOUD = "com.floe.android.host.meeting.extra.LIVE_CLOUD"
+        internal const val ACTION_CANCEL_LIVE = "com.floe.android.host.meeting.RECORD_CANCEL_LIVE"
         internal const val NOTIFICATION_ID = MeetingRecordingNotifications.NOTIFICATION_ID
     }
 }

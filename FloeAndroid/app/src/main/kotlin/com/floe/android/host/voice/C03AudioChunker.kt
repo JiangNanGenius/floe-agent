@@ -85,6 +85,18 @@ class C03AudioChunker(
         }
         val limit = C03ChunkBudget.normalizedLimit(chunkLimitBytes)
         val maxPayload = C03ChunkBudget.payloadBytes(limit)
+        val rawWav = parsePcm16Wav(source)
+        if (rawWav != null) {
+            extractPcm16Wav(
+                source = source,
+                raw = rawWav,
+                staging = staging,
+                maxPayload = maxPayload,
+                maxChunks = maxChunks,
+                onChunk = onChunk,
+            )
+            return
+        }
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var writer: ChunkWriter? = null
@@ -296,6 +308,167 @@ class C03AudioChunker(
             staging.listFiles()?.forEach { runCatching { it.delete() } }
         }
     }
+
+    /**
+     * Reads a plain PCM16 RIFF/WAVE file without a MediaCodec decoder. Android
+     * exposes WAV as `audio/raw`, so the compressed-source decoder path cannot
+     * consume it; live meeting recordings and imported WAVs still need the
+     * same bounded chunk contract.
+     */
+    private suspend fun extractPcm16Wav(
+        source: File,
+        raw: RawPcm16Wav,
+        staging: File,
+        maxPayload: Long,
+        maxChunks: Int,
+        onChunk: suspend (C03AudioChunk) -> Unit,
+    ) {
+        val dataBytes = raw.dataBytes
+        if (dataBytes < 2L) {
+            throw C03VoiceFailure(C03VoiceErrorCode.EMPTY_TRANSCRIPT, "audioTrackEmpty")
+        }
+        val blockAlign = raw.channels * 2
+        var consumed = 0L
+        var index = 0
+        try {
+            RandomAccessFile(source, "r").use { input ->
+                while (consumed < dataBytes) {
+                    currentCoroutineContext().ensureActive()
+                    if (cancelled) throw kotlinx.coroutines.CancellationException("chunkCancelled")
+                    if (index >= maxChunks) {
+                        throw C03VoiceFailure(
+                            C03VoiceErrorCode.FILE_TOO_LARGE,
+                            "tooManyAudioChunks",
+                        )
+                    }
+                    val remaining = dataBytes - consumed
+                    val frameAligned = (minOf(maxPayload, remaining) / blockAlign) * blockAlign
+                    if (frameAligned <= 0L) break
+                    val bytes = ByteArray(frameAligned.toInt())
+                    input.seek(raw.dataOffset + consumed)
+                    input.readFully(bytes)
+                    val pcm = downmixToPcm16(
+                        bytes,
+                        raw.channels,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                    )
+                    if (pcm.isEmpty()) break
+                    val file = File(staging, "chunk-%05d.wav".format(index))
+                    val writer = ChunkWriter(file, raw.sampleRate)
+                    writer.write(pcm)
+                    val duration = writer.finish()
+                    if (duration <= 0.0) {
+                        runCatching { file.delete() }
+                        break
+                    }
+                    val chunk = C03AudioChunk(
+                        index = index,
+                        file = file,
+                        sourceStartSeconds =
+                            (consumed / blockAlign).toDouble() / raw.sampleRate.toDouble(),
+                        durationSeconds = duration,
+                        sampleRate = raw.sampleRate,
+                        channels = 1,
+                    )
+                    index++
+                    consumed += frameAligned
+                    try {
+                        onChunk(chunk)
+                    } finally {
+                        runCatching { file.delete() }
+                    }
+                }
+            }
+            if (index == 0) {
+                throw C03VoiceFailure(C03VoiceErrorCode.EMPTY_TRANSCRIPT, "audioTrackEmpty")
+            }
+        } finally {
+            staging.listFiles()?.forEach { runCatching { it.delete() } }
+        }
+    }
+
+    private fun parsePcm16Wav(file: File): RawPcm16Wav? {
+        if (!file.isFile || file.length() < 44L) return null
+        return try {
+            RandomAccessFile(file, "r").use { input ->
+                val header = ByteArray(12)
+                input.readFully(header)
+                if (String(header, 0, 4, Charsets.US_ASCII) != "RIFF" ||
+                    String(header, 8, 4, Charsets.US_ASCII) != "WAVE"
+                ) {
+                    return null
+                }
+                var offset = 12L
+                var sampleRate = 0
+                var channels = 0
+                var formatOk = false
+                var dataOffset = -1L
+                var declaredData = 0L
+                while (offset + 8 <= input.length()) {
+                    input.seek(offset)
+                    val id = ByteArray(4)
+                    input.readFully(id)
+                    val sizeBytes = ByteArray(4)
+                    input.readFully(sizeBytes)
+                    val size = java.nio.ByteBuffer.wrap(sizeBytes)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xffffffffL
+                    val data = offset + 8
+                    when (String(id, Charsets.US_ASCII)) {
+                        "fmt " -> {
+                            if (size < 16L || data + 16L > input.length()) return null
+                            input.seek(data)
+                            val format = readLe16(input)
+                            channels = readLe16(input)
+                            sampleRate = readLe32(input)
+                            input.skipBytes(6)
+                            val bits = readLe16(input)
+                            formatOk = format == 1 && channels in 1..8 &&
+                                sampleRate in 8_000..192_000 && bits == 16
+                            if (!formatOk) return null
+                        }
+                        "data" -> {
+                            dataOffset = data
+                            declaredData = size
+                            break
+                        }
+                    }
+                    offset = data + size + (size and 1L)
+                }
+                if (!formatOk || dataOffset < 0L) return null
+                val available = (input.length() - dataOffset).coerceAtLeast(0L)
+                val actual = minOf(declaredData, available).coerceAtLeast(0L)
+                RawPcm16Wav(
+                    sampleRate = sampleRate,
+                    channels = channels,
+                    dataOffset = dataOffset,
+                    dataBytes = actual,
+                )
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun readLe16(input: RandomAccessFile): Int {
+        val low = input.read()
+        val high = input.read()
+        if (low < 0 || high < 0) return -1
+        return (low and 0xff) or ((high and 0xff) shl 8)
+    }
+
+    private fun readLe32(input: RandomAccessFile): Int {
+        val bytes = ByteArray(4)
+        input.readFully(bytes)
+        return java.nio.ByteBuffer.wrap(bytes)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+    }
+
+    private data class RawPcm16Wav(
+        val sampleRate: Int,
+        val channels: Int,
+        val dataOffset: Long,
+        val dataBytes: Long,
+    )
 
     private fun validatedSource(path: String): File {
         if (path.isBlank() || path.length > 4_096) {

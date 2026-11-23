@@ -25,7 +25,10 @@ internal class MeetingRecordingController(context: Context) : MeetingRecorder {
 
     override val state: StateFlow<MeetingRecordingState> = MeetingRecordingRuntime.state
 
-    override suspend fun start(meetingId: String): MeetingMaterial {
+    override suspend fun start(
+        meetingId: String,
+        liveCloudTranscription: Boolean,
+    ): MeetingMaterial {
         val id = MeetingIds.require(meetingId)
         if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -49,12 +52,17 @@ internal class MeetingRecordingController(context: Context) : MeetingRecorder {
             detail.recordings.size + 1,
         )
         val draft = withContext(Dispatchers.IO) {
-            repository.createRecordingDraft(id, fallbackName)
+            repository.createRecordingDraft(
+                meetingId = id,
+                displayName = fallbackName,
+                liveAudio = liveCloudTranscription,
+            )
         }
         val startIntent = Intent(appContext, MeetingRecordingService::class.java)
             .setAction(MeetingRecordingService.ACTION_START)
             .putExtra(MeetingRecordingService.EXTRA_MEETING_ID, id)
             .putExtra(MeetingRecordingService.EXTRA_RECORDING_ID, draft.id)
+            .putExtra(MeetingRecordingService.EXTRA_LIVE_CLOUD, liveCloudTranscription)
         try {
             ContextCompat.startForegroundService(appContext, startIntent)
         } catch (error: Exception) {
@@ -292,6 +300,27 @@ internal class MeetingRecordingController(context: Context) : MeetingRecorder {
             throw MeetingException(next.error)
         }
         return null
+    }
+
+    override suspend fun cancelLiveTranscription(): Boolean {
+        val snapshot = MeetingRecordingRuntime.state.value
+        val meetingId = snapshot.meetingId ?: return false
+        val recordingId = snapshot.recordingId ?: return false
+        if (snapshot.phase != MeetingRecordingPhase.RECORDING &&
+            snapshot.phase != MeetingRecordingPhase.PAUSED
+        ) {
+            return false
+        }
+        return try {
+            sendCommand(
+                MeetingRecordingService.ACTION_CANCEL_LIVE,
+                meetingId,
+                recordingId,
+            )
+            true
+        } catch (_: MeetingException) {
+            false
+        }
     }
 
     fun activeRecordingIds(): Set<String> = MeetingRecordingRuntime.activeRecordingIds()
