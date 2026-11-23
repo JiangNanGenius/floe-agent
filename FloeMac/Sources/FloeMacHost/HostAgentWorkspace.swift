@@ -445,6 +445,9 @@ final class HostAgentWorkspace: ObservableObject {
     @Published var allowsWorkspaceWrites: Bool { didSet { preferences.set(allowsWorkspaceWrites, forKey: "floe.mac.workspace.allowWrites") } }
     @Published var verifyAgentAnswers: Bool { didSet { preferences.set(verifyAgentAnswers, forKey: "floe.mac.agent.verifyAnswers") } }
     @Published var defaultMode: HostAgentMode { didSet { preferences.set(defaultMode.rawValue, forKey: "floe.mac.agent.defaultMode") } }
+    @Published var computerUseBackend: MacComputerUseBackend {
+        didSet { preferences.set(computerUseBackend.rawValue, forKey: Self.computerUseBackendKey) }
+    }
     @Published private(set) var defaultApprovalMode: TaskApprovalMode
     @Published private(set) var approvalModelID: UUID?
     @Published private(set) var selectedTaskPolicy: TaskPolicy?
@@ -453,6 +456,7 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private(set) var approvalSettingsError: String?
     private static let defaultApprovalKey = "floe.mac.agent.defaultApprovalMode"
     private static let reviewerKey = "floe.mac.agent.approvalModelID"
+    private static let computerUseBackendKey = "floe.mac.agent.computerUseBackend"
 
     var taskApprovalMode: TaskApprovalMode {
         selectedID == nil ? draftApprovalMode ?? defaultApprovalMode
@@ -1045,6 +1049,8 @@ final class HostAgentWorkspace: ObservableObject {
         #if FLOE_UNIFIED_MAC
         self.webSearch = MacSearchSettings(namespace: namespace, useKeychain: useKeychain, preferences: preferences)
         self.preferences = preferences
+        self.computerUseBackend = preferences.string(forKey: Self.computerUseBackendKey)
+            .flatMap(MacComputerUseBackend.init(rawValue:)) ?? .kimi
         self.selectedLocalModelID = preferences.string(forKey: Self.selectedLocalModelKey).flatMap(UUID.init(uuidString:))
         self.auxiliaryPreferences = preferences.data(forKey: Self.auxiliaryPreferencesKey)
             .flatMap { try? JSONDecoder().decode(ModelSelectionPreferences.self, from: $0) } ?? .init()
@@ -2871,6 +2877,7 @@ final class HostAgentWorkspace: ObservableObject {
                         imageInspectionAvailable: provider.model.capabilities.contains(.vision) || auxRoutes.vision != nil,
                         imageTools: images, videoTools: videoTools,
                         browserTools: { root in self.makeTaskBrowserTools?(taskID, root) ?? [] },
+                        computerUseBackend: computerUseBackend,
                         extensionTools: extensionTools,
                         memoryTools: memory.tools(conversationID: taskID,
                             workspaceID: toolWorkspace.kind == .project ? toolWorkspace.id : nil, allowWrites: !readOnly),

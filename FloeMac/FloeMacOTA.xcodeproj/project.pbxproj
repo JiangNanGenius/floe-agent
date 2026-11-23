@@ -227,6 +227,7 @@
 		D168282587B3A8AA0FD3D08B /* FloeTaskActivityRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B01BD5383D76B30B5B44F89 /* FloeTaskActivityRows.swift */; };
 		D2FC991018483F18E00503B1 /* MacNativeShellTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28877918BFBA665B730F135E /* MacNativeShellTool.swift */; };
 		D38C5CCFD803477C3D3886CD /* BridgeConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A583838B33A00947EEDB8092 /* BridgeConfiguration.swift */; };
+		D3DE1E356B657DB6CE2D8239 /* MacFloeComputerUse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4019E37C8FF1366F03ADD831 /* MacFloeComputerUse.swift */; };
 		D50CA8553DE347D1C493365A /* Iroh-FFI-MIT.txt in Resources */ = {isa = PBXBuildFile; fileRef = 493F6D40AF1EF3959781DF8B /* Iroh-FFI-MIT.txt */; };
 		D581E00160FB882697BBA25E /* MacRemoteConnections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DD579188556BF725E477D0F /* MacRemoteConnections.swift */; };
 		D8B6297AEF40618F8E5B5BE8 /* MacManagedStorageSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F4B0F643EECE31FA42EC9E /* MacManagedStorageSettingsView.swift */; };
@@ -360,6 +361,7 @@
 		3D58A5F857514472DF89BC1B /* MacTaskActivityInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacTaskActivityInspector.swift; sourceTree = "<group>"; };
 		3F1D29C9C204AD8130361FCD /* MacScopedApprovals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacScopedApprovals.swift; sourceTree = "<group>"; };
 		3FFFAB59E01717D5FB145D41 /* MacQuestionHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacQuestionHistoryView.swift; sourceTree = "<group>"; };
+		4019E37C8FF1366F03ADD831 /* MacFloeComputerUse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacFloeComputerUse.swift; sourceTree = "<group>"; };
 		40DE622EFB41BFC58F46665D /* AppMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMode.swift; sourceTree = "<group>"; };
 		413742E7CECCE8B7E964FD66 /* MacTimelineEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacTimelineEditorView.swift; sourceTree = "<group>"; };
 		420ACB7044421B3F884B3EFE /* MacMediaEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMediaEditing.swift; sourceTree = "<group>"; };
@@ -893,6 +895,7 @@
 				1BC52FE75470569CE7414E5E /* MacConversationTools.swift */,
 				6F1D006608C2CCC3FCC6B459 /* MacCreativeLibrary.swift */,
 				46F89873558A21507D732F67 /* MacCreativeWorkbenchView.swift */,
+				4019E37C8FF1366F03ADD831 /* MacFloeComputerUse.swift */,
 				6DEB5C7FC678EE5139D25AC2 /* MacICloudModelsView.swift */,
 				D33E07BAB926EA27E23FE185 /* MacICloudModelSync.swift */,
 				10B9BA421EC847B74F9A4258 /* MacImageGeneration.swift */,
@@ -1476,6 +1479,7 @@
 				5F49E9F3BCE3E1A273409F72 /* MacConversationTools.swift in Sources */,
 				5B8B06EE86C7A61F42187D04 /* MacCreativeLibrary.swift in Sources */,
 				4741B142DE4A1F6D8C032F65 /* MacCreativeWorkbenchView.swift in Sources */,
+				D3DE1E356B657DB6CE2D8239 /* MacFloeComputerUse.swift in Sources */,
 				399D32E6F5742F41EAC16062 /* MacICloudConfigurationView.swift in Sources */,
 				31A495121B815C0EDA3F01AE /* MacICloudModelSync.swift in Sources */,
 				67CE69B1723C3E8324B9BA49 /* MacICloudModelsView.swift in Sources */,

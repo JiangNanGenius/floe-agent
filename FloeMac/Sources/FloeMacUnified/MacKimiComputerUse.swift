@@ -7,20 +7,19 @@ import Security
 import FloeTools
 
 enum MacKimiError: LocalizedError {
-    case unavailable, transport, invalidTarget, permission, message(String)
+    case unavailable, transport, invalidTarget, message(String)
     var errorDescription: String? {
         switch self {
         case .unavailable: "Install Kimi CU and enable local agent access in its settings."
         case .transport: "Kimi CU did not return a complete response. Inspect the window before repeating an action."
         case .invalidTarget: "Choose a target app, then inspect its window again before acting."
-        case .permission: "This action requires approval to access another application."
         case .message(let text): text
         }
     }
 }
 
 /// A run owns one stdio session so a snapshot remains bound to the same Kimi CU connection.
-final class MacKimiComputerUse: @unchecked Sendable {
+final class MacKimiComputerUse: MacDesktopClient, @unchecked Sendable {
     private let queue = DispatchQueue(label: "org.floeagent.mac.kimicu")
     private var process: Process?
     private var requests: FileHandle?
@@ -81,13 +80,9 @@ final class MacKimiComputerUse: @unchecked Sendable {
         screenshot = nil
     }
 
-    struct Reply: Sendable {
-        var text: String
-        var image: Data?
-        var mime: String?
-    }
+    private typealias Reply = MacDesktopReply
 
-    func perform(_ action: MacDesktopControl.Arguments, pid: Int32, context: ToolContext) async throws -> Reply {
+    func perform(_ action: MacDesktopControl.Arguments, pid: Int32, context: ToolContext) async throws -> MacDesktopReply {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 do {

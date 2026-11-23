@@ -219,11 +219,30 @@ struct MacPermissionsSettingsView: View {
             }
 
             Section {
-                MacKimiCompanionRow()
+                Picker(MacPermissionsText.t("后台操作后端", "Background Control Backend"), selection: $workspace.computerUseBackend) {
+                    Text("Kimi CU")
+                        .accessibilityIdentifier("settings.computerUse.kimi")
+                        .tag(MacComputerUseBackend.kimi)
+                    Text(MacPermissionsText.t("Floe 本机", "Floe Native"))
+                        .accessibilityIdentifier("settings.computerUse.floe")
+                        .tag(MacComputerUseBackend.floe)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.permissions.computerUseBackend")
+                if workspace.computerUseBackend == .kimi {
+                    MacKimiCompanionRow()
+                }
             } header: {
-                Text(MacPermissionsText.t("后台操作其他应用", "Background App Control"))
+                Text("Computer Use")
             } footer: {
-                Text(MacPermissionsText.t("在 Kimi CU 中配置辅助功能和屏幕录制权限。", "Configure Accessibility and Screen Recording in Kimi CU."))
+                switch workspace.computerUseBackend {
+                case .kimi:
+                    Text(MacPermissionsText.t("下次运行将使用 Kimi CU。请在 Kimi CU 中配置本地 Agent 连接、辅助功能和屏幕录制。",
+                                              "Kimi CU will be used on the next run. Configure local agent access, Accessibility and Screen Recording in Kimi CU."))
+                case .floe:
+                    Text(MacPermissionsText.t("下次运行将使用 Floe 本机。请在下方为 Floe Agent 允许辅助功能。截取窗口还需屏幕录制权限。",
+                                              "Floe Native will be used on the next run. Allow Accessibility for Floe Agent below. Window captures also require Screen Recording."))
+                }
             }
 
             Section {

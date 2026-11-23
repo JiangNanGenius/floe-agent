@@ -61,6 +61,7 @@ let keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
     canvasWindow.orderBack(nil)
     panel.orderBack(nil)
+    if CommandLine.arguments.contains("--initial-key-window") { panel.makeKey() }
 }
 var activated = false
 func record() {

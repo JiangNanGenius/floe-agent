@@ -258,6 +258,7 @@ public enum MacAgentWorkspaceTools {
         imageInspectionAvailable: Bool = false,
         imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [],
         browserTools: ((URL) -> [AnyAgentTool])? = nil,
+        computerUseBackend: MacComputerUseBackend = .kimi,
         extensionTools: [AnyAgentTool] = [],
         memoryTools: [AnyAgentTool] = [],
         observeShellOutput: (@Sendable (MacShellOutputUpdate) async -> Void)? = nil,
@@ -287,6 +288,7 @@ public enum MacAgentWorkspaceTools {
             imageInspectionAvailable: imageInspectionAvailable,
             imageTools: imageTools, videoTools: videoTools,
             browserTools: readOnly || chatOnly ? [] : browserTools?(root) ?? [],
+            computerUseBackend: computerUseBackend,
             extensionTools: memoryTools + (chatOnly ? [] : extensionTools),
             observeShellOutput: observeShellOutput
         )
@@ -2751,6 +2753,7 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
                 conversations: FloeMacConversationToolCapability? = nil,
                 imageInspectionAvailable: Bool = false,
                 imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [], browserTools: [AnyAgentTool] = [],
+                computerUseBackend: MacComputerUseBackend = .kimi,
                 extensionTools: [AnyAgentTool] = [],
                 observeShellOutput: (@Sendable (MacShellOutputUpdate) async -> Void)? = nil) {
         let root = workspaceRootURL.resolvingSymlinksInPath().standardizedFileURL
@@ -2785,7 +2788,9 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             if FileManager.default.isExecutableFile(atPath: MacNativeShellTool.sandbox) {
                 table[MacNativeShellTool.name] = MacNativeShellTool(root: MacAgentWorkspaceRoot(root), observe: observeShellOutput)
             }
-            for tool in MacNativeDesktopTools.available(rootURL: root) { table[tool.executionDescriptor.name] = tool }
+            for tool in MacNativeDesktopTools.available(rootURL: root, backend: computerUseBackend) {
+                table[tool.executionDescriptor.name] = tool
+            }
             table[MacAgentWorkspaceTools.createFileToolName] = MacAgentWorkspaceCreateFileTool(rootURL: root)
             table[MacAgentWorkspaceTools.replaceTextToolName] = MacAgentWorkspaceReplaceTextTool(rootURL: root)
             table[MacAgentWorkspaceTools.writeFileToolName] = MacAgentWorkspaceWriteFileTool(rootURL: root)

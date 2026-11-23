@@ -292,6 +292,10 @@ final class UnifiedMacSmoke {
             await verifyBackgroundWindow(model, fixturePID: pid, window: window)
             return
         }
+        if CommandLine.arguments.contains("--computer-use-settings-only") {
+            await verifyComputerUseSettings(model)
+            return
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--native-command-fixture"),
            CommandLine.arguments.indices.contains(flag + 1), let endpoint = URL(string: CommandLine.arguments[flag + 1]) {
             await exerciseNativeCommands(model, endpoint: endpoint)
@@ -786,10 +790,18 @@ final class UnifiedMacSmoke {
     private func verifyBackgroundWindow(_ model: BridgeAppModel, fixturePID: Int32, window: Int) async {
         let app = "org.floeagent.qa.background-window"
         let before = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let cursor = CGEvent(source: nil)?.location
+        let native = CommandLine.arguments.contains("--background-floe-native")
+        let settings = HostAgentWorkspace(supportDirectory: root, namespace: preferenceSuite, useKeychain: false,
+                                          preferences: preferences)
+        if native { settings.computerUseBackend = .floe }
+        let backend = settings.computerUseBackend
+        let executor = MacAgentWorkspaceToolExecutor(workspaceRootURL: root, computerUseBackend: backend)
         guard fixturePID > 0, window > 0, before != fixturePID,
               NSRunningApplication(processIdentifier: fixturePID)?.bundleIdentifier == app,
-              let desktop = MacNativeDesktopTools.available(rootURL: root).compactMap({ $0 as? MacDesktopControl }).first else {
-            finish(["error": "Background fixture or signed companion unavailable"]); return
+              let desktop = executor.descriptor(named: MacDesktopControl.name) else {
+            finish(["error": "Background fixture or selected backend unavailable", "backend": backend.rawValue,
+                    "nativeStatus": MacFloeComputerUse.status]); return
         }
         let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root,
                                   cancellation: CancellationToken(), approvalOrigin: .humanCard)
@@ -800,7 +812,7 @@ final class UnifiedMacSmoke {
         func invoke(_ action: MacDesktopControl.Action, snapshot: String? = nil, index: Int? = nil,
                     value: String? = nil, keys: String? = nil,
                     from: CGPoint? = nil, to: CGPoint? = nil, targetWindow: Int? = nil,
-                    steps: Int? = nil) async throws -> ToolExecutionOutput {
+                    steps: Int? = nil, expectedIdentity: String? = nil) async throws -> ToolResult {
             var input: [String: Any] = ["action": action.rawValue, "app": app, "pid": fixturePID,
                                         "windowID": targetWindow ?? window]
             input["snapshotID"] = snapshot
@@ -813,8 +825,9 @@ final class UnifiedMacSmoke {
             input["toY"] = to.map { Double($0.y) }
             input["steps"] = steps
             let data = try JSONSerialization.data(withJSONObject: input)
-            let arguments = try JSONDecoder().decode(MacDesktopControl.Arguments.self, from: data)
-            return try await desktop.execute(arguments, context: context)
+            let call = try ToolCall(id: UUID().uuidString, toolName: MacDesktopControl.name, argumentsJSON: data, scope: .local)
+            return try await executor.execute(call, expectedAuthorizationIdentity: expectedIdentity ?? desktop.authorizationIdentity,
+                                              context: context)
         }
         func snapshotID(_ text: String) throws -> String {
             let pattern = #"(?<=snapshot_id=)[A-Fa-f0-9-]{36}"#
@@ -827,31 +840,42 @@ final class UnifiedMacSmoke {
                   let index = Int(line[range]) else { throw MacKimiError.invalidTarget }
             return (try snapshotID(text), index)
         }
-        var result: [String: Any] = [:]
+        var result: [String: Any] = ["backend": backend.rawValue]
         do {
+            if native {
+                let listed = try await invoke(.windows)
+                result["windowsListed"] = listed.status == .ok && listed.outputSummary.contains("window_id=\(window)")
+                let old = MacDesktopControl.descriptor.authorizationIdentity
+                result["oldBackendApprovalDenied"] = try await invoke(.inspect, expectedIdentity: old).status == .denied
+            }
             let fieldState = try await invoke(.inspect)
-            let field = try snapshot(fieldState.summary, role: "AXTextField")
+            let field = try snapshot(fieldState.outputSummary, role: "AXTextField")
+            if native, let dragWindow {
+                let wrongWindow = try await invoke(.setValue, snapshot: field.0, index: field.1, value: "Wrong window",
+                                                   targetWindow: dragWindow)
+                result["crossWindowInputRejected"] = wrongWindow.status == .failed
+            }
             _ = try await invoke(.setValue, snapshot: field.0, index: field.1, value: "Floe background edit")
             var buttonState = try await invoke(.inspect)
-            result["fieldVerified"] = buttonState.summary.contains("Floe background edit")
+            result["fieldVerified"] = buttonState.outputSummary.contains("Floe background edit")
             if gestures {
-                let field = try snapshot(buttonState.summary, role: "AXTextField")
+                let field = try snapshot(buttonState.outputSummary, role: "AXTextField")
                 _ = try await invoke(.click, snapshot: field.0, index: field.1)
                 let focus = try await invoke(.inspect)
-                result["fieldFocused"] = focus.summary.split(separator: "\n").contains {
+                result["fieldFocused"] = focus.outputSummary.split(separator: "\n").contains {
                     $0.contains("AXTextField") && $0.contains("(focused)")
                 }
-                let selected = try await invoke(.keys, snapshot: snapshotID(focus.summary), keys: "cmd+a")
+                let selected = try await invoke(.keys, snapshot: snapshotID(focus.outputSummary), keys: "cmd+a")
                 let refreshed = try await invoke(.inspect)
-                let pressed = try await invoke(.keys, snapshot: snapshotID(refreshed.summary), keys: "z")
-                result["keysDelivered"] = selected.exitStatus != 1 && pressed.exitStatus != 1
-                    && pressed.summary.contains("Window after action:")
-                result["keysReceipt"] = String(pressed.summary.prefix(1200))
+                let pressed = try await invoke(.keys, snapshot: snapshotID(refreshed.outputSummary), keys: "z")
+                result["keysDelivered"] = selected.status == .ok && pressed.status == .ok
+                    && pressed.outputSummary.contains("Window after action:")
+                result["keysReceipt"] = String(pressed.outputSummary.prefix(1200))
                 buttonState = try await invoke(.inspect)
             }
-            let button = try snapshot(buttonState.summary, role: "Record fixture click")
+            let button = try snapshot(buttonState.outputSummary, role: "Record fixture click")
             let clicked = try await invoke(.click, snapshot: button.0, index: button.1)
-            result["clickDelivered"] = clicked.exitStatus != 1 && clicked.summary.contains("Window after action:")
+            result["clickDelivered"] = clicked.status == .ok && clicked.outputSummary.contains("Window after action:")
             let capture = try await invoke(.screenshot)
             if let item = capture.artifacts.first {
                 let data = try Data(contentsOf: root.appendingPathComponent(item.relativePath))
@@ -860,12 +884,13 @@ final class UnifiedMacSmoke {
             if gestures {
                 guard let dragWindow, dragWindow != window else { throw MacKimiError.invalidTarget }
                 let canvas = try await invoke(.screenshot, targetWindow: dragWindow)
-                let moved = try await invoke(.drag, snapshot: snapshotID(canvas.summary),
+                let moved = try await invoke(.drag, snapshot: snapshotID(canvas.outputSummary),
                     from: CGPoint(x: 100, y: 140), to: CGPoint(x: 300, y: 140), targetWindow: dragWindow, steps: 2)
-                result["dragDelivered"] = moved.exitStatus != 1 && moved.summary.contains("Window after action:")
-                result["dragReceipt"] = String(moved.summary.prefix(1200))
+                result["dragDelivered"] = moved.status == .ok && moved.outputSummary.contains("Window after action:")
+                result["dragReceipt"] = String(moved.outputSummary.prefix(1200))
             }
             result["foregroundPreserved"] = NSWorkspace.shared.frontmostApplication?.processIdentifier == before
+            result["cursorPreserved"] = CGEvent(source: nil)?.location == cursor
         } catch { result["error"] = error.localizedDescription }
         if let agent = model.macWorkspace?.agent {
             let end = ContinuousClock.now + .seconds(8)
@@ -873,6 +898,39 @@ final class UnifiedMacSmoke {
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
         finish(result)
+    }
+
+    private func verifyComputerUseSettings(_ model: BridgeAppModel) async {
+        var checks: [String: Bool] = [:]
+        defer { finish(["checks": checks]) }
+        guard let workspace = await readyFixtureWorkbench(model),
+              await exerciseSettingsPage(.permissions, model: model),
+              let content = model.smokeAgentSettingsSheet?.contentView else { return }
+        checks["defaultsToKimi"] = workspace.computerUseBackend == .kimi
+
+        func matchingPicker(in view: NSView) -> NSSegmentedControl? {
+            if let picker = view as? NSSegmentedControl, picker.segmentCount == 2,
+               picker.label(forSegment: 0) == "Kimi CU" { return picker }
+            return view.subviews.lazy.compactMap { matchingPicker(in: $0) }.first
+        }
+        func choose(_ backend: MacComputerUseBackend) async -> Bool {
+            content.layoutSubtreeIfNeeded()
+            if let picker = matchingPicker(in: content) {
+                picker.selectedSegment = backend == .kimi ? 0 : 1
+                _ = picker.sendAction(picker.action, to: picker.target)
+            } else {
+                _ = pressAccessibilityButton(content, id: "settings.computerUse." + backend.rawValue)
+            }
+            let deadline = ContinuousClock.now + .seconds(1)
+            while workspace.computerUseBackend != backend && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            let reopened = HostAgentWorkspace(supportDirectory: root, namespace: preferenceSuite, useKeychain: false,
+                                              preferences: preferences)
+            return workspace.computerUseBackend == backend && reopened.computerUseBackend == backend
+        }
+        checks["floeSelectedAndSaved"] = await choose(.floe)
+        checks["kimiSelectedAndSaved"] = await choose(.kimi)
     }
 
     private func exerciseVisionRouting(_ model: BridgeAppModel, endpoint: URL) async {
