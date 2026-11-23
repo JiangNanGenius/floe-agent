@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>インストールから最初の結果まで</title>
+<link rel="stylesheet" href="../../styles/help.css">
+</head>
+<body>
+<main>
+<h1>インストールから最初の結果まで</h1>
+<nav class="toc" aria-label="目次"><h2>目次</h2><ul>
+<li class="lv2"><a href="#overview">概要</a></li>
+<li class="lv2"><a href="#section-1">インストールチャンネルを選択してください</a></li>
+<li class="lv2"><a href="#section-2">AIタスクを完了してください</a></li>
+<li class="lv2"><a href="#section-3">デバイスでコードを実行してください</a></li>
+<li class="lv2"><a href="#section-4">3Dモデルを作成して保存してください</a></li>
+<li class="lv2"><a href="#section-5">Spaceで作業してみてください（新しいビルド）</a></li>
+<li class="lv2"><a href="#section-6">適切なブリッジを選択してください</a></li>
+<li class="lv2"><a href="#section-7">保存し、回復し、サポートを受ける</a></li>
+</ul></nav>
+<h2 id="overview">概要</h2>
+<p>このガイドでは iOS / iPadOS を取り上げています。 選択したリリースの実際の機能を確認してください。 ご覧ください <a href="shared-basics.html">共有ガイド</a> モデル、タスク、ファイル用です。</p>
+<h2 id="section-1">インストールチャンネルを選択してください</h2>
+<p>開く <a href="https://www.floe-agent.com/en/releases" class="external">リリースセンター</a> そして、Floe Agent、Mac Bridge、またはiOS Bridgeを選択してください。 Floeエージェントは、iOS/iPadOS（26歳以上）向けにApp Storeでご利用いただけます。ストアから更新してください。 GitHub iOS IPAはご自身の署名が必要で、新しい機能が搭載されている可能性があります。 検査する <a href="https://github.com/JiangNanGenius/floe-agent/blob/main/docs/CURRENT_STATUS.md" class="external">チャンネルバージョンと検証日</a> インストーラーを選択する前に <a href="https://www.floe-agent.com/en#beta" class="external">ウェブサイトで申し込む</a> TestFlightへのアクセスについて；申請しても即時の適格性が保証されるわけではありません。</p>
+<h2 id="section-2">AIタスクを完了してください</h2>
+<p>モデル設定で作業中のクラウドモデルを追加し、タスクを作成してそのワークスペースを選択してください。 続く <a href="shared-basics.html">モデル、タスク、ファイル</a> 設定、明確な手順、保存、および一般的なエラーについて。 ご覧ください <a href="user-manual.html#section-2">プラットフォームマニュアル</a> ローカルモデルおよびデバイスの機能について。</p>
+<h2 id="section-3">デバイスでコードを実行してください</h2>
+<p><strong>準備してください：</strong> 十分なストレージとメモリ。 現在の iOS は、タスクおよびプロジェクトの所有権を保持しながら、共有 ARM64 Linux ランタイムを使用しています。 パッケージはゲストアーキテクチャと一致しなければなりません。</p>
+<ol><li>実行環境設定でリソースをダウンロードし、検証してから、現在のワークスペース端末を開いてください。</li><li>ラン <code>pwd</code> そして <code>uname -m</code> ディレクトリと実際のアーキテクチャを確認する。 その環境にPython、Node.js、またはその他の必要なパッケージをインストールしてください。</li><li>小さなプログラムを実行し、その出力を開いてください。 HTTP サービスの場合は、選択してください <strong>Webサービスとして実行</strong>、実際の応答を待ってから、プレビューしてください。</li><li>完了したら、所有ジョブまたはサービスを停止してください。 端末を隠したりプレビューを閉じたりしても、バックグラウンド作業は停止しません。</li></ol>
+<p><strong>失敗した場合は：</strong> まず、インストール、起動、ジョブの出力を検査してください。 修復する前にプロジェクトファイルを保存し、最初のステップとしてデータをリセットしたり削除したりしないでください。 見てみる <a href="user-manual.html#section-9">端末と環境</a>.</p>
+<h2 id="section-4">3Dモデルを作成して保存してください</h2>
+<p><strong>準備してください：</strong> ネイティブ3Dワークベンチを使用したiOS/iPadOSリリース。 インポートされたメッシュはネイティブのパラメトリック履歴を取得せず、サポートされる操作はフォーマットによって異なります。</p>
+<ol><li>クリエイティブなワークフローを通じて、シンプルなジオメトリから始めて、ネイティブの3Dモデルを作成してください。</li><li>同一モデル内で寸法、穴、またはフィレットを絞り込む。 アシスタントを使用する際は、現在のモデルと意図された変更を特定してください。</li><li>ジオメトリ、素材、ビューを確認し、保存してください。 <code>.floecad</code> ファイルをファイルし、再度開いてください。</li><li>意図した使用目的の画像またはサポートされている3D形式をエクスポートし、受信ツールで確認してください。</li></ol>
+<p><strong>失敗した場合は：</strong> 成功したインポートを編集可能なサポートとして扱うのではなく、読み取り専用のインポートを保持します。 失敗したジオメトリの変更を復元可能な状態に元に戻す。 ご覧ください <a href="user-manual.html#section-15-3">ネイティブ3Dマニュアル</a>.</p>
+<h2 id="section-5">Spaceで作業してみてください（新しいビルド）</h2>
+<p><strong>準備してください：</strong> Space を含むインストーラです；参照してください <a href="workspaces.html">ワークスペースガイド</a> 必要なビルドと <a href="https://github.com/JiangNanGenius/floe-agent/blob/main/docs/CURRENT_STATUS.md" class="external">チャンネルのステータス</a> 可用性について GitHub IPAはご自身の署名が必要です。</p>
+<ol><li>開く <strong>スペース</strong> サイドバーから「Files」に切り替えてください。 軽くたたく <strong>新しい</strong> そして、図面または文書を作成し、名前を付けてください。</li><li>作業を編集し、閉じてから「Continue working」から再度開いて、保存されたことを確認してください。</li><li>作業のアシスタントを開き、作業を要約または続行するよう依頼してください；提案を受諾する前にすべて確認してください。</li><li>テスト作業を削除し、最近削除した項目から復元して、リカバリを学んでください。</li></ol>
+<p><strong>失敗した場合は：</strong> ビルドがスペースをサポートしていることを確認してください（設定 → 診断と概要）。 見てみる <a href="workspaces.html">スペースと専門作業台</a> 会議、音楽、印刷、ツールボックスのために。</p>
+<h2 id="section-6">適切なブリッジを選択してください</h2>
+<div class="table-wrap"><table><tr><th>製品</th><th>目的</th><th>接続する前に</th></tr><tr><td>Floe ブリッジ · Mac</td><td>同じMacでFloeからターミナル、ファイル、MCPを使用する</td><td>両方のアプリは1台のMacで実行され、同じペアリングコードを確認します。これはiPadからMacへのリモートブリッジではありません。</td></tr><tr><td>Floe iOS ブリッジ</td><td>iPhone および iPad 用のスタンドアロンローカルオートメーションブリッジ</td><td>必要な署名機能、デバイスの準備およびペアリングが必要です；バージョン1.0はメインのFloeアプリと統合されていません</td></tr></table></div>
+<p>Mac Bridge: インストール <a href="https://www.floe-agent.com/en/releases?platform=bridge" class="external">選択されたリリース</a>、メニューバーアプリを開き、同じMac上のFloeから接続してください。 コードを比較し、両方のプロンプトを承認してください。 作業を開始する前に、ディレクトリを確認し、テストファイルを読んでください。 切断後、コマンドは再生されません。 メニューバーのアイコンが見当たらない場合は、アプリを再起動してください。ペアリングに失敗した場合は、両方のバージョンと確認を確認してください。</p>
+<p>iOS ブリッジ：開始は <a href="https://github.com/JiangNanGenius/floe-agent/blob/floe-ios-bridge-v1.0.0/FloeIOSBridge/INSTALL.md" class="external">バージョン管理されたインストール手順</a>. バージョン1.0では、Network Extension機能による署名が必要です。任意の再署名設定は保証されません。 アプリで準備を完了し、デバイス上でクライアントのペアリングを承認してください。 アクセスはデフォルトでローカルです。必要な場合にのみ LAN アクセスを有効にしてください。 操作後に画面を読み取ってください；結果が未確認の場合、自動的にタップを繰り返さないでください。</p>
+<h2 id="section-7">保存し、回復し、サポートを受ける</h2>
+<p>各Office、メディア、または3Dエディタに保存されていることを確認してください。 名前を付けて保存するとエクスポートは、元のデータを自動的に置き換えるわけではありません。 競合が残っている場合は、リカバリコピーを保存してください。 重要なファイルの独立したバックアップを保持してください。</p>
+<p>サポートのために、バージョン、デバイス、手順、期待される結果、実際の結果を記述してください。 <a href="https://github.com/JiangNanGenius/floe-agent/blob/main/SUPPORT.md" class="external">サポートチャンネル</a>. 必要な診断情報またはスクリーンショットのみを自発的に提出し、パスワードやキー、プライベートファイルは決して含めない。 続行 <a href="user-manual.html">フルマニュアル</a> そして <a href="workspaces.html">ワークスペースガイド</a>.</p>
+</main>
+<footer><p>Floe ガイド</p></footer>
+</body>
+</html>

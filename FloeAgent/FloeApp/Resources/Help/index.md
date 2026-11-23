@@ -1,4 +1,4 @@
-# Floe Help (floe.help.quickstart 1.2.0)
+# Floe Help (floe.help.quickstart 1.4.0)
 
 This is the offline document package for the built-in Floe help center. Read it in the App under Settings > Help with contents, search and images.
 
@@ -96,3 +96,4 @@ Adjust how much memory the shared Linux runtime may use.
 
 ---
 External links open the public floe-agent repository and need a network connection.
+Source revision: de32aca14c13b555b4e8819e5b14c51cd3b55c7c

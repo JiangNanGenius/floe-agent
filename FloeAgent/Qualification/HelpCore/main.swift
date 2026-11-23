@@ -72,7 +72,11 @@ do {
     let english = try HelpLibrarySnapshot(files: files, language: .english, digest: digest)
     let chinese = try HelpLibrarySnapshot(files: files, language: .simplifiedChinese, digest: digest)
     check(english.manifest.version == HelpBundleMetadata.bundledVersion, "manifest version")
-    check(english.index.articles.count == 6, "six articles", "\(english.index.articles.count)")
+    let expectedArticles: Set<String> = [
+        "quickstart", "shared-basics", "user-manual", "workspaces",
+        "input.keyboard", "voice.output", "environment.memory"
+    ]
+    check(Set(english.index.articles.map(\.id)) == expectedArticles, "article catalog")
     check(english.index.categories.count == 7, "seven categories")
     check(Set(english.index.articles.map(\.id)) == Set(chinese.index.articles.map(\.id)),
           "cross-locale article identity")
@@ -166,6 +170,9 @@ do {
     check(home.mimeType == "image/webp", "image mime")
     check(home.data.count > 100_000 && home.data.count <= HelpBundleMetadata.maximumFileBytes,
           "image bounded", "\(home.data.count)")
+    let workshopImage = try chinese.resource(at: "help/assets/guide/ipad-video-split.webp")
+    check(workshopImage.mimeType == "image/webp" && !workshopImage.data.isEmpty,
+          "illustrated video walkthrough image")
     let css = try english.resource(at: "help/styles/help.css")
     check(css.mimeType.hasPrefix("text/css"), "css mime")
     expectError("resource missing") { try english.resource(at: "help/assets/none.webp") }

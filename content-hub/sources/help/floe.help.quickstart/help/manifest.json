@@ -8,17 +8,73 @@
     "workspaces": "ios"
   },
   "id": "floe.help.quickstart",
-  "version": "1.2.0",
-  "sourceRevision": "",
+  "version": "1.4.0",
+  "sourceRevision": "de32aca14c13b555b4e8819e5b14c51cd3b55c7c",
   "title": {
     "en": "Floe Help",
-    "zh-Hans": "Floe 帮助中心"
+    "zh-Hans": "Floe 帮助中心",
+    "zh-Hant": "Floe 幫助中心",
+    "ja": "Floe ヘルプ",
+    "ko": "Floe 도움말",
+    "fr": "Aide de Floe",
+    "de": "Floe Hilfe",
+    "es": "Ayuda Floe",
+    "pt-BR": "Ajuda Floe"
   },
   "indexPaths": {
     "en": "help/index/en.json",
-    "zh-Hans": "help/index/zh-Hans.json"
+    "zh-Hans": "help/index/zh-Hans.json",
+    "zh-Hant": "help/index/zh-Hant.json",
+    "ja": "help/index/ja.json",
+    "ko": "help/index/ko.json",
+    "fr": "help/index/fr.json",
+    "de": "help/index/de.json",
+    "es": "help/index/es.json",
+    "pt-BR": "help/index/pt-BR.json"
   },
   "resources": [
+    {
+      "path": "help/articles/de/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1212,
+      "sha256": "8ad477633b8e9df41b1c95b475e1b1424a6c49487c665c1a2bd30ab5636490c8"
+    },
+    {
+      "path": "help/articles/de/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1240,
+      "sha256": "b112ec83f8f38e3d5373a447572b223ac0fa0e2e7899ab3bca37bcb669c9ab58"
+    },
+    {
+      "path": "help/articles/de/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 9392,
+      "sha256": "0003c6b2e79c9b0ea50a7ebc5996de2eca5580c916ba05c8802d5142e62aff46"
+    },
+    {
+      "path": "help/articles/de/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 6277,
+      "sha256": "6aad876ff9e7917e06d968f4cff409e10d01b7e1f086f0eea47bc5939b8c00eb"
+    },
+    {
+      "path": "help/articles/de/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 139262,
+      "sha256": "b74a1ffe813f561a78de2d3173822e66578e94b18d0a1d3d3a76c38ae8426165"
+    },
+    {
+      "path": "help/articles/de/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1011,
+      "sha256": "f31dfd8f36d5cdb26c048e54b7179e1eb0782d6aff43441097731f9b36d519e4"
+    },
+    {
+      "path": "help/articles/de/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 32673,
+      "sha256": "b6d02d37f3cab5ba48cb13c0dbf1afdf56ac34dbc5a0085cdd4c19d9a88955e5"
+    },
     {
       "path": "help/articles/en/environment.memory.html",
       "mimeType": "text/html; charset=utf-8",
@@ -46,8 +102,8 @@
     {
       "path": "help/articles/en/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 109754,
-      "sha256": "d7bc9ad5426454a328d610a35ad7ac186d11f8a0cebdd0fce527dcccd1490812"
+      "byteCount": 114519,
+      "sha256": "cedaa6ffbcae7ab3d0ebb0df04803d979978158d7b71b67419e7189159e78ba7"
     },
     {
       "path": "help/articles/en/voice.output.html",
@@ -58,8 +114,218 @@
     {
       "path": "help/articles/en/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 17384,
-      "sha256": "ab0853a549388ad3099a7b709bc764081c8a779f2a807662f69d64a5097657b7"
+      "byteCount": 29700,
+      "sha256": "48c93554fd1d1cb001ab36e696a5292696a0d177239c5e05307229627da15bf7"
+    },
+    {
+      "path": "help/articles/es/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1225,
+      "sha256": "39d70307fe7cab7590fc51f003fc5f1b28e07b774ef88f7b2c577be5e8c095d6"
+    },
+    {
+      "path": "help/articles/es/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1177,
+      "sha256": "03911681c5f184624f2ab79403cb48b28f454c65d9a663399fe67d052db2afe8"
+    },
+    {
+      "path": "help/articles/es/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 8797,
+      "sha256": "6bea7bf94c1fc84509e88ade04fb6eb9995afb2bae708c4f56f88e4c9483d099"
+    },
+    {
+      "path": "help/articles/es/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 5898,
+      "sha256": "81925a8226ae7e6e455fc7fa53294f17a56a520cf6e594c3d2760d7371af2558"
+    },
+    {
+      "path": "help/articles/es/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 135146,
+      "sha256": "c3d42ee1768ca864d2b24a1681536918dfaf0666d794d072b276be62094aa81d"
+    },
+    {
+      "path": "help/articles/es/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 987,
+      "sha256": "28f41fa7487e59aed5a192e23e0d1f008fd0621f5c02eb529d45022289041322"
+    },
+    {
+      "path": "help/articles/es/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 32634,
+      "sha256": "edab25bea36a3e8312ee1e0ae1ee9db898a1d01b5efe830d01481237d01ecb02"
+    },
+    {
+      "path": "help/articles/fr/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1245,
+      "sha256": "a0bbd0ac5c9a2f59205b8bda43ed359ffc62e935f14753f19e44627582f4f797"
+    },
+    {
+      "path": "help/articles/fr/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1185,
+      "sha256": "afe989ff04e3d610049ac169aa8f72a699e4bbd27b8ec13b5e99aa66b40b3a94"
+    },
+    {
+      "path": "help/articles/fr/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 9573,
+      "sha256": "2287616e30ad91034f02510f55c17177707204a5603b31e3599612c7a353dc48"
+    },
+    {
+      "path": "help/articles/fr/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 6550,
+      "sha256": "240ab37d931e61e7d4d09e05024cd3f1be812021e7b2710c307508cb0596ad36"
+    },
+    {
+      "path": "help/articles/fr/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 146456,
+      "sha256": "31bd87fb03da1a901a578cbecb623d0dc2823e18f33d7eb916dece494ed2f517"
+    },
+    {
+      "path": "help/articles/fr/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1012,
+      "sha256": "f2a283ffd9582238eb42ad349444bbeddfb00023d3e34561fb3e50f513309626"
+    },
+    {
+      "path": "help/articles/fr/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 33993,
+      "sha256": "0989dbc9bec4ca3081a3da80be5f16446973a2e7d4c31d17d006280895ca7698"
+    },
+    {
+      "path": "help/articles/ja/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1259,
+      "sha256": "eee12f754f5c423e8931caf5881480e44f7f6a79e09403576c9bea9c691df58f"
+    },
+    {
+      "path": "help/articles/ja/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1396,
+      "sha256": "753b8c6a9a9bf28aa9f9fd4f01e2b040c4b383c10388b30afe3ac4b60ecaad77"
+    },
+    {
+      "path": "help/articles/ja/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 11008,
+      "sha256": "7cd9f23d4073d66d272fffda58cf8b37c07412ff5f9fbb621db26d0f691ea6fe"
+    },
+    {
+      "path": "help/articles/ja/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 7403,
+      "sha256": "83f34b63633e57b0d01a1863b36f6a1fb66cf140d35071e8718da61e69b1ded1"
+    },
+    {
+      "path": "help/articles/ja/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 160641,
+      "sha256": "56760086dcf06d727ab2c25cfa15999e69734e4c145a970cd019f802efefdebb"
+    },
+    {
+      "path": "help/articles/ja/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1088,
+      "sha256": "e8a6b3014bd476b3060b0aeca9bc97eb667356efb2a8e99866d34da808a1f362"
+    },
+    {
+      "path": "help/articles/ja/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 35697,
+      "sha256": "18b05c4404d11d18e86d153aaf1e8010716af30d07a0181611676c31ac37dde8"
+    },
+    {
+      "path": "help/articles/ko/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1158,
+      "sha256": "ee94f99fc03f7671e1c0c06d0819d50363a9bccdffb540f72b80b061b26e4db3"
+    },
+    {
+      "path": "help/articles/ko/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1198,
+      "sha256": "88a92fdf7ef4e4fd5ddf15356f9f7386641a3c66b3e8cb5c35789e709c81d957"
+    },
+    {
+      "path": "help/articles/ko/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 9311,
+      "sha256": "e01b6ff81c7e889ffb189d590485124298195039cbcffb8b6a7526223ee6d1bc"
+    },
+    {
+      "path": "help/articles/ko/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 6191,
+      "sha256": "1a6d951fc3fad9d15961bc7999066d2a6083585a09f7a6d7fc0d616d362af610"
+    },
+    {
+      "path": "help/articles/ko/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 140215,
+      "sha256": "e84bfbcd59478f97deb41cbc7e884c372cb995b3343614bfa5dd088a9fc256df"
+    },
+    {
+      "path": "help/articles/ko/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1013,
+      "sha256": "ee4b878571cb92a34e8103dd6c382f788661ceb71a68e91ae85e790bf0d12174"
+    },
+    {
+      "path": "help/articles/ko/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 32800,
+      "sha256": "4c45e16932e694f96b398c1eb882bdfa3a3e481f97987a92bb070637f541f471"
+    },
+    {
+      "path": "help/articles/pt-BR/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1240,
+      "sha256": "82c9fffabe420ae0039d67725b94564271b7b60d3009f30b008c5d9dccb361c3"
+    },
+    {
+      "path": "help/articles/pt-BR/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1168,
+      "sha256": "d2d927872b79dfedf1af3f9066eb95cc527d3d5ecefcf293e356c3bbad5fd492"
+    },
+    {
+      "path": "help/articles/pt-BR/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 8581,
+      "sha256": "5d1451dea07b2aa34cb499c2fbbecf1454b4751226746d4753911c3fb76fbff2"
+    },
+    {
+      "path": "help/articles/pt-BR/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 5644,
+      "sha256": "1db6cb3dc49572f77e4959c226b0af6419a81fd6fd1c17d4ce3d8839e4c49ca7"
+    },
+    {
+      "path": "help/articles/pt-BR/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 131248,
+      "sha256": "21c10f23e3a61fe57b6bcb0df50be273875b7b70faa9fbe811749c233a63bec8"
+    },
+    {
+      "path": "help/articles/pt-BR/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 984,
+      "sha256": "4670a2de76c929a8fe781eb420b8d0c9ab1799f6eb3d3884c366cdebc94beba3"
+    },
+    {
+      "path": "help/articles/pt-BR/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 32223,
+      "sha256": "20b0daa05f07b83c8450adfa48af526d767746c4cd646338034e152e0c51aeec"
     },
     {
       "path": "help/articles/zh-Hans/environment.memory.html",
@@ -88,8 +354,8 @@
     {
       "path": "help/articles/zh-Hans/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 102113,
-      "sha256": "5cff6919cfb08e0da898b6998126fff58a964d505e6aa0047394eff72e34339b"
+      "byteCount": 106985,
+      "sha256": "bc2bdc6dbdfc04ac401396b80969c0eb1c34a3dfa6abe6050df8a5e5b90f9efa"
     },
     {
       "path": "help/articles/zh-Hans/voice.output.html",
@@ -100,8 +366,50 @@
     {
       "path": "help/articles/zh-Hans/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 15514,
-      "sha256": "b74548fbc4a40ce469da1fde809465c8f83b1da2e3ed7b2221a29c28fcadbd33"
+      "byteCount": 26811,
+      "sha256": "df20a8574a8ca6abcac6889b65a6dcff3a9dd0f5b25586eb1646535c4ee36226"
+    },
+    {
+      "path": "help/articles/zh-Hant/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1062,
+      "sha256": "bfc5c04dbdf33673363fb181cf7045ec63c46b9b94cecc3fb4bbfad6da6d919d"
+    },
+    {
+      "path": "help/articles/zh-Hant/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1044,
+      "sha256": "3ab8612490c21825d9593d82ede991bc94fb044f2ba209e31afc95528c9e4e14"
+    },
+    {
+      "path": "help/articles/zh-Hant/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 7164,
+      "sha256": "401ca1e060197e6b605d686fa2120d25e61386c556789bae4c94dc557a697e05"
+    },
+    {
+      "path": "help/articles/zh-Hant/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 4453,
+      "sha256": "26ec17bad8b71be2abc7ee18abb24c9bc1a8cafa3d550e89f7659ba777bcb7b9"
+    },
+    {
+      "path": "help/articles/zh-Hant/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 107222,
+      "sha256": "21a23c61b513debd0b6c8327d99d14a0dbd628d68b92cff27b582970568e9a30"
+    },
+    {
+      "path": "help/articles/zh-Hant/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 930,
+      "sha256": "ee5d3d7137d89bf4a73ef09d5b1a5485c98073a0e5e6f701296340aae0a54917"
+    },
+    {
+      "path": "help/articles/zh-Hant/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 26826,
+      "sha256": "fae09998d22c2ba2919d03ce68ed71eb6e4673dc4857879dcf5c55ba0f9d54d7"
     },
     {
       "path": "help/assets/guide/canvas-current.webp",
@@ -116,6 +424,138 @@
       "sha256": "2463c23350211e53178bd58aa5417e4a210a411400e0fc4b82fb6f29321cf9cc"
     },
     {
+      "path": "help/assets/guide/ipad-cad-rectangle.webp",
+      "mimeType": "image/webp",
+      "byteCount": 309878,
+      "sha256": "5c6504da594138da10302206b529503643d9d0782839bb897c6bc64b68f469e1"
+    },
+    {
+      "path": "help/assets/guide/ipad-cad-sketch.webp",
+      "mimeType": "image/webp",
+      "byteCount": 312962,
+      "sha256": "3107ac401f0dfb72e149affc2d2c1fba35e5324dcfd542bb47e3d6d7eff85cda"
+    },
+    {
+      "path": "help/assets/guide/ipad-cad-solid.webp",
+      "mimeType": "image/webp",
+      "byteCount": 495408,
+      "sha256": "a293b7cebcc4cf3d3a17ee713dfbf878e1b432a6672d045e46a9e2f06b73b978"
+    },
+    {
+      "path": "help/assets/guide/ipad-calculator.webp",
+      "mimeType": "image/webp",
+      "byteCount": 31694,
+      "sha256": "4b009dd5276bec2e7f72ccc520ad837d623770180862fcfd93bc389afb428d9e"
+    },
+    {
+      "path": "help/assets/guide/ipad-canvas-note.webp",
+      "mimeType": "image/webp",
+      "byteCount": 196506,
+      "sha256": "a159333fd75dbd7dd518e1e104d4258016a916947c01df05f5eb114e6b8b356c"
+    },
+    {
+      "path": "help/assets/guide/ipad-excel-pdf-refresh.webp",
+      "mimeType": "image/webp",
+      "byteCount": 122842,
+      "sha256": "7c17b5500007f11e289760eb7682eb4550fa998b54a635d1791c63f9eac8bc0f"
+    },
+    {
+      "path": "help/assets/guide/ipad-help-center.webp",
+      "mimeType": "image/webp",
+      "byteCount": 119210,
+      "sha256": "8b8e2c5e29e1ae5f6845bcbc8931fef71f5c1f80f24516ea613fdf34ec33b506"
+    },
+    {
+      "path": "help/assets/guide/ipad-help-setting.webp",
+      "mimeType": "image/webp",
+      "byteCount": 165936,
+      "sha256": "366627e096080c987e47e7a8573981c376947bc9e0fc6f469f81cd83fc5a0a91"
+    },
+    {
+      "path": "help/assets/guide/ipad-image-alpha.webp",
+      "mimeType": "image/webp",
+      "byteCount": 97134,
+      "sha256": "24063911861cca1401a7a7beb1a685b6984d85b21e910e8113cb13ef9b785258"
+    },
+    {
+      "path": "help/assets/guide/ipad-image-layers.webp",
+      "mimeType": "image/webp",
+      "byteCount": 74028,
+      "sha256": "4edbf52b963ecc8f986aaa0ea2e605960bedf632675a5ed7198792fa76c51453"
+    },
+    {
+      "path": "help/assets/guide/ipad-map-attributes.webp",
+      "mimeType": "image/webp",
+      "byteCount": 44388,
+      "sha256": "708bccd4d7446b2c8aabd4f617bb98cbc992d841959ea09adb13208f88f3228b"
+    },
+    {
+      "path": "help/assets/guide/ipad-map-export.webp",
+      "mimeType": "image/webp",
+      "byteCount": 99526,
+      "sha256": "10a22f24e2e472a57647a7f73deac0ef1c9559b415b4af8c5e7b6b65bec9a71d"
+    },
+    {
+      "path": "help/assets/guide/ipad-map-fit.webp",
+      "mimeType": "image/webp",
+      "byteCount": 49042,
+      "sha256": "33a44df8d6eabfe3ede3108e17891c2cd80f0d1c64502a69af727c913c71ca53"
+    },
+    {
+      "path": "help/assets/guide/ipad-meeting-playback.webp",
+      "mimeType": "image/webp",
+      "byteCount": 85298,
+      "sha256": "2d9cbc6bdd5dc6c372d9d8605f76813af661f9a904193a5f1e985e01e1decf60"
+    },
+    {
+      "path": "help/assets/guide/ipad-meeting-workbench.webp",
+      "mimeType": "image/webp",
+      "byteCount": 62018,
+      "sha256": "a7f3456238ebcfd6a6c02b45a6a20333e204b568cfc82b517d9420e6db54b1a7"
+    },
+    {
+      "path": "help/assets/guide/ipad-model-provider.webp",
+      "mimeType": "image/webp",
+      "byteCount": 87300,
+      "sha256": "5334e251bd129ab590015e909a586e6a49667b5ac47e383d1864f37f7d293373"
+    },
+    {
+      "path": "help/assets/guide/ipad-notes-shape.webp",
+      "mimeType": "image/webp",
+      "byteCount": 35580,
+      "sha256": "7660541f6a7bb308ce262b75c0ab35fa427bd160b15c7e9730911b98cde0b2cf"
+    },
+    {
+      "path": "help/assets/guide/ipad-protractor.webp",
+      "mimeType": "image/webp",
+      "byteCount": 48176,
+      "sha256": "d87804a1ee7c55bc9c93cf50e33c7282e78a2d4dd673cef85167920494773a77"
+    },
+    {
+      "path": "help/assets/guide/ipad-skill-hub.webp",
+      "mimeType": "image/webp",
+      "byteCount": 600132,
+      "sha256": "adf9563c7f862ef2c3956d77690dabe70b9d92ca0652b68873af2ecfd5ac584e"
+    },
+    {
+      "path": "help/assets/guide/ipad-space-overview.webp",
+      "mimeType": "image/webp",
+      "byteCount": 54440,
+      "sha256": "26eaf605ca1ed782f8c900febfa51eb0ea403bab112f622312f31d675f68c08a"
+    },
+    {
+      "path": "help/assets/guide/ipad-toolbox.webp",
+      "mimeType": "image/webp",
+      "byteCount": 65424,
+      "sha256": "3bad0c6784c42e885ef73cde7e328a68c0ace9ee34b7eb5b9890e579d3be09a7"
+    },
+    {
+      "path": "help/assets/guide/ipad-video-split.webp",
+      "mimeType": "image/webp",
+      "byteCount": 162544,
+      "sha256": "9342e117269e4a4957e414568b0babed0ed12d9a13ff0dccc87580494067d085"
+    },
+    {
       "path": "help/assets/guide/notes-current.webp",
       "mimeType": "image/webp",
       "byteCount": 149950,
@@ -128,16 +568,58 @@
       "sha256": "7f4b0c8e37923a264eb262dbaab8c5eed15e2301f7cb155f327d535e229c02b7"
     },
     {
+      "path": "help/index/de.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 177358,
+      "sha256": "fb7f4a33fd6e096d0fd0a8c9a68fc4b5af34db8b25f7bd162466c3d09186f9de"
+    },
+    {
       "path": "help/index/en.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 133050,
-      "sha256": "820e1348313a769bd905964468a4c1fed209ce42a0497365611c6e4c7cc4b06b"
+      "byteCount": 145792,
+      "sha256": "9dd39b3b8866b0800a81c7bdc2fac78786a3cb5cb3cc50670ffb9c41c6dc3807"
+    },
+    {
+      "path": "help/index/es.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 172341,
+      "sha256": "7dfca74c54de4bbb098fdc44408cf95cf3b10b2cb8c5253ce9e95361158c9571"
+    },
+    {
+      "path": "help/index/fr.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 180248,
+      "sha256": "cca75b79b5acb64a016fe60599577d5f08a24db49810e77a9a465ba8a4a637a6"
+    },
+    {
+      "path": "help/index/ja.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 207968,
+      "sha256": "091bbf4f9bd14843e59eb905d5c53bbce52ed1e31f1d8abe2f228b9e2d8ee707"
+    },
+    {
+      "path": "help/index/ko.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 179968,
+      "sha256": "2a73c45da6c4a776b346bba9a501e4e4ac1df4c74ecc034b2360277e67e55522"
+    },
+    {
+      "path": "help/index/pt-BR.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 167641,
+      "sha256": "43bedb321b3dee60d548d17e3c7312cee78b50b74316f99ee173f77255d44f2a"
     },
     {
       "path": "help/index/zh-Hans.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 123745,
-      "sha256": "c00df6342c6026e0a4e09fc75bf391a9ca316a9e740799dd49757bc739ef9b59"
+      "byteCount": 135480,
+      "sha256": "61dc324a5cdd520d263d4cd4b0575e4f1e4e3894999b6afe1d297c60852db32e"
+    },
+    {
+      "path": "help/index/zh-Hant.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 135792,
+      "sha256": "de3bb81d548c18835ffe0323ad87b5163776dfb163590c0420cd5eb0ddecc91e"
     },
     {
       "path": "help/styles/help.css",
@@ -146,16 +628,58 @@
       "sha256": "8c78a412a55f714d0407e6accc9673949a79a776021977c460a8a089f2ce470f"
     },
     {
+      "path": "index.de.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 3625,
+      "sha256": "8aae7b2f204fbae633d2f357f905e7524a5eac445bce7aeff840562ce0d313a7"
+    },
+    {
+      "path": "index.es.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 3731,
+      "sha256": "7df0a904388326f79beddd2ee1edb14ef627c9d242177fabee2608e89969d7df"
+    },
+    {
+      "path": "index.fr.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 3792,
+      "sha256": "3bc01688238aa3028fe23b0b0e363f2c768f71e95280e4d1beccf030234f267e"
+    },
+    {
+      "path": "index.ja.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 4536,
+      "sha256": "7fb2cdd255631b07478a7dfc3af14a58d1781dea3ae7235c45191f5df676bdc2"
+    },
+    {
+      "path": "index.ko.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 3737,
+      "sha256": "73152553aa0cb01d67c4038fc7af112dc6202a1085cfbbdcc6249a0e6a7162c0"
+    },
+    {
       "path": "index.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 3037,
-      "sha256": "afbccf88049a2ff7ac6247a116b6fa80732b538b8af13a52e5f6e9ce462cf740"
+      "byteCount": 3095,
+      "sha256": "f77e6ca4c537cc19577a8781c1eeb2bf393e936bebfcae7aa46ae741bd2ae436"
+    },
+    {
+      "path": "index.pt-BR.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 3532,
+      "sha256": "4bc8b3c913a741203301de714b2c93f5388ddc52828d1fc764b758dba4f6041a"
     },
     {
       "path": "index.zh-Hans.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 2981,
-      "sha256": "10c086f16e9b1e065b95a9a06304188fab508bf4dae58702fa28cd225a6082b9"
+      "byteCount": 3038,
+      "sha256": "6b4af03d5c440f21ebeec9dabdbf16227cac24cc76ad97a7eca35d015ed93e83"
+    },
+    {
+      "path": "index.zh-Hant.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 3053,
+      "sha256": "b2d61240daf5101b8e39d069ddda621c33a532778eb5916f94f6bf1f60e24d5b"
     }
   ]
 }
