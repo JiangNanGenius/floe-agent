@@ -166,6 +166,10 @@ final class UnifiedMacSmoke {
             await exercisePairedWorkspaceFiles(model)
             return
         }
+        if CommandLine.arguments.contains("--paired-device-sync-v2-only") {
+            await exercisePairedDeviceSyncV2(model)
+            return
+        }
         let pagedHistoryPair = CommandLine.arguments.contains("--device-history-paged-pair-only")
         if CommandLine.arguments.contains("--device-history-only") || pagedHistoryPair {
             await exerciseDeviceHistory(model, usePagedPeer: pagedHistoryPair)
@@ -2001,6 +2005,203 @@ final class UnifiedMacSmoke {
         await center.pair(remote, named: "Remote fixture")
         await peer.pair(local, named: "Native Mac fixture")
         return (local, remote)
+    }
+
+    private func exercisePairedDeviceSyncV2(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let center = agent.deviceHistorySync,
+              center.supportsWorkspaceChanges, !center.enabled else { finish(["ready": false]); return }
+        let id = UUID(), user = UUID(), assistant = UUID(), attachment = UUID()
+        let workspace = root.appendingPathComponent("Peer Workspace", isDirectory: true)
+        let managed = root.appendingPathComponent("Peer Storage", isDirectory: true)
+        let firstBytes = Data(repeating: 0x61, count: 384 * 1_024 + 713)
+        let digest = FloeDigest.sha256Hex(firstBytes)
+        let time = Date(timeIntervalSince1970: 1_700_000_000.1234567).timeIntervalSinceReferenceDate
+        let first = workspace.appendingPathComponent("before.txt")
+        let removed = workspace.appendingPathComponent("will-remove.txt")
+        let renamed = workspace.appendingPathComponent("after.txt")
+        let external = root.appendingPathComponent("Picked document.txt")
+        let externalText = "Original picked document fixture."
+        let expectedFile = Data("Rename fixture".utf8)
+        let expectedRemoved = Data("Delete fixture".utf8)
+        var phase = "seed"
+        var peer: DeviceHistorySyncCenter?
+        var results: [String: Any] = [:]
+        do {
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: false)
+            try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            try expectedFile.write(to: first)
+            try expectedRemoved.write(to: removed)
+            let database = try DatabaseManager.inMemory()
+            try await database.migrate()
+            let store = SQLiteConversationStore(database: database)
+            let raw = try JSONSerialization.data(withJSONObject: [
+                "version": 2, "id": id.uuidString, "title": "Paired attachments", "createdAt": time, "updatedAt": time,
+                "attachments": [["id": attachment.uuidString, "kind": "document", "displayName": "Original.txt",
+                                 "uti": "public.plain-text", "byteCount": firstBytes.count,
+                                 "sha256": digest, "createdAt": time]],
+                "messages": [
+                    ["id": user.uuidString, "role": "user", "content": "Open the shared original.",
+                     "createdAt": time, "parts": [
+                        ["id": UUID().uuidString, "index": 0, "kind": "text",
+                         "text": "Open the shared original.", "createdAt": time],
+                        ["id": UUID().uuidString, "index": 1, "kind": "attachment",
+                         "attachmentID": attachment.uuidString, "createdAt": time],
+                     ]],
+                    ["id": assistant.uuidString, "role": "assistant", "content": "Shared document read.",
+                     "createdAt": time, "parts": [
+                        ["id": UUID().uuidString, "index": 0, "kind": "tool", "toolName": "workspace.readFile",
+                         "toolStatus": "ok", "text": "Display-only tool summary", "createdAt": time],
+                     ]],
+                ],
+            ])
+            _ = try await store.importDeviceHistory(DeviceConversationHistory(data: raw))
+            let files = HostAgentDatabase.DeviceAttachmentFiles(directory: managed)
+            guard let reference = try await store.deviceHistoryUserAttachment(conversationID: id, id: attachment) else {
+                throw DeviceHistorySyncError.invalidResponse
+            }
+            let name = try await files.store(firstBytes, matching: reference)
+            guard try await store.restoreDeviceHistoryAttachment(conversationID: id, attachmentID: attachment,
+                    messageID: user, digest: digest, relativePath: name) else { throw DeviceHistorySyncError.unavailable }
+            let remote = deviceSyncV2FixturePeer(store: store, files: files, workspace: workspace, taskID: id)
+            peer = remote
+            let (mac, other) = try await pairDeviceHistoryFixtures(center, remote)
+            phase = "receive"
+            await remote.share(id, with: mac.id, enabled: true)
+            await remote.shareWorkspace(id, with: mac.id, enabled: true, propagateChanges: true)
+            await center.receive(id, from: other.id, includeWorkspace: true)
+            results["firstStatus"] = String(describing: center.status)
+            results["originalRestored"] = center.attachmentResult?.restoredAttachments == 1
+            await agent.select(id)
+            var localOriginal: URL?
+            await agent.withSavedAttachment(id: attachment, conversationID: id) { localOriginal = $0 }
+            results["previewReadsOriginal"] = try localOriginal.map { try Data(contentsOf: $0) == firstBytes } == true
+            results["toolSummaryVisible"] = agent.messages.contains { message in
+                message.parts.contains {
+                    $0.metadata["deviceHistory.tool"] == "workspace.readFile" && $0.text == "Display-only tool summary"
+                }
+            }
+            let rawReplay = try await agent.receiveDeviceHistory(id, raw)
+            await center.receive(id, from: other.id, includeWorkspace: true)
+            results["submillisecondRetry"] = rawReplay == 0 && center.status == .received(0)
+                && center.attachmentResult == nil
+            guard let localRecord = agent.selectedConversationWorkspace, let localOriginal else {
+                throw DeviceHistorySyncError.unavailable
+            }
+            let localRoot = try MacAgentWorkspaceTools.resolvePrivateTaskRoot(localRecord, base: agent.personalTaskLeaseBase)
+
+            phase = "local bookmark"
+            try Data(externalText.utf8).write(to: external)
+            guard let picked = agent.stageAttachments([external]).first,
+                  await agent.verifyChatSmoke(followUp: "Sync my picked document.", expectedAttachmentText: externalText) else {
+                throw DeviceHistorySyncError.unavailable
+            }
+            await center.share(id, with: other.id, enabled: true)
+            await center.shareWorkspace(id, with: other.id, enabled: true, propagateChanges: true)
+            let copyOnly = await remote.remoteConversations(from: mac.id)?.first { $0.id == id }
+            await remote.receive(id, from: mac.id, includeWorkspace: true)
+            let absent = try await store.deviceHistoryUserAttachment(conversationID: id, id: picked.id) == nil
+            results["priorGrantDoesNotShareAttachments"] = copyOnly?.workspaceFiles == true
+                && copyOnly?.attachmentTransfer != true && absent
+
+            phase = "explicit attachment share"
+            await center.shareAttachments(id, with: other.id, enabled: true)
+            await remote.receive(id, from: mac.id, includeWorkspace: true)
+            results["reverseStatus"] = String(describing: remote.status)
+            if let saved = try await store.deviceHistoryUserAttachment(conversationID: id, id: picked.id) {
+                let peerURL = try await files.verifiedURL(for: saved)
+                results["bookmarkedBytesReceived"] = try Data(contentsOf: peerURL) == Data(externalText.utf8)
+                    && remote.attachmentResult?.restoredAttachments == 1
+            } else {
+                results["bookmarkedBytesReceived"] = false
+            }
+            try Data(repeating: 0x7a, count: externalText.utf8.count).write(to: external)
+            do {
+                _ = try await agent.exportDeviceAttachment(id, id: picked.id, offset: 0, count: 1)
+                results["changedBookmarkRefused"] = false
+            } catch DeviceHistorySyncError.conflict {
+                results["changedBookmarkRefused"] = true
+            }
+            await center.shareAttachments(id, with: other.id, enabled: false)
+            let revoked = await remote.remoteConversations(from: mac.id)?.first { $0.id == id }
+            results["onlyAttachmentGrantRevoked"] = revoked?.workspaceFiles == true && revoked?.attachmentTransfer != true
+
+            phase = "convergence"
+            try FileManager.default.moveItem(at: first, to: renamed)
+            try FileManager.default.removeItem(at: removed)
+            await center.receive(id, from: other.id, includeWorkspace: true)
+            results["convergenceStatus"] = String(describing: center.workspaceResult)
+            if case .received(let receipt) = center.workspaceResult {
+                let fm = FileManager.default
+                let removedRoot = localRoot.appendingPathComponent("Floe Sync Conflicts/Removed")
+                let recovered = (try? fm.subpathsOfDirectory(atPath: removedRoot.path)) ?? []
+                results["renameConverged"] = try receipt.movedFiles == 1
+                    && !fm.fileExists(atPath: localRoot.appendingPathComponent(first.lastPathComponent).path)
+                    && Data(contentsOf: localRoot.appendingPathComponent(renamed.lastPathComponent)) == expectedFile
+                results["deletionRecoverable"] = try receipt.deletedFiles == 1
+                    && !fm.fileExists(atPath: localRoot.appendingPathComponent(removed.lastPathComponent).path)
+                    && recovered.filter { $0.hasSuffix("/will-remove.txt") }.contains {
+                        (try? Data(contentsOf: removedRoot.appendingPathComponent($0))) == expectedRemoved
+                    }
+            }
+            await center.pause()
+            await remote.pause()
+            let deleted = await agent.changeConversationMetadata(id: id, change: .delete)
+            results["ownedAttachmentCleanup"] = deleted && !FileManager.default.fileExists(atPath: localOriginal.path)
+                && FileManager.default.fileExists(atPath: external.path)
+            finish(results)
+        } catch {
+            await center.pause()
+            await peer?.pause()
+            results["error"] = "\(phase): \(error)"
+            finish(results)
+        }
+    }
+
+    private func deviceSyncV2FixturePeer(store: SQLiteConversationStore, files: HostAgentDatabase.DeviceAttachmentFiles,
+                                         workspace: URL, taskID: UUID) -> DeviceHistorySyncCenter {
+        let identity = root.appendingPathComponent("peer-v2-identity")
+        let list: @Sendable () async throws -> [DeviceHistoryOffer] = {
+            try await store.conversations().map { .init(id: $0.id, title: $0.title) }
+        }
+        let receive: @Sendable (UUID, Data, String?, String?) async throws -> Int = { id, data, peer, cursor in
+            let history = try DeviceConversationHistory(data: data)
+            guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
+            return try await store.importDeviceHistory(history, sourcePeerID: peer, nextCursor: cursor).addedMessages
+        }
+        return .init(settingsURL: root.appendingPathComponent("peer-v2-settings"),
+            identityStorage: .init(load: { try? Data(contentsOf: identity) }, save: { try $0.write(to: identity, options: .atomic) }),
+            source: .init(list: { ids in try await list().filter { ids.contains($0.id) } },
+                export: { id, version in try await store.deviceHistory(conversationID: id, version: version).encoded() },
+                exportPage: { id, after, through, version in
+                    let page = try await store.deviceHistoryPage(conversationID: id, after: after, through: through, version: version)
+                    return .init(archive: page.archive, nextCursor: page.nextCursor, through: page.through, hasMore: page.hasMore)
+                }, attachment: { owner, id, offset, count in
+                    guard let ref = try await store.deviceHistoryUserAttachment(conversationID: owner, id: id) else {
+                        throw DeviceHistorySyncError.notShared
+                    }
+                    return try await files.chunk(of: ref, offset: offset, count: count)
+                }),
+            localTasks: { try await list() }, importHistory: { try await receive($0, $1, nil, nil) },
+            pagedHistory: .init(cursor: { try await store.deviceHistoryCursor(from: $0, conversationID: $1) },
+                commit: { try await receive($1, $2, $0, $3) }),
+            workspaceHost: .init(resolve: { owner, _ in
+                guard owner == taskID else { throw DeviceHistorySyncError.unavailable }
+                return .init(scope: owner.uuidString, url: workspace, guardCurrent: {})
+            }, ledgerDirectory: root.appendingPathComponent("Peer Ledger"), canPropagateWorkspaceChanges: true),
+            attachmentRestore: .init(pending: { id in
+                try await store.deviceHistoryUserAttachments(conversationID: id, storage: .none).compactMap { item in
+                    guard let message = item.messageID else { return nil }
+                    return .init(attachmentID: item.id, messageID: message, kind: item.kind == .image ? .image : .file,
+                                 displayName: item.displayName, byteCount: item.byteCount, digest: item.sha256)
+                }
+            }, restore: { owner, item, bytes in
+                guard let ref = try await store.deviceHistoryUserAttachment(conversationID: owner, id: item.attachmentID)
+                else { return false }
+                let name = try await files.store(bytes, matching: ref)
+                return try await store.restoreDeviceHistoryAttachment(conversationID: owner, attachmentID: item.attachmentID,
+                                                                     messageID: item.messageID, digest: item.digest, relativePath: name)
+            }))
     }
 
     private func exercisePairedWorkspaceFiles(_ model: BridgeAppModel) async {

@@ -157,16 +157,17 @@ struct MacThreadTranscript: View {
         case .userMessage(let message):
             userMessage(message)
         case .assistantMessage(let text, let suffix, _):
+            let saved = UUID(uuidString: suffix).flatMap { id in workspace.messages.first { $0.id == id } }
             let visible = query.isEmpty ? "" : ConversationSearchText.visibleText(markdown: text)
             let ranges = query.ranges(in: visible)
             if !ranges.isEmpty {
                 ThreadSearchHighlightedAssistantMessage(text: visible, ranges: ranges)
             } else {
-                let saved = UUID(uuidString: suffix).flatMap { id in workspace.messages.first { $0.id == id } }
                 AssistantMessageView(text: text, allowsReadAloud: false,
                     attachments: saved.map { AttachmentChipItem.items(in: $0.parts) } ?? [],
                     onOpenAttachment: { item in if let saved { openAttachment(saved, item) } })
             }
+            if let saved { syncedToolResults(saved) }
         case .event(let event):
             ThreadEventView(event: event, isLive: event.runID == liveRun?.id && workspace.isSending,
                 hasError: workspace.transcriptEventsByRun[event.runID, default: []].contains { $0.kind == .error },
@@ -194,6 +195,27 @@ struct MacThreadTranscript: View {
             ModelResponseWaitingView(title: RunStateLocalizer.responseWaitingTitle(for: liveRun?.state))
         case .approval:
             EmptyView() // The review stays above the composer on Mac.
+        }
+    }
+
+    @ViewBuilder private func syncedToolResults(_ message: PersistedMessage) -> some View {
+        let results = message.parts.filter { $0.metadata["deviceHistory.tool"] != nil }
+        if !results.isEmpty {
+            DisclosureGroup("mac.deviceSync.toolResults") {
+                ForEach(results) { result in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: result.metadata["deviceHistory.tool"] ?? "")
+                            .font(.subheadline.weight(.medium))
+                        Text(verbatim: result.text ?? "")
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                }
+            }
+            .font(.subheadline)
+            .accessibilityIdentifier("thread.syncedToolResults")
         }
     }
 
@@ -230,6 +252,7 @@ struct MacThreadTranscript: View {
                 }
             }
         }
+        syncedToolResults(message)
         if let runID = message.runID, workspace.messages.first(where: { $0.role == "user" && $0.runID == runID })?.id == message.id,
            let questions = workspace.settledQuestions[runID], !questions.isEmpty {
             MacQuestionHistoryView(requests: questions)

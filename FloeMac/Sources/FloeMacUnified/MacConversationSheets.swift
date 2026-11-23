@@ -7,11 +7,13 @@ import SwiftUI
 final class MacConversationAttachmentPreview: Identifiable {
     let id: UUID
     let url: URL
+    let name: String
     private let scoped: Bool
 
-    init(id: UUID, url: URL) {
+    init(id: UUID, url: URL, name: String) {
         self.id = id
         self.url = url
+        self.name = name
         scoped = url.startAccessingSecurityScopedResource()
     }
 
@@ -27,7 +29,7 @@ struct MacConversationAttachmentSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(verbatim: preview.url.lastPathComponent).font(.headline).lineLimit(1)
+                Text(verbatim: preview.name).font(.headline).lineLimit(1)
                 Spacer()
                 Button("mac.attachment.reveal") { NSWorkspace.shared.activateFileViewerSelecting([preview.url]) }
                 Button("mac.composer.done") { dismiss() }

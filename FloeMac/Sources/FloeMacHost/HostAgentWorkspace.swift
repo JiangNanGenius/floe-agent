@@ -704,6 +704,7 @@ final class HostAgentWorkspace: ObservableObject {
     var workbenchSkills: MacWorkbenchSkillsService?
     var workbenchConnectors: MacWorkbenchConnectorsService?
     var deviceHistorySync: DeviceHistorySyncCenter?
+    var deviceAttachmentFiles: HostAgentDatabase.DeviceAttachmentFiles?
     var endTaskBrowserRun: ((UUID) -> Void)?
     let webSearch: MacSearchSettings
     private let networkStatus = NetworkStatusMonitor()
@@ -1911,11 +1912,21 @@ final class HostAgentWorkspace: ObservableObject {
         let selection = historySelection
         defer { release() }
         do {
-            guard let attachment = try await runtime.conversationAttachment(id: id, conversationID: conversationID),
-                  attachment.storage == .securityScopedBookmark, let bookmark = attachment.urlBookmark else {
+            guard let attachment = try await runtime.conversationAttachment(id: id, conversationID: conversationID) else {
                 throw CocoaError(.fileNoSuchFile)
             }
             guard historySelection == selection, selectedID == conversationID, !Task.isCancelled else { return }
+            #if FLOE_UNIFIED_MAC
+            if attachment.storage == .applicationSupport, let deviceAttachmentFiles {
+                let url = try await deviceAttachmentFiles.verifiedURL(for: attachment)
+                guard historySelection == selection, selectedID == conversationID, !Task.isCancelled else { return }
+                use(url)
+                return
+            }
+            #endif
+            guard attachment.storage == .securityScopedBookmark, let bookmark = attachment.urlBookmark else {
+                throw CocoaError(.fileNoSuchFile)
+            }
             var stale = false
             let url = try URL(resolvingBookmarkData: bookmark,
                               options: [.withSecurityScope, .withoutUI, .withoutMounting],
@@ -2178,6 +2189,7 @@ final class HostAgentWorkspace: ObservableObject {
                 saveTaskMode(nil, for: id)
                 runningInputModeOverrides.removeValue(forKey: id)
                 HostAgentDatabase.removeComposerImages(for: id, runtimeDirectory: personalTaskLeaseBase)
+                await deviceAttachmentFiles?.remove(for: id)
             }
             #endif
             try await reloadConversations(using: runtime)
@@ -2533,21 +2545,21 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
-    func exportDeviceHistory(_ id: UUID) async throws -> Data {
+    func exportDeviceHistory(_ id: UUID, version: Int = 1) async throws -> Data {
         guard isReady, !isTerminating, let runtime, let release = admit() else { throw CocoaError(.userCancelled) }
         defer { release() }
         do {
-            return try await runtime.deviceHistory(conversationID: id).encoded()
+            return try await runtime.deviceHistory(conversationID: id, version: version).encoded()
         } catch DeviceConversationHistoryError.sizeLimit {
             throw DeviceHistorySyncError.tooLarge
         }
     }
 
-    func exportDeviceHistoryPage(_ id: UUID, after: String?, through: Int64?) async throws -> DeviceHistoryPage {
+    func exportDeviceHistoryPage(_ id: UUID, after: String?, through: Int64?, version: Int = 1) async throws -> DeviceHistoryPage {
         guard isReady, !isTerminating, let runtime, let release = admit() else { throw CocoaError(.userCancelled) }
         defer { release() }
         do {
-            let page = try await runtime.deviceHistoryPage(conversationID: id, after: after, through: through)
+            let page = try await runtime.deviceHistoryPage(conversationID: id, after: after, through: through, version: version)
             return .init(archive: page.archive, nextCursor: page.nextCursor, through: page.through, hasMore: page.hasMore)
         } catch DeviceConversationHistoryError.sizeLimit {
             throw DeviceHistorySyncError.tooLarge
@@ -2561,6 +2573,43 @@ final class HostAgentWorkspace: ObservableObject {
               !changingTasks.contains(id), let release = admit() else { throw DeviceHistorySyncError.busy }
         defer { release() }
         return try await runtime.deviceHistoryCursor(from: peerID, conversationID: id)
+    }
+
+    func exportDeviceAttachment(_ owner: UUID, id: UUID, offset: Int64, count: Int) async throws -> Data {
+        guard isReady, !isTerminating, !changingTasks.contains(owner), let runtime, let deviceAttachmentFiles,
+              let release = admit() else { throw DeviceHistorySyncError.busy }
+        defer { release() }
+        guard let reference = try await runtime.deviceHistoryAttachment(conversationID: owner, id: id) else {
+            throw DeviceHistorySyncError.notShared
+        }
+        return try await deviceAttachmentFiles.chunk(of: reference, offset: offset, count: count)
+    }
+
+    func pendingDeviceAttachments(_ id: UUID) async throws -> [DeviceAttachmentRestore.Item] {
+        guard isReady, !isTerminating, let runtime, let release = admit() else { throw DeviceHistorySyncError.unavailable }
+        defer { release() }
+        return try await runtime.pendingDeviceHistoryAttachments(conversationID: id).compactMap { reference in
+            guard let messageID = reference.messageID, !reference.sha256.isEmpty else { return nil }
+            return .init(attachmentID: reference.id, messageID: messageID, kind: reference.kind == .image ? .image : .file,
+                         displayName: reference.displayName, byteCount: reference.byteCount, digest: reference.sha256)
+        }
+    }
+
+    func restoreDeviceAttachment(_ owner: UUID, item: DeviceAttachmentRestore.Item, data: Data) async throws -> Bool {
+        guard isReady, !isTerminating, !changingTasks.contains(owner), liveRuns[owner] == nil,
+              let runtime, let deviceAttachmentFiles, let release = admit() else { throw DeviceHistorySyncError.busy }
+        changingTasks.insert(owner)
+        defer {
+            changingTasks.remove(owner)
+            release()
+        }
+        guard let reference = try await runtime.deviceHistoryAttachment(conversationID: owner, id: item.attachmentID),
+              reference.storage == .none, reference.messageID == item.messageID,
+              reference.sha256 == item.digest, reference.byteCount == data.count else { return false }
+        let name = try await deviceAttachmentFiles.store(data, matching: reference)
+        try Task.checkCancellation()
+        return try await runtime.restoreDeviceHistoryAttachment(conversationID: owner, attachmentID: item.attachmentID,
+                                                                 messageID: item.messageID, digest: item.digest, relativePath: name)
     }
 
     func receiveDeviceHistory(_ id: UUID, _ data: Data, from peerID: String? = nil, nextCursor: String? = nil) async throws -> Int {
@@ -4814,6 +4863,7 @@ final class HostAgentWorkspace: ObservableObject {
     // Used only by the packaged App smoke command with its temporary
     // database and Keychain disabled. The adapter never creates a request.
     func verifyChatSmoke(reply: String = "Synthetic persisted reply.", followUp: String? = nil,
+                         expectedAttachmentText: String? = nil,
                          admissionIsClosedToInstall: () -> Bool = { true }) async -> Bool {
         let initialOwner = selectedID
         guard vault == nil, isReady, let runtime, !isSending, (followUp == nil) == (initialOwner == nil),
@@ -4822,7 +4872,8 @@ final class HostAgentWorkspace: ObservableObject {
         let prompt = followUp ?? "Synthetic Mac chat"
         guard beginSend(prompt, runtime: runtime,
                   provider: .init(provider: config.profile, model: config.model,
-                                  adapter: SmokeChatAdapter(reply: reply), credentials: .init())) else { return false }
+                                  adapter: SmokeChatAdapter(expectedAttachmentText: expectedAttachmentText, reply: reply),
+                                  credentials: .init())) else { return false }
         let heldAdmission = admissionIsClosedToInstall()
         let deadline = ContinuousClock.now + .seconds(8)
         while isSending && ContinuousClock.now < deadline {

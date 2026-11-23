@@ -4,6 +4,13 @@ import Darwin
 import FloeMacSelfCore
 import FloePersistence
 import Foundation
+#if FLOE_UNIFIED_MAC
+import FloeCore
+import FloeDeviceSync
+import FloeModels
+import FloeTools
+import UniformTypeIdentifiers
+#endif
 
 enum HostAgentDatabase {
     static func open(applicationSupport: URL, namespace: String) throws -> FloeMacSelfRuntime {
@@ -281,3 +288,150 @@ enum HostAgentDatabase {
         case supportDirectory, directoryCreate, directoryOpen, databaseOpen, ownershipOrPermissions, accessControl
     }
 }
+
+#if FLOE_UNIFIED_MAC
+extension HostAgentDatabase {
+    /// Original bytes are verified before any chunk can leave this Mac.
+    /// Received files live beside the database, outside all project roots.
+    actor DeviceAttachmentFiles {
+        private static let folder = "Synced Attachments"
+        private let directory: URL
+        private var snapshot: (reference: AttachmentRef, bytes: Data, nextOffset: Int)?
+
+        init(directory: URL) {
+            self.directory = physicalRuntimeDirectory(directory.standardizedFileURL)
+        }
+
+        func chunk(of reference: AttachmentRef, offset: Int64, count: Int) throws -> Data {
+            try Task.checkCancellation()
+            guard reference.conversationID != nil, reference.messageID != nil,
+                  (0...DeviceAttachmentRestoreLimit.maximumItemBytes).contains(reference.byteCount),
+                  count > 0, offset >= 0, offset <= Int64(reference.byteCount) - Int64(count) else {
+                throw DeviceHistorySyncError.invalidResponse
+            }
+            let start = Int(offset)
+            let bytes: Data
+            if let snapshot, snapshot.reference == reference, snapshot.nextOffset == start {
+                bytes = snapshot.bytes
+            } else {
+                snapshot = nil
+                switch reference.storage {
+                case .applicationSupport:
+                    bytes = try readStored(reference).bytes
+                case .securityScopedBookmark:
+                    guard let bookmark = reference.urlBookmark else { throw DeviceHistorySyncError.notShared }
+                    var stale = false
+                    let url = try URL(resolvingBookmarkData: bookmark,
+                        options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                        relativeTo: nil, bookmarkDataIsStale: &stale)
+                    guard !stale, url.isFileURL else { throw DeviceHistorySyncError.unavailable }
+                    let opened = url.startAccessingSecurityScopedResource()
+                    defer { if opened { url.stopAccessingSecurityScopedResource() } }
+                    let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                    guard fd >= 0 else { throw DeviceHistorySyncError.unavailable }
+                    defer { Darwin.close(fd) }
+                    bytes = try Self.verifiedBytes(fd, matching: reference)
+                case .none:
+                    throw DeviceHistorySyncError.notShared
+                }
+            }
+            let end = start + count
+            snapshot = end == bytes.count ? nil : (reference, bytes, end)
+            return bytes.subdata(in: start..<end)
+        }
+
+        func store(_ bytes: Data, matching reference: AttachmentRef) throws -> String {
+            let name = Self.filename(for: reference)
+            guard let owner = reference.conversationID, bytes.count == reference.byteCount,
+                  bytes.count <= DeviceAttachmentRestoreLimit.maximumItemBytes,
+                  FloeDigest.sha256Hex(bytes) == reference.sha256 else { throw DeviceHistorySyncError.invalidResponse }
+            try withDirectory(owner, create: true) { _, fd, url in
+                var info = stat()
+                if fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                    guard errno == ENOENT else { throw DeviceHistorySyncError.unavailable }
+                    try Task.checkCancellation()
+                    let pin = MacAgentWorkspacePinSupport.Pin(parentFileDescriptor: fd, name: name, parentPhysicalPath: url.path)
+                    _ = try MacAgentWorkspaceTextMutation.publishNewFile(pin: pin, data: bytes,
+                        displayPath: name, cancellation: CancellationToken())
+                }
+                _ = try Self.readStored(fd, name: name, matching: reference)
+            }
+            return name
+        }
+
+        func verifiedURL(for reference: AttachmentRef) throws -> URL {
+            try readStored(reference).url
+        }
+
+        func remove(for owner: UUID) {
+            if snapshot?.reference.conversationID == owner { snapshot = nil }
+            try? withDirectory(owner, create: false) { parent, fd, url in
+                let names = try FileManager.default.contentsOfDirectory(atPath: url.path)
+                for name in names where name.hasPrefix("sync-") {
+                    _ = unlinkat(fd, name, 0)
+                }
+                _ = unlinkat(parent, owner.uuidString, AT_REMOVEDIR)
+            }
+        }
+
+        private func readStored(_ reference: AttachmentRef) throws -> (url: URL, bytes: Data) {
+            guard reference.storage == .applicationSupport, let owner = reference.conversationID,
+                  let name = reference.relativePath, name == Self.filename(for: reference) else {
+                throw DeviceHistorySyncError.unavailable
+            }
+            return try withDirectory(owner, create: false) { _, fd, url in
+                (url.appendingPathComponent(name), try Self.readStored(fd, name: name, matching: reference))
+            }
+        }
+
+        private static func readStored(_ directory: Int32, name: String, matching reference: AttachmentRef) throws -> Data {
+            let fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard fd >= 0 else { throw DeviceHistorySyncError.unavailable }
+            defer { Darwin.close(fd) }
+            _ = try checkedIdentity(fd, type: S_IFREG, permissions: 0o600)
+            return try verifiedBytes(fd, matching: reference)
+        }
+
+        private static func verifiedBytes(_ fd: Int32, matching reference: AttachmentRef) throws -> Data {
+            var info = stat()
+            guard (0...DeviceAttachmentRestoreLimit.maximumItemBytes).contains(reference.byteCount),
+                  fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+                  info.st_size == Int64(reference.byteCount) else { throw DeviceHistorySyncError.conflict }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+            var bytes = Data()
+            bytes.reserveCapacity(reference.byteCount)
+            while let chunk = try handle.read(upToCount: min(512 * 1_024, reference.byteCount - bytes.count + 1)),
+                  !chunk.isEmpty {
+                try Task.checkCancellation()
+                guard chunk.count <= reference.byteCount - bytes.count else { throw DeviceHistorySyncError.conflict }
+                bytes.append(chunk)
+            }
+            guard bytes.count == reference.byteCount, FloeDigest.sha256Hex(bytes) == reference.sha256 else {
+                throw DeviceHistorySyncError.conflict
+            }
+            return bytes
+        }
+
+        private static func filename(for reference: AttachmentRef) -> String {
+            let ext = UTType(reference.uti)?.preferredFilenameExtension ?? "bin"
+            let simple = !ext.isEmpty && ext.utf8.count <= 12 && ext.utf8.allSatisfy {
+                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+            }
+            return "sync-\(reference.id.uuidString).\(simple ? ext : "bin")"
+        }
+
+        private func withDirectory<T>(_ owner: UUID, create: Bool, _ body: (Int32, Int32, URL) throws -> T) throws -> T {
+            let base = directory.appendingPathComponent(Self.folder, isDirectory: true)
+            let parent = create ? try openPrivateDirectory(parent: directory, name: Self.folder).0 : try openDirectory(base)
+            defer { Darwin.close(parent) }
+            _ = try checkedIdentity(parent, type: S_IFDIR, permissions: 0o700)
+            let fd = create ? try openPrivateDirectory(parentFD: parent, name: owner.uuidString).0
+                : openat(parent, owner.uuidString, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw DeviceHistorySyncError.unavailable }
+            defer { Darwin.close(fd) }
+            _ = try checkedIdentity(fd, type: S_IFDIR, permissions: 0o700)
+            return try body(parent, fd, base.appendingPathComponent(owner.uuidString, isDirectory: true))
+        }
+    }
+}
+#endif

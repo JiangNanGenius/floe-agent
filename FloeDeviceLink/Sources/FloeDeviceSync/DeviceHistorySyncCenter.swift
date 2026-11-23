@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import Combine
+import CryptoKit
 import FloeDeviceLink
 import Foundation
 
@@ -33,9 +34,22 @@ public struct DeviceHistoryPeer: Codable, Identifiable, Sendable, Equatable {
     let address: FloeDeviceLinkAddress
     public var sharedConversations: Set<UUID>
     var workspaceScopes: [UUID: String]? = nil
+    /// Per-conversation workspace convergence consent. Absent or `1` keeps
+    /// the original copy-only semantics; `2` was explicitly (re)granted
+    /// after delete/rename propagation existed and opts into convergence.
+    var workspaceSyncVersions: [UUID: Int]? = nil
+    var attachmentConsents: Set<UUID>? = nil
 
     public func sharesWorkspace(for conversationID: UUID) -> Bool {
         sharedConversations.contains(conversationID) && workspaceScopes?[conversationID] != nil
+    }
+
+    public func convergesWorkspace(for conversationID: UUID) -> Bool {
+        sharesWorkspace(for: conversationID) && workspaceSyncVersions?[conversationID] == 2
+    }
+
+    public func sharesAttachments(for conversationID: UUID) -> Bool {
+        sharesWorkspace(for: conversationID) && attachmentConsents?.contains(conversationID) == true
     }
 }
 
@@ -102,6 +116,13 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         public let peerID: String
         public fileprivate(set) var committedPages = 0
         public fileprivate(set) var addedMessages = 0
+        /// Original user attachments whose bytes were verified, stored, and
+        /// bound to their message parts during this receive.
+        public fileprivate(set) var restoredAttachments = 0
+        /// Attachments that stayed unrestored (peer lacks them, transport
+        /// failed, or verification failed). No usable link is presented for
+        /// these; a later receive retries them.
+        public fileprivate(set) var failedAttachments = 0
     }
 
     @Published private var settings = Settings()
@@ -110,6 +131,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     @Published public private(set) var pairingCode: String?
     @Published public private(set) var fingerprint: String?
     @Published public private(set) var receiveProgress: ReceiveProgress?
+    @Published public private(set) var attachmentResult: ReceiveProgress?
     @Published public private(set) var workspaceProgress: DeviceWorkspaceReceiveProgress?
     @Published public private(set) var workspaceResult: WorkspaceResult?
     public private(set) var workspacePeerID: String?
@@ -119,6 +141,10 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     public var customRelayURL: URL? { settings.customRelayURL }
     public var peers: [DeviceHistoryPeer] { settings.peers }
     public var supportsWorkspaceSync: Bool { workspaceHost != nil }
+    public var supportsWorkspaceChanges: Bool { workspaceHost?.canPropagateWorkspaceChanges == true }
+    /// A host that can export user-picked files outside the workspace uses
+    /// a separate grant. An old copy-only workspace grant reads as off.
+    public let requiresAttachmentConsent: Bool
 
     private let settingsURL: URL
     private let identityStorage: DeviceHistoryIdentityStorage
@@ -127,6 +153,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     private let importHistory: @MainActor (UUID, Data) async throws -> Int
     private let pagedHistory: DeviceHistoryPageDestination?
     private let workspaceHost: DeviceWorkspaceSyncHost?
+    private let attachmentRestore: DeviceAttachmentRestore?
     private let didImport: @MainActor (UUID) async -> Void
     private var service: DeviceHistorySync?
     private var receiveTask: Task<Void, Never>?
@@ -142,6 +169,8 @@ public final class DeviceHistorySyncCenter: ObservableObject {
                 importHistory: @escaping @MainActor (UUID, Data) async throws -> Int,
                 pagedHistory: DeviceHistoryPageDestination? = nil,
                 workspaceHost: DeviceWorkspaceSyncHost? = nil,
+                attachmentRestore: DeviceAttachmentRestore? = nil,
+                requiresAttachmentConsent: Bool = false,
                 didImport: @escaping @MainActor (UUID) async -> Void = { _ in }) {
         self.settingsURL = settingsURL
         self.identityStorage = identityStorage
@@ -150,6 +179,8 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         self.importHistory = importHistory
         self.pagedHistory = pagedHistory
         self.workspaceHost = workspaceHost
+        self.attachmentRestore = attachmentRestore
+        self.requiresAttachmentConsent = requiresAttachmentConsent
         self.didImport = didImport
         do {
             let data = try Data(contentsOf: settingsURL)
@@ -244,7 +275,9 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         next.peers.removeAll { $0.id == ticket.id }
         next.peers.append(DeviceHistoryPeer(name: String(name.prefix(100)), address: ticket.address,
                                             sharedConversations: previous?.sharedConversations ?? [],
-                                            workspaceScopes: previous?.workspaceScopes))
+                                            workspaceScopes: previous?.workspaceScopes,
+                                            workspaceSyncVersions: previous?.workspaceSyncVersions,
+                                            attachmentConsents: previous?.attachmentConsents))
         await update(next, rebind: false)
     }
 
@@ -268,16 +301,20 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         } else {
             next.peers[index].sharedConversations.remove(taskID)
             next.peers[index].workspaceScopes?.removeValue(forKey: taskID)
+            next.peers[index].workspaceSyncVersions?.removeValue(forKey: taskID)
+            next.peers[index].attachmentConsents?.remove(taskID)
         }
         do {
             try save(next)
-            try await service?.replaceShares(shares, workspaces: workspaceShares)
+            try await service?.replaceShares(shares, workspaces: workspaceShares, versions: workspaceVersions,
+                                             attachments: attachmentShares)
         } catch {
             status = .transferFailed
         }
     }
 
-    public func shareWorkspace(_ taskID: UUID, with peerID: String, enabled: Bool) async {
+    public func shareWorkspace(_ taskID: UUID, with peerID: String, enabled: Bool,
+                               propagateChanges: Bool = false) async {
         guard !busy, let workspaceHost,
               let index = settings.peers.firstIndex(where: { $0.id == peerID }),
               settings.peers[index].sharedConversations.contains(taskID) else { return }
@@ -287,16 +324,39 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         var next = settings
         do {
             var scopes = next.peers[index].workspaceScopes ?? [:]
-            if enabled { scopes[taskID] = try await workspaceHost.shareScope(for: taskID) }
-            else { scopes.removeValue(forKey: taskID) }
+            var versions = next.peers[index].workspaceSyncVersions ?? [:]
+            if enabled {
+                let scope = try await workspaceHost.shareScope(for: taskID)
+                if scopes[taskID] != scope { next.peers[index].attachmentConsents?.remove(taskID) }
+                scopes[taskID] = scope
+                versions[taskID] = propagateChanges && supportsWorkspaceChanges ? DeviceWorkspaceConvergence.v2.rawValue : nil
+            } else {
+                scopes.removeValue(forKey: taskID)
+                versions.removeValue(forKey: taskID)
+                next.peers[index].attachmentConsents?.remove(taskID)
+            }
             guard revision == self.revision else { return }
             next.peers[index].workspaceScopes = scopes
+            next.peers[index].workspaceSyncVersions = versions
             try save(next)
-            try await service?.replaceShares(shares, workspaces: workspaceShares)
+            try await service?.replaceShares(shares, workspaces: workspaceShares, versions: workspaceVersions,
+                                             attachments: attachmentShares)
             status = .ready
         } catch {
             status = Self.failureStatus(error)
         }
+    }
+
+    public func shareAttachments(_ taskID: UUID, with peerID: String, enabled: Bool) async {
+        guard requiresAttachmentConsent, !busy,
+              let index = settings.peers.firstIndex(where: { $0.id == peerID }),
+              settings.peers[index].sharesWorkspace(for: taskID) else { return }
+        var next = settings
+        var consents = next.peers[index].attachmentConsents ?? []
+        if enabled { consents.insert(taskID) }
+        else { consents.remove(taskID) }
+        next.peers[index].attachmentConsents = consents
+        await update(next, rebind: false)
     }
 
     public func localConversations() async -> [DeviceHistoryOffer] {
@@ -352,6 +412,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
 
     private func receiveSelection(_ taskID: UUID, from peer: DeviceHistoryPeer,
                                   service: DeviceHistorySync, revision: Int, includeWorkspace: Bool) async {
+        attachmentResult = nil
         defer {
             receiveTask = nil
             receiveProgress = nil
@@ -372,15 +433,25 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     private func pullHistory(_ taskID: UUID, from peerID: String, session: DeviceHistorySync.ReceiveSession,
                              revision: Int, includeWorkspace: Bool) async {
         var outcome: Status
+        var capabilities: DeviceHistorySync.PeerCapabilities?
+        var importsAttachments = false
         do {
+            if pagedHistory != nil || includeWorkspace { capabilities = try await session.capabilities() }
+            importsAttachments = includeWorkspace && attachmentRestore != nil && capabilities?.attachmentTransfer == true
+                && capabilities?.offers.contains(where: { $0.id == taskID && $0.attachmentTransfer == true }) == true
+            let version = importsAttachments ? 2 : 1
+            // A prior text-only cursor must not skip old attachment-bearing
+            // messages when the user first opts into files.
+            let cursorPeer = importsAttachments ? peerID + ":attachments-v2" : peerID
             if let pagedHistory {
-                let cursor = try await pagedHistory.cursor(peerID, taskID)
-                try await session.transferHistory(taskID, after: cursor) { [weak self] delivery in
+                let cursor = try await pagedHistory.cursor(cursorPeer, taskID)
+                try await session.transferHistory(taskID, after: cursor, version: version, capabilities: capabilities) { [weak self] delivery in
                     guard let self else { throw CancellationError() }
-                    try await self.commit(delivery, conversationID: taskID, peerID: peerID, revision: revision)
+                    try await self.commit(delivery, conversationID: taskID, peerID: peerID,
+                                          revision: revision, cursorPeer: cursorPeer)
                 }
             } else {
-                let data = try await session.history(taskID)
+                let data = try await session.history(taskID, version: version)
                 try await commit(.archive(data), conversationID: taskID, peerID: peerID, revision: revision)
             }
             outcome = .received(receiveProgress?.addedMessages ?? 0)
@@ -398,19 +469,104 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         }
         if revision == self.revision {
             status = outcome
-            if case .received = outcome, includeWorkspace, let workspaceHost {
+            if case .received = outcome, includeWorkspace {
+                if let attachmentRestore, importsAttachments {
+                    await pullAttachments(taskID, session: session, restore: attachmentRestore,
+                                          capabilities: capabilities, revision: revision)
+                    if let progress = receiveProgress, progress.restoredAttachments > 0 || progress.failedAttachments > 0 {
+                        attachmentResult = progress
+                        if progress.restoredAttachments > 0 { await Task { await didImport(taskID) }.value }
+                    }
+                }
                 receiveProgress = nil
-                await pullWorkspace(taskID, session: session, host: workspaceHost, revision: revision)
+                if let workspaceHost {
+                    let offer = capabilities?.offers.first(where: { $0.id == taskID })
+                    let convergence: DeviceWorkspaceConvergence = offer?.workspaceSyncVersion == 2
+                        ? workspaceConvergence(for: peerID, conversationID: taskID) : .v1
+                    await pullWorkspace(taskID, session: session, host: workspaceHost,
+                                        convergence: convergence, revision: revision)
+                }
+            }
+        }
+    }
+
+    /// Pulls the original user attachment bytes declared by the imported v2
+    /// history. Runs only when the peer advertised the capability and the
+    /// workspace share is active; per-item failures are counted and retried
+    /// on a later receive, never surfaced as half-links.
+    private func pullAttachments(_ taskID: UUID, session: DeviceHistorySync.ReceiveSession,
+                                 restore: DeviceAttachmentRestore,
+                                 capabilities: DeviceHistorySync.PeerCapabilities?, revision: Int) async {
+        guard revision == self.revision,
+              capabilities?.attachmentTransfer == true,
+              capabilities?.offers.contains(where: { $0.id == taskID && $0.workspaceFiles == true }) == true else { return }
+        let items: [DeviceAttachmentRestore.Item]
+        do {
+            items = try await restore.pending(taskID)
+        } catch {
+            return
+        }
+        let valid = items.filter {
+            $0.byteCount >= 0 && $0.byteCount <= DeviceAttachmentRestoreLimit.maximumItemBytes
+                && DeviceWorkspaceDigest.isValid($0.digest)
+        }
+        var budget = DeviceAttachmentRestoreLimit.maximumTotalBytes
+        var restored = 0
+        var failed = 0
+        defer {
+            if var progress = receiveProgress, restored > 0 || failed > 0 {
+                progress.restoredAttachments += restored
+                progress.failedAttachments += failed
+                receiveProgress = progress
+            }
+        }
+        for item in valid.prefix(DeviceAttachmentRestoreLimit.maximumItems) {
+            guard revision == self.revision, !Task.isCancelled else { return }
+            guard Int64(item.byteCount) <= budget else { break }
+            do {
+                var data = Data()
+                data.reserveCapacity(min(item.byteCount, 8 * 1_024 * 1_024))
+                var offset = 0
+                while offset < item.byteCount {
+                    try Task.checkCancellation()
+                    let count = min(DeviceWorkspaceManifest.chunkSize, item.byteCount - offset)
+                    let bytes = try await session.attachmentChunk(taskID: taskID, attachmentID: item.attachmentID,
+                                                                  offset: offset, count: count)
+                    data.append(bytes)
+                    offset += bytes.count
+                    guard offset <= item.byteCount else { throw DeviceHistorySyncError.invalidResponse }
+                }
+                guard data.count == item.byteCount,
+                      DeviceWorkspaceDigest.hex(SHA256.hash(data: data)) == item.digest else {
+                    throw DeviceHistorySyncError.invalidResponse
+                }
+                try Task.checkCancellation()
+                guard revision == self.revision else { throw CancellationError() }
+                budget -= Int64(item.byteCount)
+                if try await restore.restore(taskID, item, data) {
+                    restored += 1
+                } else {
+                    failed += 1
+                }
+            } catch is CancellationError {
+                return
+            } catch DeviceHistorySyncError.notShared, DeviceHistorySyncError.disconnected {
+                // Authorization vanished mid-phase: stop pulling; the
+                // workspace phase reports the revocation honestly.
+                return
+            } catch {
+                failed += 1
             }
         }
     }
 
     private func pullWorkspace(_ taskID: UUID, session: DeviceHistorySync.ReceiveSession,
-                               host: DeviceWorkspaceSyncHost, revision: Int) async {
+                               host: DeviceWorkspaceSyncHost,
+                               convergence: DeviceWorkspaceConvergence, revision: Int) async {
         let result: WorkspaceResult
         do {
             try Task.checkCancellation()
-            try await session.transferWorkspace(taskID) { [weak self] value in
+            try await session.transferWorkspace(taskID, convergence: convergence) { [weak self] value in
                 await self?.updateWorkspaceProgress(value, revision: revision)
             }
             guard let report = currentWorkspaceProgress else { throw DeviceHistorySyncError.invalidResponse }
@@ -439,7 +595,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     }
 
     private func commit(_ delivery: DeviceHistoryDelivery, conversationID: UUID,
-                        peerID: String, revision: Int) async throws {
+                        peerID: String, revision: Int, cursorPeer: String? = nil) async throws {
         try Task.checkCancellation()
         guard self.revision == revision, enabled, peers.contains(where: { $0.id == peerID }) else {
             throw CancellationError()
@@ -450,7 +606,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
             added = try await importHistory(conversationID, data)
         case .page(let data, let nextCursor):
             guard let pagedHistory else { throw DeviceHistorySyncError.unsupportedVersion }
-            added = try await pagedHistory.commit(peerID, conversationID, data, nextCursor)
+            added = try await pagedHistory.commit(cursorPeer ?? peerID, conversationID, data, nextCursor)
         }
         if var progress = receiveProgress {
             progress.addedMessages += added
@@ -482,6 +638,30 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         }, uniquingKeysWith: { first, _ in first })
     }
 
+    private var workspaceVersions: [String: [UUID: Int]] {
+        Dictionary(settings.peers.compactMap { peer in
+            let versions = peer.workspaceSyncVersions?.filter {
+                peer.sharedConversations.contains($0.key) && peer.workspaceScopes?[$0.key] != nil
+            } ?? [:]
+            return versions.isEmpty ? nil : (peer.id, versions)
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private var attachmentShares: [String: Set<UUID>]? {
+        guard requiresAttachmentConsent else { return nil }
+        return Dictionary(settings.peers.map { peer in
+            (peer.id, (peer.attachmentConsents ?? []).filter { peer.sharesWorkspace(for: $0) })
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Local convergence consent for a peer conversation: explicit v2
+    /// (re)grant on both ends plus the existing workspace share.
+    public func workspaceConvergence(for peerID: String, conversationID: UUID) -> DeviceWorkspaceConvergence {
+        guard let peer = settings.peers.first(where: { $0.id == peerID }),
+              peer.convergesWorkspace(for: conversationID) else { return .v1 }
+        return .v2
+    }
+
     private func update(_ next: Settings, rebind: Bool = true) async {
         guard !busy, !loadFailed else { return }
         busy = true
@@ -489,7 +669,8 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         do {
             try save(next)
             if !rebind, let service {
-                try await service.replaceShares(shares, workspaces: workspaceShares)
+                try await service.replaceShares(shares, workspaces: workspaceShares, versions: workspaceVersions,
+                                                attachments: attachmentShares)
                 status = .ready
             } else {
                 try await restart()
@@ -555,7 +736,8 @@ public final class DeviceHistorySyncCenter: ObservableObject {
             }
         }
         let service = DeviceHistorySync(link: link, shares: shares, source: source, workspaceHost: workspaceHost,
-                                        workspaceShares: workspaceShares)
+                                        workspaceShares: workspaceShares, versions: workspaceVersions,
+                                        attachmentShares: attachmentShares)
         self.service = service
         await service.start()
         guard revision == self.revision else { return }

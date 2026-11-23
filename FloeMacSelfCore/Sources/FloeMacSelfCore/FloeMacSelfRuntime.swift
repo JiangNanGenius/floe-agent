@@ -3342,16 +3342,19 @@ public actor FloeMacSelfRuntime {
         return answer.isEmpty ? nil : answer
     }
 
-    public func deviceHistory(conversationID: UUID) async throws -> DeviceConversationHistory {
+    public func deviceHistory(conversationID: UUID, version: Int = 1) async throws -> DeviceConversationHistory {
         try ensureOpen()
         try requireAuthority()
-        return try await requireStores().conversations.deviceHistory(conversationID: conversationID)
+        return try await requireStores().conversations.deviceHistory(conversationID: conversationID, version: version,
+                                                                      includeUserBookmarks: true)
     }
 
-    public func deviceHistoryPage(conversationID: UUID, after: String?, through: Int64?) async throws -> DeviceConversationHistoryPage {
+    public func deviceHistoryPage(conversationID: UUID, after: String?, through: Int64?, version: Int = 1)
+        async throws -> DeviceConversationHistoryPage {
         try ensureOpen()
         try requireAuthority()
-        return try await requireStores().conversations.deviceHistoryPage(conversationID: conversationID, after: after, through: through)
+        return try await requireStores().conversations.deviceHistoryPage(conversationID: conversationID, after: after,
+            through: through, version: version, includeUserBookmarks: true)
     }
 
     public func deviceHistoryCursor(from peerID: String, conversationID: UUID) async throws -> String? {
@@ -3366,6 +3369,26 @@ public actor FloeMacSelfRuntime {
         try ensureOpen()
         try requireAuthority()
         return try await requireStores().conversations.importDeviceHistory(history, sourcePeerID: sourcePeerID, nextCursor: nextCursor)
+    }
+
+    public func deviceHistoryAttachment(conversationID: UUID, id: UUID) async throws -> AttachmentRef? {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().conversations.deviceHistoryUserAttachment(conversationID: conversationID, id: id)
+    }
+
+    public func pendingDeviceHistoryAttachments(conversationID: UUID) async throws -> [AttachmentRef] {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().conversations.deviceHistoryUserAttachments(conversationID: conversationID, storage: .none)
+    }
+
+    public func restoreDeviceHistoryAttachment(conversationID: UUID, attachmentID: UUID, messageID: UUID,
+                                                digest: String, relativePath: String) async throws -> Bool {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().conversations.restoreDeviceHistoryAttachment(conversationID: conversationID,
+            attachmentID: attachmentID, messageID: messageID, digest: digest, relativePath: relativePath)
     }
 
     public func isCompletedScheduleRun(_ id: UUID) async throws -> Bool {

@@ -75,6 +75,13 @@ struct DeviceWorkspaceFileStamp: Sendable, Equatable {
 }
 
 final class DeviceWorkspaceDirectory: Sendable {
+    /// The lease mutation runs synchronously inside the call; the box only
+    /// carries the outcome back through the `@Sendable` closure boundary.
+    private final class MutationOutcome<T>: @unchecked Sendable {
+        var value: T
+        init(_ value: T) { self.value = value }
+    }
+
     struct FileVersion: Sendable, Equatable {
         let stamp: DeviceWorkspaceFileStamp
         let digest: String
@@ -273,6 +280,163 @@ final class DeviceWorkspaceDirectory: Sendable {
     func conflictPath(for entry: DeviceWorkspaceEntry) -> String {
         let digest = entry.digest ?? DeviceWorkspaceDigest.hex(SHA256.hash(data: Data(entry.path.utf8)))
         return DeviceWorkspacePath.conflicts + "/" + digest + "/" + entry.path
+    }
+
+    enum RemovalOutcome: Sendable, Equatable {
+        /// The exact baseline file was removed.
+        case removed
+        /// The path could not be proven to be the exact confirmed baseline,
+        /// or the binding rejected the mutation. The local file (if any) is
+        /// kept.
+        case preserved
+    }
+
+    enum RelocationOutcome: Sendable, Equatable {
+        /// The baseline file was moved to the destination path.
+        case moved
+        /// The destination already held identical bytes; the source spelling
+        /// was removed instead.
+        /// The source, destination, or binding was not an exact safe case.
+        /// Nothing was changed.
+        case preserved
+    }
+
+    /// A source file proven (outside the mutation) to be the exact confirmed
+    /// baseline identity. The stamp pins dev/inode/timestamps so the guarded
+    /// mutation can prove it is collapsing the same file it verified.
+    private struct VerifiedSource {
+        let path: String
+        let version: FileVersion
+    }
+
+    /// Removes the confirmed baseline file. `pathHint` (the exact spelling
+    /// recorded when both sides confirmed the entry) is tried first; the
+    /// comparison-key scan only covers entries confirmed before paths were
+    /// recorded or re-spelled locally. Anything that cannot be proven to be
+    /// the exact baseline identity is preserved, never deleted.
+    @discardableResult
+    func remove(locatingKey key: String, digest: String, pathHint: String?) throws -> RemovalOutcome {
+        try validateVisibleRoot()
+        guard let target = try resolve(key: key, digest: digest, pathHint: pathHint) else { return .preserved }
+        let outcome = MutationOutcome<RemovalOutcome>(.preserved)
+        try lease.mutate(lease.url.appending(path: target.path)) {
+            try self.validateVisibleRoot()
+            try Task.checkCancellation()
+            guard let (parent, name) = try self.parent(of: target.path, create: false),
+                  let file = try self.openFile(name, in: parent),
+                  try file.info().matches(target.version.stamp) else { return }
+            guard unlinkat(parent.number, name, 0) == 0 else {
+                throw WorkspaceDescriptor.failure()
+            }
+            outcome.value = .removed
+        }
+        return outcome.value
+    }
+
+    /// Move an unchanged shared file to the workspace's visible recovery
+    /// folder. Both parent paths are opened under the pinned root.
+    func trash(locatingKey key: String, digest: String, pathHint: String?) throws -> RemovalOutcome {
+        try validateVisibleRoot()
+        guard let target = try resolve(key: key, digest: digest, pathHint: pathHint) else { return .preserved }
+        let destination = "\(DeviceWorkspacePath.conflicts)/Removed/\(UUID().uuidString)/\(target.path)"
+        return try relocate(target, to: destination) ? .removed : .preserved
+    }
+
+    func move(locatingKey key: String, digest: String, pathHint: String?, to destination: String) throws -> RelocationOutcome {
+        try validateVisibleRoot()
+        guard DeviceWorkspacePath.isSyncable(destination) else { throw DeviceHistorySyncError.invalidResponse }
+        guard let target = try resolve(key: key, digest: digest, pathHint: pathHint) else { return .preserved }
+        return try relocate(target, to: destination) ? .moved : .preserved
+    }
+
+    private func relocate(_ target: VerifiedSource, to destination: String) throws -> Bool {
+        let outcome = MutationOutcome(false)
+        try lease.mutate(lease.url.appending(path: target.path)) {
+            try self.lease.mutate(self.lease.url.appending(path: destination)) {
+                try self.validateVisibleRoot()
+                try Task.checkCancellation()
+                guard let (sourceParent, sourceName) = try self.parent(of: target.path, create: false),
+                      let (targetParent, targetName) = try self.parent(of: destination, create: true),
+                      let source = try self.openFile(sourceName, in: sourceParent),
+                      try source.info().matches(target.version.stamp),
+                      let onDisk = try self.info(in: sourceParent, name: sourceName),
+                      onDisk.matches(target.version.stamp) else { return }
+                if renameatx_np(sourceParent.number, sourceName, targetParent.number, targetName, UInt32(RENAME_EXCL)) == 0 {
+                    outcome.value = true
+                } else if errno != EEXIST {
+                    throw WorkspaceDescriptor.failure()
+                }
+            }
+        }
+        return outcome.value
+    }
+
+    /// Proves a baseline identity before its mutation is leased. The path
+    /// hint gives the exact spelling without a tree walk; the key scan is
+    /// the fallback for legacy baselines.
+    private func resolve(key: String, digest: String, pathHint: String?) throws -> VerifiedSource? {
+        if let pathHint, DeviceWorkspacePath.isSyncable(pathHint),
+           DeviceWorkspacePath.comparisonKey(pathHint) == key,
+           let version = try version(at: pathHint), version.digest == digest {
+            return VerifiedSource(path: pathHint, version: version)
+        }
+        return try locate(key: key, digest: digest).map {
+            VerifiedSource(path: $0.path, version: $0.version)
+        }
+    }
+
+    private struct LocatedFile {
+        let path: String
+        let version: FileVersion
+    }
+
+    /// Walks names only (content is hashed solely for the exact key match)
+    /// to find the file carrying `key`. Returns nil when absent or ambiguous
+    /// so callers converge only on an exact, unique, verified identity.
+    /// Each level opens an independent descriptor so repeated tombstone
+    /// lookups never share a directory read offset with the lease root.
+    private func locate(key: String, digest: String) throws -> LocatedFile? {
+        try locate(in: descriptor, prefix: "", key: key, digest: digest)
+    }
+
+    private func locate(in directory: WorkspaceDescriptor, prefix: String,
+                        key: String, digest: String) throws -> LocatedFile? {
+        let number = openat(directory.number, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard number >= 0 else { throw WorkspaceDescriptor.failure() }
+        guard let entries = fdopendir(number) else {
+            let failure = WorkspaceDescriptor.failure()
+            close(number)
+            throw failure
+        }
+        defer { closedir(entries) }
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let item = readdir(entries) else {
+                if errno != 0 { throw WorkspaceDescriptor.failure() }
+                return nil
+            }
+            let name = withUnsafePointer(to: &item.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 256) { String(validatingCString: $0) }
+            }
+            guard let name else { continue }
+            let path = prefix + name
+            guard DeviceWorkspacePath.isSyncable(path), let metadata = try info(in: directory, name: name),
+                  metadata.st_dev == identity.device else { continue }
+            let type = metadata.st_mode & S_IFMT
+            if type == S_IFDIR {
+                let child = try openDirectory(name, in: directory)
+                if let found = try locate(in: child, prefix: path + "/", key: key, digest: digest) {
+                    return found
+                }
+            } else if type == S_IFREG, metadata.st_nlink == 1,
+                      DeviceWorkspacePath.comparisonKey(path) == key {
+                guard let file = try openFile(name, in: directory) else { return nil }
+                let version = try fileVersion(file)
+                guard version.digest == digest else { continue }
+                return LocatedFile(path: path, version: version)
+            }
+        }
     }
 
     private func file(at path: String) throws -> WorkspaceDescriptor? {

@@ -253,6 +253,15 @@ private struct DeviceHistoryPeerSettings: View {
                 if center.workspacePeerID == peerID, let result = center.workspaceResult {
                     Text(workspaceStatusText(result)).foregroundStyle(.secondary)
                 }
+                if let result = center.attachmentResult, result.peerID == peerID {
+                    Text(label("已接收 \(result.restoredAttachments) 个附件。",
+                               "Received \(result.restoredAttachments) attachments.")).foregroundStyle(.secondary)
+                    if result.failedAttachments > 0 {
+                        Text(label("\(result.failedAttachments) 个附件未接收，可再次同步。",
+                                   "\(result.failedAttachments) attachments are pending. Sync again to retry."))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             Section {
                 ForEach(local) { task in
@@ -276,6 +285,25 @@ private struct DeviceHistoryPeerSettings: View {
                         .disabled(center.busy)
                         .accessibilityLabel(label("共享 \(task.title) 的工作区文件", "Share workspace files for \(task.title)"))
                         .accessibilityIdentifier("deviceHistorySync.shareWorkspace.\(task.id.uuidString)")
+                        if center.requiresAttachmentConsent, !staleShares.contains(task.id),
+                           let peer = center.peers.first(where: { $0.id == peerID }), peer.sharesWorkspace(for: task.id) {
+                            Toggle(label("共享附件和工具结果", "Share Attachments and Tool Results"), isOn: Binding(get: {
+                                center.peers.first(where: { $0.id == peerID })?.sharesAttachments(for: task.id) == true
+                            }, set: { enabled in
+                                Task { await center.shareAttachments(task.id, with: peerID, enabled: enabled) }
+                            }))
+                            .disabled(center.busy)
+                            .accessibilityIdentifier("deviceHistorySync.shareAttachments.\(task.id.uuidString)")
+                        }
+                        if center.supportsWorkspaceChanges, !staleShares.contains(task.id),
+                           let peer = center.peers.first(where: { $0.id == peerID }), peer.sharesWorkspace(for: task.id) {
+                            Toggle(label("同步重命名和删除", "Sync Renames and Deletions"), isOn: Binding(get: {
+                                center.peers.first(where: { $0.id == peerID })?.convergesWorkspace(for: task.id) == true
+                            }, set: { enabled in
+                                Task { await center.shareWorkspace(task.id, with: peerID, enabled: true, propagateChanges: enabled) }
+                            }))
+                            .disabled(center.busy)
+                        }
                         if staleShares.contains(task.id) {
                             Text(label("工作区已变更。重新开启文件共享后可继续同步。",
                                        "The workspace changed. Turn on file sharing again to sync the new workspace."))
@@ -289,8 +317,13 @@ private struct DeviceHistoryPeerSettings: View {
                 Text(label("共享给这台设备", "Share With This Device"))
             } footer: {
                 if center.supportsWorkspaceSync {
-                    Text(label("授权后，这台设备可以拉取会话所属工作区的文件。",
-                               "A device with file access can pull files from the conversation’s workspace."))
+                    if center.requiresAttachmentConsent {
+                        Text(label("双方开启同步删除后，移除的文件可在工作区的 Floe Sync Conflicts 中找回。",
+                                   "When both devices sync deletions, removed files can be recovered in Floe Sync Conflicts."))
+                    } else {
+                        Text(label("授权后，对方可以接收会话附件和工作区文件。双方开启同步删除时，移除的文件可在工作区的 Floe Sync Conflicts 中找回。",
+                                   "File sharing includes conversation attachments and workspace files. With deletion sync on for both devices, removed files can be recovered in Floe Sync Conflicts."))
+                    }
                 }
             }
             Section {
@@ -335,6 +368,10 @@ private struct DeviceHistoryPeerSettings: View {
 private func workspaceStatusText(_ result: DeviceHistorySyncCenter.WorkspaceResult) -> String {
     switch result {
     case .received(let progress):
+        if progress.movedFiles > 0 || progress.deletedFiles > 0 || progress.preservedRemovals > 0 {
+            return label("已保存 \(progress.savedFiles) 个文件，重命名 \(progress.movedFiles) 个，移入恢复文件夹 \(progress.deletedFiles) 个，保留 \(progress.conflicts + progress.preservedRemovals) 项不同内容。",
+                         "Saved \(progress.savedFiles) files, renamed \(progress.movedFiles), moved \(progress.deletedFiles) to recovery, and preserved \(progress.conflicts + progress.preservedRemovals) differences.")
+        }
         if progress.conflicts > 0 {
             return label("已保存 \(progress.savedFiles) 个文件，\(progress.conflicts) 项冲突留在工作区的 Floe Sync Conflicts 文件夹。",
                          "Saved \(progress.savedFiles) files. Find \(progress.conflicts) conflicts in the workspace’s Floe Sync Conflicts folder.")

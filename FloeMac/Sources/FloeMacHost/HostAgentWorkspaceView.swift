@@ -1245,7 +1245,7 @@ struct HostAgentWorkspaceView: View {
                 guard let id = item.attachmentID else { return }
                 Task {
                     await workspace.withSavedAttachment(id: id, conversationID: message.conversationID) {
-                        attachmentPreview = MacConversationAttachmentPreview(id: id, url: $0)
+                        attachmentPreview = MacConversationAttachmentPreview(id: id, url: $0, name: item.name)
                     }
                 }
             }, hasDraft: !draft.wrappedValue.isEmpty, reuseMessage: { text in

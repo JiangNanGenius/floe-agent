@@ -7,14 +7,20 @@ import FloeCore
 /// by the v3 stores. Centralised so every store persists dates identically.
 enum PersistenceCodec {
     static func encode(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        fractionalDateFormatter().string(from: date)
     }
 
     static func decodeDate(_ value: String) throws -> Date {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try decodeDate(value, fractional: fractionalDateFormatter())
+    }
+
+    static func fractionalDateFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }
+
+    static func decodeDate(_ value: String, fractional: ISO8601DateFormatter) throws -> Date {
         if let date = fractional.date(from: value) { return date }
         let standard = ISO8601DateFormatter()
         standard.formatOptions = [.withInternetDateTime]

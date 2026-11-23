@@ -172,6 +172,7 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                 activity.activityCount == 0
             }))
             if let directory {
+                workspace.deviceAttachmentFiles = HostAgentDatabase.DeviceAttachmentFiles(directory: directory)
                 let vault = KeychainStore(service: namespace + ".device-sync", synchronizable: false,
                                           accessibility: .afterFirstUnlockThisDeviceOnly)
                 let account = "endpoint-identity-v1"
@@ -191,12 +192,15 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                     identityStorage: identity,
                     source: .init(list: { [weak workspace] shared in
                         await workspace?.deviceHistoryOffers(shared: shared) ?? []
-                    }, export: { [weak workspace] id in
+                    }, export: { [weak workspace] id, version in
                         guard let workspace else { throw CocoaError(.userCancelled) }
-                        return try await workspace.exportDeviceHistory(id)
-                    }, exportPage: { [weak workspace] id, after, through in
+                        return try await workspace.exportDeviceHistory(id, version: version)
+                    }, exportPage: { [weak workspace] id, after, through, version in
                         guard let workspace else { throw CocoaError(.userCancelled) }
-                        return try await workspace.exportDeviceHistoryPage(id, after: after, through: through)
+                        return try await workspace.exportDeviceHistoryPage(id, after: after, through: through, version: version)
+                    }, attachment: { [weak workspace] owner, id, offset, count in
+                        guard let workspace else { throw CocoaError(.userCancelled) }
+                        return try await workspace.exportDeviceAttachment(owner, id: id, offset: offset, count: count)
                     }),
                     localTasks: { [weak workspace] in workspace?.deviceHistoryOffers() ?? [] },
                     importHistory: { [weak workspace] id, data in
@@ -216,9 +220,18 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                             self?.taskTerminals.hasLiveSession(in: taskIDs) ?? true
                         }
                     }, ledgerDirectory: directory.appendingPathComponent("DeviceSync/WorkspaceLedger", isDirectory: true),
+                        canPropagateWorkspaceChanges: true,
                         didImport: { [weak workspace] id in
                             await workspace?.refreshReceivedDeviceWorkspace(id)
                         }),
+                    attachmentRestore: .init(pending: { [weak workspace] id in
+                        guard let workspace else { throw DeviceHistorySyncError.unavailable }
+                        return try await workspace.pendingDeviceAttachments(id)
+                    }, restore: { [weak workspace] owner, item, bytes in
+                        guard let workspace else { throw DeviceHistorySyncError.unavailable }
+                        return try await workspace.restoreDeviceAttachment(owner, item: item, data: bytes)
+                    }),
+                    requiresAttachmentConsent: true,
                     didImport: { [weak workspace] id in
                         await workspace?.refreshReceivedDeviceHistory(id)
                     }
