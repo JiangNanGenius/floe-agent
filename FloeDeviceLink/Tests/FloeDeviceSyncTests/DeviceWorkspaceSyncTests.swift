@@ -138,6 +138,77 @@ func workspaceRevocationStopsAnOpenTransferAndRetryKeepsCommittedFiles() async t
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
 }
 
+@MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [false, true], [false, true])
+func conversationAndFilesContinueOnTheSameConnection(paged: Bool, revokeFilesAfterHistory: Bool) async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(path: "floe-combined-sync-" + UUID().uuidString)
+        .resolvingSymlinksInPath()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let outbound = directory.appending(path: "outbound")
+    let inbound = directory.appending(path: "inbound")
+    for root in [outbound, inbound] {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+    let bytes = Data(repeating: 0xA7, count: DeviceWorkspaceManifest.chunkSize + 17)
+    try bytes.write(to: outbound.appending(path: "asset.bin"))
+    let taskID = UUID()
+    let identity = FloeDeviceLinkIdentity.generate()
+    let localIdentity = FloeDeviceLinkIdentity.generate()
+    let savedKey = localIdentity.privateKeyBytes()
+    let shares = [localIdentity.endpointID: Set([taskID])]
+    let senderLink = try await FloeDeviceLink.bind(identity: identity, trustedEndpointIDs: [localIdentity.endpointID],
+                                                  relay: .disabled, bindAddress: "127.0.0.1:0")
+    let history = Data([3])
+    let exportPage: @Sendable (UUID, String?, Int64?) async throws -> DeviceHistoryPage = { _, _, _ in
+        .init(archive: history, nextCursor: "received", through: 1, hasMore: false)
+    }
+    let source = DeviceHistorySource(list: { _ in [.init(id: taskID, title: "Fixture")] },
+                                     export: { _ in history }, exportPage: paged ? exportPage : nil)
+    let sender = DeviceHistorySync(link: senderLink, shares: shares, source: source, workspaceHost: .init(resolve: { _, _ in
+        .init(scope: "outbound", url: outbound, guardCurrent: {})
+    }, ledgerDirectory: directory.appending(path: "outbound-ledger")), workspaceShares: [localIdentity.endpointID: [taskID: "outbound"]])
+    await sender.start()
+    let importHistory: @MainActor @Sendable (UUID, Data) async throws -> Int = { id, data in
+        #expect(id == taskID && data == history)
+        if revokeFilesAfterHistory { try await sender.replaceShares(shares) }
+        // The authenticated connection can finish, but the peer refuses any new dial.
+        try senderLink.replaceTrustedEndpointIDs([])
+        return 1
+    }
+    let destination: DeviceHistoryPageDestination? = paged ? .init(cursor: { _, _ in nil }, commit: { peerID, id, data, cursor in
+        #expect(peerID == identity.endpointID && cursor == "received")
+        return try await importHistory(id, data)
+    }) : nil
+    let receiver = DeviceHistorySyncCenter(settingsURL: directory.appending(path: "settings.json"),
+        identityStorage: .init(load: { savedKey }, save: { _ in Issue.record("Unexpected replacement identity") }),
+        source: .init(list: { _ in [] }, export: { _ in Data() }), localTasks: { [] }, importHistory: { id, data in
+            #expect(!paged, "A paged peer should be imported through the page destination")
+            return try await importHistory(id, data)
+        }, pagedHistory: destination, workspaceHost: .init(resolve: { _, _ in
+            .init(scope: "inbound", url: inbound, guardCurrent: {})
+        }, ledgerDirectory: directory.appending(path: "inbound-ledger")))
+    await receiver.activate()
+    await receiver.setEnabled(true)
+    await receiver.pair(.init(address: senderLink.address()), named: "Fixture")
+    await receiver.receive(taskID, from: identity.endpointID, includeWorkspace: true)
+
+    #expect(receiver.status == .received(1))
+    #expect(receiver.busy == false)
+    if revokeFilesAfterHistory {
+        #expect(receiver.workspaceResult == .interrupted(nil, .noLongerShared))
+        #expect(!FileManager.default.fileExists(atPath: inbound.appending(path: "asset.bin").path))
+    } else {
+        if case .received(let report) = receiver.workspaceResult {
+            #expect(report.savedFiles == 1)
+        } else {
+            Issue.record("Both phases must finish over the already authenticated connection")
+        }
+        #expect((try? Data(contentsOf: inbound.appending(path: "asset.bin"))) == bytes)
+    }
+    await receiver.pause()
+    await sender.stop()
+}
+
 private actor WorkspaceBindingFixture {
     private var current = true
     func change() { current = false }

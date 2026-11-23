@@ -340,7 +340,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         let revision = revision
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.pullHistory(taskID, from: peer, service: service, revision: revision, includeWorkspace: includeWorkspace)
+            await self.receiveSelection(taskID, from: peer, service: service, revision: revision, includeWorkspace: includeWorkspace)
         }
         receiveTask = task
         await task.value
@@ -350,24 +350,38 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         receiveTask?.cancel()
     }
 
-    private func pullHistory(_ taskID: UUID, from peer: DeviceHistoryPeer,
-                             service: DeviceHistorySync, revision: Int, includeWorkspace: Bool) async {
+    private func receiveSelection(_ taskID: UUID, from peer: DeviceHistoryPeer,
+                                  service: DeviceHistorySync, revision: Int, includeWorkspace: Bool) async {
         defer {
             receiveTask = nil
             receiveProgress = nil
             finishWork()
         }
+        do {
+            try await service.withReceiveSession(to: peer.address) { [weak self] session in
+                guard let self else { throw CancellationError() }
+                await self.pullHistory(taskID, from: peer.id, session: session, revision: revision, includeWorkspace: includeWorkspace)
+            }
+        } catch is CancellationError {
+            if revision == self.revision { status = .cancelled(0) }
+        } catch {
+            if revision == self.revision { status = Self.failureStatus(error) }
+        }
+    }
+
+    private func pullHistory(_ taskID: UUID, from peerID: String, session: DeviceHistorySync.ReceiveSession,
+                             revision: Int, includeWorkspace: Bool) async {
         var outcome: Status
         do {
             if let pagedHistory {
-                let cursor = try await pagedHistory.cursor(peer.id, taskID)
-                try await service.transferHistory(taskID, from: peer.address, after: cursor) { [weak self] delivery in
+                let cursor = try await pagedHistory.cursor(peerID, taskID)
+                try await session.transferHistory(taskID, after: cursor) { [weak self] delivery in
                     guard let self else { throw CancellationError() }
-                    try await self.commit(delivery, conversationID: taskID, peerID: peer.id, revision: revision)
+                    try await self.commit(delivery, conversationID: taskID, peerID: peerID, revision: revision)
                 }
             } else {
-                let data = try await service.history(taskID, from: peer.address)
-                try await commit(.archive(data), conversationID: taskID, peerID: peer.id, revision: revision)
+                let data = try await session.history(taskID)
+                try await commit(.archive(data), conversationID: taskID, peerID: peerID, revision: revision)
             }
             outcome = .received(receiveProgress?.addedMessages ?? 0)
         } catch is CancellationError {
@@ -386,16 +400,17 @@ public final class DeviceHistorySyncCenter: ObservableObject {
             status = outcome
             if case .received = outcome, includeWorkspace, let workspaceHost {
                 receiveProgress = nil
-                await pullWorkspace(taskID, from: peer, service: service, host: workspaceHost, revision: revision)
+                await pullWorkspace(taskID, session: session, host: workspaceHost, revision: revision)
             }
         }
     }
 
-    private func pullWorkspace(_ taskID: UUID, from peer: DeviceHistoryPeer,
-                               service: DeviceHistorySync, host: DeviceWorkspaceSyncHost, revision: Int) async {
+    private func pullWorkspace(_ taskID: UUID, session: DeviceHistorySync.ReceiveSession,
+                               host: DeviceWorkspaceSyncHost, revision: Int) async {
         let result: WorkspaceResult
         do {
-            try await service.transferWorkspace(taskID, from: peer.address) { [weak self] value in
+            try Task.checkCancellation()
+            try await session.transferWorkspace(taskID) { [weak self] value in
                 await self?.updateWorkspaceProgress(value, revision: revision)
             }
             guard let report = currentWorkspaceProgress else { throw DeviceHistorySyncError.invalidResponse }
@@ -405,7 +420,9 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         } catch {
             result = .interrupted(currentWorkspaceProgress, Self.failureStatus(error))
         }
-        await Task { await host.didImport(taskID) }.value
+        if currentWorkspaceProgress != nil {
+            await Task { await host.didImport(taskID) }.value
+        }
         if revision == self.revision { workspaceResult = result }
         workspaceProgress = nil
         currentWorkspaceProgress = nil
