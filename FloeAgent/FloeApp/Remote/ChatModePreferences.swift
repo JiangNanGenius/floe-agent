@@ -70,7 +70,7 @@ final class ChatReasoningDraftStore {
 /// runtime ceiling and reasoning resolution never consult these helpers.
 enum ChatModePreferences {
 
-    /// All five conversation-local settings are selectable on the chat
+    /// All conversation-local settings are selectable on the chat
     /// surface today. This is the single gate a future surface consults when
     /// it must hide a choice (for example a compact picker); it never
     /// changes what a run resolves.
@@ -83,6 +83,7 @@ enum ChatModePreferences {
     /// diagnostics and any future key-free surface.
     static let displayTokens: [(preference: ChatReasoningPreference, english: String, chinese: String)] = [
         (.fast, "Fast", "快速"),
+        (.automatic, "Automatic", "自动"),
         (.low, "Low", "低"),
         (.medium, "Medium", "中"),
         (.high, "High", "高"),

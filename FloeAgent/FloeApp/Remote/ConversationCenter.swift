@@ -840,9 +840,9 @@ final class ConversationCenter: ObservableObject {
     /// conversation-local preference (default `.fast`) is captured at the
     /// run's FIRST chat ingress, recorded as an invisible `.status` event and
     /// reused by every continuation/recovery without a second decision. A
-    /// preference or mode switch mid-run applies to the NEXT run only. Task
-    /// modes never consult this coordinator, and the automatic-effort
-    /// classifier never runs for `.chat` runs.
+    /// preference or mode switch mid-run applies to the next run only. Task
+    /// modes use their model's setting. Chat opts in to effort classification
+    /// through its own Automatic choice.
     private let chatReasoningCoordinator = ChatReasoningCoordinator()
 
     /// Explicit composer-mode choices whose durable write has not landed yet.
@@ -3564,14 +3564,12 @@ final class ConversationCenter: ObservableObject {
         let conversationStore = self.conversationStore(for: conversationID)
         let runStore = self.runStore(for: conversationID)
         let runningInputStore = self.runningInputStore(for: conversationID)
-        // Reasoning ingress. A fast-chat run NEVER enters the automatic
-        // effort classifier: its setting is the conversation-local chat
-        // preference (default `.fast`), resolved against the endpoint's
-        // documented reasoning contract and FROZEN for this run and every
-        // continuation. Task modes (.agent/.plan/.goal) keep the existing
-        // per-fresh-round auxiliary decision and global semantics.
+        // Chat freezes its conversation-local choice before deciding whether
+        // to use the shared automatic-effort path. Task modes use the model's
+        // setting. Continuations keep the original run's choice.
         var resolvedModel = model
         var chatReasoningPolicy: ProviderReasoningPolicy = .modelDefault
+        var usesAutomaticEffort = !requestedChatMode
         if requestedChatMode {
             let preference = await chatReasoningPreference(
                 for: conversationID,
@@ -3603,7 +3601,10 @@ final class ConversationCenter: ObservableObject {
             )
             resolvedModel = chatResolution.model
             chatReasoningPolicy = chatResolution.policy
-        } else {
+            let frozenPreference = await chatReasoningCoordinator.decision(runID: runID)?.preference
+            usesAutomaticEffort = !isTemporary && frozenPreference == .automatic
+        }
+        if usesAutomaticEffort {
             // Automatic reasoning effort: at most one auxiliary-model decision
             // per fresh round, frozen on this run's model profile; resume/
             // retry reuse the frozen abstract choice (re-clamped for a re-

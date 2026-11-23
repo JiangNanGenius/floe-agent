@@ -910,25 +910,41 @@ public actor FloeMacSelfRuntime {
                 projectInstructions: request.context.projectInstructions
             )
 
+            let savedReasoningEvents: [RunEventRecord]
+            if recovery != nil {
+                savedReasoningEvents = try await stores.runs.events(runID: runID, afterSequence: 0, limit: 64)
+            } else {
+                savedReasoningEvents = []
+            }
+            let savedEffort = AutomaticReasoningEffortDecision.find(in: savedReasoningEvents)
             var turnModel = resolvedProvider.model
             var reasoningPolicy: ProviderReasoningPolicy = .modelDefault
+            var chatUsesAutomaticEffort = false
             if effectiveChatFastMode {
                 let conversationID = prepared.conversation.id
                 let preferences = SQLiteChatPreferenceStore(database: database)
                 let stored = try await preferences.preferences(conversationID: conversationID)?.chatReasoning
-                let preference = request.chatReasoningPreference ?? stored ?? .fast
-                if let requested = request.chatReasoningPreference, requested != (stored ?? .fast) {
+                let frozen = ChatReasoningSupport.findDecision(in: savedReasoningEvents)
+                let preference = frozen?.preference ?? request.chatReasoningPreference ?? stored ?? .fast
+                if recovery == nil, let requested = request.chatReasoningPreference, requested != (stored ?? .fast) {
                     try await preferences.updateChatReasoning(requested, conversationID: conversationID)
                 }
                 let coordinator = ChatReasoningCoordinator()
                 let resolution = await coordinator.resolve(
                     runID: prepared.run.id, provider: resolvedProvider.provider, model: turnModel, preference: preference
                 )
-                if let decision = await coordinator.decision(runID: prepared.run.id) {
+                if frozen == nil, let decision = await coordinator.decision(runID: prepared.run.id) {
                     launchStatusPayloads.append(decision.payloadJSON())
                 }
                 turnModel = resolution.model
                 reasoningPolicy = resolution.policy
+                chatUsesAutomaticEffort = preference == .automatic
+            } else if savedEffort != nil {
+                // A model preference edited after an interruption applies
+                // to the next round. This round already chose Automatic.
+                turnModel.reasoningEffort = nil
+            } else if let dispatchedModel = recovery?.checkpoint.providerDispatchRequest?.model {
+                turnModel.reasoningEffort = dispatchedModel.reasoningEffort
             }
             var configuration = FloeAgentRuntime.Configuration(
                 conversationID: prepared.conversation.id,
@@ -1016,27 +1032,29 @@ public actor FloeMacSelfRuntime {
                         + "\n\n" + currentUserTextDocuments.joined(separator: "\n\n")
                 )
             }
-            var routes = auxiliary
-            if effectiveChatFastMode || turnModel.effectiveReasoningEffort != .automatic
-                || !AutomaticReasoningEffortSupport.supportsVariableEffort(provider: resolvedProvider.provider, model: turnModel) {
-                routes.effortClassifier = nil
-            }
+            let usesAutomaticEffort = (!effectiveChatFastMode || chatUsesAutomaticEffort)
+                && turnModel.effectiveReasoningEffort == .automatic
+                && AutomaticReasoningEffortSupport.supportsVariableEffort(provider: resolvedProvider.provider, model: turnModel)
             let serviceAdapter: any ProviderAdapter
-            if needsVision || routes.effortClassifier != nil {
+            if needsVision || usesAutomaticEffort {
                 if needsVision && currentUserImages.count != prepared.attachments.filter({ $0.kind == .image }).count {
                     throw FloeError.invalidConfiguration("An image attachment changed. Attach it again.")
                 }
-                let helperInput = AutomaticReasoningEffortInputBuilder.build(
-                    goal: SecretRedactor.redact(canonicalGoal, secret: provider.credentials.apiKey), attachments: stagedAttachments)
-                serviceAdapter = FloeMacSelfAuxiliaryAdapter(underlying: documentAdapter, routes: routes,
+                let ingress: AutomaticReasoningEffortIngress? = usesAutomaticEffort
+                    ? (recovery == nil ? .freshRound : .continuation) : nil
+                let helperInput = ingress == .freshRound ? AutomaticReasoningEffortInputBuilder.build(
+                    goal: SecretRedactor.redact(canonicalGoal, secret: provider.credentials.apiKey),
+                    attachments: stagedAttachments
+                ) : ""
+                serviceAdapter = FloeMacSelfAuxiliaryAdapter(underlying: documentAdapter, routes: auxiliary,
                     images: needsVision ? currentUserImages : [], userText: canonicalGoal, classifierInput: helperInput,
-                    runID: runID, recorder: { id, decision in
+                    runID: runID, effortIngress: ingress, savedEffort: savedEffort, recorder: { id, decision in
                         _ = try? await stores.runs.appendEvent(runID: id, kind: .status, payloadJSON: decision.payloadJSON())
                     })
             } else { serviceAdapter = documentAdapter }
             let describeToolImages: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])?
-            if let vision = routes.vision {
-                let reasoning = routes.visionReasoning
+            if let vision = auxiliary.vision {
+                let reasoning = auxiliary.visionReasoning
                 let primarySecret = resolvedProvider.credentials.apiKey
                 describeToolImages = { images, focus in
                     guard let description = try? await FloeMacSelfAuxiliaryVision.describe(

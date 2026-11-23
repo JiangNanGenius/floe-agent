@@ -425,6 +425,7 @@ final class HostAgentWorkspace: ObservableObject {
     var smokePromptFrame: CGRect?
     var smokeSteerFrame: CGRect?
     var smokeModeFrame: CGRect?
+    var smokeReasoningFrame: CGRect?
     var smokeComposerModelFrame: CGRect?
     var smokeClosePlanFrame: CGRect?
     var smokeReopenPlanFrame: CGRect?
@@ -5323,14 +5324,16 @@ final class HostAgentWorkspace: ObservableObject {
         return beginSend(prompt, runtime: runtime, provider: profile.binding(), workspaceID: projectID, mode: mode)
     }
 
-    func configureCheckpointFixtureModel(run: RunRecord, endpoint: URL) -> Bool {
+    func configureCheckpointFixtureModel(run: RunRecord, endpoint: URL, remoteModelID: String = "recovery-fixture",
+                                         reasoningEffort: ModelReasoningEffort? = nil) -> Bool {
         guard vault == nil, endpoint.scheme == "http", endpoint.host == "127.0.0.1",
               let providerID = run.providerID, let modelID = run.modelID,
               var fixture = try? HostAgentProvider(endpoint: endpoint.absoluteString, protocolKind: .openAIChatCompletions,
-                  modelID: "recovery-fixture", apiKey: "", supportsTools: true, allowsPlainHTTP: true) else { return false }
+                  modelID: remoteModelID, apiKey: "", supportsTools: true, allowsPlainHTTP: true) else { return false }
         fixture.profile.id = providerID
         fixture.model.id = modelID
         fixture.model.providerID = providerID
+        fixture.model.reasoningEffort = reasoningEffort
         providers = [fixture]
         selectedProviderID = providerID
         selectedModelID = modelID

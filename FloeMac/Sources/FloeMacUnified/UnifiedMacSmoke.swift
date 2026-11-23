@@ -221,6 +221,11 @@ final class UnifiedMacSmoke {
             await exerciseVisionRouting(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--automatic-reasoning-only"), let endpoint = projectTaskFixtureEndpoint,
+           endpoint.host == "127.0.0.1" {
+            await exerciseAutomaticReasoning(model, endpoint: endpoint)
+            return
+        }
         if CommandLine.arguments.contains("--transcript-parity-only") {
             await exerciseTranscriptParity(model)
             return
@@ -958,6 +963,66 @@ final class UnifiedMacSmoke {
         }
         checks["floeSelectedAndSaved"] = await choose(.floe)
         checks["kimiSelectedAndSaved"] = await choose(.kimi)
+    }
+
+    private func exerciseAutomaticReasoning(_ model: BridgeAppModel, endpoint: URL) async {
+        var checks: [String: Bool] = [:]
+        defer { finish(["checks": checks, "diagnostics": settingsDiagnostics]) }
+        guard let agent = await readyFixtureWorkbench(model),
+              agent.addProvider(name: "Reasoning Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "o3", key: "",
+                                supportsTools: true, allowsPlainHTTP: true),
+              agent.addProvider(name: "Effort Helper", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "effort-helper-fixture", key: "",
+                                allowsPlainHTTP: true),
+              let primary = agent.providers.first(where: { $0.model.remoteModelID == "o3" }),
+              let helper = agent.auxiliaryCandidates(.text).first(where: { $0.model.remoteModelID == "effort-helper-fixture" }),
+              agent.selectDefaultModel(primary.model.id) else { return }
+        agent.setAuxiliaryModel(helper.model.id, for: .text)
+        agent.composerMode = .chat
+        agent.verifyAgentAnswers = false
+
+        func choose(_ preference: ChatReasoningPreference) async -> Bool {
+            let titles = ChatReasoningPreference.allCases.map {
+                String(localized: String.LocalizationValue("mac.reasoning." + $0.rawValue))
+            }
+            let title = String(localized: String.LocalizationValue("mac.reasoning." + preference.rawValue))
+            guard await selectMenuChoice(frame: agent.smokeReasoningFrame, titles: titles, target: title) else { return false }
+            let deadline = ContinuousClock.now + .seconds(2)
+            while (agent.chatReasoning != preference || agent.savingChatReasoning) && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            return agent.chatReasoning == preference && !agent.savingChatReasoning
+        }
+
+        func send(_ label: String, mode: HostAgentMode, expecting effort: ModelReasoningEffort? = nil,
+                  fallback: Bool = false) async -> Bool {
+            guard agent.send("Reasoning fixture \(label).", mode: mode) else { return false }
+            let deadline = ContinuousClock.now + .seconds(8)
+            while agent.isSending && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(35)) }
+            guard !agent.isSending, let id = agent.selectedID else { return false }
+            await agent.select(nil)
+            await agent.select(id)
+            guard let run = agent.transcriptRuns.first, run.state == "completed",
+                  agent.messages.contains(where: { $0.runID == run.id && $0.content == "Reasoning fixture completed." })
+            else { return false }
+            let events = agent.transcriptEventsByRun[run.id, default: []]
+            let decision = AutomaticReasoningEffortDecision.find(in: events)
+            if fallback { return decision?.source == .fallback && decision?.level == nil }
+            if let effort { return decision?.source == .auxiliary && decision?.level == effort }
+            return decision == nil
+        }
+
+        checks["fastChatDefault"] = agent.chatReasoning == .fast
+        checks["fastChat"] = await send("fast", mode: .chat)
+        checks["automaticMenu"] = await choose(.automatic)
+        checks["automaticChat"] = await send("automatic", mode: .chat, expecting: .high)
+        checks["conversationChoiceRestored"] = agent.chatReasoning == .automatic && agent.composerMode == .chat
+        checks["helperFailureUsesDefault"] = await send("fallback", mode: .chat, fallback: true)
+        checks["manualMenu"] = await choose(.medium)
+        checks["manualChat"] = await send("manual", mode: .chat)
+        checks["taskAutomatic"] = await send("task", mode: .agent, expecting: .high)
+        checks["chatDoesNotWriteModelSetting"] = agent.composerProvider?.model.effectiveReasoningEffort == .automatic
     }
 
     private func exerciseVisionRouting(_ model: BridgeAppModel, endpoint: URL) async {
@@ -2761,6 +2826,8 @@ final class UnifiedMacSmoke {
     private func exerciseColdRecovery(_ model: BridgeAppModel, endpoint: URL) async {
         let streaming = CommandLine.arguments.contains("--cold-provider")
         let unknown = CommandLine.arguments.contains("--cold-dispatched")
+        let automatic = CommandLine.arguments.contains("--cold-automatic-reasoning")
+        let modelID = automatic ? "o3" : "recovery-fixture"
         let expectedState = streaming ? "streamingModel" : unknown ? "executingTool" : "waitingApproval"
         guard let agent = await readyFixtureWorkbench(model) else { finish(["ready": false]); return }
         let folder = root.appendingPathComponent("Cold Recovery Project", isDirectory: true)
@@ -2768,7 +2835,7 @@ final class UnifiedMacSmoke {
         if !CommandLine.arguments.contains("--workbench-reopen") {
             guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil,
                   let project = await agent.addWorkspace(name: "Cold Recovery Project", rootURL: folder, selectForNewTask: false),
-                  agent.startNamedAgentFixture("Prepare the cold recovery fixture.", modelID: "recovery-fixture",
+                  agent.startNamedAgentFixture("Prepare the cold recovery fixture.", modelID: modelID,
                                               endpoint: endpoint, projectID: project.id) else {
                 finish(["started": false]); return
             }
@@ -2809,7 +2876,8 @@ final class UnifiedMacSmoke {
             try? await Task.sleep(for: .milliseconds(35))
         }
         guard let original = agent.continuableRun, original.state == expectedState, agent.activeRunCount == 0,
-              agent.configureCheckpointFixtureModel(run: original, endpoint: endpoint) else {
+              agent.configureCheckpointFixtureModel(run: original, endpoint: endpoint,
+                                                    remoteModelID: modelID, reasoningEffort: automatic ? .low : nil) else {
             finish(["reopened": false, "stage": "recovery route", "state": await agent.recoveryFixtureState(),
                     "diagnostics": agent.smokeRunDiagnostics + settingsDiagnostics]); return
         }

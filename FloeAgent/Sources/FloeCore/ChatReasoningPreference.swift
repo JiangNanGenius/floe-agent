@@ -19,6 +19,7 @@ import Foundation
 /// without touching the model profile globally.
 public enum ChatReasoningPreference: String, Sendable, Codable, CaseIterable, Hashable, Identifiable {
     case fast
+    case automatic
     case low
     case medium
     case high
@@ -30,12 +31,11 @@ public enum ChatReasoningPreference: String, Sendable, Codable, CaseIterable, Ha
     /// `.fast`. Chat only — no other surface reads this default.
     public static let defaultValue: ChatReasoningPreference = .fast
 
-    /// The explicit level for the run's model copy. `.fast` returns nil: its
-    /// concrete wire tier is decided by the provider/model resolution, not a
-    /// fixed level, and the decision record keeps the resolved tier.
+    /// The explicit level for the run's model copy. Fast and Automatic
+    /// resolve their concrete wire tiers when the run starts.
     public var modelEffortOverride: ModelReasoningEffort? {
         switch self {
-        case .fast: return nil
+        case .fast, .automatic: return nil
         case .low: return .low
         case .medium: return .medium
         case .high: return .high
@@ -86,6 +86,34 @@ public struct ChatConversationPreferences: Sendable, Codable, Hashable {
 
     public var effectiveChatReasoning: ChatReasoningPreference {
         chatReasoning ?? .defaultValue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case chatReasoning, automaticReasoning, preferredExecutionMode, lastPresentedPlanRevision
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if try values.decodeIfPresent(Bool.self, forKey: .automaticReasoning) == true {
+            chatReasoning = .automatic
+        } else {
+            chatReasoning = try values.decodeIfPresent(ChatReasoningPreference.self, forKey: .chatReasoning)
+        }
+        preferredExecutionMode = try values.decodeIfPresent(String.self, forKey: .preferredExecutionMode)
+        lastPresentedPlanRevision = try values.decodeIfPresent(String.self, forKey: .lastPresentedPlanRevision)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        // Older clients can still restore the execution mode and plan marker.
+        // Their absent Chat setting keeps the existing Fast default.
+        if chatReasoning == .automatic {
+            try values.encode(true, forKey: .automaticReasoning)
+        } else {
+            try values.encodeIfPresent(chatReasoning, forKey: .chatReasoning)
+        }
+        try values.encodeIfPresent(preferredExecutionMode, forKey: .preferredExecutionMode)
+        try values.encodeIfPresent(lastPresentedPlanRevision, forKey: .lastPresentedPlanRevision)
     }
 }
 

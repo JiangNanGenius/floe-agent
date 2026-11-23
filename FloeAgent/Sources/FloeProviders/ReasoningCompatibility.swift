@@ -410,6 +410,8 @@ enum ReasoningCompatibility {
     ) -> (policy: ProviderReasoningPolicy, level: ModelReasoningEffort?) {
         guard !model.effectiveOmitReasoningParameters else { return (.modelDefault, nil) }
         switch preference {
+        case .automatic:
+            return (.modelDefault, nil)
         case .fast:
             if documentsDisabledReasoning(provider: provider, model: model) {
                 return (.disabled, nil)
@@ -422,16 +424,14 @@ enum ReasoningCompatibility {
             }
             return (.modelDefault, nil)
         case .low, .medium, .high, .maximum:
-            let abstract = preference.modelEffortOverride ?? .automatic
-            if abstract == .automatic { return (.modelDefault, nil) }
-            let clamped = clampAutomaticReasoningEffort(abstract, provider: provider, model: model)
-            guard supportsVariableReasoningEffort(provider: provider, model: model) else {
+            guard let abstract = preference.modelEffortOverride,
+                  supportsVariableReasoningEffort(provider: provider, model: model) else {
                 // Unknown families transmit no effort field at all: sending a
                 // stored tier would claim a setting the endpoint never
                 // receives, so the honest resolution is omission.
                 return (.modelDefault, nil)
             }
-            return (.modelDefault, clamped)
+            return (.modelDefault, clampAutomaticReasoningEffort(abstract, provider: provider, model: model))
         }
     }
 }

@@ -31370,6 +31370,23 @@
         }
       }
     },
+    "chat.reasoning.automatic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动"
+          }
+        }
+      }
+    },
     "chat.reasoning.fast": {
       "extractionState": "manual",
       "localizations": {

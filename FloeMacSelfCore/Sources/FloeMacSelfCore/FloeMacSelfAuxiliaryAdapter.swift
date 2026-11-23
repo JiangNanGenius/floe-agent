@@ -45,18 +45,23 @@ struct FloeMacSelfAuxiliaryAdapter: ProviderAdapter {
     let userText: String
     let classifierInput: String
     let runID: UUID
+    let effortIngress: AutomaticReasoningEffortIngress?
+    let savedEffort: AutomaticReasoningEffortDecision?
     let recorder: AutomaticReasoningEffortCoordinator.Recorder?
     private let imageDescription = MacTurnImageDescription()
     private let effort = AutomaticReasoningEffortCoordinator()
 
     init(underlying: any ProviderAdapter, routes: FloeMacSelfAuxiliaryRoutes, images: [ConversationImagePart],
-         userText: String, classifierInput: String, runID: UUID, recorder: AutomaticReasoningEffortCoordinator.Recorder?) {
+         userText: String, classifierInput: String, runID: UUID, effortIngress: AutomaticReasoningEffortIngress?,
+         savedEffort: AutomaticReasoningEffortDecision?, recorder: AutomaticReasoningEffortCoordinator.Recorder?) {
         self.underlying = underlying
         self.routes = routes
         self.images = images
         self.userText = userText
         self.classifierInput = classifierInput
         self.runID = runID
+        self.effortIngress = effortIngress
+        self.savedEffort = savedEffort
         self.recorder = recorder
     }
 
@@ -79,10 +84,16 @@ struct FloeMacSelfAuxiliaryAdapter: ProviderAdapter {
                     if !images.isEmpty && !outgoing.fitsMacAttachmentBudget {
                         throw FloeError.invalidConfiguration("The image description exceeds the task model’s context limit.")
                     }
-                    if let classifier = routes.effortClassifier {
-                        outgoing.model = await effort.resolvedModel(runID: runID, provider: request.provider,
-                            model: request.model, boundedInput: classifierInput, classifier: classifier,
-                            ingress: .freshRound, recorder: recorder)
+                    if let effortIngress {
+                        outgoing.model = await withTaskCancellationHandler {
+                            await effort.resolvedModel(
+                                runID: runID, provider: request.provider, model: request.model,
+                                boundedInput: classifierInput, classifier: routes.effortClassifier,
+                                ingress: effortIngress, seedReader: { _ in savedEffort }, recorder: recorder
+                            )
+                        } onCancel: {
+                            Task { await effort.cancelPending(runID: runID) }
+                        }
                     }
                     try Task.checkCancellation()
                     for try await event in underlying.stream(request: outgoing, credentials: credentials) {

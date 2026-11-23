@@ -1070,6 +1070,9 @@ struct HostAgentWorkspaceView: View {
         .accessibilityIdentifier("composer.reasoning")
         .accessibilityLabel("mac.reasoning.label")
         .help("mac.reasoning.label")
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { workspace.smokeReasoningFrame = $0 })
+        #endif
     }
 
     @ViewBuilder private func reasoningChoice(_ choice: String, selected: String) -> some View {
