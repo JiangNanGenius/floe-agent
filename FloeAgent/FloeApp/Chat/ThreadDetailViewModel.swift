@@ -667,7 +667,13 @@ final class ThreadDetailViewModel: ObservableObject {
     /// later paging or live snapshot can contain the same row.
     func presentCommittedMessage(_ message: PersistedMessage) {
         guard message.conversationID == conversationID, !isConversationMissing else { return }
-        mergeMessageRows([message])
+        if messageIDs.contains(message.id), let index = messages.firstIndex(where: { $0.id == message.id }) {
+            // The text row may have been visible while its typed parts
+            // were still being committed. Refresh it with the durable row.
+            if messages[index] != message { messages[index] = message }
+        } else {
+            mergeMessageRows([message])
+        }
     }
 
     func refreshImportedDeviceHistory() async {
@@ -2642,6 +2648,9 @@ final class ThreadDetailViewModel: ObservableObject {
                     messages: snapshot.messages, earlierCursor: snapshot.earlierMessageCursor,
                     hasEarlier: snapshot.hasEarlierMessages
                 ))
+                if !snapshot.consumedSteers.isEmpty {
+                    self.mergeMessageRows(snapshot.consumedSteers.sorted { Self.messageCursor($0) < Self.messageCursor($1) })
+                }
                 self.mergeRunHeaders(snapshot.runs)
                 for (runID, incoming) in snapshot.eventsByRun {
                     self.mergeEventPage(incoming, runID: runID)
@@ -2668,7 +2677,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.reconcilePlanComposerMode()
                 if self.activeGoal != snapshot.activeGoal { self.activeGoal = snapshot.activeGoal }
                 if self.taskPolicy != snapshot.taskPolicy { self.taskPolicy = snapshot.taskPolicy }
-                if self.pendingInputs != snapshot.pendingInputs { self.pendingInputs = snapshot.pendingInputs }
+                let pending = snapshot.pendingInputs.filter { !self.messageIDs.contains($0.id) || $0.mode != .steer }
+                if self.pendingInputs != pending { self.pendingInputs = pending }
                 await self.refreshChildRuns()
                 self.startChildRunPollingIfNeeded()
                 let serviceBecameAvailable = self.selectedRunID.flatMap {
@@ -2840,7 +2850,18 @@ final class ThreadDetailViewModel: ObservableObject {
                         }
                     }
                     self.liveFinishedTools[callID] = status.rawValue
-                case .userInputConsumed:
+                case .userInputConsumed(let receipt):
+                    if receipt.runID == run.id,
+                       let row = try? await center.conversationStore(for: self.conversationID)
+                           .message(id: receipt.inputID, conversationID: self.conversationID),
+                       row.role == "user", row.runID == receipt.runID,
+                       !Task.isCancelled, self.selectedRunID == run.id,
+                       feedbackGeneration == self.liveFeedbackGeneration {
+                        self.presentCommittedMessage(row)
+                        self.pendingInputs.removeAll { $0.id == receipt.inputID }
+                    }
+                    guard !Task.isCancelled, self.selectedRunID == run.id,
+                          feedbackGeneration == self.liveFeedbackGeneration else { break liveEvents }
                     guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     answerTarget = ""
                     reasoningTarget = ""

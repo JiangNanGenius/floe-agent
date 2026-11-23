@@ -550,9 +550,8 @@ enum ThreadTimelineBuilder {
         //    this run's start instead of the last equal string globally.
         if let run {
             let directlyBound = messagesForRun.filter { $0.role == "user" }
-            let candidates = directlyBound.isEmpty ? unboundUserMessages.filter {
-                $0.content == run.goal
-            } : directlyBound
+            let candidates = (directlyBound.isEmpty ? unboundUserMessages : directlyBound)
+                .filter { $0.content == run.goal }
             if let goalMessage = candidates.min(by: {
                 abs($0.createdAt.timeIntervalSince(run.startedAt))
                     < abs($1.createdAt.timeIntervalSince(run.startedAt))

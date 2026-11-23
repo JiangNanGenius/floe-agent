@@ -770,6 +770,7 @@ struct ConversationSessionSnapshot: Sendable {
     let revision: Int
     let conversation: ConversationRecord
     let messages: [PersistedMessage]
+    let consumedSteers: [PersistedMessage]
     let earlierMessageCursor: ConversationMessageCursor?
     let hasEarlierMessages: Bool
     let runs: [RunRecord]
@@ -1918,6 +1919,14 @@ final class ConversationCenter: ObservableObject {
         let runs = try await runStore.recentRuns(
             conversationID: conversationID, limit: 160
         )
+        let consumedSteers: [PersistedMessage]
+        if messagePage.hasEarlier, let cursor = messagePage.earlierCursor, let runID = runs.first?.id,
+           let sqlite = conversationStore as? SQLiteConversationStore {
+            consumedSteers = (try? await sqlite.consumedSteers(conversationID: conversationID,
+                                                              runID: runID, before: cursor)) ?? []
+        } else {
+            consumedSteers = []
+        }
         let taskPolicy = try await SQLiteWorkspaceStore(database: environment.database)
             .taskPolicy(conversationID: conversationID)
         var visibleRunIDs = Set(messages.compactMap(\.runID))
@@ -1959,6 +1968,7 @@ final class ConversationCenter: ObservableObject {
             revision: revision,
             conversation: conversation,
             messages: messages,
+            consumedSteers: consumedSteers,
             earlierMessageCursor: messagePage.earlierCursor,
             hasEarlierMessages: messagePage.hasEarlier,
             runs: runs,
@@ -2186,7 +2196,7 @@ final class ConversationCenter: ObservableObject {
     func deviceWorkspaceIsBusy(conversations: Set<UUID>) -> Bool {
         activeRuns.values.contains { conversations.contains($0.conversationID) }
             || runServices.values.contains { conversations.contains($0.conversationID) }
-            || pendingRunPreparations.values.contains { conversations.contains($0.conversationID) }
+            || pendingRunPreparations.values.contains { $0.conversationID.map(conversations.contains) == true }
     }
 
     private func refreshConversationInList(_ conversationID: UUID) async {
@@ -7242,14 +7252,12 @@ final class ConversationCenter: ObservableObject {
         content: String,
         attachments: [AttachmentRef],
         preparationID: UUID,
-        acceptedGoalInput: PendingUserInput? = nil
+        acceptedInput: PendingUserInput
     ) async throws -> StartedConversationRun {
-        if let acceptedGoalInput {
-            guard acceptedGoalInput.conversationID == record.conversationID,
-                  acceptedGoalInput.targetRunID == record.id,
-                  acceptedGoalInput.executionMode == AgentExecutionMode.goal.rawValue,
-                  acceptedGoalInput.content == content else { throw FloeError.unauthorized }
-        }
+        guard acceptedInput.conversationID == record.conversationID,
+              acceptedInput.targetRunID == record.id,
+              acceptedInput.mode == .steer,
+              acceptedInput.content == content else { throw FloeError.unauthorized }
         let resolvedPair: (ProviderProfile, ModelProfile)
         if let modelID = record.modelID, let resolved = providerAndModel(modelID: modelID) {
             resolvedPair = resolved
@@ -7260,9 +7268,9 @@ final class ConversationCenter: ObservableObject {
         try await captureIngressSecrets(ingress.captures, owner: .conversation(record.conversationID))
         guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         let safeContent = ingress.sanitizedText
-        let messageID = acceptedGoalInput?.id ?? UUID()
+        let messageID = acceptedInput.id
         try modelInputProjection(for: record.id, conversationID: record.conversationID).register(id: messageID, safe: safeContent, live: content, captures: ingress.captures)
-        let createdAt = acceptedGoalInput?.createdAt ?? Date()
+        let createdAt = acceptedInput.createdAt
         try await conversationStore(for: record.conversationID).appendMessage(PersistedMessage(
             id: messageID,
             conversationID: record.conversationID,
@@ -7338,7 +7346,7 @@ final class ConversationCenter: ObservableObject {
                     let started = try await resumeRunWithInput(
                         record, content: input.content, attachments: input.attachments,
                         preparationID: preparationID,
-                        acceptedGoalInput: input.executionMode == AgentExecutionMode.goal.rawValue ? input : nil)
+                        acceptedInput: input)
                     try await store.markConsumed(id: inputID, runID: started.runID)
                     FloeLogger(category: .app).info(
                         "steerTargetAwaitingDependencyResumed conversation=\(input.conversationID.uuidString) run=\(started.runID.uuidString) input=\(input.id.uuidString)")

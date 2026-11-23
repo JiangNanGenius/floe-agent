@@ -1236,33 +1236,27 @@ struct ThreadTimelineTests {
         )
         terminal.createdAt = start.addingTimeInterval(8)
 
-        let items = ThreadTimelineBuilder.buildConversation(
-            messages: [goal, guidance],
-            runs: [run],
-            eventsByRun: [run.id: [firstAnswer, finalAnswer, terminal]],
-            liveRunID: nil,
-            isRunning: false,
-            liveStreamedText: "",
-            liveReasoningText: "",
-            pendingApprovals: []
-        )
-
-        let guidanceIndex = items.firstIndex {
-            if case .userMessage(let message) = $0 { return message.id == guidance.id }
-            return false
-        }
-        let firstAnswerIndex = items.firstIndex {
-            if case .assistantMessage(let text, _, _) = $0 { return text == "我先检查文件" }
-            return false
-        }
-        let finalAnswerIndex = items.firstIndex {
-            if case .assistantMessage(let text, _, _) = $0 { return text == "已按引导完成" }
-            return false
-        }
-        #expect(guidanceIndex != nil)
-        if let firstAnswerIndex, let guidanceIndex, let finalAnswerIndex {
-            #expect(firstAnswerIndex < guidanceIndex)
-            #expect(guidanceIndex < finalAnswerIndex)
+        // The original request can be outside the current message page.
+        for visibleMessages in [[goal, guidance], [guidance]] {
+            let items = ThreadTimelineBuilder.buildConversation(
+                messages: visibleMessages,
+                runs: [run],
+                eventsByRun: [run.id: [firstAnswer, finalAnswer, terminal]],
+                liveRunID: nil,
+                isRunning: false,
+                liveStreamedText: "",
+                liveReasoningText: "",
+                pendingApprovals: []
+            )
+            let visibleText = items.compactMap { item -> String? in
+                switch item {
+                case .userMessage(let message): message.content
+                case .assistantMessage(let text, _, _): text
+                default: nil
+                }
+            }
+            let expected = ["我先检查文件", guidance.content, "已按引导完成"]
+            #expect(visibleText == (visibleMessages.count == 2 ? [goal.content] + expected : expected))
         }
     }
 
