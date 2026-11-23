@@ -59,7 +59,7 @@
     <string name="providers_test_failed">连接失败</string>
     <string name="providers_cancel_test">停止测试</string>
     <string name="providers_models_section">模型</string>
-    <string name="providers_no_models">暂无模型。测试连接以发现模型，或手动添加。</string>
+    <string name="providers_no_models">暂无模型。</string>
     <string name="providers_manage_models">管理模型</string>
     <string name="providers_refresh_models">刷新模型列表</string>
     <string name="providers_manual_fallback_hint">此端点不支持模型发现，请手动添加模型。</string>

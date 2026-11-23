@@ -344,7 +344,7 @@
     <string name="providers_open_waiting_models">Models couldn\'t be confirmed yet. Try again in a moment.</string>
     <string name="providers_load_failed">Couldn\'t load your providers. Try again.</string>
     <string name="providers_probe_requires_save">Save this provider first, then test the connection or discover models.</string>
-    <string name="providers_probe_unavailable">Couldn\'t start the connection test. Try again.</string>
+    <string name="providers_probe_unavailable">Couldn\'t verify the connection. Check the endpoint, API key and network.</string>
     <string name="providers_custom_endpoint">Custom endpoint</string>
     <string name="providers_toggle_failed">Couldn\'t update this provider. It stayed unchanged — try again.</string>
     <string name="providers_toggle_too_large">This provider\'s full configuration is too large to change here. Open it to edit and save.</string>
