@@ -1,0 +1,4 @@
+{
+  "en-US": "In Settings → Sync, share a conversation with a paired device. Interrupt a long sync and try again to check that it continues from the last saved batch and adds no duplicates. This build also improves Linux setup progress, meeting minutes, and Studio exports to the original workspace.",
+  "zh-Hans": "在「设置 → 同步」里向配对设备共享一条会话。中断长会话同步后重试，检查是否从已保存的位置继续，重复拉取是否新增 0 条。本版也改进了 Linux 设置进度、会议纪要和 Studio 导出回原工作区的流程。"
+}
