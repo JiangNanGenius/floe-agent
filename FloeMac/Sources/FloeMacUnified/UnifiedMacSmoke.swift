@@ -184,6 +184,10 @@ final class UnifiedMacSmoke {
             await exerciseRunningAttachments(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--vision-routing-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseVisionRouting(model, endpoint: endpoint)
+            return
+        }
         if CommandLine.arguments.contains("--transcript-parity-only") {
             await exerciseTranscriptParity(model)
             return
@@ -787,6 +791,65 @@ final class UnifiedMacSmoke {
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
         finish(result)
+    }
+
+    private func exerciseVisionRouting(_ model: BridgeAppModel, endpoint: URL) async {
+        let auxiliaryOnly = CommandLine.arguments.contains("--auxiliary-vision")
+        let captureWindow = CommandLine.arguments.contains("--fixture-window-capture")
+        guard let agent = await readyFixtureWorkbench(model),
+              agent.addProvider(name: "Vision Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "vision-primary-fixture",
+                                key: "", supportsImages: !auxiliaryOnly, supportsTools: true, allowsPlainHTTP: true)
+        else { finish(["configured": false]); return }
+        if auxiliaryOnly {
+            guard agent.addProvider(name: "Vision Helper Fixture", endpoint: endpoint.absoluteString,
+                                    protocolKind: .openAIChatCompletions, modelID: "vision-helper-fixture",
+                                    key: "", supportsImages: true, allowsPlainHTTP: true),
+                  let helper = agent.auxiliaryCandidates(.vision).first(where: { $0.model.remoteModelID == "vision-helper-fixture" }) else {
+                finish(["auxiliaryConfigured": false]); return
+            }
+            agent.setAuxiliaryModel(helper.model.id, for: .vision)
+        }
+        let folder = root.appendingPathComponent("Vision Project", isDirectory: true)
+        func sampleImage(_ color: NSColor) -> Data? {
+            let canvas = NSImage(size: NSSize(width: 36, height: 24))
+            canvas.lockFocus()
+            color.setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: 0, width: 36, height: 24)).fill()
+            canvas.unlockFocus()
+            return canvas.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:))?.representation(using: .png, properties: [:])
+        }
+        let attachment = root.appendingPathComponent("attachment.png")
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil,
+              let diagram = sampleImage(.systemBlue), let attached = sampleImage(.systemGreen),
+              (try? diagram.write(to: folder.appendingPathComponent("diagram.png"))) != nil,
+              (try? attached.write(to: attachment)) != nil,
+              let project = await agent.addWorkspace(name: "Vision Project", rootURL: folder),
+              let staged = agent.stageAttachments([attachment]).first else { finish(["staged": false]); return }
+        agent.verifyAgentAnswers = false
+        guard agent.send("Compare the supplied image and the project diagram.", workspaceID: project.id, mode: .agent)
+        else { finish(["sent": false]); return }
+        var approvals = Set<String>()
+        let deadline = ContinuousClock.now + .seconds(32)
+        while agent.isSending, ContinuousClock.now < deadline {
+            if let card = agent.pendingApproval, ["image.inspect", "mac.desktop.control"].contains(card.toolName),
+               !approvals.contains(card.callID), clickApproval(in: agent, allow: true, screenshot: "visual-approval.png") {
+                approvals.insert(card.callID)
+            }
+            try? await Task.sleep(for: .milliseconds(45))
+        }
+        if agent.isSending {
+            agent.stop()
+            let stopped = ContinuousClock.now + .seconds(7)
+            while agent.isSending, ContinuousClock.now < stopped { try? await Task.sleep(for: .milliseconds(50)) }
+        }
+        if let id = agent.selectedID, !agent.isSending { await agent.select(id) }
+        finish(["completed": agent.messages.contains { $0.role == "assistant" && $0.content.contains("Vision route verified.") },
+                "retainedAttachment": agent.messages.contains { $0.role == "user" && $0.parts.contains { $0.attachmentID == staged.id } },
+                "attachedDigest": FloeDigest.sha256Hex(attached), "diagramDigest": FloeDigest.sha256Hex(diagram),
+                "capturedWindow": !captureWindow || ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+                    .contains { $0.hasPrefix("Window-") },
+                "diagnostics": agent.smokeRunDiagnostics])
     }
 
     private func exerciseRunningAttachments(_ model: BridgeAppModel, endpoint: URL) async {

@@ -954,6 +954,7 @@ public actor FloeAgentRuntime {
     private var ownedSystemContextID: UUID?
     private let liveSystemContext: (@Sendable () async throws -> String)?
     private let toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])?
+    private let workspaceArtifactTools: Set<String>
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
     private var runtimeWaitRecords: [String: AgentWaitRecord] = [:]
@@ -1256,6 +1257,7 @@ public actor FloeAgentRuntime {
         hydrateModelInputs: (@Sendable ([ModelUserInputSource]) async throws -> Void)? = nil,
         liveSystemContext: (@Sendable () async throws -> String)? = nil,
         toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])? = nil,
+        workspaceArtifactTools: Set<String> = [],
         sink: (any AgentEventSink)? = nil,
         runID: UUID = UUID(),
         runtimeAuthorities: RuntimeAuthorityStore = .shared,
@@ -1287,6 +1289,7 @@ public actor FloeAgentRuntime {
         self.hydrateModelInputs = hydrateModelInputs
         self.liveSystemContext = liveSystemContext
         self.toolVisualEvidenceResolver = toolVisualEvidenceResolver
+        self.workspaceArtifactTools = workspaceArtifactTools
         self.sink = sink
         self.runID = runID
         self.runtimeAuthorities = runtimeAuthorities
@@ -2545,7 +2548,7 @@ public actor FloeAgentRuntime {
         // local curated fence is gone; removal happens at the catalog
         // boundary, not by a model-visible preference.
         descriptors.removeAll { RetiredExecutionTools.contains($0.name) }
-        if configuration.model.capabilities.contains(.vision) {
+        if configuration.model.capabilities.contains(.vision), !workspaceArtifactTools.contains("image.inspect") {
             // A multimodal model receives the current image bytes directly.
             // Do not offer auxiliary inspection/OCR escape hatches that make
             // capable models avoid looking at the supplied image. Preflight
@@ -3335,26 +3338,33 @@ public actor FloeAgentRuntime {
             var attachedBytes = 0
             var attachedCount = 0
             var evidenceReceipts: [String] = []
-            let evidence = pendingToolResults.flatMap(\.artifacts)
-                .compactMap { artifact -> ProviderContentPart? in
-                    guard ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil else { return nil }
-                    let key = "\(artifact.relativePath)|\(artifact.sha256.lowercased())"
-                    guard seenEvidence.insert(key).inserted else { return nil }
-                    guard attachedCount < ProviderImageEvidencePolicy.maximumImages else {
-                        evidenceReceipts.append("\(artifact.relativePath): not attached; this result exceeds the image-count budget.")
-                        return nil
-                    }
-                    let remaining = ProviderImageEvidencePolicy.maximumTotalBytes - attachedBytes
-                    guard let delivery = Self.providerImageDelivery(artifact, byteLimit: min(
-                        remaining, ProviderImageEvidencePolicy.maximumImageBytes)) else {
-                        evidenceReceipts.append("\(artifact.relativePath): not attached; retained bytes could not be verified or prepared within the image budget. Do not claim to have seen it.")
-                        return nil
-                    }
-                    attachedCount += 1
-                    attachedBytes += delivery.data.count
-                    evidenceReceipts.append("\(artifact.relativePath): \(delivery.receipt)")
-                    return .imageData(mimeType: delivery.mimeType, base64: delivery.data.base64EncodedString())
+            let workspaceCalls = Set(pendingToolCalls.compactMap { call -> String? in
+                guard case .local = call.scope, workspaceArtifactTools.contains(call.toolName) else { return nil }
+                return call.id
+            })
+            let evidence = pendingToolResults.flatMap { result in
+                result.artifacts.map { (artifact: $0, inWorkspace: workspaceCalls.contains(result.callID)) }
+            }.compactMap { artifact, inWorkspace -> ProviderContentPart? in
+                guard ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil else { return nil }
+                let key = "\(inWorkspace)|\(artifact.relativePath)|\(artifact.sha256.lowercased())"
+                guard seenEvidence.insert(key).inserted else { return nil }
+                guard attachedCount < ProviderImageEvidencePolicy.maximumImages else {
+                    evidenceReceipts.append("\(artifact.relativePath): not attached; this result exceeds the image-count budget.")
+                    return nil
                 }
+                let remaining = ProviderImageEvidencePolicy.maximumTotalBytes - attachedBytes
+                let root = inWorkspace ? configuration.workspaceRootURL : nil
+                guard !inWorkspace || root != nil,
+                      let delivery = Self.providerImageDelivery(artifact, byteLimit: min(
+                        remaining, ProviderImageEvidencePolicy.maximumImageBytes), workspaceRoot: root) else {
+                    evidenceReceipts.append("\(artifact.relativePath): not attached; retained bytes could not be verified or prepared within the image budget. Do not claim to have seen it.")
+                    return nil
+                }
+                attachedCount += 1
+                attachedBytes += delivery.data.count
+                evidenceReceipts.append("\(artifact.relativePath): \(delivery.receipt)")
+                return .imageData(mimeType: delivery.mimeType, base64: delivery.data.base64EncodedString())
+            }
             if !evidenceReceipts.isEmpty, configuration.model.capabilities.contains(.vision) {
                 contentMessages.append(ProviderMessage(
                     role: "user",
@@ -3959,8 +3969,12 @@ public actor FloeAgentRuntime {
 
     static func providerImageDelivery(
         _ artifact: ToolArtifactReference,
-        byteLimit: Int = ProviderImageEvidencePolicy.maximumImageBytes
+        byteLimit: Int = ProviderImageEvidencePolicy.maximumImageBytes,
+        workspaceRoot: URL? = nil
     ) -> VerifiedToolImageArtifact.Delivery? {
+        if let workspaceRoot {
+            return try? VerifiedToolImageArtifact.loadWorkspace(artifact, root: workspaceRoot).providerDelivery(byteLimit: byteLimit)
+        }
         guard let support = try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false

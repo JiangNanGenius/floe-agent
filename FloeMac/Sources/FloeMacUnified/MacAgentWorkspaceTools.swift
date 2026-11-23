@@ -244,6 +244,7 @@ public enum MacAgentWorkspaceTools {
         delegationRegistry: SubagentRunnerRegistry? = nil,
         search: MacSearchAccess? = nil,
         conversations: FloeMacConversationToolCapability? = nil,
+        imageInspectionAvailable: Bool = false,
         imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [],
         browserTools: ((URL) -> [AnyAgentTool])? = nil,
         extensionTools: [AnyAgentTool] = [],
@@ -272,6 +273,7 @@ public enum MacAgentWorkspaceTools {
             readOnly: readOnly || chatOnly,
             search: search,
             conversations: chatOnly ? nil : conversations,
+            imageInspectionAvailable: imageInspectionAvailable,
             imageTools: imageTools, videoTools: videoTools,
             browserTools: readOnly || chatOnly ? [] : browserTools?(root) ?? [],
             extensionTools: memoryTools + (chatOnly ? [] : extensionTools),
@@ -1943,6 +1945,59 @@ public struct MacAgentWorkspaceReadDocumentTool: AgentTool, MacAgentWorkspaceExe
     }
 }
 
+/// Bind an existing workspace image to its bytes for the shared vision
+/// delivery route. The original file remains in place.
+struct MacAgentWorkspaceInspectImageTool: AgentTool, MacAgentWorkspaceExecutable {
+    struct Arguments: Decodable, Sendable {
+        let path: String
+        let question: String
+        let sha256: String?
+    }
+
+    static let name = "image.inspect"
+    static let toolDescription = "Inspect a PNG, JPEG, WebP or GIF in the current workspace, including a window screenshot. Provide the workspace-relative path and a focused visual question. If the producing tool reported a SHA-256 digest, pass it to inspect that exact image. The next model request receives verified visual evidence for the question."
+    static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"},"question":{"type":"string"},"sha256":{"type":"string"}},"required":["path","question"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .sendsDataToProvider]
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+    let root: MacAgentWorkspaceRoot
+
+    func validate(_ args: Arguments) throws {
+        let question = args.question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !args.path.isEmpty, !question.isEmpty, question.utf8.count <= 2_000,
+              args.sha256.map({ $0.range(of: #"^[a-fA-F0-9]{64}$"#, options: .regularExpression) != nil }) != false else {
+            throw MacAgentWorkspaceToolsError.invalidArguments("provide an image path, a focused question and an optional SHA-256")
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try macWorkspacePreflight(path: args.path, context: context, scopeArgument: nil)
+        let (physical, relative) = try macWorkspacePinSetup(root: root, path: args.path)
+        let artifact = try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physical, relative: relative, root: root) { pin in
+            let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(pin, physicalRoot: physical, displayPath: args.path)
+            let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            let limit = VerifiedToolImageArtifact.maximumStoredImageBytes
+            var info = stat()
+            guard fstat(descriptor, &info) == 0, info.st_size > 0, info.st_nlink == 1 else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            guard info.st_size <= limit else { throw MacAgentWorkspaceToolsError.tooLarge(limit: limit) }
+            let data = try file.read(upToCount: limit + 1) ?? Data()
+            guard data.count == info.st_size else { throw MacAgentWorkspaceToolsError.revisionChanged }
+            guard let mime = ProviderImageEvidencePolicy.sniffedMIME(data) else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("choose a valid PNG, JPEG, WebP or GIF")
+            }
+            let hash = FloeDigest.sha256Hex(data)
+            guard args.sha256.map({ $0.lowercased() == hash }) != false else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            return ToolArtifactReference(id: UUID(), relativePath: relative, mimeType: mime, byteCount: data.count, sha256: hash)
+        }
+        try context.cancellation.throwIfCancelled()
+        return .init(digesting: "Image verified for visual delivery: \(relative)\nVisual question: \(args.question)", artifacts: [artifact])
+    }
+}
+
 // MARK: workspace.createFile
 
 /// Creates one new UTF-8 text file inside the selected project workspace.
@@ -2281,6 +2336,7 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
 
     public init(workspaceRootURL: URL, runOutputArtifactRoot: URL? = nil, readOnly: Bool = false, search: MacSearchAccess? = nil,
                 conversations: FloeMacConversationToolCapability? = nil,
+                imageInspectionAvailable: Bool = false,
                 imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [], browserTools: [AnyAgentTool] = [],
                 extensionTools: [AnyAgentTool] = [],
                 observeShellOutput: (@Sendable (MacShellOutputUpdate) async -> Void)? = nil) {
@@ -2295,6 +2351,9 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
             MacAgentWorkspaceTools.readDocumentToolName: MacAgentWorkspaceReadDocumentTool(rootURL: root),
         ]
         if let search, search.isConfigured { table[MacSearchTool.name] = MacSearchTool(access: search) }
+        if imageInspectionAvailable, !readOnly {
+            table[MacAgentWorkspaceInspectImageTool.name] = MacAgentWorkspaceInspectImageTool(root: MacAgentWorkspaceRoot(root))
+        }
         for tool in conversations?.tools ?? [] where !readOnly || ConversationToolAccess.plan.allows(tool.descriptor) {
             table[tool.descriptor.name] = tool
         }

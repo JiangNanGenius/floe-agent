@@ -500,6 +500,7 @@ public actor ConversationRunService {
             hydrateModelInputs: hydrateModelInputs,
             liveSystemContext: refreshContext,
             toolVisualEvidenceResolver: toolVisualEvidenceResolver,
+            workspaceArtifactTools: receiptWorkspaceID == nil ? [] : workspaceArtifactTools,
             sink: forwarder,
             runID: runID
         )

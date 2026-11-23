@@ -1034,6 +1034,17 @@ public actor FloeMacSelfRuntime {
                         _ = try? await stores.runs.appendEvent(runID: id, kind: .status, payloadJSON: decision.payloadJSON())
                     })
             } else { serviceAdapter = documentAdapter }
+            let describeToolImages: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])?
+            if let vision = routes.vision {
+                let reasoning = routes.visionReasoning
+                describeToolImages = { images, _ in
+                    guard let description = try? await FloeMacSelfAuxiliaryVision.describe(
+                        images, using: vision, reasoningEnabled: reasoning) else { return [] }
+                    return [ConversationMessage(role: "user", content: description)]
+                }
+            } else {
+                describeToolImages = nil
+            }
             let personalization = SQLitePersonalizationStore(database: database)
             let personalizationWorkspaceID = prepared.workspace.kind == .project ? prepared.workspace.id : nil
             let service = ConversationRunService(
@@ -1045,6 +1056,7 @@ public actor FloeMacSelfRuntime {
                 gate: resolvedTools.gate,
                 auditSink: resolvedTools.auditSink,
                 checkpointStore: stores.checkpoints,
+                toolVisualEvidenceResolver: describeToolImages,
                 intelligenceStore: stores.intelligence,
                 conversationStore: stores.conversations,
                 runStore: stores.runs,
@@ -1058,7 +1070,8 @@ public actor FloeMacSelfRuntime {
                     (id: prepared.workspace.id, root: $0)
                 },
                 workspaceArtifactTools: availableToolNames.intersection([
-                    "image.generate", "video.generate", "video.status", "video.cancel", "browser.download"
+                    "image.generate", "image.inspect", "video.generate", "video.status", "video.cancel",
+                    "browser.download", "mac.desktop.control"
                 ]),
                 conversationHistory: conversationHistory,
                 currentUserImages: needsVision ? [] : currentUserImages,

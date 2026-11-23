@@ -81,9 +81,18 @@ public struct VerifiedToolImageArtifact: Sendable {
     }
 
     public static func load(_ reference: ToolArtifactReference, root: URL) throws -> Self {
+        try load(reference, root: root, requiresAppNamespace: true)
+    }
+
+    /// The caller must have bound the producing tool to this run's local
+    /// workspace. App-storage references still use the namespace check above.
+    public static func loadWorkspace(_ reference: ToolArtifactReference, root: URL) throws -> Self {
+        try load(reference, root: root, requiresAppNamespace: false)
+    }
+
+    private static func load(_ reference: ToolArtifactReference, root: URL, requiresAppNamespace: Bool) throws -> Self {
         let components = reference.relativePath.split(separator: "/", omittingEmptySubsequences: false)
-        guard components.count >= 2,
-              let namespace = components.first, namespaces.contains(String(namespace)),
+        guard !requiresAppNamespace || (components.count >= 2 && components.first.map { namespaces.contains(String($0)) } == true),
               components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
               !reference.relativePath.contains("\\"), !reference.relativePath.contains("\0"),
               reference.byteCount > 0, reference.byteCount <= maximumStoredImageBytes,
