@@ -79,6 +79,10 @@ public struct PendingUserInput: Sendable, Codable, Hashable, Identifiable {
 
 /// Receipt emitted when the runtime has inserted a steer into model context.
 public struct SteerConsumptionReceipt: Sendable, Codable, Hashable {
+    /// The kind field of the durable status marker for a user steer.
+    /// Reusing status keeps the event readable by earlier clients.
+    public static let timelineEventKind = "userInputConsumed"
+
     public var inputID: UUID
     public var runID: UUID
     public var consumedAt: Date
