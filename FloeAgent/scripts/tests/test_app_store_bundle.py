@@ -206,6 +206,18 @@ class PrivacyManifestTests(unittest.TestCase):
         self.assertEqual(report["privacy_manifests"]["frameworks"][0]["executable_sha256"],
                          hashlib.sha256(binary_before).hexdigest())
 
+    def test_kirikiri_keeps_its_vendored_file_metadata_manifest(self):
+        binary = thin_with_symbols(undefined=["_stat", "_fstat", "_lstat"])
+        framework = self.add_framework("ShioriKrkr", binary)
+        receipt = self.run_policy()["privacy_manifests"]["frameworks"][0]
+        manifest = plistlib.loads((framework / "PrivacyInfo.xcprivacy").read_bytes())
+        self.assertEqual(receipt["categories"], ["NSPrivacyAccessedAPICategoryFileTimestamp"])
+        self.assertIn({
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPITypeReasons": ["C617.1"],
+        }, manifest["NSPrivacyAccessedAPITypes"])
+        self.assertEqual((framework / "ShioriKrkr").read_bytes(), binary)
+
     def test_unpatched_shell_statfs_fails_with_rebuild_pointer(self):
         self.add_framework("shell", thin_with_symbols(undefined=["_stat", "_lstat", "_statfs"]))
         with self.assertRaisesRegex(ValueError, "rebuild_shell_frameworks.py"):

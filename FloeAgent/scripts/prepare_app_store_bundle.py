@@ -40,8 +40,8 @@ MACHO = {bytes.fromhex(v) for v in ("cffaedfe", "cefaedfe", "feedfacf", "feedfac
 
 # --- required-reason privacy manifests -------------------------------------
 
-PRIVACY_MANIFEST_ROOT = (Path(__file__).resolve().parents[1]
-                         / "FloeApp/Resources/PrivacyManifests/EmbeddedFrameworks")
+APP_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+PRIVACY_MANIFEST_ROOT = APP_SOURCE_ROOT / "FloeApp/Resources/PrivacyManifests/EmbeddedFrameworks"
 REBUILT_FRAMEWORKS_ENV = "FLOE_PRIVACY_REBUILT_FRAMEWORKS"
 REBUILT_PRIVACY_GENERATOR = "floe-ios_system-privacy-rebuild-v1"
 
@@ -100,8 +100,8 @@ FILE_TIMESTAMP_SYMBOLS = frozenset(name for name, category in SYMBOL_CATEGORIES.
 REBUILT_TARGETS = {"shell": "shell.framework", "text": "text.framework"}
 
 # Every framework that can appear in Frameworks/ must be reviewed here. The
-# value is the controlled manifest directory under PRIVACY_MANIFEST_ROOT, or
-# None for a framework whose binary uses no required-reason API at all
+# value is a controlled manifest directory or an exact vendored framework
+# directory, or None for a binary that uses no required-reason API at all
 # (verified by symbol and key-string scan). Anything else fails closed.
 REVIEWED_EMBEDDED_FRAMEWORKS = {
     "CPDFium.framework": "CPDFium",
@@ -121,6 +121,8 @@ REVIEWED_EMBEDDED_FRAMEWORKS = {
     "FloeMoleculePreviewBridge.framework": None,
     "FloeMachiningNative.framework": None,
     "RoyalVNCKit.framework": "RoyalVNCKit",
+    "ShioriKrkr.framework": (APP_SOURCE_ROOT / "ThirdParty/FloeVisualNovelRuntime"
+                            / "ShioriKrkr.xcframework/ios-arm64/ShioriKrkr.framework"),
     "awk.framework": None,
     "curl_ios.framework": "curl_ios",
     "dash.framework": "dash",
