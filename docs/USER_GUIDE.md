@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-11-12 -->
+<!-- docs-updated: 2026-11-24 -->
 
 > This guide covers iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). App Store, GitHub/Feather and TestFlight versions are tracked with verification dates in [channel status](CURRENT_STATUS.md). GitHub IPAs require your own signing; TestFlight availability follows your group. See the [workspace guide](WORKSPACES_GUIDE.md) for build-specific features.
 
@@ -56,7 +56,7 @@ This guide describes workflows; use the workspace guide and selected release not
 
 ![A completed task with its local web result in Floe on iPad.](assets/guide/home-current.png)
 
-*A completed task with its local web result.* Check the model and workspace before sending your first request. Screenshots in this chapter show the App Store 1.7.74 (315); the workbench tutorials in the [workspace guide](WORKSPACES_GUIDE.md) follow the newer 1.8.5 (325) builds.
+*A completed task with its local web result.* Check the model and workspace before sending your first request. The task screenshot above shows 1.7.74 (315). The new screenshots in this guide show 1.8.72 (393) in the iPad Simulator.
 
 1. Install from the [App Store listing](https://apps.apple.com/app/id6801209053) linked on the [official website](https://www.floe-agent.com/); availability follows your storefront. For a beta, use a TestFlight group you already have access to and check its build, expiry and testing notes.
 2. For GitHub or Feather/AltStore delivery, follow the installation instructions on the release page. The GitHub developer IPA is unsigned and requires your own signing method; it is not a TestFlight package.
@@ -95,9 +95,17 @@ A downloaded voice does not replace another voice you selected while waiting. In
 
 ### Help and guides
 
-Open **Settings → Help & Guides** to browse topics or enter keywords in **Search guides and settings**. The bundled English and Simplified Chinese guides work offline without a configured model. In an article, use **Contents** to jump to a section or **Find on Page** to search its text; enlarge images, copy the article, and adjust appearance and text size.
+1. Tap the gear at the bottom of the sidebar, then open **Settings → Help & Guides**. Browse by topic or use **Search guides and settings** in the upper right. Built-in guides are available offline.
+2. Open an article and use the list icon to open **Contents**. Select a heading to jump to it. The magnifying glass searches the current article. Open **Format** for reading options, or tap an image to enlarge it.
+3. Use the article’s back button to return to Help & Guides. Tap **Done** in Settings to return to the task or screen you had open.
+
+![Help & Guides in the iPad settings pane with search at the upper right (Simplified Chinese).](assets/guide/ipad-help-center.png)
 
 Ask the current assistant when you need help with an operation. Guide citations in its answer open the relevant chapter. When **Open This Setting** is offered, tap it to reach that setting and make the change yourself. Closing help returns to the original task or file with its draft and progress preserved.
+
+For example, search for “Return Key” in English. Open **Change it**, then tap **Open This Setting** to highlight **Hardware Keyboard → Return Key** in **General**. You can go back after looking at the setting. If search comes up empty, try a shorter feature name in the app’s current language.
+
+![A help article opens General and highlights the hardware keyboard Return Key setting (Simplified Chinese).](assets/guide/ipad-help-setting.png)
 
 A failed guide update keeps the existing content readable. Updating the App preserves newer guides already on the device. Check [channel status](CURRENT_STATUS.md) and your installed build for feature availability.
 
@@ -124,7 +132,9 @@ If the menu-bar icon does not appear, launch Floe Bridge from Applications again
 <!-- doc-anchor: section-4 -->
 ### Cloud providers
 
-Open Settings → Model Providers. Add the endpoint, wire protocol, actual model ID and API credential supplied by your provider. Test the configuration, enable both provider and model, choose the default Agent model, then verify the model label on New Task.
+Open **Settings → Models & Providers**, then tap **+**. Choose a chat, image generation/editing, or video generation provider. For chat, enter the endpoint, protocol, exact model ID and credential supplied by your provider. Test the configuration, enable the provider and model, then verify the model shown on **New Task**.
+
+![The chat provider form shows its purpose, provider and protocol (Simplified Chinese).](assets/guide/ipad-model-provider.png)
 
 Provider and model names may contain hyphens, underscores and version dots, such as `qwen3.5-plus` or `model_v2.1`. Keep the actual model ID exactly as supplied. Provider display names normalize pasted line breaks and incidental invisible formatting while preserving meaningful Unicode; oversized names report their UTF-8 size.
 
@@ -178,7 +188,7 @@ Downloaded MLX models are Beta. Download, load and inference are separate stages
 <!-- doc-anchor: section-7 -->
 ## 3. Tasks and workspace ownership
 
-On New Task, check the model, project, execution target, Skills and permissions before sending. With no project, Floe creates a private task workspace; with a project, file actions belong to that project. Attach necessary material and state the outcome, format, location and completion criteria.
+On **New Task**, check the model, project, execution target, mode and permissions underneath the composer. Tap **Ask** to view task permissions. The speech bubble at the upper right starts a temporary chat. With no project, Floe uses a private task workspace. With a selected project, file actions belong to that project. Attach the material you need and describe the outcome, format, location and completion criteria.
 
 Example: “Read this attachment, create a one-page summary and action list in the current workspace, and give me links to the finished files.” The draft becomes a continuing task. Later messages use the same task context.
 
@@ -202,6 +212,8 @@ Return inserts a new line; Command+Return sends where supported. Text wraps at t
 **Hardware keyboard.** In Settings → General, choose whether Return adds a new line or sends a message. When Return sends, Shift–Return adds a new line. Command–Return still sends. The choice applies to the inline and expanded message composers; the onscreen keyboard keeps its existing behavior.
 
 **Selecting and finding text.** Long-press your message or an assistant reply to select text, adjust the selection and copy. Choose Find in Chat from the conversation menu, or press Command+F. Previous and Next jump between highlighted hits without changing your draft. The sidebar search also finds saved ordinary conversations. Multiple words must all match; quoted phrases stay together. Results show the actual matching line.
+
+**Schedule a task.** Open **Task Center** from the sidebar, then tap the calendar icon to open the scheduling form. Enter a name and instructions, choose the workspace, run time and repeat rule, then check the time zone before saving.
 
 **Scheduled tasks.** A linked plan appears below the conversation navigation bar. Open it for timing, parameters and run history. Each occurrence creates its own task. Run Now adds an extra run without changing the original time. Skip Next skips that occurrence; Cancel Future keeps existing history. A successful occurrence does not itself complete the overall goal: the assistant must explicitly finish a plan whose goal is achieved. Live Activities may show running work or the nearest wait; delivery and execution timing remain subject to system scheduling.
 
@@ -262,9 +274,9 @@ For text, resolve save errors before running. For Office, preserve and compare b
 
 ![A Notes document open with its annotation controls in Floe.](assets/guide/notes-current.png)
 
-*A Notes document open with its controls.* Open Notes from the sidebar, import a sample PDF, and try a short pen stroke before editing an important document.
+*A Notes document open with its controls.* Open **Space → Notes** on builds with Space. Earlier builds have a direct Notes entry in the sidebar.
 
-Open Notes from the sidebar, then use + to create or import. For task files, select Import from Floe Workspace, choose the project or task, then the file. Check pages, text and attachments after import. The Notes copy is independently stored, not a live mirror of the source.
+On builds with Space, open **Space → Notes → +**. Choose **Blank Note**, enter a name, and tap **Create**. The same menu offers meeting notes, mind maps, notebooks and Office files. For task files, choose **Import from Floe Workspace**, choose the project or task, then choose the file. Check pages, text and attachments after import. The Notes copy is independently stored, not a live mirror of the source.
 
 When sharing from another app or opening a file with Floe, choose Notes, Task or Canvas. For Task or Canvas, select an existing target or create one. Existing task drafts are preserved. The import action inside Notes goes directly to Notes; the attachment action inside a task adds to that task. Importing does not send a message automatically.
 
@@ -286,28 +298,28 @@ Saving an Office document in Notes updates its automatic cover from the saved co
 
 [↑ Back to contents](#contents)
 
+### Add a shape and check it saved
+
+1. In a blank note, choose the square **+** in the writing toolbar and select **Ellipse**. The shape appears on the current page. The same menu offers rectangles, lines and arrows.
+2. Tap **Undo** to remove the shape and **Redo** to restore it. Use the chevron at the left of the editor to hide the document tabs and title bar. Tap it again to bring them back.
+3. Use the top-left back button to return to the library. Reopen the note and check that the shape is still there. Export as PDF for reading elsewhere, or keep the note or export a Floe note package to edit it again.
+
+![An ellipse and the writing toolbar in an iPad note (Simplified Chinese).](assets/guide/ipad-notes-shape.png)
+
 <!-- doc-anchor: section-12 -->
 ## 8. Office: edit, annotate, save and reopen
 
-1. Open a DOCX, XLSX or PPTX file, wait for it to load, then enter editing.
-2. Edit according to the format: Word supports styles, lists, alignment and tables; Excel supports cells and formulas, formatting, rows and columns, freeze panes, sorting and filtering; presentations support slide duplication, reordering and object alignment.
-3. Tap the toolbar pen button to write with Apple Pencil. In **Pen settings**, choose **Pen**, **Marker** or **Highlighter** and adjust color, width and transparency. Five dots from small to large offer quick widths; use the slider for fine adjustment with a live stroke preview. Tap **Done** to close settings and keep drawing; tap the pen button again to return to ordinary editing.
-4. In Notes, open the document assistant and describe what to view or edit. It can request a specific region, including completed ink; an ordinary message no longer attaches a screenshot of the current page automatically. When a modification needs confirmation, use the proposal's **Apply edit** or **Discard** buttons.
-5. Save and wait for completion. Export the file when ready to share.
+| Feature | What to use it for |
+| --- | --- |
+| **Word** | Write reports, proposals and other documents. Organize them with paragraph styles, lists, images and tables. |
+| **Excel** | Build budgets, inventories and data sheets. Use formulas to calculate totals, and sort or filter the data. |
+| **PowerPoint** | Build presentations and teaching materials. Add, remove, duplicate or reorder slides in the navigator. |
 
-Available operations depend on the file format; unavailable options explain why. If loading or saving fails, keep the original and check the error. Compare conflicting versions before saving.
+Create a document through **Space → Files → + → Document…**, or import a DOCX, XLSX or PPTX. Save from the ribbon after editing. Choose the pen to annotate with Apple Pencil. The document assistant in Notes can inspect a specific page or cell range. Review its proposed changes before applying them.
 
-On iPad, Office uses the full toolbar when the editor is wide enough and a compact layout in narrow split views. Opening the keyboard does not switch the layout by itself.
+**To share or print**, open **Export Format → PDF** or **Print…** and choose a sheet, range or page selection. If you see **Settings changed**, tap **Update preview**, then check the page count and content before saving or printing. Keep the editable document to revise the text, formulas or slides later.
 
-In 3D Present, open Environment to import a panoramic environment image, adjust rotation and brightness, and add or edit named scene lights. Applying changes is undoable and saves them with the document; still images and videos use the same scene appearance.
-
-**Office autosave in Notes.** Completed edits save after you pause; a pen contact still down defers saving until you lift it. A failed save keeps the editing copy so you can retry.
-
-**View a specific region.** The assistant can read an Excel sheet and cell range (such as `A1:N30`), or a Word/PowerPoint page and optional rectangle, including content outside the screen. Ask it to list sheets or pages first if needed. Floe saves completed edits before returning the region image from that saved version; use a vision-capable model to view it. Lift the pen or retry if the editor is busy.
-
-**PDF export and printing.** Choose Export Format → PDF or Print…. The actual PDF preview stays below the settings and updates automatically as you change them. XLSX supports worksheet selection, full content, saved print areas or explicit cell ranges; paper, orientation, margins, printed gridlines, fit to width/page, percentage or a width-by-height page budget. Drag the scale slider or enter an exact percentage. Once the preview is current, sharing, saving and printing use that same file. Word/PowerPoint support final PDF page selection such as `1-3,5`. The assistant can export with these same workbook options. The original is preserved; lift the Pencil before exporting.
-
-An AI edit that was not confirmed in the editor can still run as an authorized automatic copy: only after the task's runtime approves that exact tool call, the engine works on an isolated copy and publishes a new `<name>.edited.<ext>` — the original is never overwritten, the output is reopened and verified (formula cells check their persisted cached value/type/error), and an existing different file at the output path is refused. A user-confirmed edit (the editor's confirmation) keeps its existing path. Long Office/media work can be submitted as a background job: the job freezes the workspace, revision and command payload at submission, reports real progress, keeps running when you close the page, and cancellation only becomes terminal after the processor acknowledges and cleans its staging.
+![The refreshed Excel preview lets you share or save the current sheet as a PDF (Simplified Chinese).](assets/guide/ipad-excel-pdf-refresh.png)
 
 [↑ Back to contents](#contents)
 
@@ -430,15 +442,30 @@ For native `.floecad` work (the 3D workbench's drawing and assembly services), t
 <!-- doc-anchor: section-19 -->
 ## 15. Canvas, images, audio and video
 
+**Free-form editing: organize material on a Canvas**
+
+A Canvas in Creative Mode gives evolving ideas and assets room to sit side by side. To plan a launch, put the goal on the left, references in the middle and candidate designs on the right. Add sticky notes to record the trade-offs. Text, images, documents and models are individual objects you can select, move and reopen.
+
 ![A populated Canvas with images, text and a document in one workspace.](assets/guide/canvas-current.png)
 
-*A populated Canvas with images, text and a document in one workspace.* Select an object to inspect or edit it. Review each generated asset before exporting.
+| What you want to do | Where to start |
+| --- | --- |
+| Place drafts, references and options side by side on a board | **Creative Mode → New Canvas**. |
+| Make a flowchart or relationship diagram built around shapes and links | **Space → Overview → Diagram**. |
+| Crop or layer an image and export it with a transparent background | **Space → Overview → Drawing / image**. |
+| Take handwritten notes, annotate readings or keep reference material by page | **Notes**. |
 
-Create a canvas in Creative Mode, add text/images/generation nodes, connect inputs and check the chosen model's capabilities. Open the generated asset from its node to preview it. In newer builds, diagram works in Space hold structured diagrams and Creative mode's mixed canvas keeps text, images, assets and documents on one board; see [Space and specialist workbenches](WORKSPACES_GUIDE.md).
+1. Choose **Creative Mode → New Canvas → Blank Canvas**. Use the bottom **+ → Sticky Note**, write a goal in one line and tap the checkmark at the top. The sticky note stays selected, ready to move to one side of the board.
+2. Use **+** again to add text, shapes or other content. Use sticky notes for short ideas, text for headings and shapes to mark out areas. Zoom in to inspect details. Switch back to the selection tool when you want to move objects.
+3. Open a node to continue working in its editor. For example, double-click a DWG or DXF node to edit the drawing. Tap **Done** to update that node, or **Make Variant** to place another version on the board for comparison.
+4. To generate an asset, select a model that supports the type of output. Enter your request in a generation node and connect any source nodes you want to use. After the run, open the new output node and inspect it. You can arrange ordinary notes, images and documents by hand at any time.
+5. Tap **Done** to return to Creative Mode. Reopen the same canvas and check that the objects, positions and connections are still there. For delivery as an image or a design file, export from its workbench and open the result for a final check.
 
-In the media workspace, select a file, configure crop, trim, subtitles or export format, preview and export. Play the output to check duration, audio, captions and framing. Preserve originals. Image generation, image editing, video generation and local conversion are different capabilities with different providers/quotas. See [Canvas architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md).
+![A selected sticky note and its actions on an iPad canvas (Simplified Chinese).](assets/guide/ipad-canvas-note.png)
 
-Double-click a `.dwg` or `.dxf` drawing node to open its drawing editor. Finish updates the original node; Make Variant creates a new node. Unsaved edits remain as a draft when you close the editor and can be resumed on reopening. Entering full screen re-parents the same live session — undo history and unsaved edits are preserved. Canvas backups include media projects, assets and CAD drafts.
+In the media workbench, preview the results of a crop, trim or caption change before exporting. Play the output to check duration, sound, captions and framing. Image generation, image editing, video generation and local conversion use different capabilities. Check the selected model or workbench for available settings. See [Canvas architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md).
+
+The drawing editor saves drafts when closed and keeps the editing session when entering full screen. Canvas backups include media projects, assets and CAD drafts.
 
 <!-- doc-anchor: section-29 -->
 ### Media workbench: projects, editing and export
@@ -452,9 +479,26 @@ never squeezed into a strip.
 
 - **Images**: crop, move, scale and rotate; manage layers, add text or drawing, adjust color, blur, sharpen, mosaic and filters. Use rectangle, ellipse or lasso selections, then add, subtract, invert, feather or create a mask.
 - **Video**: add clips to the main track, trim, split, reorder, change speed or adjust framing. Add music, volume changes and fades on the music track. Add captions manually or transcribe a selected clip. Hard cuts and cross-dissolve transitions are available.
+
+**Start an image project.** Open **Space → Overview → Drawing / Image** and create a project. Use **+ → Drawing Layer** in the layers panel to add a transparent drawing layer. Select the layer and adjust brush size, hardness and opacity. The left side holds the tools. The right side shows properties for the current tool or layer. Use **Export** to pick a format and whether to keep transparency.
+
+![Image layers, brush properties and Export (Simplified Chinese).](assets/guide/ipad-image-layers.png)
+
+**Make a transparent PNG.** Use the import icon in the Drawing / Image workbench to select a PNG with transparent areas. Once the asset appears in the layer list, tap the eye beside **Background** to hide the white layer. Look for a checkerboard in the preview. If everything still looks white, check whether the source image has its own white background.
+
+1. Open **Export**, select **PNG** and enable **Preserve transparency**. To make a white-background copy, turn off that option and export again.
+2. Use **Share exported file** to save the output to Files, then check its size and background. To verify transparency, view the PNG on a colored background. The canvas or export settings determine the output size. Use the displayed export dimensions when checking the file.
+3. Find and reopen the original project by name in **Space → Files**. Check the asset layer and background visibility. Use this project for further layer editing.
+
+![Hiding the background layer reveals a checkerboard in the transparent areas (Simplified Chinese).](assets/guide/ipad-image-alpha.png)
+
+**Cut a video.** Open **Space → Overview → Video** and create a project. Use the import icon on the top bar to choose a local video. When it appears in the timeline, select it and tap the time ruler to position the playhead. Tap **Split** and check that the timeline now contains two clips. Choose **Export → Export MP4**, wait for completion, then open the export and check the picture and duration. Choose a full project package when you need to edit it later.
+
+![The test clip was split at 1.5 seconds and the timeline shows both segments (Simplified Chinese).](assets/guide/ipad-video-split.png)
+
 - **Save and resume**: projects save automatically. Use the toolbar folder button to open saved projects with their layers, timeline and edit history. Opening the same source again lets you resume editing or start a new project.
 - **Save failure**: your current edits stay open. Retry **Save project**, keep editing, or explicitly discard unsaved changes. Close completes after the current edits are saved; discarding keeps saved versions and source assets.
-- **Export**: choose PNG, JPEG or HEIC for images, with size and quality options; choose H.264 or HEVC for video, with resolution and frame-rate options. Files go to `Workbench/Exports` in the workspace. Use Share / Save to Files after export.
+- **Export**: choose PNG, JPEG or HEIC for images, with size and quality options; choose H.264 or HEVC for video, with resolution and frame-rate options. Use **Share** or **Save to Files** after export. A project opened from Space owns its exports, and a workbench opened from a task file uses that task’s workspace.
 - **AI**: open the AI drawer, choose your assets and model, then review parameters and costs before submitting. Accept a candidate to add it as a new layer or clip; you can still undo it. Jobs and candidates remain after closing the workbench. If generation is interrupted, check its status before resubmitting a paid request.
 
 ### Frame interpolation and super resolution
@@ -552,6 +596,10 @@ Ask the assistant to transcribe an existing audio file or create a playable audi
 <!-- doc-anchor: section-21 -->
 ## 17. Skills, MCP, mail and automation
 
+Open **Skill Hub** from the sidebar. **Discover** lists skills by category and opens their details and dependencies. **Installed** shows each skill’s version, enabled state and any available updates. Check the task’s capabilities and permissions when using a skill in a task.
+
+![Skill Hub shows Discover, Installed, and the skill categories (Simplified Chinese).](assets/guide/ipad-skill-hub.png)
+
 **Shortcuts drafts:** Repeated **Send to Floe** and **Create a task** actions keep separate drafts. Home fills a free composer in order and preserves existing text and attachments; when drafts are waiting, free the composer and use **Insert next**. Review the draft and send it yourself. Queued drafts survive reopening, and older unsent drafts migrate automatically. Adding a draft does not require a configured model.
 
 **Get Run Files.** In Shortcuts, add **Get Run Files** and choose an existing Floe run. It returns the verified files produced by that exact run as Shortcuts files. Leave **Include partial results** off for complete results; turn it on only when you explicitly want verified files from a run that is still active, failed or cancelled. Use native Shortcuts steps such as **Quick Look** or **Save File** to view or store them. A run that produced no files returns an empty result.
@@ -626,7 +674,7 @@ Manage fonts, documents, environments and diagnostics in Settings. Imported font
 <!-- doc-anchor: section-19 -->
 ## 19. Temporary chat (RAM-only)
 
-The New Task launchpad is the only entry that starts a temporary chat; ordinary chat stays the default and no mode chooser appears. Text typed on the launchpad is carried into the temporary chat. An open saved conversation no longer offers a temporary switch, so a saved chat can never be converted from its own thread. *(Builds up to the current internal 1.7.32 (273) still show the header toggle; the next update removes it.)*
+The New Task launchpad is the only entry that starts a temporary chat; ordinary chat stays the default and no mode chooser appears. Tap the speech bubble at the top right of **New Task**. The text in the composer moves to the temporary chat. Attachments stay with New Task. Copy the text before switching if you also need it there. An open saved conversation no longer offers a temporary switch, so a saved chat can never be converted from its own thread.
 
 - The normal message list and composer are reused. Voice input is available; attachment staging stays unavailable. The compact Temporary menu carries the explanation, the voice note, End and Keep as saved instead of a persistent banner.
 - Temporary chat supports public web search and retrieval, plus on-demand basic device reads that are enabled and authorized, such as location, calendar and reminder queries. Entering chat does not start continuous location tracking. Writes, external sends, code execution, installation, long-running tasks and remote control remain unavailable; other private-file and account capabilities stay outside this boundary. Results remain in this RAM-only session.
