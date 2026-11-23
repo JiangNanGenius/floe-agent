@@ -379,9 +379,8 @@ class RootWorkspaceController internal constructor(
     // ------------------------------------------------ reasoning effort chip
 
     private val reasoningEffortState = MutableStateFlow<ReasoningEffortUi?>(null)
-    /** The SAVED reasoning effort of the currently selected configured model
-     * (null = the wire row carried no value — displayed honestly, never a
-     * fabricated "auto"). Recomputed by [refreshSelectedModelReasoning]. */
+    /** The selected model's effective setting. An omitted saved effort is
+     * Automatic, as it is in the native model profile. */
     val reasoningEffort: StateFlow<ReasoningEffortUi?> = reasoningEffortState
 
     /** Re-reads the selected model's row from the REAL cached provider rows.
@@ -389,8 +388,9 @@ class RootWorkspaceController internal constructor(
     fun refreshSelectedModelReasoning() {
         val modelId = host.home.selectedModelId.value
         val row = cachedModelRow(modelId)
-        reasoningEffortState.value = row?.reasoningEffort?.let { raw ->
-            ReasoningEffortUi.entries.firstOrNull { it.swiftRaw == raw }
+        reasoningEffortState.value = row?.let { model ->
+            if (model.reasoningEffort == null) ReasoningEffortUi.AUTOMATIC
+            else ReasoningEffortUi.entries.firstOrNull { it.swiftRaw == model.reasoningEffort }
         }
     }
 

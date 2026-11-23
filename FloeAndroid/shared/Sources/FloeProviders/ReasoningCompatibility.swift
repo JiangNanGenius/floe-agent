@@ -26,16 +26,22 @@ enum ReasoningCompatibility {
     ) -> String? {
         if policy == .disabled {
             if provider.kind == .alibabaStudio || isDashScope(provider) { return "none" }
+            if usesNativeDeepSeekControls(provider) { return "none" }
             if isOpenAIReasoningFamily(provider: provider, model: model) {
                 return supportsOpenAINone(model.remoteModelID) ? "none" : nil
             }
             return nil
         }
         let effort = model.effectiveReasoningEffort
-        guard effort != .automatic, isOpenAIReasoningFamily(provider: provider, model: model) else {
-            return nil
+        guard effort != .automatic else { return nil }
+        if usesNativeDeepSeekControls(provider) {
+            return deepSeekEffort(effort)
         }
-        return openAIEffort(effort, modelID: model.remoteModelID)
+        if isVolcengineArk(provider), supportsArkEffort(model.remoteModelID) {
+            return effort == .maximum ? "high" : effort.rawValue
+        }
+        return isOpenAIReasoningFamily(provider: provider, model: model)
+            ? openAIEffort(effort, modelID: model.remoteModelID) : nil
     }
 
     static func requiresAssistantReasoningReplay(
@@ -54,7 +60,7 @@ enum ReasoningCompatibility {
             if provider.kind == .alibabaStudio || isDashScope(provider) {
                 return ChatOptions(enableThinking: false)
             }
-            if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+            if isVolcengineArk(provider) || isDeepSeek(provider: provider, model: model) {
                 return ChatOptions(thinkingType: "disabled")
             }
             if isOpenAIReasoningFamily(provider: provider, model: model),
@@ -66,6 +72,9 @@ enum ReasoningCompatibility {
         let effort = model.effectiveReasoningEffort
         guard effort != .automatic else { return ChatOptions() }
 
+        if let gemini = geminiEffort(effort, provider: provider, model: model) {
+            return ChatOptions(reasoningEffort: gemini)
+        }
         if isDeepSeek(provider: provider, model: model) {
             // Official chat contract (api-docs.deepseek.com/api/create-chat-completion):
             // reasoning_effort accepts none/low/high/max. `minimal` is accepted
@@ -78,7 +87,7 @@ enum ReasoningCompatibility {
                 reasoningEffort: deepSeekEffort(effort)
             )
         }
-        if provider.kind == .volcengineArk {
+        if provider.kind == .volcengineArk || (isVolcengineArk(provider) && supportsArkEffort(model.remoteModelID)) {
             return ChatOptions(
                 thinkingType: "enabled",
                 reasoningEffort: effort == .maximum ? "high" : effort.rawValue
@@ -100,8 +109,14 @@ enum ReasoningCompatibility {
         model: ModelProfile,
         policy: ProviderReasoningPolicy = .modelDefault
     ) -> String? {
-        guard policy == .disabled else { return nil }
-        if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+        if isVolcengineArk(provider) {
+            if policy == .disabled { return "disabled" }
+            if model.effectiveReasoningEffort != .automatic, supportsArkEffort(model.remoteModelID) {
+                return "enabled"
+            }
+        }
+        if policy == .disabled, isDeepSeek(provider: provider, model: model),
+           !usesNativeDeepSeekControls(provider) {
             return "disabled"
         }
         return nil
@@ -136,6 +151,22 @@ enum ReasoningCompatibility {
         provider.traits(model: model).isDeepSeek
     }
 
+    private static func usesNativeDeepSeekControls(_ provider: ProviderProfile) -> Bool {
+        provider.baseURL.host?.lowercased() == "api.deepseek.com"
+    }
+
+    private static func isVolcengineArk(_ provider: ProviderProfile) -> Bool {
+        if provider.kind == .volcengineArk { return true }
+        let host = provider.baseURL.host?.lowercased() ?? ""
+        return host.hasPrefix("ark.") && host.hasSuffix(".volces.com")
+    }
+
+    private static func supportsArkEffort(_ modelID: String) -> Bool {
+        let id = modelID.lowercased()
+        return id == "ark-code-latest" || id == "doubao-seed-evolving" || id.hasPrefix("doubao-seed-2")
+            || id.hasPrefix("doubao-seed-1-8") || id.hasPrefix("doubao-seed-1.8")
+    }
+
     /// DeepSeek's documented effort contract. There is no native `medium`
     /// value: the endpoint accepts it as a compatibility alias and maps it to
     /// `high`, so Floe sends the value the endpoint will actually use rather
@@ -158,6 +189,24 @@ enum ReasoningCompatibility {
         return id.hasPrefix("gpt-5.1") || id.hasPrefix("gpt-5.2")
             || id.hasPrefix("gpt-5.3") || id.hasPrefix("gpt-5.4")
             || id.hasPrefix("gpt-5.5") || id.hasPrefix("gpt-5.6")
+    }
+
+    // The Gemini chat preset uses Google's OpenAI-compatible endpoint.
+    // Send its documented reasoning_effort field without native thinking keys.
+    private static func geminiEffort(_ effort: ModelReasoningEffort,
+                                    provider: ProviderProfile,
+                                    model: ModelProfile) -> String? {
+        guard provider.kind == .googleGemini ||
+                provider.baseURL.host?.lowercased() == "generativelanguage.googleapis.com",
+              let id = model.remoteModelID.lowercased().split(separator: "/").last,
+              id.hasPrefix("gemini-2.5-") || id.hasPrefix("gemini-3") || id.hasPrefix("gemini-4-"),
+              !id.contains("image"), !id.contains("tts"), !id.contains("live") else { return nil }
+        if effort == .maximum {
+            return id.hasPrefix("gemini-4-neon") || id.hasPrefix("gemini-4-hydrogen")
+                ? "xhigh" : "high"
+        }
+        if effort == .medium, id.hasPrefix("gemini-3-pro") { return "high" }
+        return effort.rawValue
     }
 
     private static func isOpenAIReasoningFamily(provider: ProviderProfile, model: ModelProfile) -> Bool {
@@ -204,23 +253,46 @@ enum ReasoningCompatibility {
     /// keep today's "automatic" behavior without an extra request.
     static func supportsVariableReasoningEffort(
         provider: ProviderProfile,
-        model: ModelProfile
+        model: ModelProfile,
+        usesTools: Bool = false
     ) -> Bool {
-        guard provider.kind != .local else { return false }
-        var probe = model
-        probe.reasoningEffort = .high
-        switch provider.wireProtocol {
-        case .openAIResponses:
-            return responsesEffort(provider: provider, model: probe) != nil
-        case .openAIChatCompletions:
-            let options = chatOptions(provider: provider, model: probe)
-            return options.reasoningEffort != nil
-                || options.thinkingType != nil
-                || options.enableThinking != nil
-        case .anthropicMessages:
-            let options = anthropicOptions(provider: provider, model: probe)
-            return options.effort != nil || options.thinkingType != nil
+        guard provider.kind != .local,
+              (model.explicitCapabilities ?? model.capabilities).contains(.text) else { return false }
+        let traits = provider.traits(model: model)
+        guard let id = model.remoteModelID.lowercased().split(separator: "/").last else { return false }
+        if isVolcengineArk(provider) {
+            guard supportsArkEffort(model.remoteModelID) else { return false }
+        } else if traits.isDeepSeek {
+            // A gateway can serve a DeepSeek model without accepting the
+            // native request fields. Legacy native models had no effort tiers.
+            guard usesNativeDeepSeekControls(provider),
+                  id == "deepseek-flash" || id.hasPrefix("deepseek-v4") else { return false }
+        } else if provider.kind == .alibabaStudio || traits.isDashScope {
+            guard id.hasPrefix("qwen3.8-") || id.hasPrefix("qwen4-max") else { return false }
+        } else if traits.isOpenAIReasoningFamily, provider.wireProtocol != .anthropicMessages,
+                  geminiEffort(.low, provider: provider, model: model) == nil {
+            // Being configured under the OpenAI preset alone does not make
+            // a GPT-4, chat-only, or pro model support these variable tiers.
+            guard !id.contains("-pro"), !id.contains("-chat"), !id.contains("preview"),
+                  !id.hasPrefix("o1-mini") else {
+                return false
+            }
+            let knownFamily = ["gpt-5", "gpt-6", "o1", "o3", "o4"].contains { id.hasPrefix($0) }
+                || id.contains("codex")
+            guard knownFamily else { return false }
+            if usesTools, provider.wireProtocol == .openAIChatCompletions,
+               ["gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6"].contains(where: { id.hasPrefix($0) }) {
+                // These OpenAI Chat Completions models cannot combine tools
+                // with a positive effort. Leave the user's route as configured.
+                return false
+            }
         }
+        var probe = model
+        probe.reasoningEffort = .low
+        let low = wireEffortValue(provider: provider, model: probe)
+        probe.reasoningEffort = .high
+        let high = wireEffortValue(provider: provider, model: probe)
+        return low != nil && high != nil && low != high
     }
 
     /// Freezes the level whose wire value the endpoint will actually use.
@@ -232,13 +304,17 @@ enum ReasoningCompatibility {
         provider: ProviderProfile,
         model: ModelProfile
     ) -> ModelReasoningEffort {
+        if provider.wireProtocol == .openAIChatCompletions,
+           let wire = geminiEffort(effort, provider: provider, model: model) {
+            return ModelReasoningEffort(rawValue: wire) ?? effort
+        }
         let traits = provider.traits(model: model)
         if traits.isDeepSeek {
             // No native medium tier: `medium` is only a compatibility alias
             // that lands as `high`.
             return effort == .medium ? .high : effort
         }
-        if provider.kind == .volcengineArk {
+        if isVolcengineArk(provider) {
             // `maximum` is sent as `high`.
             return effort == .maximum ? .high : effort
         }

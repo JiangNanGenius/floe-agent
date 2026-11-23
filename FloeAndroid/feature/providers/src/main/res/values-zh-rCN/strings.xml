@@ -138,7 +138,7 @@
     <string name="model_reasoning_medium">标准</string>
     <string name="model_reasoning_high">深入</string>
     <string name="model_reasoning_maximum">最大</string>
-    <string name="model_reasoning_hint">Floe 会按供应商协议转换该设置。自动会保留供应商默认行为；不支持的参数不会发送。</string>
+    <string name="model_reasoning_hint">自动档用辅助文本模型为普通聊天和任务按轮选档。无法选档时，沿用供应商默认设置。</string>
     <string name="model_section_limits">Token 限制</string>
     <string name="model_context_tokens">上下文长度</string>
     <string name="model_max_output_tokens">最大输出长度</string>

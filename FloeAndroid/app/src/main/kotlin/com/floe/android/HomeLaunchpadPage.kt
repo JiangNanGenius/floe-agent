@@ -469,8 +469,8 @@ fun HomeLaunchpadPage(
                         )
                     }
                 }
-                // Reasoning chip: the SELECTED configured model's REAL saved
-                // effort (never a fabricated "auto"); choosing an effort
+                // Reasoning chip: the selected model's effective effort,
+                // including Automatic when the saved effort is omitted. Choosing a level
                 // writes through the ORIGINAL full-snapshot model CAS and
                 // every surface re-reads the same projection. With no usable
                 // model the chip routes to provider setup instead of a

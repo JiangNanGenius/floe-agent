@@ -142,7 +142,7 @@
     <string name="model_reasoning_medium">Balanced</string>
     <string name="model_reasoning_high">Deep</string>
     <string name="model_reasoning_maximum">Maximum</string>
-    <string name="model_reasoning_hint">Floe maps this setting to each provider\'s native reasoning controls. Automatic preserves the provider default; unsupported fields are omitted.</string>
+    <string name="model_reasoning_hint">Automatic uses the auxiliary text model to choose an effort for each chat or task turn. If it cannot select a supported level, the provider default applies.</string>
     <string name="model_section_limits">Token limits</string>
     <string name="model_context_tokens">Context window</string>
     <string name="model_max_output_tokens">Maximum output</string>

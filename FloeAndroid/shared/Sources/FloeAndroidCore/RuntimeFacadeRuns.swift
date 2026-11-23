@@ -782,6 +782,7 @@ public actor FacadeRunDomain {
     internal let ingress: RunCredentialResolver
     internal let assembly: RunModelAssembly
     internal let tools: RunToolAssembly
+    internal let automaticReasoningEffortCoordinator = AutomaticReasoningEffortCoordinator()
 
     internal var owners: [UUID: RunOwnership] = [:]
     // Global generation avoids unbounded per-run tombstones and ABA after an
@@ -1176,7 +1177,7 @@ public actor FacadeRunDomain {
         if let service = liveServices[runID] {
             await service.cancel()
         } else {
-            _ = markLaunchCancelRequested(runID)
+            _ = await markLaunchCancelRequested(runID)
         }
     }
 
@@ -1928,11 +1929,7 @@ public actor FacadeRunDomain {
         // the COMMITTED launch truthfully (durable rows exist and stay;
         // staged attachments were committed above and are never discarded).
         if shouldAbortBeforeEffects(runID) || !fenceIsValid(launchToken) {
-            await markCommittedLaunchAbandoned(runID: prepared.run.id,
-                                               reason: "cancelledBeforeStart",
-                                               bundle: bundle)
-            await retire(runID: prepared.run.id, terminalSucceeded: false,
-                         feedTerminal: false)
+            await abandonPreparedLaunch(current, reason: "cancelledBeforeStart")
             if let queuedInputProofID {
                 postCommitRefusedLaunches[queuedInputProofID] = prepared.run.id
             }
@@ -1999,24 +1996,18 @@ public actor FacadeRunDomain {
                 // same launch transaction); the query value is identical but
                 // never re-derived here.
                 explicitExecutionMode: prepared.run.explicitExecutionMode
-                    .flatMap(ExplicitExecutionMode.init(rawValue:)))
+                    .flatMap(ExplicitExecutionMode.init(rawValue:)),
+                reasoningIngress: .freshRound,
+                reasoningAttachments: launchAttachments)
             assemblyPhase = nil
         } catch let error as RunDomainError {
-            await markCommittedLaunchAbandoned(runID: prepared.run.id,
-                                               reason: "serviceAssemblyFailed",
-                                               bundle: bundle)
-            await retire(runID: prepared.run.id, terminalSucceeded: false,
-                         feedTerminal: false)
+            await abandonPreparedLaunch(current, reason: "serviceAssemblyFailed")
             if let queuedInputProofID {
                 postCommitRefusedLaunches[queuedInputProofID] = prepared.run.id
             }
             return RunDomainReply(.rejected(error.addingPhase(assemblyPhase)))
         } catch {
-            await markCommittedLaunchAbandoned(runID: prepared.run.id,
-                                               reason: "serviceAssemblyFailed",
-                                               bundle: bundle)
-            await retire(runID: prepared.run.id, terminalSucceeded: false,
-                         feedTerminal: false)
+            await abandonPreparedLaunch(current, reason: "serviceAssemblyFailed")
             if let queuedInputProofID {
                 postCommitRefusedLaunches[queuedInputProofID] = prepared.run.id
             }
@@ -2030,8 +2021,15 @@ public actor FacadeRunDomain {
         // handoff (RUN-S1 repair): cancel/steer/policy/snapshot reach the
         // live producer from this point; removal happens ONLY at retirement
         // under actor state.
+        guard var handed = owners[runID], handed.instanceID == current.instanceID,
+              !handed.cancelRequested, !retirementFenced, fenceIsValid(handed.launchToken) else {
+            await abandonPreparedLaunch(current, reason: "launchFencedBeforeHandoff")
+            if let queuedInputProofID {
+                postCommitRefusedLaunches[queuedInputProofID] = prepared.run.id
+            }
+            return RunDomainReply(.rejected(RunDomainError(.sessionFenced, .epochFenced)))
+        }
         liveServices[prepared.run.id] = service
-        var handed = owners[runID] ?? current
         handed.phase = .handedOff
         if let receipt, !handed.startedEffectEmitted {
             // `started` = the owned producer Tasks are dispatched and the
@@ -2571,6 +2569,7 @@ public actor FacadeRunDomain {
             ownership.phase = .terminating
             let bundle = ownership.bundle
             register(ownership)
+            await automaticReasoningEffortCoordinator.cancelPending(runID: query.runID)
             await markCommittedLaunchAbandoned(runID: query.runID,
                                                reason: "cancelledDuringPrepare",
                                                bundle: bundle)
@@ -4994,6 +4993,17 @@ public actor FacadeRunDomain {
         return RunDomainReply(.rejected(error))
     }
 
+    /// A stop during service assembly may already own termination.
+    private func abandonPreparedLaunch(_ expected: RunOwnership, reason: String) async {
+        let runID = expected.runID
+        guard var owner = owners[runID], owner.instanceID == expected.instanceID,
+              owner.phase == .prepared else { return }
+        owner.phase = .terminating
+        register(owner)
+        await markCommittedLaunchAbandoned(runID: runID, reason: reason, bundle: owner.bundle)
+        await retire(runID: runID, terminalSucceeded: false, feedTerminal: false)
+    }
+
     /// C1: durable marking of an abandoned committed launch through the
     /// RUN'S OWN bundle (ordinary → SQLite store; temporary → the RAM
     /// store, which is the authority there), using ONLY the original APIs
@@ -5027,7 +5037,9 @@ public actor FacadeRunDomain {
     func retire(runID: UUID, terminalSucceeded: Bool, feedTerminal: Bool) async {
         guard let ownership = owners[runID] else { return }
         _ = requestG04NativeRunStop(runID: runID, conversationID: ownership.conversationID)
+        await automaticReasoningEffortCoordinator.cancelAndForget(runID: runID)
         await tools.retireDelegate(runID: runID)
+        guard owners[runID]?.instanceID == ownership.instanceID else { return }
         if let token = ownership.consumerToken {
             components.events.detachConsumer(token)
         }
@@ -5830,10 +5842,11 @@ public actor RunDomainDeletionLifecycle: ConversationDeletionLifecycle {
 }
 
 extension FacadeRunDomain {
-    func markLaunchCancelRequested(_ runID: UUID) -> Bool {
+    func markLaunchCancelRequested(_ runID: UUID) async -> Bool {
         guard var ownership = owners[runID] else { return false }
         ownership.cancelRequested = true
         register(ownership)
+        await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
         return true
     }
 

@@ -675,7 +675,9 @@ extension FacadeRunDomain {
         environmentID: String?,
         notes: NotesRunBinding? = nil,
         retryWorkspaceReadOnly: Bool = false,
-        explicitExecutionMode: ExplicitExecutionMode? = nil
+        explicitExecutionMode: ExplicitExecutionMode? = nil,
+        reasoningIngress: AutomaticReasoningEffortIngress = .continuation,
+        reasoningAttachments: [AttachmentRef] = []
     ) async throws -> ConversationRunService {
         let temporary = bundle.identity == .temporary
         let isNotes = bundle.identity == .notes
@@ -901,10 +903,19 @@ extension FacadeRunDomain {
         // resolved to `.localLinux`; it gates the optional-cleanup corrective
         // path and the trusted PRoot package-review class for real shell
         // calls, never a deterministic allow or a `.linuxVM` guest claim.
+        let model: ModelProfile
+        if isNotes || temporary {
+            model = launch.model
+        } else {
+            model = try await resolvedRunReasoningModel(
+                runID: runID, launch: launch, goal: goal, attachments: reasoningAttachments,
+                bundle: bundle, reasoningIngress: reasoningIngress,
+                usesTools: toolsEnabled && (launch.model.explicitCapabilities ?? launch.model.capabilities).contains(.tools))
+        }
         var configuration = Self.runtimeConfiguration(
             conversationID: conversationID,
             provider: launch.provider,
-            model: launch.model,
+            model: model,
             mode: mode,
             ceiling: ceiling,
             toolsEnabled: toolsEnabled,
@@ -1078,7 +1089,7 @@ extension FacadeRunDomain {
         let childStore: (any ChildRunStoring)? = (temporary || isNotes) ? nil : bundle.childRuns
         let runner = SubagentRunner(
             provider: launch.provider,
-            model: launch.model,
+            model: model,
             adapter: adapter,
             credentials: credentials,
             executor: executor,

@@ -1231,12 +1231,15 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             model: request.model,
             policy: request.reasoningPolicy
         )
+        let usesCompletionTokenLimit = request.provider.baseURL.host?.lowercased() == "api.openai.com"
+        let outputLimit = request.model.limits.configuredMaxOutputTokens
         return ChatRequest(
             model: request.model.remoteModelID,
             messages: messages,
             tools: tools.isEmpty ? nil : tools,
             toolChoice: tools.isEmpty ? nil : "auto",
-            maxTokens: request.model.limits.configuredMaxOutputTokens,
+            maxTokens: usesCompletionTokenLimit ? nil : outputLimit,
+            maxCompletionTokens: usesCompletionTokenLimit ? outputLimit : nil,
             thinking: reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
             reasoningEffort: reasoning.reasoningEffort,
             enableThinking: reasoning.enableThinking,

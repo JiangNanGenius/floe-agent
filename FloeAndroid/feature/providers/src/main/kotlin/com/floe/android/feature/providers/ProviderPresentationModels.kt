@@ -61,7 +61,7 @@ enum class ModelCapabilityUi(val swiftBit: Int) {
     VIDEO_GENERATION(1 shl 6),
 }
 
-/** Reasoning intent (⇄ ModelReasoningEffort). AUTOMATIC sends nothing. */
+/** Reasoning intent (⇄ ModelReasoningEffort), resolved by the run runtime. */
 enum class ReasoningEffortUi(val swiftRaw: String) {
     AUTOMATIC("automatic"),
     LOW("low"),

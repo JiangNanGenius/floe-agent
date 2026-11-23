@@ -28,6 +28,7 @@ import Foundation
 import GRDB
 import FloePersistence
 import FloeAgentRuntime
+import FloeCore
 import FloeSecurity
 import FloeModels
 import FloeProviders
@@ -67,24 +68,42 @@ public struct G02NoEnvironmentOwnership: RunEnvironmentOwnershipProving {
 public struct G02PersonalizationRouteProvider: PersonalizationRouteProviding {
     private let configurationStore: ModelConfigurationStore
     private let credentials: RunCredentialResolver
+    private let primaryModelID: UUID?
+    private let adapterFor: @Sendable (ProviderProfile) -> any ProviderAdapter
+    private let transportAdmitted: @Sendable () -> Bool
 
     public init(configurationStore: ModelConfigurationStore,
                 credentials: RunCredentialResolver) {
+        self.init(configurationStore: configurationStore, credentials: credentials,
+                  adapterFor: { OriginalProviderAdapterFactory().adapter(for: $0) },
+                  transportAdmitted: { G02RuntimeComposition.shared.transportGate.admitsCloudNetwork })
+    }
+
+    init(configurationStore: ModelConfigurationStore,
+         credentials: RunCredentialResolver,
+         primaryModelID: UUID? = nil,
+         adapterFor: @escaping @Sendable (ProviderProfile) -> any ProviderAdapter,
+         transportAdmitted: @escaping @Sendable () -> Bool) {
         self.configurationStore = configurationStore
         self.credentials = credentials
+        self.primaryModelID = primaryModelID
+        self.adapterFor = adapterFor
+        self.transportAdmitted = transportAdmitted
     }
 
     public func textOnlyRoute() async -> PersonalizationRouteOutcome {
         // Transport admission is the qualified gate (closed until Main's
         // transport+TLS qualification passes): fail closed honestly.
-        guard G02RuntimeComposition.shared.transportGate.admitsCloudNetwork else {
+        guard transportAdmitted() else {
             return .transportUnqualified
         }
         do {
             let preferences = try await configurationStore.preferences()
             guard let modelID = preferences.generalAuxiliaryLLMModelID
-                    ?? preferences.defaultAgentModelID,
+                    ?? primaryModelID ?? preferences.defaultAgentModelID,
                   let model = try await configurationStore.model(id: modelID),
+                  model.isEnabled,
+                  (model.explicitCapabilities ?? model.capabilities).contains(.text),
                   model.supportsGeneralAuxiliaryLLM else {
                 return .noUsableTextModel
             }
@@ -112,7 +131,7 @@ public struct G02PersonalizationRouteProvider: PersonalizationRouteProviding {
             } catch {
                 return .credentialUnavailable("secretMissing")
             }
-            let adapter = OriginalProviderAdapterFactory().adapter(for: provider)
+            let adapter = adapterFor(provider)
             return .resolved(PersonalizationGenerateModelInput(
                 provider: provider,
                 model: model,

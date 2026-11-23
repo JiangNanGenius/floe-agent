@@ -32,9 +32,11 @@ public enum AutomaticReasoningEffortSupport {
     /// (provider default) behavior with no extra request.
     public static func supportsVariableEffort(
         provider: ProviderProfile,
-        model: ModelProfile
+        model: ModelProfile,
+        usesTools: Bool = false
     ) -> Bool {
-        ReasoningCompatibility.supportsVariableReasoningEffort(provider: provider, model: model)
+        ReasoningCompatibility.supportsVariableReasoningEffort(
+            provider: provider, model: model, usesTools: usesTools)
     }
 
     /// The level whose wire value the endpoint will actually use. Today only
