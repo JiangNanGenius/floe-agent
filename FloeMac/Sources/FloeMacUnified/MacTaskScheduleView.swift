@@ -20,6 +20,15 @@ struct MacTaskScheduleView: View {
     @State private var edit: Edit?
     @State private var deleting: TaskScheduleRecord?
     @State private var linkedIDs: Set<UUID> = []
+    /// Result line for the last successful Skip Next (iPad parity).
+    @State private var skipNotice: String?
+    /// Set when THIS sheet tapped Run Now. Navigation on bind only honors a
+    /// launch this instance initiated, so another open sheet (task center +
+    /// inspector) or a stale bind cannot steal the route.
+    @State private var pendingRunNowScheduleID: UUID?
+    #if FLOE_MAC_HOST_SMOKE
+    static var smokeRunNowFrames: [UUID: CGRect] = [:]
+    #endif
 
     private var visibleRecords: [TaskScheduleRecord] {
         guard let originTaskID else { return center.records }
@@ -50,6 +59,7 @@ struct MacTaskScheduleView: View {
             Divider()
             Form {
                 if let error = center.errorMessage { Text(error).foregroundStyle(.red) }
+                if let skipNotice { Text(skipNotice).foregroundStyle(.secondary) }
                 if let notifications = workspace.taskNotifications { MacNotificationAuthorizationRow(center: notifications) }
                 Section {
                     ForEach(visibleRecords) { record in planRow(record) }
@@ -71,7 +81,8 @@ struct MacTaskScheduleView: View {
                                     if let error = occurrence.errorText { Text(error).font(.caption).foregroundStyle(.secondary) }
                                 }
                                 Spacer()
-                                Text(status(occurrence.state)).foregroundStyle(.secondary)
+                                Text(status(occurrence.state, skippedByUser: occurrence.summary == TaskScheduleOccurrence.userSkippedSummary))
+                                    .foregroundStyle(.secondary)
                                 if let taskID = occurrence.conversationID,
                                    workspace.conversations.contains(where: { $0.id == taskID }) {
                                     Button(MacPermissionsText.t("打开任务", "Open Task")) { dismiss(); openTask(taskID) }
@@ -85,6 +96,14 @@ struct MacTaskScheduleView: View {
         }
         .frame(width: 690, height: 560)
         .task { await center.reload() }
+        .onChange(of: center.lastManualLaunch) { _, launch in
+            // The conversation is persisted before the sidebar list reloads.
+            // Only open the task for a Run Now tap in this sheet.
+            guard let launch, launch.scheduleID == pendingRunNowScheduleID else { return }
+            pendingRunNowScheduleID = nil
+            dismiss()
+            openTask(launch.conversationID)
+        }
         .task(id: center.recent) {
             if let originTaskID { linkedIDs = await center.linkedSchedules(for: originTaskID) }
         }
@@ -114,8 +133,15 @@ struct MacTaskScheduleView: View {
                 }
             }
             Spacer()
-            Button(MacPermissionsText.t("立即运行", "Run Now")) { Task { await center.runNow(record) } }
-                .disabled(center.isBusy || center.running.contains(record.id) || center.launching.contains(record.id))
+            Button(MacPermissionsText.t("立即运行", "Run Now")) {
+                pendingRunNowScheduleID = record.id
+                Task { await center.runNow(record) }
+            }
+            .accessibilityIdentifier("mac.schedule.runNow." + record.id.uuidString)
+            .disabled(center.isBusy || center.running.contains(record.id) || center.launching.contains(record.id))
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { Self.smokeRunNowFrames[record.id] = $0 })
+            #endif
             Menu {
                 Button(MacPermissionsText.t("编辑", "Edit")) { edit = Edit(record: record) }
                     .disabled(center.running.contains(record.id))
@@ -123,6 +149,12 @@ struct MacTaskScheduleView: View {
                     Button(MacPermissionsText.t("暂停", "Pause")) { Task { await center.setEnabled(record, enabled: false) } }
                 } else if record.cadence != .once || record.scheduledAt > Date() {
                     Button(MacPermissionsText.t("恢复", "Resume")) { Task { await center.setEnabled(record, enabled: true) } }
+                }
+                if record.cadence != .afterSuccess {
+                    Button(MacPermissionsText.t("跳过下一次", "Skip Next"), systemImage: "forward.end") {
+                        Task { await skipNext(record) }
+                    }
+                    .disabled(!record.isEnabled)
                 }
                 Button(MacPermissionsText.t("删除", "Delete"), role: .destructive) { deleting = record }
                     .disabled(center.running.contains(record.id))
@@ -134,6 +166,21 @@ struct MacTaskScheduleView: View {
         .accessibilityIdentifier("mac.schedule.plan")
     }
 
+    private func skipNext(_ record: TaskScheduleRecord) async {
+        guard let result = await center.skipNext(record) else { return }
+        if let next = result.nextExpectedAt {
+            skipNotice = MacPermissionsText.t(
+                "已跳过这一次，下次 \(next.formatted(date: .abbreviated, time: .shortened))。",
+                "Skipped this occurrence. Next \(next.formatted(date: .abbreviated, time: .shortened)).")
+        } else if result.planDisabled {
+            skipNotice = MacPermissionsText.t("已跳过这一次，计划已完成并停用。",
+                                              "Skipped this occurrence. The plan is now finished.")
+        } else {
+            skipNotice = MacPermissionsText.t("已跳过这一次，计划继续。",
+                                              "Skipped this occurrence; the plan continues.")
+        }
+    }
+
     private func upstreamStatus(_ record: TaskScheduleRecord) -> String {
         if let run = center.recent.first(where: { $0.scheduleID == record.id && $0.isUpstreamArmed }) {
             return status(run.state)
@@ -141,14 +188,14 @@ struct MacTaskScheduleView: View {
         return MacPermissionsText.t("所选运行成功后执行", "Runs after the selected run succeeds")
     }
 
-    private func status(_ value: TaskScheduleOccurrenceState) -> String {
+    private func status(_ value: TaskScheduleOccurrenceState, skippedByUser: Bool = false) -> String {
         switch value {
         case .pending, .claimed: MacPermissionsText.t("等待启动", "Waiting to Start")
         case .running: MacPermissionsText.t("运行中", "Running")
         case .completed: MacPermissionsText.t("已完成", "Completed")
         case .failed: MacPermissionsText.t("失败", "Failed")
         case .cancelled: MacPermissionsText.t("已停止", "Stopped")
-        case .skipped: MacPermissionsText.t("已错过", "Missed")
+        case .skipped: skippedByUser ? MacPermissionsText.t("已跳过", "Skipped") : MacPermissionsText.t("已错过", "Missed")
         case .interrupted: MacPermissionsText.t("待核对", "Needs Review")
         }
     }

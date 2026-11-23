@@ -60,9 +60,10 @@ struct MacWorkspaceTrashRecord: Codable, Identifiable, Sendable {
         workspace = try FileID(root)
         parent = try FileID(original.directory)
         originalItem = try FileID(url)
-        guard parent.statID == original.directoryIdentity, originalItem.statID == item.identity else {
+        guard parent.statID == original.directoryIdentity else {
             throw HistoryError.unavailable
         }
+        guard originalItem.statID == item.identity else { throw CocoaError(.fileWriteFileExists) }
         subdirectory = original.directory.pathComponents.dropFirst(root.pathComponents.count).joined(separator: "/")
         // On a fresh external volume only trashItem can initialize the real
         // per-user Trash. An absent bin must not block that first system move.

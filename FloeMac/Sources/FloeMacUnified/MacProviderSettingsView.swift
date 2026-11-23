@@ -399,8 +399,8 @@ struct MacProviderSettingsView: View {
                 }
                 SecureField(MacProviderText.t("API 密钥", "API key"), text: $draft.key)
                 Text(MacProviderText.t(
-                    "密钥只保存在本机钥匙串，不会同步到其他设备。",
-                    "The key stays in this Mac's Keychain and never syncs to other devices."))
+                    "密钥保存在钥匙串。可在 iCloud 配置同步中单独开启密钥同步。",
+                    "The key is stored in Keychain. You can enable key sync separately in iCloud Configuration Sync."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

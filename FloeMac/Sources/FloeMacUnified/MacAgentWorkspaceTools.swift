@@ -52,6 +52,7 @@ import CryptoKit
 import Darwin
 import UniformTypeIdentifiers
 import AppKit
+import ImageIO
 import PDFKit
 import Vision
 import FloeAgentRuntime
@@ -107,6 +108,9 @@ public enum MacAgentWorkspaceToolsError: Error, LocalizedError {
     case documentTextUnavailable(String)
     /// Payload or file exceeds the bounded size cap.
     case tooLarge(limit: Int)
+    /// Image capture bytes failed verification (type sniff, declared-MIME
+    /// match, decodability or pixel geometry).
+    case invalidImage(String)
     /// A single-file unified diff was malformed, multi-file, or did not match
     /// the current revision (mapped from the shared text-mutation contract).
     case invalidPatch(String)
@@ -149,6 +153,8 @@ public enum MacAgentWorkspaceToolsError: Error, LocalizedError {
             "the document text is unavailable: \(reason)"
         case .tooLarge(let limit):
             "the payload exceeds the \(limit)-byte limit"
+        case .invalidImage(let reason):
+            "the image capture failed verification: \(reason)"
         case .invalidPatch(let reason):
             "Invalid patch: \(reason)"
         }
@@ -959,6 +965,219 @@ enum MacAgentWorkspacePinSupport {
             throw error
         }
         Darwin.close(descriptor)
+    }
+}
+
+// MARK: - Verified workspace image evidence
+
+/// One bounded, verified image capture published into the run workspace as a
+/// digest-addressed `ToolArtifactReference`, so desktop/browser/shell
+/// screenshots reach the shared multimodal evidence chain
+/// (`AgentRuntime` attaches workspace-tool image artifacts via
+/// `VerifiedToolImageArtifact.loadWorkspace` + `ProviderImageEvidencePolicy`).
+///
+/// Verification is identical for every producer:
+/// - bytes are non-empty and within the stored-image cap;
+/// - the magic bytes sniff to a canonical provider image type
+///   (PNG/JPEG/WebP/GIF) that matches the declared MIME when one is given;
+/// - the bytes decode through ImageIO with sane pixel geometry;
+/// - publication is descriptor-pinned (`O_NOFOLLOW` at every step,
+///   device/inode checks), exclusive (an existing leaf is never replaced),
+///   staged+fsynced, and digest-receipted — a symlinked or swapped path can
+///   never redirect the artifact outside the workspace.
+enum MacWorkspaceImageEvidence {
+    static let maximumCaptureBytes = VerifiedToolImageArtifact.maximumStoredImageBytes
+    static let maximumCaptureSide = 16_384
+    static let maximumCapturePixels = 33_554_432
+
+    struct Capture: Sendable {
+        let bytes: Data
+        let mime: String
+        let width: Int
+        let height: Int
+
+        fileprivate init(bytes: Data, mime: String, width: Int, height: Int) {
+            self.bytes = bytes
+            self.mime = mime
+            self.width = width
+            self.height = height
+        }
+    }
+
+    private struct Geometry: Sendable { var width: Int, height: Int }
+
+    private static func geometry(in bytes: Data) throws -> Geometry {
+        guard let source = CGImageSourceCreateWithData(
+            bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary
+        ) else {
+            throw MacAgentWorkspaceToolsError.invalidImage("the capture is not a decodable image")
+        }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              (1...maximumCaptureSide).contains(width), (1...maximumCaptureSide).contains(height),
+              width * height <= maximumCapturePixels else {
+            throw MacAgentWorkspaceToolsError.invalidImage("the capture has unsupported pixel dimensions")
+        }
+        // Metadata alone is not a decode: prove the container is not corrupt
+        // with one bounded thumbnail rasterization before admitting bytes.
+        let decodeOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 64,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
+              CGImageSourceCreateThumbnailAtIndex(source, 0, decodeOptions as CFDictionary) != nil else {
+            throw MacAgentWorkspaceToolsError.invalidImage("the capture could not be decoded (corrupt image data)")
+        }
+        return Geometry(width: width, height: height)
+    }
+
+    /// Verifies raw capture bytes before anything touches the workspace.
+    static func verifiedCapture(_ bytes: Data, declaredMime: String? = nil) throws -> Capture {
+        guard !bytes.isEmpty, bytes.count <= maximumCaptureBytes else {
+            throw MacAgentWorkspaceToolsError.tooLarge(limit: maximumCaptureBytes)
+        }
+        guard let sniffed = ProviderImageEvidencePolicy.sniffedMIME(bytes) else {
+            throw MacAgentWorkspaceToolsError.invalidImage("the capture is not a PNG, JPEG, WebP or GIF image")
+        }
+        if let declared = declaredMime?.trimmingCharacters(in: .whitespaces).lowercased(),
+           !declared.isEmpty,
+           ProviderImageEvidencePolicy.canonicalMIMEType(declared) != sniffed {
+            throw MacAgentWorkspaceToolsError.invalidImage("the capture content does not match its declared image type")
+        }
+        let size = try geometry(in: bytes)
+        return Capture(bytes: bytes, mime: sniffed, width: size.width, height: size.height)
+    }
+
+    /// Publishes one tool-owned capture as a NEW workspace file
+    /// (`<basename>.<ext>`). Fails closed when the leaf exists in any form.
+    static func publish(
+        root: MacAgentWorkspaceRoot,
+        context: ToolContext,
+        capture: Capture,
+        basename: String
+    ) throws -> ToolArtifactReference {
+        let `extension` = ProviderImageEvidencePolicy.fileExtension(forMIME: capture.mime) ?? "png"
+        let relative = basename + "." + `extension`
+        try context.authorizeWorkspacePath(relative)
+        guard let physical = root.physicalPath else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid("the workspace path is unavailable")
+        }
+        let receipt = try MacAgentWorkspacePinSupport.withPinnedTarget(
+            physicalRoot: physical, relative: relative, root: root
+        ) { pin in
+            let leaf = MacAgentWorkspacePinSupport.leafStatus(pin)
+            guard leaf.missing else { throw MacAgentWorkspaceToolsError.targetAlreadyExists(relative) }
+            return try MacAgentWorkspaceTextMutation.publishNewFile(
+                pin: pin, data: capture.bytes, displayPath: relative, cancellation: context.cancellation)
+        }
+        return ToolArtifactReference(
+            id: UUID(), relativePath: relative, mimeType: capture.mime,
+            byteCount: receipt.byteCount, sha256: receipt.sha256)
+    }
+
+    /// Identity of a declared output path sampled before the producing
+    /// command runs. `missing` covers every not-there-yet shape (no leaf, no
+    /// parent, or an unpinnable parent): the post-run admission then requires
+    /// the leaf to exist and, when it existed before the spawn, to carry a
+    /// changed pinned revision — device/inode, size, or subsecond
+    /// mtime/ctime. An unchanged same-second file is never attached.
+    struct DeclaredTargetSnapshot: Sendable {
+        var missing: Bool
+        var device: UInt64
+        var inode: UInt64
+        var size: Int64
+        var mtimeSeconds: Int
+        var mtimeNanoseconds: Int
+        var ctimeSeconds: Int
+        var ctimeNanoseconds: Int
+
+        static let absent = DeclaredTargetSnapshot(
+            missing: true, device: 0, inode: 0, size: 0,
+            mtimeSeconds: 0, mtimeNanoseconds: 0, ctimeSeconds: 0, ctimeNanoseconds: 0)
+
+        func changedIdentity(from info: stat) -> Bool {
+            guard !missing else { return true }
+            return device != UInt64(info.st_dev) || inode != UInt64(info.st_ino)
+                || size != Int64(info.st_size)
+                || mtimeSeconds != Int(info.st_mtimespec.tv_sec)
+                || mtimeNanoseconds != Int(info.st_mtimespec.tv_nsec)
+                || ctimeSeconds != Int(info.st_ctimespec.tv_sec)
+                || ctimeNanoseconds != Int(info.st_ctimespec.tv_nsec)
+        }
+    }
+
+    /// Pins the declared output path and records its pre-spawn revision.
+    /// Any resolution failure (missing leaf or parent) records `absent`.
+    static func snapshotDeclaredTarget(
+        root: MacAgentWorkspaceRoot,
+        relative: String
+    ) -> DeclaredTargetSnapshot {
+        guard let physical = root.physicalPath else { return .absent }
+        return (try? MacAgentWorkspacePinSupport.withPinnedTarget(
+            physicalRoot: physical, relative: relative, root: root
+        ) { pin -> DeclaredTargetSnapshot in
+            let leaf = MacAgentWorkspacePinSupport.leafStatus(pin)
+            guard leaf.exists, !leaf.symlink else { return .absent }
+            return DeclaredTargetSnapshot(
+                missing: false,
+                device: UInt64(leaf.info.st_dev), inode: UInt64(leaf.info.st_ino),
+                size: Int64(leaf.info.st_size),
+                mtimeSeconds: Int(leaf.info.st_mtimespec.tv_sec),
+                mtimeNanoseconds: Int(leaf.info.st_mtimespec.tv_nsec),
+                ctimeSeconds: Int(leaf.info.st_ctimespec.tv_sec),
+                ctimeNanoseconds: Int(leaf.info.st_ctimespec.tv_nsec))
+        }) ?? .absent
+    }
+
+    /// Verifies an existing workspace-relative file a tool call declared as
+    /// its image output (the shell `captureImagePath` lane) against the
+    /// pre-spawn snapshot. The leaf is pinned and re-verified byte-for-byte;
+    /// an unchanged or merely retouched revision is rejected. The returned
+    /// capture carries the exact admitted bytes — callers publish them to a
+    /// unique evidence file so later overwrites of the declared path can
+    /// never change an already published receipt.
+    static func verifyDeclaredFile(
+        root: MacAgentWorkspaceRoot,
+        relative: String,
+        prior: DeclaredTargetSnapshot
+    ) throws -> Capture {
+        guard let physical = root.physicalPath else {
+            throw MacAgentWorkspaceToolsError.workspaceRootInvalid("the workspace path is unavailable")
+        }
+        return try MacAgentWorkspacePinSupport.withPinnedTarget(
+            physicalRoot: physical, relative: relative, root: root
+        ) { pin in
+            let leaf = MacAgentWorkspacePinSupport.leafStatus(pin)
+            guard leaf.exists, !leaf.symlink, leaf.info.st_mode & S_IFMT == S_IFREG,
+                  leaf.info.st_nlink == 1,
+                  leaf.info.st_mode & (S_ISUID | S_ISGID) == 0 else {
+                throw MacAgentWorkspaceToolsError.pathEscapesWorkspace(relative)
+            }
+            guard prior.missing || prior.changedIdentity(from: leaf.info) else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(
+                pin, physicalRoot: physical, displayPath: relative)
+            defer { Darwin.close(descriptor) }
+            let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            guard let bytes = try file.read(upToCount: maximumCaptureBytes + 1),
+                  bytes.count <= maximumCaptureBytes else {
+                throw MacAgentWorkspaceToolsError.tooLarge(limit: maximumCaptureBytes)
+            }
+            var after = stat(), named = stat()
+            guard fstat(descriptor, &after) == 0,
+                  after.st_size == leaf.info.st_size,
+                  after.st_mtimespec.tv_sec == leaf.info.st_mtimespec.tv_sec,
+                  after.st_mtimespec.tv_nsec == leaf.info.st_mtimespec.tv_nsec,
+                  fstatat(pin.parentFileDescriptor, pin.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  named.st_dev == leaf.info.st_dev, named.st_ino == leaf.info.st_ino else {
+                throw MacAgentWorkspaceToolsError.revisionChanged
+            }
+            return try verifiedCapture(bytes)
+        }
     }
 }
 
@@ -2856,7 +3075,8 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
                 : ((output.exitStatus ?? 0) == 0 ? .ok : .failed)
             // Match the runtime's page-size treatment for bounded JSON pages.
             let longReads = [MacAgentWorkspaceTools.readFileToolName, MacAgentWorkspaceTools.readDocumentToolName, MacPublicWebFetch.name]
-            let visionReads: Set<String> = [MacAgentWorkspaceOCRTool.name, MacAgentWorkspaceBarcodeScanTool.name]
+            let visionReads: Set<String> = Set([MacAgentWorkspaceOCRTool.name, MacAgentWorkspaceBarcodeScanTool.name])
+                .union(MacTaskBrowserTools.visionEvidenceToolNames)
             let summaryCap = FloeMacConversationTools.readToolNames.contains(call.toolName) ? ConversationEnvelope.maximumEnvelopeCharacters
                 : call.toolName == MacTaskImageModelsTool.name ? 262_144
                 : longReads.contains(call.toolName) || visionReads.contains(call.toolName) ? 196_608

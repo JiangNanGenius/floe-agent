@@ -44,7 +44,15 @@ let canvasWindow = NSWindow(contentRect: NSRect(x: 400, y: 40, width: 340, heigh
 canvasWindow.title = "Floe Background Drag"
 let dragSurface = DragSurfaceView(frame: NSRect(x: 0, y: 0, width: 340, height: 220))
 dragSurface.wantsLayer = true
-dragSurface.layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.25).cgColor
+if CommandLine.arguments.contains("--vision-colors") {
+    dragSurface.layer?.backgroundColor = NSColor(srgbRed: 1, green: 0, blue: 1, alpha: 1).cgColor
+    let marker = CALayer()
+    marker.frame = NSRect(x: 170, y: 0, width: 170, height: 220)
+    marker.backgroundColor = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1).cgColor
+    dragSurface.layer?.addSublayer(marker)
+} else {
+    dragSurface.layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.25).cgColor
+}
 canvasWindow.contentView = dragSurface
 panel.contentView?.addSubview(field)
 panel.contentView?.addSubview(button)

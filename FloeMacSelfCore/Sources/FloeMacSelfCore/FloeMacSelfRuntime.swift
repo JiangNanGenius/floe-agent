@@ -1037,9 +1037,11 @@ public actor FloeMacSelfRuntime {
             let describeToolImages: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])?
             if let vision = routes.vision {
                 let reasoning = routes.visionReasoning
-                describeToolImages = { images, _ in
+                let primarySecret = resolvedProvider.credentials.apiKey
+                describeToolImages = { images, focus in
                     guard let description = try? await FloeMacSelfAuxiliaryVision.describe(
-                        images, using: vision, reasoningEnabled: reasoning) else { return [] }
+                        images, using: vision, reasoningEnabled: reasoning,
+                        focus: SecretRedactor.redact(focus, secret: primarySecret)) else { return [] }
                     return [ConversationMessage(role: "user", content: description)]
                 }
             } else {
@@ -1071,7 +1073,7 @@ public actor FloeMacSelfRuntime {
                 },
                 workspaceArtifactTools: availableToolNames.intersection([
                     "image.generate", "image.inspect", "video.generate", "video.status", "video.cancel",
-                    "browser.download", "mac.desktop.control"
+                    "browser.download", "browser.screenshot", "mac.desktop.control", "exec.shell"
                 ]),
                 conversationHistory: conversationHistory,
                 currentUserImages: needsVision ? [] : currentUserImages,

@@ -49,14 +49,22 @@ final class MacTaskNotifications: NSObject, ObservableObject, UNUserNotification
         await updateAuthorization()
     }
 
-    func post(_ event: Event, taskID: UUID, key: String) {
+    func post(_ event: Event, taskID: UUID, key: String, title: String? = nil) {
         guard isInstalled else { return }
         Task {
             await updateAuthorization()
             guard authorization.canPresentAlert else { return }
             let content = UNMutableNotificationContent()
             content.title = event.title
-            content.body = MacPermissionsText.t("打开 Floe 查看任务。", "Open Floe to view the task.")
+            // iPad parity: the alert names the task so a terminal/approval
+            // notification is actionable from the banner alone. A missing
+            // title (e.g. a just-created conversation not yet reloaded) keeps
+            // the honest generic body instead of guessing.
+            if let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+                content.body = trimmed
+            } else {
+                content.body = MacPermissionsText.t("打开 Floe 查看任务。", "Open Floe to view the task.")
+            }
             content.threadIdentifier = taskID.uuidString
             content.userInfo = ["taskID": taskID.uuidString]
             content.sound = .default

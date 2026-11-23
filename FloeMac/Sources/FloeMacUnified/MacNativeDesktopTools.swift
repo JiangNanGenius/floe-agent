@@ -195,31 +195,14 @@ struct MacDesktopControl: AgentTool, MacAgentWorkspaceExecutable {
         return .init(digesting: reply.text, maximumSummaryCharacters: 24_000)
     }
 
+    /// Verifies the backend capture (size, magic bytes, declared-MIME match,
+    /// decodable pixel geometry) and publishes it as a new pinned workspace
+    /// artifact so the multimodal evidence chain can deliver it to the model.
     private func save(_ bytes: Data, mime: String, context: ToolContext) throws -> ToolArtifactReference {
-        let id = UUID()
-        let name = "Window-" + id.uuidString + (mime == "image/png" ? ".png" : ".jpg")
-        try context.authorizeWorkspacePath(name)
-        guard let physical = root.physicalPath else { throw MacDesktopError.invalidTarget }
-        try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physical, relative: name, root: root) { pin in
-            let parent = pin.parentFileDescriptor
-            let stage = ".floe-window-" + id.uuidString
-            let fd = openat(parent, stage, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-            guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
-            defer { close(fd); unlinkat(parent, stage, 0) }
-            try bytes.withUnsafeBytes { raw in
-                guard let base = raw.baseAddress else { throw CocoaError(.fileWriteUnknown) }
-                var offset = 0
-                while offset < raw.count {
-                    try context.cancellation.throwIfCancelled()
-                    let count = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
-                    if count < 0 && errno == EINTR { continue }
-                    guard count > 0 else { throw CocoaError(.fileWriteUnknown) }
-                    offset += count
-                }
-            }
-            try context.cancellation.throwIfCancelled()
-            guard fsync(fd) == 0, linkat(parent, stage, parent, pin.name, 0) == 0 else { throw CocoaError(.fileWriteUnknown) }
-        }
-        return .init(id: id, relativePath: name, mimeType: mime, byteCount: bytes.count, sha256: FloeDigest.sha256Hex(bytes))
+        let capture = try MacWorkspaceImageEvidence.verifiedCapture(bytes, declaredMime: mime)
+        return try MacWorkspaceImageEvidence.publish(
+            root: root, context: context, capture: capture,
+            basename: "Window-" + UUID().uuidString
+        )
     }
 }

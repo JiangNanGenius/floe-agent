@@ -39,6 +39,11 @@ public struct VisualTextRegion: Sendable, Codable, Hashable {
 }
 
 public enum VisualTextRecognizer {
+    public enum RecognitionLevel: Sendable {
+        case fast
+        case accurate
+    }
+
     /// Recognizes visible text into upper-left-origin screenshot pixel bounds.
     /// Results are reading-order sorted, bounded, and assigned per-frame refs.
     public static func recognize(
@@ -46,13 +51,14 @@ public enum VisualTextRecognizer {
         pixelWidth: Int,
         pixelHeight: Int,
         referencePrefix: String = "text",
-        limit: Int = 80
+        limit: Int = 80,
+        level: RecognitionLevel = .accurate
     ) throws -> [VisualTextRegion] {
         guard pixelWidth > 0, pixelHeight > 0, !imageData.isEmpty, limit > 0 else { return [] }
 #if canImport(Vision)
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
+        request.recognitionLevel = level == .fast ? .fast : .accurate
+        request.usesLanguageCorrection = level == .accurate
         request.minimumTextHeight = 0.008
         // A VNRecognizeTextRequest defaults to an English-only recognition
         // language list, which silently skips fully rendered CJK lines: the
@@ -61,9 +67,8 @@ public enum VisualTextRecognizer {
         // per-line automatic language detection the shipped document.pdf.
         // convert path already uses (PDFDocumentOperations), so English
         // transcription stays byte-stable while Chinese lines route to the
-        // Chinese model. Intersect with the languages the device reports so
-        // an absent Chinese model fails closed to the previous behavior
-        // instead of breaking every screenshot.
+        // Chinese model. Intersect with the languages Vision supports for
+        // this level. The fast level may only support the English fallback.
         let desiredLanguages = ["zh-Hans", "zh-Hant", "en-US"]
         if let supported = try? request.supportedRecognitionLanguages() {
             let kept = desiredLanguages.filter { supported.contains($0) }

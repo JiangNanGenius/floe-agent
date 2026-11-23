@@ -3009,7 +3009,9 @@ final class HostAgentWorkspace: ObservableObject {
                     await taskSchedules.bindLaunched(occurrence: scheduled.occurrence, runID: handle.identity.runID,
                                                      conversationID: taskID, store: scheduled.store)
                     if taskPolicy.notificationPolicy.shouldNotifyStages {
-                        taskNotifications?.post(.started, taskID: taskID, key: handle.identity.runID.uuidString)
+                        let scheduleTitle = taskSchedules.records.first(where: { $0.id == scheduled.schedule.id })?.title
+                        taskNotifications?.post(.started, taskID: taskID, key: handle.identity.runID.uuidString,
+                                                title: scheduleTitle ?? notificationTaskTitle(taskID))
                     }
                 }
                 if let queued, let store = try? await runtime.runningInputStore() {
@@ -3095,7 +3097,8 @@ final class HostAgentWorkspace: ObservableObject {
                         await refreshTranscriptEvents(runID: handle.identity.runID, conversationID: taskID, runtime: runtime)
                     case .harness(.approvalRequested):
                         if liveRuns[taskID]?.notificationPolicy.shouldNotifyApproval == true, let approval = liveRuns[taskID]?.approval {
-                            taskNotifications?.post(.approval, taskID: taskID, key: "\(handle.identity.runID)-\(approval.callID)")
+                            taskNotifications?.post(.approval, taskID: taskID, key: "\(handle.identity.runID)-\(approval.callID)",
+                                                    title: notificationTaskTitle(taskID))
                         }
                         await refreshTranscriptEvents(runID: handle.identity.runID, conversationID: taskID, runtime: runtime)
                     case .harness(.approvalResolved):
@@ -3276,15 +3279,22 @@ final class HostAgentWorkspace: ObservableObject {
     private func notifyTerminal(_ receipt: FloeMacSelfTerminalReceipt?, taskID: UUID) {
         guard let receipt, receipt.confirmed,
               let policy = liveRuns[taskID]?.notificationPolicy else { return }
+        let title = notificationTaskTitle(taskID)
         switch receipt.outcome {
         case .completed:
-            if policy.shouldNotifyTerminal(succeeded: true) { taskNotifications?.post(.completed, taskID: taskID, key: receipt.runID.uuidString) }
+            if policy.shouldNotifyTerminal(succeeded: true) { taskNotifications?.post(.completed, taskID: taskID, key: receipt.runID.uuidString, title: title) }
         case .failed, .blocked, .interrupted, .abortedBeforeDispatch:
-            if policy.shouldNotifyTerminal(succeeded: false) { taskNotifications?.post(.failed, taskID: taskID, key: receipt.runID.uuidString) }
+            if policy.shouldNotifyTerminal(succeeded: false) { taskNotifications?.post(.failed, taskID: taskID, key: receipt.runID.uuidString, title: title) }
         case .cancelled:
-            if policy.shouldNotifyCancellation { taskNotifications?.post(.cancelled, taskID: taskID, key: receipt.runID.uuidString) }
+            if policy.shouldNotifyCancellation { taskNotifications?.post(.cancelled, taskID: taskID, key: receipt.runID.uuidString, title: title) }
         case .paused, .unknown: break
         }
+    }
+
+    /// Display title for a task notification body; nil keeps the generic
+    /// honest body in `MacTaskNotifications`.
+    private func notificationTaskTitle(_ taskID: UUID) -> String? {
+        conversations.first(where: { $0.id == taskID }).map(\.title)
     }
 
     private func loadProviderFailure(_ run: RunRecord, runtime: FloeMacSelfRuntime, selection: UUID) async {

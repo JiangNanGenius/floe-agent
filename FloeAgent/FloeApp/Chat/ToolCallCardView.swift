@@ -24,6 +24,57 @@ import AppKit
 typealias ThreadToolCardImage = NSImage
 #endif
 
+#if FLOE_UNIFIED_MAC
+import ImageIO
+
+/// Task ownership is supplied by the Mac workbench. A tool row must match the
+/// runtime's saved workspace receipt before the image may resolve through it.
+struct MacToolImageWorkspace: Sendable, Hashable {
+    let conversationID: UUID
+    let workspace: WorkspaceRecord
+    let privateTaskRootBase: URL
+
+    func load(_ artifact: ToolArtifactReference) -> VerifiedToolImageArtifact? {
+        guard artifact.byteCount > 0, artifact.byteCount <= VerifiedToolImageArtifact.maximumStoredImageBytes else { return nil }
+        var verified: VerifiedToolImageArtifact?
+        try? MacAgentWorkspaceTools.withWorkspaceFile(
+            workspace, privateTaskRootBase: privateTaskRootBase, path: artifact.relativePath, artifact: artifact
+        ) { url in
+            let root = artifact.relativePath.split(separator: "/").reduce(url) { parent, _ in
+                parent.deletingLastPathComponent()
+            }
+            verified = try? VerifiedToolImageArtifact.loadWorkspace(artifact, root: root)
+        }
+        return verified
+    }
+
+    func thumbnail(_ artifact: ToolArtifactReference) -> (image: CGImage, url: URL)? {
+        guard let retained = load(artifact),
+              let source = CGImageSourceCreateWithData(retained.data as CFData, [
+                  kCGImageSourceShouldCache: false
+              ] as CFDictionary),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceShouldCacheImmediately: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 1600
+              ] as CFDictionary) else { return nil }
+        return (image, retained.fileURL)
+    }
+}
+
+private struct MacToolImageWorkspaceKey: EnvironmentKey {
+    static let defaultValue: MacToolImageWorkspace? = nil
+}
+
+extension EnvironmentValues {
+    var macToolImageWorkspace: MacToolImageWorkspace? {
+        get { self[MacToolImageWorkspaceKey.self] }
+        set { self[MacToolImageWorkspaceKey.self] = newValue }
+    }
+}
+#endif
+
 /// Provider call IDs are unique only within their owning run. A legacy row
 /// without a call ID uses its durable event ID instead of sharing an empty key.
 struct ToolCallDisclosureKey: Hashable {
@@ -83,6 +134,9 @@ struct ToolCallCardView: View {
     var gitHubSource: GitHubSourceReference? = nil
     #endif
     var diagnosticProgress: [TaskDiagnosticProgress] = []
+    #if FLOE_UNIFIED_MAC
+    var workspaceImages: MacToolImageWorkspace? = nil
+    #endif
 
     /// The thread supplies its run/call-scoped choice; other hosts retain a
     /// local choice. Nil means use the first-status default, never a command
@@ -119,6 +173,9 @@ struct ToolCallCardView: View {
             #endif
             if !imageArtifacts.isEmpty {
                 ArtifactImageGallery(artifacts: imageArtifacts)
+                    #if FLOE_UNIFIED_MAC
+                    .environment(\.macToolImageWorkspace, workspaceImages)
+                    #endif
             }
             // File changes remain visible even when technical tool details are folded.
             // The disposition helper (NativeFileDiff.swift) is portable, but the
@@ -368,10 +425,28 @@ struct ArtifactImageView: View {
     let artifact: ToolArtifactReference
     let index: Int
     var preverified: VerifiedChatInlineArtifact? = nil
+    #if FLOE_UNIFIED_MAC
+    @Environment(\.macToolImageWorkspace) private var workspaceImages
+    #endif
     @State private var image: ThreadToolCardImage?
     @State private var fileURL: URL?
     @State private var failed = false
     @State private var showingFullScreen = false
+
+    private struct ImageLoadIdentity: Hashable {
+        let artifact: ToolArtifactReference
+        #if FLOE_UNIFIED_MAC
+        let workspace: MacToolImageWorkspace?
+        #endif
+    }
+
+    private var imageLoadIdentity: ImageLoadIdentity {
+        #if FLOE_UNIFIED_MAC
+        .init(artifact: artifact, workspace: workspaceImages)
+        #else
+        .init(artifact: artifact)
+        #endif
+    }
 
     /// Platform decode of verified image bytes.
     private static func decode(_ data: Data) -> ThreadToolCardImage? {
@@ -421,7 +496,7 @@ struct ArtifactImageView: View {
                     .controlSize(.small)
             }
         }
-        .task(id: artifact.id) { await loadVerifiedImage() }
+        .task(id: imageLoadIdentity) { await loadVerifiedImage() }
         #if canImport(UIKit)
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let image, let fileURL {
@@ -435,7 +510,7 @@ struct ArtifactImageView: View {
             }
         }
         #endif
-        .onChange(of: artifact.id) { _, _ in showingFullScreen = false }
+        .onChange(of: imageLoadIdentity) { _, _ in showingFullScreen = false }
     }
 
     private var imageTitle: String {
@@ -454,6 +529,16 @@ struct ArtifactImageView: View {
             return
         }
         let reference = artifact
+        #if FLOE_UNIFIED_MAC
+        if let workspaceImages {
+            let preview = await Task.detached(priority: .utility) { workspaceImages.thumbnail(reference) }.value
+            guard !Task.isCancelled else { return }
+            guard let preview else { failed = true; return }
+            image = NSImage(cgImage: preview.image, size: .zero)
+            fileURL = preview.url
+            return
+        }
+        #endif
         let loaded = await Task.detached(priority: .userInitiated) {
             guard let support = FileManager.default.urls(for: .applicationSupportDirectory,
                                                         in: .userDomainMask).first else { return nil as VerifiedToolImageArtifact? }

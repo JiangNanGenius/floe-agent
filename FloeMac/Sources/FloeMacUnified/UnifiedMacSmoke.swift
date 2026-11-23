@@ -944,6 +944,7 @@ final class UnifiedMacSmoke {
         let auxiliaryOnly = CommandLine.arguments.contains("--auxiliary-vision")
         let captureWindow = CommandLine.arguments.contains("--fixture-window-capture")
         let documentTools = CommandLine.arguments.contains("--visual-document-tools")
+        let visualPipeline = CommandLine.arguments.contains("--visual-capture-pipeline")
         guard let agent = await readyFixtureWorkbench(model),
               agent.addProvider(name: "Vision Fixture", endpoint: endpoint.absoluteString,
                                 protocolKind: .openAIChatCompletions, modelID: "vision-primary-fixture",
@@ -978,14 +979,20 @@ final class UnifiedMacSmoke {
             do { try writeVisualToolFixtures(in: folder) }
             catch { finish(["visualFixture": false]); return }
         }
+        if visualPipeline { agent.computerUseBackend = .floe }
         agent.verifyAgentAnswers = false
-        guard agent.send("Compare the supplied image and the project diagram.", workspaceID: project.id, mode: .agent)
+        let prompt = visualPipeline
+            ? "Find the two colored markers in the fixture window and browser viewport."
+            : "Compare the supplied image and the project diagram."
+        guard agent.send(prompt, workspaceID: project.id, mode: .agent)
         else { finish(["sent": false]); return }
         var approvals = Set<String>()
-        let deadline = ContinuousClock.now + .seconds(32)
+        var reviewable: Set<String> = ["image.inspect", "image.ocr", "image.barcode.scan", "mac.desktop.control"]
+        if visualPipeline { reviewable.formUnion(["exec.shell", "browser.navigate", "browser.screenshot", "browser.profileBinding"]) }
+        let deadline = ContinuousClock.now + .seconds(visualPipeline ? 70 : 32)
         while agent.isSending, ContinuousClock.now < deadline {
             if let card = agent.pendingApproval,
-               ["image.inspect", "image.ocr", "image.barcode.scan", "mac.desktop.control"].contains(card.toolName),
+               reviewable.contains(card.toolName),
                !approvals.contains(card.callID), clickApproval(in: agent, allow: true, screenshot: "visual-approval.png") {
                 approvals.insert(card.callID)
             }
@@ -997,11 +1004,29 @@ final class UnifiedMacSmoke {
             while agent.isSending, ContinuousClock.now < stopped { try? await Task.sleep(for: .milliseconds(50)) }
         }
         if let id = agent.selectedID, !agent.isSending { await agent.select(id) }
+        var visualReceipts: [String: [String]] = [:]
+        if visualPipeline, let conversationID = agent.selectedID {
+            let scope = MacToolImageWorkspace(conversationID: conversationID, workspace: project,
+                                              privateTaskRootBase: agent.personalTaskLeaseBase)
+            for event in agent.transcriptEventsByRun.values.joined() where event.kind == .toolResult {
+                let payload = ThreadEventPayload.decode(event.payloadJSON)
+                guard payload["dispatched"] == "true", payload["status"] == "ok",
+                      payload["workspaceID"].flatMap(UUID.init(uuidString:)) == project.id,
+                      let tool = payload["tool"], let callID = payload["id"],
+                      let json = payload["artifactRefsJSON"],
+                      let references = try? JSONDecoder().decode([ToolArtifactReference].self, from: Data(json.utf8))
+                else { continue }
+                visualReceipts[tool + "/" + callID] = references.compactMap { reference in
+                    scope.thumbnail(reference).map { _ in reference.sha256 }
+                }
+            }
+        }
         finish(["completed": agent.messages.contains { $0.role == "assistant" && $0.content.contains("Vision route verified.") },
                 "retainedAttachment": agent.messages.contains { $0.role == "user" && $0.parts.contains { $0.attachmentID == staged.id } },
                 "attachedDigest": FloeDigest.sha256Hex(attached), "diagramDigest": FloeDigest.sha256Hex(diagram),
                 "capturedWindow": !captureWindow || ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
                     .contains { $0.hasPrefix("Window-") },
+                "visualReceipts": visualReceipts,
                 "diagnostics": agent.smokeRunDiagnostics])
     }
 
@@ -1238,6 +1263,22 @@ final class UnifiedMacSmoke {
         let paused = center.records.first(where: { $0.id == repeating.id })?.isEnabled == false
         await center.setEnabled(repeating, enabled: true)
         let rearmed = center.records.first(where: { $0.id == repeating.id })?.nextExpectedAt != nil
+        let nextBeforeSkip = center.records.first(where: { $0.id == repeating.id })?.nextExpectedAt
+        let repeatedSkip = await center.skipNext(repeating)
+        let recurringSkipped: Bool
+        if let nextBeforeSkip, let repeatedSkip, let nextAfterSkip = repeatedSkip.nextExpectedAt {
+            recurringSkipped = nextAfterSkip > nextBeforeSkip && center.recent.contains {
+                $0.id == repeatedSkip.skippedOccurrenceID && $0.state == .skipped && $0.runID == nil
+            }
+        } else {
+            recurringSkipped = false
+        }
+        let futureOnce = TaskScheduleRecord(title: "Fixture future occurrence", prompt: "This run should be skipped.",
+            cadence: .once, scheduledAt: Date().addingTimeInterval(1800))
+        let futureStored = await center.save(futureOnce)
+        let onceSkipped = await center.skipNext(futureOnce)
+        let disabledAfterSkip = futureStored && onceSkipped?.planDisabled == true
+            && center.records.first(where: { $0.id == futureOnce.id })?.isEnabled == false
         let missedStored = await center.save(missed)
         let deadline = ContinuousClock.now + .seconds(13)
         while ContinuousClock.now < deadline && (!center.recent.contains(where: { $0.scheduleID == once.id && $0.state == .completed })
@@ -1308,7 +1349,9 @@ final class UnifiedMacSmoke {
             }
         }
         var scheduleSheet = false
+        var manualScheduleRoute = false
         MacWorkspaceTaskCenter.smokeSchedulesFrame = nil
+        MacTaskScheduleView.smokeRunNowFrames = [:]
         if clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame, screenshot: nil) {
             let controls = ContinuousClock.now + .seconds(3)
             while MacWorkspaceTaskCenter.smokeSchedulesFrame == nil && ContinuousClock.now < controls {
@@ -1322,7 +1365,29 @@ final class UnifiedMacSmoke {
                 }
                 if let sheet = window.attachedSheet, let content = sheet.contentView {
                     capture(content, extension: "scheduled-tasks-sheet.png")
-                    scheduleSheet = await closeFixtureSheet(sheet, id: "mac.schedule.done")
+                    scheduleSheet = true
+                    let runButton = "mac.schedule.runNow." + repeating.id.uuidString
+                    content.layoutSubtreeIfNeeded()
+                    refreshButtonFrames(in: content)
+                    var pressed = pressAccessibilityButton(content, id: runButton)
+                    if !pressed, let frame = MacTaskScheduleView.smokeRunNowFrames[repeating.id] {
+                        pressed = clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: sheet)
+                    }
+                    if pressed {
+                        let launched = ContinuousClock.now + .seconds(6)
+                        while ContinuousClock.now < launched {
+                            if let manual = center.lastManualLaunch, manual.scheduleID == repeating.id,
+                               agent.selectedID == manual.conversationID, window.attachedSheet == nil {
+                                manualScheduleRoute = true
+                                break
+                            }
+                            try? await Task.sleep(for: .milliseconds(40))
+                        }
+                    }
+                    if !manualScheduleRoute {
+                        settingsDiagnostics.append("Schedule Run Now pressed=\(pressed), bound=\(center.lastManualLaunch?.scheduleID == repeating.id), sheetOpen=\(window.attachedSheet != nil).")
+                    }
+                    if window.attachedSheet === sheet { _ = await closeFixtureSheet(sheet, id: "mac.schedule.done") }
                 }
             }
         }
@@ -1332,6 +1397,8 @@ final class UnifiedMacSmoke {
         } else { false }
         finish(["policy": policy, "calendarCompletedOnce": stored && result.count == 1 && result.first?.state == .completed,
                 "calendarStates": result.map(\.state.rawValue), "recurringPauseResume": recurringStored && paused && rearmed,
+                "recurringSkipNext": recurringSkipped, "oneShotSkipEndsPlan": disabledAfterSkip,
+                "manualScheduleRoute": manualScheduleRoute,
                 "recordedMissed": missedStored && recordedMiss, "manualMakeup": manual,
                 "afterSuccess": directed, "linkedSchedule": linked, "structuredCompatibility": structuredCompatibility,
                 "sameVisibleTask": correctSelection, "ownsProject": projectOwner, "notificationRoute": notificationRoutes, "scheduleSheet": scheduleSheet,

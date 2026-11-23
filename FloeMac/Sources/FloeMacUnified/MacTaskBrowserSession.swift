@@ -5,6 +5,8 @@ import Combine
 import FloeMacToolbox
 import FloeTools
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 import WebKit
 
 /// One task's independent browser on the Mac workbench lane. All WebKit work
@@ -70,7 +72,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
 
     private(set) var isReleased = false
     private var activeExecutionCount = 0
-    private var pendingProbes: [UUID: MacBrowserProbeRequest] = [:]
+    private var pendingProbes: [UUID: () -> Void] = [:]
     private(set) var lastActivityAt = Date()
 
     /// The model run currently allowed to read or act on this browser. It
@@ -487,6 +489,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         lastModelActivity = nil
         // In-flight page work of this holding period is fenced with it.
         fenceDispatchQueue()
+        invalidatePendingProbes()
         downloads.cancelAll()
     }
 
@@ -526,6 +529,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         lastModelActivity = nil
         documentNodeLabels.removeAll()
         fenceDispatchQueue()
+        invalidatePendingProbes()
         downloads.cancelAll()
         isUserControlling = true
         takeoverPending = activeExecutionCount > 0
@@ -632,6 +636,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         lastModelActivity = nil
         documentNodeLabels.removeAll()
         fenceDispatchQueue()
+        invalidatePendingProbes()
         downloads.cancelAll()
         tabObservations.values.forEach { $0.forEach { $0.invalidate() } }
         tabObservations.removeAll()
@@ -650,6 +655,93 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
     }
 
     // MARK: - Command execution
+
+    /// Captures the WebKit viewport owned by this exact task and run.
+    /// The user can take over at any time, including during the native read.
+    func captureVisionViewport(tabID: UUID?, control: MacBrowserControlLease) async throws -> Data {
+        try assertModelControlCurrent(control)
+        guard await enterDispatch(epoch: control.epoch) else {
+            try Task.checkCancellation()
+            throw MacTaskBrowserError.validation("Browser control changed before the screenshot")
+        }
+        activeExecutionCount += 1
+        defer {
+            activeExecutionCount -= 1
+            leaveDispatch()
+            finishTakeoverIfIdle()
+        }
+        try assertModelControlCurrent(control)
+        try Task.checkCancellation()
+        guard let targetID = tabID ?? activeTabID, let tab = tabs.first(where: { $0.id == targetID }),
+              let url = tab.webView.url, !tab.webView.isLoading else {
+            throw MacTaskBrowserError.validation("Open a browser page and wait for it to load before taking a screenshot")
+        }
+        let webView = tab.webView
+        let size = webView.bounds.size
+        guard size.width.isFinite, size.height.isFinite, size.width >= 1, size.height >= 1 else {
+            throw MacTaskBrowserError.validation("The browser viewport has no visible size")
+        }
+        let deadline = ContinuousClock.now + .seconds(6)
+        let before = try await visionGeometry(for: webView, deadline: deadline)
+        try assertModelControlCurrent(control)
+        let options = WKSnapshotConfiguration()
+        options.rect = CGRect(origin: .zero, size: size)
+        let scale = min(1, 1280 / max(size.width, size.height))
+        options.snapshotWidth = NSNumber(value: max(1, Double(size.width * scale)))
+        options.afterScreenUpdates = true
+        let raster: CGImage = try await runProbe(deadline: deadline) { complete in
+            webView.takeSnapshot(with: options) { image, error in
+                if let error { complete(.failure(error)); return }
+                guard let raster = image?.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                    complete(.failure(MacTaskBrowserError.validation("WebKit did not return a screenshot")))
+                    return
+                }
+                complete(.success(raster))
+            }
+        }
+        try assertModelControlCurrent(control)
+        let bytes = try await Task.detached(priority: .userInitiated) {
+            try Self.encodeVisionSnapshot(raster)
+        }.value
+        let after = try await visionGeometry(for: webView, deadline: deadline)
+        try assertModelControlCurrent(control)
+        try Task.checkCancellation()
+        guard before == after, webView.bounds.size == size, webView.url == url, !webView.isLoading,
+              tabs.contains(where: { $0.id == targetID && $0.documentID == tab.documentID && $0.webView === webView }) else {
+            throw MacTaskBrowserError.validation("The page or viewport changed during capture. Take a new screenshot.")
+        }
+        lastActivityAt = Date()
+        recordModelActivity(for: .observe(cursor: nil))
+        return bytes
+    }
+
+    private struct VisionGeometry: Decodable, Equatable {
+        let width, height, scrollX, scrollY, scale: Double
+    }
+
+    private func visionGeometry(for webView: WKWebView, deadline: ContinuousClock.Instant) async throws -> VisionGeometry {
+        let value = try await probeValue("return globalThis.__floeProtocol?.visionGeometry() ?? null;",
+                                         arguments: [:], in: webView, deadline: deadline)
+        guard let object = value as? [String: Any] else {
+            throw MacTaskBrowserError.validation("The page has no available screenshot geometry")
+        }
+        return try JSONDecoder().decode(VisionGeometry.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    private nonisolated static func encodeVisionSnapshot(_ image: CGImage) throws -> Data {
+        let output = NSMutableData()
+        guard (1...4096).contains(image.width), (1...4096).contains(image.height),
+              image.width * image.height <= 8_388_608,
+              let encoder = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil) else {
+            throw MacTaskBrowserError.validation("The browser screenshot exceeds the image size limit")
+        }
+        CGImageDestinationAddImage(encoder, image, nil)
+        guard CGImageDestinationFinalize(encoder), output.length > 0,
+              output.length <= VerifiedToolImageArtifact.maximumStoredImageBytes else {
+            throw MacTaskBrowserError.validation("The browser screenshot could not be encoded within the image limit")
+        }
+        return output as Data
+    }
 
     /// Executes one command for a model holding a lease. Dispatches are
     /// serialized; a takeover or release while queued returns without
@@ -1035,18 +1127,34 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         in webView: WKWebView,
         deadline: ContinuousClock.Instant
     ) async throws -> Any? {
-        guard !isReleased else { throw MacBrowserProbeError.released }
-        let id = UUID()
-        let request = MacBrowserProbeRequest()
-        pendingProbes[id] = request
-        defer { pendingProbes.removeValue(forKey: id) }
-        let data = try await request.run(deadline: deadline) { completion in
+        let data: Data = try await runProbe(deadline: deadline) { complete in
             webView.callAsyncJavaScript(
-                script, arguments: arguments, in: nil, in: self.contentWorld,
-                completionHandler: completion
-            )
+                script, arguments: arguments, in: nil, in: self.contentWorld
+            ) { result in
+                complete(result.flatMap { value in
+                    Result { try JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed) }
+                })
+            }
         }
         return try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+    }
+
+    private func runProbe<Value: Sendable>(
+        deadline: ContinuousClock.Instant,
+        invoke: (@escaping MacBrowserProbeRequest<Value>.Completion) -> Void
+    ) async throws -> Value {
+        guard !isReleased else { throw MacBrowserProbeError.released }
+        let id = UUID()
+        let request = MacBrowserProbeRequest<Value>()
+        pendingProbes[id] = { request.invalidate() }
+        defer { pendingProbes.removeValue(forKey: id) }
+        return try await request.run(deadline: deadline, invoke: invoke)
+    }
+
+    private func invalidatePendingProbes() {
+        let invalidations = pendingProbes
+        pendingProbes.removeAll()
+        for invalidate in invalidations.values { invalidate() }
     }
 
     private struct ProbeSnapshot: Decodable {
@@ -1513,7 +1621,12 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
       addEventListener('load', () => push('Page.loadEventFired'), {once:true});
       addEventListener('hashchange', () => push('Page.navigatedWithinDocument'));
       addEventListener('popstate', () => push('Page.navigatedWithinDocument'));
-      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents};
+      const visionGeometry = () => ({
+        width: window.innerWidth, height: window.innerHeight,
+        scrollX: window.scrollX, scrollY: window.scrollY,
+        scale: window.visualViewport?.scale ?? 1
+      });
+      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, visionGeometry};
       push('Runtime.executionContextCreated');
     })();
     """#
@@ -1703,24 +1816,24 @@ final class MacTaskBrowserWebView: WKWebView {
 }
 
 /// A callback may never arrive after a WebKit process/navigation failure.
-/// Resolve a single Sendable JSON receipt on callback, deadline, cancellation,
+/// Resolve a single Sendable value on callback, deadline, cancellation,
 /// or owner release; a late callback cannot resume it twice. No task group
 /// waits for an uncooperative native callback before returning the failure.
 @MainActor
-final class MacBrowserProbeRequest {
-    typealias Completion = @MainActor @Sendable (Result<Any, Error>) -> Void
-    private var continuation: CheckedContinuation<Data, Error>?
+private final class MacBrowserProbeRequest<Value: Sendable> {
+    typealias Completion = @MainActor @Sendable (Result<Value, Error>) -> Void
+    private var continuation: CheckedContinuation<Value, Error>?
     private var deadlineTask: Task<Void, Never>?
     private var started = false
 
     func run(
         deadline: ContinuousClock.Instant,
         invoke: (@escaping Completion) -> Void
-    ) async throws -> Data {
+    ) async throws -> Value {
         precondition(!started)
         started = true
         try Task.checkCancellation()
-        let bytes = try await withTaskCancellationHandler {
+        let value = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
                 guard !Task.isCancelled else {
@@ -1736,29 +1849,18 @@ final class MacBrowserProbeRequest {
                     catch { return }
                     self?.finish(.failure(MacBrowserProbeError.timedOut))
                 }
-                invoke { [weak self] result in
-                    guard let self, self.continuation != nil else { return }
-                    do {
-                        // SDK Any stays on MainActor. Only JSON Data crosses
-                        // the continuation; no unchecked Sendable wrapper.
-                        let value = try result.get()
-                        let data = try JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed)
-                        self.finish(.success(data))
-                    } catch {
-                        self.finish(.failure(error))
-                    }
-                }
+                invoke { [weak self] result in self?.finish(result) }
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.finish(.failure(CancellationError())) }
         }
         try Task.checkCancellation()
-        return bytes
+        return value
     }
 
     func invalidate() { finish(.failure(MacBrowserProbeError.released)) }
 
-    private func finish(_ result: Result<Data, Error>) {
+    private func finish(_ result: Result<Value, Error>) {
         guard let continuation else { return }
         self.continuation = nil
         deadlineTask?.cancel()

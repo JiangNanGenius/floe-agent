@@ -1357,6 +1357,12 @@ struct MacWorkspaceRootView: View {
         return "mac.workspace.inspector.running"
     }
 
+    private var currentToolImageWorkspace: MacToolImageWorkspace? {
+        guard let conversation = destinationConversationID, conversation == workspace.selectedID,
+              let owner = workspace.selectedConversationWorkspace else { return nil }
+        return .init(conversationID: conversation, workspace: owner, privateTaskRootBase: workspace.personalTaskLeaseBase)
+    }
+
     @ViewBuilder private var detail: some View {
         switch destination {
         case .newTask, .conversation:
@@ -1384,6 +1390,7 @@ struct MacWorkspaceRootView: View {
                                                 }
                                             })
                         .id(destinationConversationID ?? workspace.attachmentOwnerID)
+                        .environment(\.macToolImageWorkspace, currentToolImageWorkspace)
                         .environment(\.openURL, OpenURLAction { url in
                             // Chat content is untrusted model output. http(s)
                             // links open inside the guarded workbench browser;

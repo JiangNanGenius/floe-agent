@@ -388,7 +388,7 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                     SET state = 'skipped', summary = ?, finished_at = ?, updated_at = ?
                     WHERE id = ? AND state = 'pending'
                     """, arguments: [
-                        "Skipped by the user; this occurrence did not run.",
+                        TaskScheduleOccurrence.userSkippedSummary,
                         PersistenceCodec.encode(date),
                         PersistenceCodec.encode(date),
                         occurrenceID.uuidString

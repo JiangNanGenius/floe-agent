@@ -26,6 +26,12 @@ import Foundation
 /// - `retireSession(for:)` releases the session on task deletion.
 @MainActor
 final class MacTaskBrowserTools: ObservableObject {
+    /// Names of browser tools whose results carry verified image artifacts
+    /// for the multimodal evidence chain. The workspace executor routes
+    /// their summary caps through the vision-read envelope; keep in sync
+    /// with the bundle below.
+    nonisolated static let visionEvidenceToolNames: Set<String> = [MacBrowserScreenshotTool.name]
+
     /// URL-only page restore hooks backed by the workbench controller's
     /// `MacBrowserRestoreStore`; a record is only applied when the user
     /// materializes that task's browser and is dropped when the task goes
@@ -201,6 +207,8 @@ final class MacTaskBrowserTools: ObservableObject {
             AnyAgentTool(MacBrowserTabTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserNavigateTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserObserveTool(environment: self, conversationID: conversationID)),
+            AnyAgentTool(MacBrowserScreenshotTool(environment: self, conversationID: conversationID,
+                                                  workspaceRoot: workspaceRoot.map(MacAgentWorkspaceRoot.init))),
             AnyAgentTool(MacBrowserEventsTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserWaitTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserClickTool(environment: self, conversationID: conversationID)),
@@ -457,6 +465,106 @@ private struct MacBrowserObserveTool: AgentTool {
     @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try await environment.run(context: context, binding: conversationID,
                                   action: .observe(cursor: args.cursor), tabID: args.tabID)
+    }
+}
+
+private struct MacBrowserScreenshotTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var tabID: UUID?
+    }
+
+    static let name = "browser.screenshot"
+    static let toolDescription = "Capture this task's browser viewport as verified PNG visual evidence when browser.observe cannot read the content. Returns a quick OCR preview with screenshot-pixel bounds. Use image.ocr on the returned path for detailed text or for languages unavailable in fast mode. The viewport image stays in the task workspace. Verify page changes using browser.observe."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"}},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.sendsDataToProvider]
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+
+    let environment: MacTaskBrowserTools
+    let conversationID: UUID
+    let workspaceRoot: MacAgentWorkspaceRoot?
+
+    func validate(_ args: Arguments) throws {}
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let owner = try environment.owner(for: context, binding: conversationID)
+        let control: MacTaskBrowserTools.ModelControl
+        do {
+            (_, control) = try environment.control(for: context, binding: conversationID)
+        } catch MacBrowserControlError.needsUser(let message) {
+            return environment.needsUserOutput(message)
+        }
+        guard environment.session(for: owner) === control.session else {
+            throw FloeError.validationFailed("The browser screenshot task changed while acquiring control")
+        }
+        // One exact viewport capture; the PNG bytes below feed both the
+        // verifier and the bounded OCR — no second capture, no re-decode of
+        // a different revision.
+        let bytes = try await control.session.captureVisionViewport(tabID: args.tabID, control: control.lease)
+        try context.cancellation.throwIfCancelled()
+        // Bounded on-device OCR of the exact captured bytes: a text fallback
+        // when DOM refs cannot describe the canvas/pixel state. Runs off the
+        // MainActor through the shared bounded recognizer; the screenshot is
+        // still attached when recognition is unavailable, busy or timed out.
+        // The fast level keeps cold multilingual model loading out of the
+        // screenshot path. Detailed recognition remains available in image.ocr.
+        let capture = try await Task.detached(priority: .utility) {
+            try MacWorkspaceImageEvidence.verifiedCapture(bytes, declaredMime: "image/png")
+        }.value
+        try control.session.assertModelControlCurrent(control.lease)
+        let recognition = await BoundedVisualTextRecognizer.shared.recognize {
+            try VisualTextRecognizer.recognize(
+                imageData: capture.bytes,
+                pixelWidth: capture.width,
+                pixelHeight: capture.height,
+                referencePrefix: "text",
+                limit: 48,
+                level: .fast
+            )
+        }
+        try context.cancellation.throwIfCancelled()
+        // The user may have taken the page back while OCR ran: never surface
+        // an image, and (because publication happens after this check) never
+        // leave an unused screenshot file behind.
+        try control.session.assertModelControlCurrent(control.lease)
+        guard let root = workspaceRoot else {
+            throw FloeError.validationFailed("Browser screenshot requires this task's workspace")
+        }
+        let artifact = try MacWorkspaceImageEvidence.publish(
+            root: root, context: context, capture: capture,
+            basename: "Browser-" + UUID().uuidString)
+        var payload: [String: Any] = [
+            "status": "ok",
+            "path": artifact.relativePath,
+            "mimeType": artifact.mimeType,
+            "byteCount": artifact.byteCount,
+            "sha256": artifact.sha256,
+            "width": capture.width,
+            "height": capture.height,
+            "visualEvidence": "attached",
+            "ocrMode": "fast"
+        ]
+        switch recognition.status {
+        case .available where !recognition.elements.isEmpty:
+            let encoded = try JSONEncoder().encode(recognition.elements)
+            payload["visualTextRegions"] = try JSONSerialization.jsonObject(with: encoded)
+            payload["visualText"] = "OCR-detected text regions only (not accessibility elements): use text-N references with these exact screenshot-pixel bounds; capture a new screenshot after any page change."
+        case .available:
+            payload["visualTextRegions"] = []
+            payload["visualText"] = "No readable text found in the capture."
+        default:
+            payload["visualTextRegionsStatus"] = recognition.status.rawValue
+            payload["visualText"] = "OCR \(recognition.status.rawValue); the PNG evidence is still attached."
+        }
+        if let marker = environment.controlMarker(for: control) { payload["control"] = marker }
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        return ToolExecutionOutput(
+            summary: String(decoding: data, as: UTF8.self),
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
+            artifacts: [artifact],
+            maximumSummaryCharacters: 16_384
+        )
     }
 }
 

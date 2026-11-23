@@ -10,12 +10,21 @@ import FloePersistence
 /// calendar, logical occurrence identity, exclusive claim and durable state.
 @MainActor
 final class MacTaskScheduleCenter: ObservableObject {
+    /// A manual "Run Now" launch that actually bound to a run. Equatable so
+    /// SwiftUI `.onChange` can observe it (a bare tuple is not).
+    struct ManualLaunch: Equatable, Sendable {
+        let scheduleID: UUID
+        let conversationID: UUID
+    }
+
     @Published private(set) var records: [TaskScheduleRecord] = []
     @Published private(set) var recent: [TaskScheduleOccurrence] = []
     @Published private(set) var isBusy = false
     @Published private(set) var launching = Set<UUID>()
     @Published private(set) var running = Set<UUID>()
     @Published private(set) var errorMessage: String?
+    /// Published after the manual occurrence is bound to its persisted run.
+    @Published private(set) var lastManualLaunch: ManualLaunch?
 
     private weak var workspace: HostAgentWorkspace?
     private var store: SQLiteTaskScheduleStore?
@@ -84,6 +93,29 @@ final class MacTaskScheduleCenter: ObservableObject {
             if enabled, let saved = try await store.schedule(id: schedule.id) {
                 try await recoverUpstream(saved, store: store, at: Date())
             }
+        }
+    }
+
+    /// Skip the next pending calendar fire without touching cadence. Mirrors
+    /// the iPad plan-detail action and the shared store: the occurrence is
+    /// retired (a one-shot plan ends disabled), the plan stays enabled and
+    /// `nextExpectedAt` advances to the following fire. Returns the store
+    /// receipt so the UI can surface the next fire time; nil on any failure
+    /// (busy, launching, storage error) with `errorMessage` set.
+    @discardableResult
+    func skipNext(_ schedule: TaskScheduleRecord) async -> TaskScheduleSkipResult? {
+        guard !isBusy, !launching.contains(schedule.id), !running.contains(schedule.id),
+              let store, let workspace, workspace.isReady, !workspace.isTerminating,
+              let release = workspace.admitScheduleWork() else { return nil }
+        isBusy = true
+        defer { isBusy = false; release() }
+        do {
+            let result = try await store.skipNext(id: schedule.id, at: Date())
+            try await refresh(store)
+            return result
+        } catch {
+            showStorageError()
+            return nil
         }
     }
 
@@ -179,6 +211,9 @@ final class MacTaskScheduleCenter: ObservableObject {
             }
             if occurrence.isManualRun { try await store.markManualStarted(id: occurrence.scheduleID, at: now) }
             else { try await store.markStarted(id: occurrence.scheduleID, at: now) }
+            if occurrence.isManualRun {
+                lastManualLaunch = ManualLaunch(scheduleID: occurrence.scheduleID, conversationID: conversationID)
+            }
             try await refresh(store)
         } catch { showStorageError() }
     }

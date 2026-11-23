@@ -35,6 +35,38 @@ struct MacWorkspaceFileOperations: Sendable {
         let trashDirectoryIdentity: Identity
     }
 
+    /// Why one item of a batch trash could not be moved. The case set is
+    /// deliberately small so the UI can phrase one honest sentence per
+    /// survivor; the item itself stays in place for every kind.
+    enum TrashFailureKind: String, Sendable, Codable {
+        /// A draft attachment, the managed conversations root or one of its
+        /// task folders still references the item or its directory.
+        case protected
+        /// The pinned identity no longer matches: the item changed or was
+        /// replaced after the user opened the action.
+        case changed
+        /// The item is no longer at its captured name.
+        case missing
+        /// Any other filesystem refusal (permissions, locks, ...).
+        case denied
+    }
+
+    struct TrashBatchFailure: Sendable, Equatable {
+        let name: String
+        let kind: TrashFailureKind
+    }
+
+    /// Batch outcome keeps successes and failures apart so the caller can
+    /// report both honestly; every failed item is still at its origin.
+    /// `moved` counts every item the system Trash accepted, independent of
+    /// `receipts`: Finder can take an item yet deny the app read-back, so a
+    /// verifiable receipt is never required for a truthful moved count.
+    struct TrashBatchOutcome: Sendable {
+        var moved: [String] = []
+        var receipts: [TrashReceipt] = []
+        var failures: [TrashBatchFailure] = []
+    }
+
     let directory: URL
     private let root: MacAgentWorkspaceRoot
     private let directoryPath: String
@@ -255,6 +287,53 @@ struct MacWorkspaceFileOperations: Sendable {
         }
     }
 
+    /// Batch move to the system Trash reuses the single-item `trash` path for
+    /// every entry: same pinned-identity staging, same journaling, same
+    /// exclusive publish. One item's failure never aborts the remaining items
+    /// and never hides them; the origin of every failed item is untouched, so
+    /// the caller can keep reporting it (and the user can retry) after a
+    /// partial run. Successful items are recoverable through the same
+    /// receipts and history records as a single trash.
+    func trashBatch(_ items: [Item], protecting files: Set<URL>,
+                    managedConversationsRoot: URL?, recordingIn history: URL?) -> TrashBatchOutcome {
+        var outcome = TrashBatchOutcome()
+        var seen = Set<String>()
+        for item in items where seen.insert(item.name).inserted {
+            let url = directory.appendingPathComponent(item.name)
+            guard Self.canMove(url, protecting: files, managedConversationsRoot: managedConversationsRoot) else {
+                outcome.failures.append(.init(name: item.name, kind: .protected))
+                continue
+            }
+            do {
+                if let receipt = try trash(item, recordingIn: history) {
+                    outcome.receipts.append(receipt)
+                }
+                // A nil receipt still means the system Trash accepted the
+                // item: only the private receipt could not be verified.
+                // Never report that as a failure or move anything back.
+                outcome.moved.append(item.name)
+            } catch let error as NSError {
+                let kind: TrashFailureKind
+                if (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT))
+                    || (error.domain == NSCocoaErrorDomain && error.code == CocoaError.fileNoSuchFile.rawValue) {
+                    kind = .missing
+                } else if (error.domain == NSPOSIXErrorDomain && error.code == Int(EEXIST))
+                    || (error.domain == NSCocoaErrorDomain
+                        && (error.code == CocoaError.fileWriteFileExists.rawValue
+                            || error.code == CocoaError.fileReadNoPermission.rawValue
+                            || error.code == CocoaError.fileWriteNoPermission.rawValue)) {
+                    // Identity mismatch and guard refusals both surface as
+                    // "changed or protected"; phrase it as a refresh hint.
+                    kind = .changed
+                } else {
+                    kind = .denied
+                }
+                outcome.failures.append(.init(name: item.name, kind: kind))
+            }
+        }
+        return outcome
+    }
+
     static func readableTrashDirectory(_ directory: URL) -> Identity? {
         let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
@@ -338,6 +417,121 @@ enum MacWorkspaceFileOperationsSmoke {
             && rejected({ _ = try MacWorkspaceFileOperations(root: base, directory: alias, managedConversationsRoot: nil) })
     }
 
+    /// Synthetic batch-trash checks against the same fixture style as the
+    /// single-item path: everything lives under a unique temporary root and
+    /// is removed on return; the real Trash and user folders are untouched.
+    static func verifyBatchTrash(in root: URL) throws -> Bool {
+        func fail(_ label: String, _ detail: String = "") -> Bool {
+            FileHandle.standardError.write(Data("Batch trash fixture \(label): \(detail)\n".utf8))
+            return false
+        }
+        let fm = FileManager.default
+        let base = root.appendingPathComponent("BatchTrash-" + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: base, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: base) }
+        let ops = try MacWorkspaceFileOperations(root: base, directory: base, managedConversationsRoot: nil)
+        // Unique fixture names keep the real system Trash scoped to this run.
+        let tag = String(UUID().uuidString.prefix(8))
+        // Each phase journals in its own history directory so a phase that
+        // legitimately leaves records (restricted Trash introspection) can
+        // never contaminate another phase's assertions.
+        let history1 = base.appendingPathComponent("History1", isDirectory: true)
+        let history2 = base.appendingPathComponent("History2", isDirectory: true)
+        let history3 = base.appendingPathComponent("History3", isDirectory: true)
+
+        // Full success. Hosts whose privacy settings deny Trash introspection
+        // still journal confirmed records but can hand back zero (or only
+        // some) receipts; the moved count must be truthful in every mix, and
+        // put-back is exercised only when every receipt verified.
+        var names: [String] = []
+        var captured: [MacWorkspaceFileOperations.Item] = []
+        for index in 0..<3 {
+            let name = "Batch \(index) \(tag).dat"
+            try Data([UInt8(index)]).write(to: base.appendingPathComponent(name))
+            names.append(name)
+            captured.append(try ops.capture(name))
+        }
+        let outcome = ops.trashBatch(captured, protecting: [], managedConversationsRoot: nil, recordingIn: history1)
+        guard outcome.failures.isEmpty else {
+            return fail("full.failures", outcome.failures.map { "\($0.name):\($0.kind.rawValue)" }.joined(separator: ","))
+        }
+        guard outcome.moved.count == 3 else {
+            return fail("full.moved", "moved=\(outcome.moved.count) receipts=\(outcome.receipts.count)")
+        }
+        for name in names where fm.fileExists(atPath: base.appendingPathComponent(name).path) {
+            return fail("full.stillAtOrigin", name)
+        }
+        var records = try MacWorkspaceTrashRecord.entries(for: base, in: history1)
+        guard records.count == 3 else { return fail("full.records", "count=\(records.count)") }
+        guard records.allSatisfy(\.confirmedBySystem) else { return fail("full.unconfirmed") }
+        if outcome.receipts.count == 3 {
+            for name in names {
+                guard let record = records.first(where: { $0.name == name }) else { return fail("full.recordMissing", name) }
+                do { try record.restore(root: base, history: history1, managed: nil) }
+                catch { return fail("full.restore", "\(name): \(error)") }
+            }
+            for (index, name) in names.enumerated() {
+                let bytes = try Data(contentsOf: base.appendingPathComponent(name))
+                guard bytes == Data([UInt8(index)]) else { return fail("full.bytes", "\(name): \(bytes.count)B") }
+            }
+            records = try MacWorkspaceTrashRecord.entries(for: base, in: history1)
+            guard records.isEmpty else { return fail("full.recordsLeft", "count=\(records.count)") }
+
+            // Partial failure: one captured item is replaced before the
+            // batch runs. It alone fails (kind .changed) and stays at the
+            // origin with the replacement bytes; the other item still
+            // reaches the Trash and restores cleanly.
+            let doomed = "Doomed \(tag).dat", healthy = "Healthy \(tag).dat"
+            try Data("original".utf8).write(to: base.appendingPathComponent(doomed))
+            try Data("fine".utf8).write(to: base.appendingPathComponent(healthy))
+            let batch = [try ops.capture(doomed), try ops.capture(healthy)]
+            // Atomic replace yields a new inode/birth, so the pinned identity
+            // no longer matches the name — the same guard a real swap trips.
+            try Data("replacement".utf8).write(to: base.appendingPathComponent(doomed), options: .atomic)
+            let partial = ops.trashBatch(batch, protecting: [], managedConversationsRoot: nil, recordingIn: history2)
+            guard partial.failures.count == 1, partial.failures.first?.name == doomed,
+                  partial.failures.first?.kind == .changed else {
+                return fail("partial.failures", partial.failures.map { "\($0.name):\($0.kind.rawValue)" }.joined(separator: ","))
+            }
+            guard partial.moved == [healthy] else { return fail("partial.moved", partial.moved.joined(separator: ",")) }
+            guard partial.receipts.count == 1 else { return fail("partial.receipts", "count=\(partial.receipts.count)") }
+            let doomedBytes = try Data(contentsOf: base.appendingPathComponent(doomed))
+            guard doomedBytes == Data("replacement".utf8) else { return fail("partial.doomedBytes") }
+            guard !fm.fileExists(atPath: base.appendingPathComponent(healthy).path) else { return fail("partial.healthyAtOrigin") }
+            guard let healthyRecord = try MacWorkspaceTrashRecord.entries(for: base, in: history2).first,
+                  healthyRecord.name == healthy else { return fail("partial.recordMissing") }
+            do { try healthyRecord.restore(root: base, history: history2, managed: nil) }
+            catch { return fail("partial.restore", String(describing: error)) }
+            guard try Data(contentsOf: base.appendingPathComponent(healthy)) == Data("fine".utf8) else {
+                return fail("partial.healthyBytes")
+            }
+        } else if outcome.receipts.isEmpty {
+            FileHandle.standardError.write(Data(("Batch trash fixture: restricted Trash read-back; "
+                                                + "skipped put-back checks, \(names.count) uniquely named "
+                                                + "items remain in the system Trash.\n").utf8))
+        } else {
+            FileHandle.standardError.write(Data(("Batch trash fixture: mixed Trash read-back "
+                                                + "(\(outcome.receipts.count)/3); skipped put-back checks.\n").utf8))
+        }
+
+        // Protection guard: an item referenced by the protected set is
+        // reported as .protected, kept in place, and never journaled. This
+        // phase never depends on Trash introspection.
+        let held = "Held \(tag).dat"
+        let heldURL = base.appendingPathComponent(held)
+        try Data("held".utf8).write(to: heldURL)
+        let blocked = ops.trashBatch([try ops.capture(held)], protecting: [heldURL],
+                                     managedConversationsRoot: nil, recordingIn: history3)
+        guard blocked.moved.isEmpty else { return fail("protected.moved", blocked.moved.joined(separator: ",")) }
+        guard blocked.receipts.isEmpty else { return fail("protected.receipts") }
+        guard blocked.failures == [.init(name: held, kind: .protected)] else {
+            return fail("protected.failures", blocked.failures.map { "\($0.name):\($0.kind.rawValue)" }.joined(separator: ","))
+        }
+        guard try Data(contentsOf: heldURL) == Data("held".utf8) else { return fail("protected.bytes") }
+        guard try MacWorkspaceTrashRecord.entries(for: base, in: history3).isEmpty else { return fail("protected.journaled") }
+        return true
+    }
+
     static func verify(in root: URL) async -> Bool {
         await Task.detached(priority: .userInitiated) {
             func fail(_ error: Error? = nil, line: Int = #line) -> Bool {
@@ -352,6 +546,7 @@ enum MacWorkspaceFileOperationsSmoke {
                 defer { try? fm.removeItem(at: base) }
                 let ops = try MacWorkspaceFileOperations(root: base, directory: base, managedConversationsRoot: nil)
                 guard try verifyTransfers(in: base) else { return fail() }
+                guard try verifyBatchTrash(in: base) else { return fail() }
                 try ops.createFolder("Input")
                 try ops.createFolder("Other")
                 do { try ops.createFolder("Input"); return fail() } catch {}

@@ -197,9 +197,11 @@ struct MacWorkspaceFilesView: View {
     @State private var showRecentlyDeleted = false
     @State private var recentDeletions: [MacWorkspaceTrashRecord] = []
     @State private var unavailableDeletions: Set<UUID> = []
+    @State private var deletionSelection: Set<UUID> = []
+    @State private var deletionNotice: String?
     @State private var loadingDeletions = false
     @State private var deletionLoadFailed = false
-    @State private var latestTrashID: UUID?
+    @State private var latestTrashIDs: Set<UUID> = []
     @State private var showTrashFinderNotice = false
     @State private var trashFinderDirectory: URL?
     @State private var trashOriginalDirectory: URL?
@@ -210,7 +212,14 @@ struct MacWorkspaceFilesView: View {
         let action: Action
         let root: URL
         let operations: MacWorkspaceFileOperations
-        let item: MacWorkspaceFileOperations.Item?
+        /// Identities pinned when the user opened the action. Empty for
+        /// create; exactly one for rename; one per selected item for trash,
+        /// where a batch shares this single confirmation and per-item guard.
+        let items: [MacWorkspaceFileOperations.Item]
+        /// Selected rows that could not even be pinned (inaccessible or
+        /// already gone when the action opened). They are reported as
+        /// failures of the same confirmed run instead of vanishing silently.
+        let skipped: [MacWorkspaceFileOperations.TrashBatchFailure]
     }
 
     var body: some View {
@@ -298,14 +307,14 @@ struct MacWorkspaceFilesView: View {
             MacWorkspaceHTMLPreview(site: site)
         }
         .onChange(of: root) { _, _ in
-            htmlSite = nil; mutationRequest = nil; restoreHistory = []; latestTrashID = nil
+            htmlSite = nil; mutationRequest = nil; restoreHistory = []; latestTrashIDs = []
             showRecentlyDeleted = false; recentDeletions = []; unavailableDeletions = []
         }
         .sheet(isPresented: $showRecentlyDeleted) { recentlyDeletedSheet }
         .sheet(item: $mutationRequest) { request in
             FileActionSheet(
-                title: mutationTitle(request.action), initial: request.action == .rename ? request.item?.name ?? "" : "",
-                trashName: request.action == .trash ? request.item?.name : nil,
+                title: mutationTitle(request.action), initial: request.action == .rename ? request.items.first?.name ?? "" : "",
+                trashName: request.action == .trash ? trashConfirmationText(request.items) : nil,
                 confirm: { name in perform(request, name: name) }
             )
         }
@@ -378,6 +387,8 @@ struct MacWorkspaceFilesView: View {
                             .disabled(!canManageHere)
                         if let entry = selectedEntries.count == 1 ? selectedEntries.first : (selection.isEmpty ? focusedEntry : nil) {
                             mutationItems(entry)
+                        } else if selectedEntries.count > 1 {
+                            batchTrashItem(selectedEntries)
                         }
                         if recentlyDeletedDirectory != nil {
                             Divider()
@@ -662,6 +673,13 @@ struct MacWorkspaceFilesView: View {
                     prepare(.create)
                     return .handled
                 }
+                .onKeyPress("a", phases: .down) { key in
+                    // Select exactly what is on screen now: the filtered,
+                    // sorted visible rows — never hidden entries.
+                    guard key.modifiers == .command, !visible.isEmpty else { return .ignored }
+                    selection = Set(visible.map(\.url))
+                    return .handled
+                }
                 .onKeyPress("d", phases: .down) { key in
                     guard key.modifiers == .command, selectedEntries.count == 1,
                           let entry = selectedEntries.first, entry.openable, !entry.folder, canManageHere else { return .ignored }
@@ -669,20 +687,22 @@ struct MacWorkspaceFilesView: View {
                     return .handled
                 }
                 .onKeyPress("z", phases: .down) { key in
-                    guard key.modifiers == .command, let receipt = restoreHistory.last, receipt.id == latestTrashID, !hasPendingChanges else { return .ignored }
-                    restore(receipt)
+                    guard key.modifiers == .command, !latestTrashIDs.isEmpty, !hasPendingChanges else { return .ignored }
+                    restore(restoreHistory.filter { latestTrashIDs.contains($0.id) })
                     return .handled
                 }
                 .onKeyPress(.return, phases: .down) { key in
                     guard key.modifiers.isEmpty, selectedEntries.count == 1,
                           let entry = selectedEntries.first, canManage(entry) else { return .ignored }
-                    prepare(.rename, entry)
+                    prepare(.rename, [entry])
                     return .handled
                 }
                 .onKeyPress(.delete, phases: .down) { key in
-                    guard key.modifiers == .command, selectedEntries.count == 1,
-                          let entry = selectedEntries.first, canManage(entry) else { return .ignored }
-                    prepare(.trash, entry)
+                    // Command-Delete uses the same single confirmation for
+                    // one item or the whole current selection; each row's
+                    // guards still decide its own fate inside the batch.
+                    guard key.modifiers == .command, !selectedEntries.isEmpty, canManageHere else { return .ignored }
+                    prepare(.trash, selectedEntries)
                     return .handled
                 }
             }
@@ -977,6 +997,7 @@ struct MacWorkspaceFilesView: View {
         if selected.count == 1, let entry = selected.first {
             actions(for: entry)
         } else {
+            batchTrashItem(selected)
             let files = selected.filter { $0.openable }
             if !files.isEmpty {
                 Button(t("打开 \(files.count) 项", "Open \(files.count) Items")) {
@@ -1011,7 +1032,7 @@ struct MacWorkspaceFilesView: View {
     }
 
     @ViewBuilder private func mutationItems(_ entry: MacWorkspaceFileEntry) -> some View {
-        Button(mutationTitle(.rename), systemImage: "pencil") { prepare(.rename, entry) }
+        Button(mutationTitle(.rename), systemImage: "pencil") { prepare(.rename, [entry]) }
             .disabled(!canManage(entry))
         if entry.folder || entry.openable {
             Button(t("移到文件夹…", "Move to Folder…"), systemImage: "folder") { transfer(entry, action: .move) }
@@ -1023,8 +1044,19 @@ struct MacWorkspaceFilesView: View {
                 .accessibilityIdentifier("workspace.files.duplicate")
                 .disabled(!canManageHere || !canAccess(entry))
         }
-        Button(mutationTitle(.trash), systemImage: "trash", role: .destructive) { prepare(.trash, entry) }
+        Button(mutationTitle(.trash), systemImage: "trash", role: .destructive) { prepare(.trash, [entry]) }
             .disabled(!canManage(entry))
+    }
+
+    /// Batch trash for a multi-selection: one confirmation, per-item guards.
+    @ViewBuilder private func batchTrashItem(_ entries: [MacWorkspaceFileEntry]) -> some View {
+        let candidates = entries.filter { $0.folder || $0.openable }
+        if !candidates.isEmpty {
+            Button(t("移到废纸篓（\(candidates.count) 项）", "Move to Trash (\(candidates.count))"),
+                   systemImage: "trash", role: .destructive) { prepare(.trash, candidates) }
+                .accessibilityIdentifier("workspace.files.batchTrash")
+                .disabled(!canManageHere)
+        }
     }
 
     private func mutationTitle(_ action: FileMutationRequest.Action) -> String {
@@ -1033,6 +1065,17 @@ struct MacWorkspaceFilesView: View {
         case .rename: t("重命名", "Rename")
         case .trash: t("移到废纸篓", "Move to Trash")
         }
+    }
+
+    /// One confirmation for single and batch trash alike. A single item is
+    /// named; a batch states its count and lists the first few names so the
+    /// destructive scope is explicit before anything is pinned again.
+    private func trashConfirmationText(_ items: [MacWorkspaceFileOperations.Item]) -> String? {
+        guard let first = items.first else { return nil }
+        guard items.count > 1 else { return first.name }
+        let listed = items.prefix(3).map(\.name).joined(separator: "、")
+        let more = items.count > 3 ? t(" 等", ", …") : ""
+        return t("所选 \(items.count) 项：\(listed)\(more)", "\(items.count) selected: \(listed)\(more)")
     }
 
     private enum TransferAction { case move, duplicate }
@@ -1110,73 +1153,166 @@ struct MacWorkspaceFilesView: View {
         return true
     }
 
-    private func prepare(_ action: FileMutationRequest.Action, _ entry: MacWorkspaceFileEntry? = nil) {
+    private func prepare(_ action: FileMutationRequest.Action, _ entries: [MacWorkspaceFileEntry] = []) {
         guard canManageHere, let root, let directory else { return }
         do {
-            let ops = try MacWorkspaceFileOperations(root: root, directory: directory, managedConversationsRoot: managedConversationsRoot ?? fixedRootURL)
-            var target: MacWorkspaceFileOperations.Item?
-            if let entry {
-                guard canManage(entry), checkDraftFiles(entry.url) else { return }
-                target = try ops.capture(entry.url.lastPathComponent)
+            let managed = managedConversationsRoot ?? fixedRootURL
+            let ops = try MacWorkspaceFileOperations(root: root, directory: directory, managedConversationsRoot: managed)
+            var targets: [MacWorkspaceFileOperations.Item] = []
+            switch action {
+            case .create:
+                break
+            case .rename:
+                guard entries.count == 1, let entry = entries.first,
+                      canManage(entry), checkDraftFiles(entry.url) else { return }
+                targets = [try ops.capture(entry.url.lastPathComponent)]
+            case .trash:
+                guard !entries.isEmpty else { return }
+                // Batch trash mirrors iPad: every selected row joins one
+                // confirmed run. Per-item guards (attachments, drafts,
+                // managed roots, pinned identity) decide each fate inside the
+                // operation and are reported per survivor; rows that cannot
+                // be pinned at all are carried as skipped failures so nothing
+                // the user selected disappears without an explanation.
+                var skipped: [MacWorkspaceFileOperations.TrashBatchFailure] = []
+                for entry in entries where entry.folder || entry.openable {
+                    guard canAccess(entry) else {
+                        skipped.append(.init(name: entry.name, kind: .denied))
+                        continue
+                    }
+                    do {
+                        targets.append(try ops.capture(entry.url.lastPathComponent))
+                    } catch let error as NSError {
+                        let missing = (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT))
+                            || (error.domain == NSCocoaErrorDomain && error.code == CocoaError.fileNoSuchFile.rawValue)
+                        skipped.append(.init(name: entry.name, kind: missing ? .missing : .denied))
+                    }
+                }
+                guard !targets.isEmpty || !skipped.isEmpty else { return }
+                let request = FileMutationRequest(action: action, root: root, operations: ops,
+                                                  items: targets, skipped: skipped)
+                if targets.isEmpty { applyTrashOutcome(request, outcome: .init()) }
+                else { mutationRequest = request }
+                return
             }
-            mutationRequest = FileMutationRequest(action: action, root: root, operations: ops, item: target)
+            mutationRequest = FileMutationRequest(action: action, root: root, operations: ops,
+                                                  items: targets, skipped: [])
         } catch { reportMutationFailure(error) }
     }
 
     private func perform(_ request: FileMutationRequest, name: String) {
         guard canManageHere, request.root == root,
               request.operations.directory.resolvingSymlinksInPath().standardizedFileURL.path == directory?.resolvingSymlinksInPath().standardizedFileURL.path else { return }
-        if let item = request.item {
+        if request.action == .rename, let item = request.items.first {
             let url = request.operations.directory.appendingPathComponent(item.name)
             guard checkDraftFiles(url) else { return }
         }
         mutationInProgress = true
+        let history = recentlyDeletedDirectory
+        let protected = effectiveAttachments.union(protectedDraftFiles())
+        let managed = managedConversationsRoot ?? fixedRootURL
         Task {
             defer { mutationInProgress = false; reloadID = UUID() }
             do {
-                let history = recentlyDeletedDirectory
-                let result = try await Task.detached(priority: .userInitiated) { () -> MacWorkspaceFileOperations.TrashReceipt? in
-                    switch request.action {
-                    case .create: try request.operations.createFolder(name)
-                    case .rename:
-                        guard let item = request.item else { throw CocoaError(.fileNoSuchFile) }
+                switch request.action {
+                case .create:
+                    try await Task.detached(priority: .userInitiated) {
+                        try request.operations.createFolder(name)
+                    }.value
+                    latestTrashIDs = []
+                case .rename:
+                    guard let item = request.items.first else { throw CocoaError(.fileNoSuchFile) }
+                    try await Task.detached(priority: .userInitiated) {
                         try request.operations.rename(item, to: name)
-                    case .trash:
-                        guard let item = request.item else { throw CocoaError(.fileNoSuchFile) }
-                        return try request.operations.trash(item, recordingIn: history)
-                    }
-                    return nil
-                }.value
-                latestTrashID = result?.id
-                if let result { restoreHistory.append(result) }
-                if request.action == .trash, result == nil {
-                    trashOriginalDirectory = request.operations.directory
-                    trashFinderDirectory = try? FileManager.default.url(
-                        for: .trashDirectory, in: .userDomainMask,
-                        appropriateFor: request.operations.directory, create: false
-                    )
-                    showTrashFinderNotice = true
-                }
-                if let item = request.item {
-                    let previous = directory?.appendingPathComponent(item.name).standardizedFileURL.path
-                    if focused?.standardizedFileURL.path == previous { focused = nil }
-                    selection = selection.filter { $0.standardizedFileURL.path != previous }
-                    if editing?.entry.url.standardizedFileURL.path == previous { editing = nil }
+                    }.value
+                    latestTrashIDs = []
+                case .trash:
+                    let outcome = try await Task.detached(priority: .userInitiated) {
+                        request.operations.trashBatch(request.items, protecting: protected,
+                                                      managedConversationsRoot: managed, recordingIn: history)
+                    }.value
+                    applyTrashOutcome(request, outcome: outcome)
                 }
             } catch { reportMutationFailure(error) }
         }
     }
 
+    /// Batch-trash bookkeeping shared by the confirmed run: survivors stay
+    /// selected with their reasons, successful items leave focus/selection/
+    /// the editor, and every verified receipt becomes immediately put-back-
+    /// able (menu, ⌘Z and Recently Deleted alike). The moved count comes from
+    /// the batch itself, not from receipts, so restricted-Trash Macs still
+    /// report honestly while the Finder-only fallback stays distinguishable
+    /// from a real failure.
+    @MainActor private func applyTrashOutcome(_ request: FileMutationRequest,
+                                              outcome: MacWorkspaceFileOperations.TrashBatchOutcome) {
+        var failures = outcome.failures
+        failures.append(contentsOf: request.skipped)
+        restoreHistory.append(contentsOf: outcome.receipts)
+        if !outcome.moved.isEmpty { latestTrashIDs = Set(outcome.receipts.map(\.id)) }
+        let movedPaths = Set(outcome.moved.map {
+            request.operations.directory.appendingPathComponent($0).standardizedFileURL.path
+        })
+        if let focused, movedPaths.contains(focused.standardizedFileURL.path) { self.focused = nil }
+        if let editing, movedPaths.contains(editing.entry.url.standardizedFileURL.path) { self.editing = nil }
+        selection = selection.filter { !movedPaths.contains($0.standardizedFileURL.path) }
+        if !failures.isEmpty {
+            let detail = failures.prefix(3).map { "“\($0.name)”：\(trashFailureReason($0.kind))" }
+                .joined(separator: "\n")
+            mutationError = t("已移到废纸篓 \(outcome.moved.count) 项，\(failures.count) 项未能完成。",
+                              "Moved \(outcome.moved.count) item(s) to the Trash; \(failures.count) could not be completed.")
+                + "\n" + detail
+        } else if outcome.moved.count == request.items.count, outcome.receipts.isEmpty, !request.items.isEmpty {
+            // The system Trash accepted every item but no receipt could be
+            // verified on this Mac; point at Finder instead of a put-back.
+            trashOriginalDirectory = request.operations.directory
+            trashFinderDirectory = try? FileManager.default.url(
+                for: .trashDirectory, in: .userDomainMask,
+                appropriateFor: request.operations.directory, create: false
+            )
+            showTrashFinderNotice = true
+        }
+    }
+
+    private func trashFailureReason(_ kind: MacWorkspaceFileOperations.TrashFailureKind) -> String {
+        switch kind {
+        case .protected:
+            t("此项目属于会话，或仍有附件在草稿中使用。", "This item belongs to a conversation or contains an attachment used by a draft.")
+        case .changed:
+            t("项目已更改或已被替换，请刷新后重试。", "The item changed or was replaced. Refresh and try again.")
+        case .missing:
+            t("项目已不在原位置。", "The item is no longer in its original location.")
+        case .denied:
+            t("请确认文件夹可写，并且项目仍在原处。", "Check that the folder is writable and the item is still in its original location.")
+        }
+    }
+
     private func restore(_ receipt: MacWorkspaceFileOperations.TrashReceipt) {
-        guard canChangeFiles(), !hasPendingChanges else { return }
+        restore([receipt])
+    }
+
+    private func restore(_ receipts: [MacWorkspaceFileOperations.TrashReceipt]) {
+        guard canChangeFiles(), !hasPendingChanges, !receipts.isEmpty else { return }
         mutationInProgress = true
         Task {
             defer { mutationInProgress = false; reloadID = UUID() }
-            do {
-                try await Task.detached(priority: .userInitiated) { try MacWorkspaceFileOperations.restore(receipt) }.value
-                restoreHistory.removeAll { $0.id == receipt.id }
-                latestTrashID = nil
-            } catch { reportMutationFailure(error) }
+            var failures: [String] = []
+            for receipt in receipts {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try MacWorkspaceFileOperations.restore(receipt)
+                    }.value
+                    restoreHistory.removeAll { $0.id == receipt.id }
+                    latestTrashIDs.remove(receipt.id)
+                } catch {
+                    failures.append("“\(receipt.item.name)”：\(restoreFailureReason(error))")
+                }
+            }
+            if !failures.isEmpty {
+                mutationError = t("已恢复 \(receipts.count - failures.count) 项，\(failures.count) 项未能完成。",
+                                  "Restored \(receipts.count - failures.count) item(s); \(failures.count) could not be completed.")
+                    + "\n" + failures.prefix(3).joined(separator: "\n")
+            }
         }
     }
 
@@ -1185,6 +1321,14 @@ struct MacWorkspaceFilesView: View {
             HStack {
                 Text(t("最近删除", "Recently Deleted")).font(.headline)
                 Spacer()
+                let restorable = recentDeletions.filter { !unavailableDeletions.contains($0.id) }
+                let allSelected = !restorable.isEmpty && deletionSelection == Set(restorable.map(\.id))
+                if !restorable.isEmpty {
+                    Button(allSelected ? t("取消全选", "Deselect All") : t("全选", "Select All")) {
+                        deletionSelection = allSelected ? [] : Set(restorable.map(\.id))
+                    }
+                    .accessibilityIdentifier("workspace.files.trash.selectAll")
+                }
                 Button { reloadID = UUID() } label: { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel(t("刷新", "Refresh"))
                     .disabled(loadingDeletions || mutationInProgress)
@@ -1199,7 +1343,7 @@ struct MacWorkspaceFilesView: View {
             } else if recentDeletions.isEmpty {
                 ContentUnavailableView(t("没有最近删除的项目", "No Recently Deleted Items"), systemImage: "trash")
             } else {
-                List(recentDeletions) { record in
+                List(recentDeletions, selection: $deletionSelection) { record in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(verbatim: record.name).lineLimit(1)
@@ -1229,12 +1373,34 @@ struct MacWorkspaceFilesView: View {
                                 .accessibilityIdentifier("workspace.files.putBack")
                         }
                     }
+                    .tag(record.id)
                 }
+                HStack(spacing: 10) {
+                    let selected = recentDeletions.filter { deletionSelection.contains($0.id) && !unavailableDeletions.contains($0.id) }
+                    Button(t("放回所选（\(selected.count) 项）", "Put Back Selected (\(selected.count))")) {
+                        putBackSelected(selected)
+                    }
+                    .disabled(selected.isEmpty || !canChangeFiles() || hasPendingChanges || mutationInProgress)
+                    .accessibilityIdentifier("workspace.files.putBackSelected")
+                    Spacer()
+                    if !selected.isEmpty {
+                        Text(t("已选 \(selected.count) 项", "\(selected.count) selected"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .controlSize(.small)
             }
         }
         .padding(16)
         .frame(minWidth: 380, idealWidth: 440, minHeight: 260)
         .task(id: reloadID) { await loadDeletedItems() }
+        .alert(t("未能完成", "Unable to Finish"), isPresented: Binding(
+            get: { deletionNotice != nil }, set: { if !$0 { deletionNotice = nil } }
+        )) {
+            Button(t("好", "OK"), role: .cancel) { deletionNotice = nil }
+        } message: {
+            Text(verbatim: deletionNotice ?? "")
+        }
     }
 
     @MainActor private func loadDeletedItems() async {
@@ -1263,11 +1429,58 @@ struct MacWorkspaceFilesView: View {
             unavailableDeletions = unavailable
             let live = Set(entries.map(\.id))
             restoreHistory.removeAll { !live.contains($0.id) }
+            // Never keep a selection on a row that vanished or became
+            // unverifiable while the sheet was closed.
+            deletionSelection.formIntersection(live.subtracting(unavailable))
         } catch {
             guard !Task.isCancelled, self.root == root else { return }
             deletionLoadFailed = true
         }
         loadingDeletions = false
+    }
+
+    /// Batch put-back mirrors iPad: every selected record goes through the
+    /// same availability-checked restore as a single put-back; one failure
+    /// never blocks the rest, survivors stay selected, and the notice names
+    /// the count plus the first reasons.
+    private func putBackSelected(_ records: [MacWorkspaceTrashRecord]) {
+        guard let root, let history = recentlyDeletedDirectory, canChangeFiles(), !hasPendingChanges,
+              !records.isEmpty else { return }
+        let managed = managedConversationsRoot ?? fixedRootURL
+        mutationInProgress = true
+        Task {
+            defer { mutationInProgress = false; reloadID = UUID() }
+            var failures: [(id: UUID, name: String, reason: String)] = []
+            for record in records {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try record.restore(root: root, history: history, managed: managed)
+                    }.value
+                    restoreHistory.removeAll { $0.id == record.id }
+                    latestTrashIDs.remove(record.id)
+                } catch {
+                    failures.append((record.id, record.name, restoreFailureReason(error)))
+                }
+            }
+            deletionSelection = Set(failures.map(\.id))
+            if !failures.isEmpty {
+                let restoredCount = records.count - failures.count
+                let detail = failures.prefix(3).map { "“\($0.name)”：\($0.reason)" }.joined(separator: "\n")
+                deletionNotice = t("已恢复 \(restoredCount) 项，\(failures.count) 项未能完成。",
+                                   "Restored \(restoredCount) item(s); \(failures.count) could not be completed.")
+                    + "\n" + detail
+            }
+        }
+    }
+
+    private func restoreFailureReason(_ error: Error) -> String {
+        if let failure = error as? MacWorkspaceTrashRecord.HistoryError {
+            switch failure {
+            case .removed: return t("该项目已离开废纸篓。", "This item is no longer in the Trash.")
+            case .unavailable: return t("请连接原磁盘，并确认原文件夹和废纸篓可访问。", "Connect the original disk and check access to the folder and Trash.")
+            }
+        }
+        return t("请确认文件夹可写，并且项目仍在废纸篓中。", "Check that the folder is writable and the item is still in the Trash.")
     }
 
     private func putBack(_ record: MacWorkspaceTrashRecord) {
@@ -1281,7 +1494,7 @@ struct MacWorkspaceFilesView: View {
                     try record.restore(root: root, history: history, managed: managed)
                 }.value
                 restoreHistory.removeAll { $0.id == record.id }
-                if latestTrashID == record.id { latestTrashID = nil }
+                latestTrashIDs.remove(record.id)
             } catch {
                 showRecentlyDeleted = false
                 reportMutationFailure(error)

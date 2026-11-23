@@ -154,6 +154,8 @@ public enum TaskScheduleOccurrenceState: String, Sendable, Codable, CaseIterable
 /// the same row in every process and duplicate wakeups collapse on the unique
 /// index instead of double-launching a task.
 public struct TaskScheduleOccurrence: Sendable, Codable, Hashable, Identifiable {
+    public static let userSkippedSummary = "Skipped by the user; this occurrence did not run."
+
     public var id: UUID
     public var scheduleID: UUID
     public var scheduledFor: Date

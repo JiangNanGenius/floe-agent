@@ -58,6 +58,9 @@ struct ThreadEventView: View {
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.nativeToolDiagnostics) private var nativeDiagnostics
+    #if FLOE_UNIFIED_MAC
+    @Environment(\.macToolImageWorkspace) private var workspaceImages
+    #endif
 
     // One decode per body evaluation. The payloads are immutable persisted
     // bytes; the previous computed properties re-parsed the same JSON for
@@ -361,6 +364,14 @@ struct ThreadEventView: View {
             detailExpansion: toolDetailExpansion)
         #if canImport(UIKit)
         card.gitHubSource = gitHubSource(payload: payload)
+        #endif
+        #if FLOE_UNIFIED_MAC
+        if let scope = workspaceImages, scope.conversationID == conversationID,
+           outputs.context != nil, result["dispatched"] == "true", result["status"] == "ok",
+           result["outcomeUnknown"] != "true",
+           result["workspaceID"].flatMap(UUID.init(uuidString:)) == scope.workspace.id {
+            card.workspaceImages = scope
+        }
         #endif
         return card
     }

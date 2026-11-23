@@ -26,12 +26,13 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
         var cwd: String?
         var timeoutSeconds: Double?
         var maxOutputBytes: Int?
+        var captureImagePath: String?
     }
 
     static let name = "exec.shell"
-    static let toolDescription = "Run a native macOS shell command starting in this conversation or project's folder. In standard tasks other user files, network and GUI are blocked by macOS workspace sandboxing. Full Access defaults to the native host; access=workspace explicitly keeps confinement. If work needs files outside this workspace or other host resources, request access=host explicitly. Standard tasks must approve host access; Full Access can run it directly. Do not repeat a partially completed command after a denial. Returns real exit status and combined stdout/stderr."
+    static let toolDescription = "Run a native macOS shell command starting in this conversation or project's folder. In standard tasks other user files, network and GUI are blocked by macOS workspace sandboxing. Full Access defaults to the native host; access=workspace explicitly keeps confinement. If work needs files outside this workspace or other host resources, request access=host explicitly. Standard tasks must approve host access; Full Access can run it directly. Do not repeat a partially completed command after a denial. Returns real exit status and combined stdout/stderr. When the command writes a screenshot or generated image, pass captureImagePath with the workspace-relative output file (.png/.jpg/.webp/.gif): after a successful exit the file is verified (fresh, bounded, real image bytes) and attached to the model as visual evidence; stale, failed or invalid captures are reported but never attached."
     static let parametersJSON = #"""
-    {"type":"object","properties":{"command":{"type":"string"},"script":{"type":"string","description":"Multiline alternative to command"},"access":{"type":"string","enum":["workspace","host"]},"cwd":{"type":"string","description":"Optional working directory relative to the current task root"},"timeoutSeconds":{"type":"number","minimum":0.1,"maximum":600},"maxOutputBytes":{"type":"integer","minimum":256,"maximum":65536}},"additionalProperties":false}
+    {"type":"object","properties":{"command":{"type":"string"},"script":{"type":"string","description":"Multiline alternative to command"},"access":{"type":"string","enum":["workspace","host"]},"cwd":{"type":"string","description":"Optional working directory relative to the current task root"},"timeoutSeconds":{"type":"number","minimum":0.1,"maximum":600},"maxOutputBytes":{"type":"integer","minimum":256,"maximum":65536},"captureImagePath":{"type":"string","maxLength":1024,"description":"Optional workspace-relative image file (.png/.jpg/.webp/.gif) the command writes; verified and attached as visual evidence only on exit 0"}},"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .writesFiles]
     static let isSideEffecting = true
@@ -61,6 +62,14 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
         if let cwd = args.cwd, cwd != "." {
             guard cwd == (try? MacAgentWorkspacePinSupport.standardizedRelativePath(cwd)) else { throw ShellError.invalid }
         }
+        if let capture = args.captureImagePath {
+            guard capture == (try? MacAgentWorkspacePinSupport.standardizedRelativePath(capture)),
+                  capture != ".",
+                  ["png", "jpg", "jpeg", "webp", "gif"].contains(
+                    capture.split(separator: ".").last.map { $0.lowercased() } ?? "") else {
+                throw ShellError.invalid
+            }
+        }
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -84,6 +93,13 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
             for await update in updates { await observe?(update) }
         }
         defer { writer.finish(); relay.cancel() }
+        // Record the declared image target's pinned revision before spawning
+        // so post-run admission can prove the command actually (re)wrote it.
+        let priorSnapshot = args.captureImagePath.map { path in
+            (try? MacAgentWorkspacePinSupport.standardizedRelativePath(path)).map {
+                MacWorkspaceImageEvidence.snapshotDeclaredTarget(root: root, relative: $0)
+            } ?? .absent
+        }
         let result = try await Task.detached(priority: .userInitiated) {
             let cwd = args.cwd ?? "."
             // Pin the working directory rather than using a path-based chdir after approval.
@@ -100,7 +116,66 @@ struct MacNativeShellTool: AgentTool, MacAgentWorkspaceExecutable {
         }.value
         writer.finish()
         await relay.value
+        if let captureImagePath = args.captureImagePath, let prior = priorSnapshot {
+            return attachCapturedImage(path: captureImagePath, prior: prior, result: result, context: context)
+        }
         return result
+    }
+
+    /// Admits a declared workspace image output only when the command finished
+    /// successfully with a known outcome and the pinned target revision
+    /// changed across the spawn (or did not exist before it). The file must
+    /// be a real pinned regular file, bounded, sniffed to a canonical image
+    /// type, decodable and digest-addressed. Any failure is reported in the
+    /// output text without failing the command; nothing unverified is ever
+    /// attached and the command's own output digest stays untouched.
+    private func attachCapturedImage(
+        path: String,
+        prior: MacWorkspaceImageEvidence.DeclaredTargetSnapshot,
+        result: ToolExecutionOutput,
+        context: ToolContext
+    ) -> ToolExecutionOutput {
+        let note: String
+        var artifacts = result.artifacts
+        if result.exitStatus != 0 || result.outcomeUnknown {
+            note = "\n[captureImagePath not attached: the command outcome is unknown or failed"
+                + " (exit=\(result.exitStatus.map(String.init) ?? "unknown")).]"
+        } else {
+            do {
+                try context.authorizeWorkspacePath(path)
+                let relative = try MacAgentWorkspacePinSupport.standardizedRelativePath(path)
+                let verified = try MacWorkspaceImageEvidence.verifyDeclaredFile(
+                    root: root, relative: relative, prior: prior)
+                // Write-side stability: publish the admitted bytes to a unique
+                // evidence snapshot. The declared output file keeps whatever
+                // the command left there; a later overwrite — including by a
+                // failed run — can never change this receipt.
+                let artifact = try MacWorkspaceImageEvidence.publish(
+                    root: root, context: context, capture: verified,
+                    basename: "ShellCapture-" + UUID().uuidString)
+                artifacts.append(artifact)
+                note = "\n[captureImagePath attached as visual evidence: captured from \(relative)"
+                    + " to snapshot \(artifact.relativePath)"
+                    + " \(artifact.mimeType) \(artifact.byteCount) bytes"
+                    + " sha256=\(artifact.sha256).]"
+            } catch {
+                note = "\n[captureImagePath not attached: \(error.localizedDescription)]"
+            }
+        }
+        let summary = result.summary + note
+        let captured = (result.capturedOutput ?? result.summary) + note
+        return ToolExecutionOutput(
+            summary: summary,
+            fullOutputSHA256: result.fullOutputSHA256,
+            exitStatus: result.exitStatus,
+            artifacts: artifacts,
+            outputFiles: result.outputFiles,
+            requiresUserAction: result.requiresUserAction,
+            maximumSummaryCharacters: summary.utf8.count + 64,
+            capturedOutput: captured,
+            capturedOutputTruncated: result.capturedOutputTruncated,
+            outcomeUnknown: result.outcomeUnknown
+        )
     }
 
     // A separate app-owned temporary directory per command avoids granting access to the user's global temp files.
