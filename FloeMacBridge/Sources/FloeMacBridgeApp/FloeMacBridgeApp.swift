@@ -145,7 +145,7 @@ private struct BridgeMenuView: View {
 @MainActor
 final class BridgeAppModel: ObservableObject {
     enum SettingsPane: String, CaseIterable {
-        case general, models, localModels, auxiliary, memories, webSearch, siteData, skills, connectors, deviceSync, iCloud, usage, permissions, dataStorage, diagnostics, bridge
+        case general, models, auxiliary, permissions, localModels, memories, webSearch, siteData, skills, connectors, deviceSync, iCloud, usage, dataStorage, diagnostics, bridge
     }
 
     @Published var error: String?
@@ -194,6 +194,7 @@ final class BridgeAppModel: ObservableObject {
     private let smoke = UnifiedMacSmoke.configured()
     var smokePort: UInt16? { server?.boundPort }
     var smokeSettingsFrames: [SettingsPane: CGRect] = [:]
+    @Published var smokeSettingsReveal: SettingsPane?
     var smokeCloudSettingsMounted = false
     var smokeLocalModelSettingsMounted = false
     var smokeSiteSettingsMounted = false
@@ -695,20 +696,30 @@ private struct UnifiedMacSettingsView: View {
                     .padding()
                 Spacer()
             } else {
-                List(selection: Binding<BridgeAppModel.SettingsPane?>(
-                    get: { compact ? nil : model.settingsPane },
-                    set: { if let pane = $0 { select(pane) } }
-                )) {
-                    ForEach(destinations.filter { $0 != .bridge }, id: \.self) { pane in
-                        navigationRow(pane, compact: compact)
+                ScrollViewReader { scroll in
+                    List(selection: Binding<BridgeAppModel.SettingsPane?>(
+                        get: { compact ? nil : model.settingsPane },
+                        set: { if let pane = $0 { select(pane) } }
+                    )) {
+                        ForEach(destinations.filter { $0 != .bridge }, id: \.self) { pane in
+                            navigationRow(pane, compact: compact)
+                        }
+                        if destinations.contains(.bridge) {
+                            Section { navigationRow(.bridge, compact: compact) }
+                        }
                     }
-                    if destinations.contains(.bridge) {
-                        Section { navigationRow(.bridge, compact: compact) }
+                    .listStyle(.sidebar)
+                    .environment(\.defaultMinListRowHeight, FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("settings.sections")
+                    .onChange(of: model.settingsPane) { _, pane in
+                        if !compact { scroll.scrollTo(pane) }
                     }
+                    #if FLOE_MAC_HOST_SMOKE
+                    .onReceive(model.$smokeSettingsReveal.compactMap { $0 }) { pane in
+                        scroll.scrollTo(pane, anchor: .center)
+                    }
+                    #endif
                 }
-                .listStyle(.sidebar)
-                .environment(\.defaultMinListRowHeight, FloeTheme.minimumTarget)
-                .accessibilityIdentifier("settings.sections")
             }
         }
     }
@@ -740,9 +751,12 @@ private struct UnifiedMacSettingsView: View {
             }
         }
         .tag(pane)
+        .id(pane)
         .accessibilityIdentifier("settings.pane." + pane.rawValue)
         #if FLOE_MAC_HOST_SMOKE
-        .background(MacWorkbenchButtonFrameReader { model.smokeSettingsFrames[pane] = $0 })
+        .background(MacWorkbenchButtonFrameReader(marker: "settings.pane." + pane.rawValue) {
+            model.smokeSettingsFrames[pane] = $0
+        })
         #endif
     }
 

@@ -316,7 +316,7 @@ final class UnifiedMacSmoke {
                     }
                     let row = model.smokeSettingsFrames[.permissions]
                     heights[label + "SettingsRow"] = row?.height ?? 0
-                    let pressed = clickSettingsPane(.permissions, model: model, in: sheet)
+                    let pressed = await clickSettingsPane(.permissions, model: model, in: sheet)
                     try? await Task.sleep(for: .milliseconds(220))
                     checks[label + "Settings"] = (row?.height ?? 0) >= 44 && pressed && model.settingsPane == .permissions
                     if label == "narrow" {
@@ -324,7 +324,8 @@ final class UnifiedMacSmoke {
                             clickWindowLocation(NSPoint(x: $0.midX, y: $0.midY), in: sheet)
                         } == true
                         try? await Task.sleep(for: .milliseconds(200))
-                        checks["narrowBack"] = hit && clickSettingsPane(.general, model: model, in: sheet) && model.settingsPane == .general
+                        if hit { checks["narrowBack"] = await clickSettingsPane(.general, model: model, in: sheet) }
+                        else { checks["narrowBack"] = false }
                         let updateDeadline = ContinuousClock.now + .seconds(2)
                         while model.updates.smokeAutomaticChecksFrame == nil && ContinuousClock.now < updateDeadline {
                             try? await Task.sleep(for: .milliseconds(40))
@@ -665,7 +666,7 @@ final class UnifiedMacSmoke {
                     try? await Task.sleep(for: .milliseconds(220))
                     guard let window = model.smokeAgentSettingsSheet, let body = window.contentView else { return }
                     capture(body, extension: "settings-provider-accounts.png")
-                    guard clickSettingsPane(.auxiliary, model: model, in: window) else { return }
+                    guard await clickSettingsPane(.auxiliary, model: model, in: window) else { return }
                     let deadline = ContinuousClock.now + .seconds(3)
                     while !agent.smokeAuxiliaryModelsMounted && ContinuousClock.now < deadline {
                         try? await Task.sleep(for: .milliseconds(40))
@@ -5235,13 +5236,37 @@ final class UnifiedMacSmoke {
             && visibleWorkbench != nil
     }
 
-    private func clickSettingsPane(_ pane: BridgeAppModel.SettingsPane, model: BridgeAppModel, in window: NSWindow) -> Bool {
+    private func clickSettingsPane(_ pane: BridgeAppModel.SettingsPane, model: BridgeAppModel, in window: NSWindow) async -> Bool {
         guard let content = window.contentView else { return false }
-        content.layoutSubtreeIfNeeded()
-        refreshButtonFrames(in: content)
-        if pressAccessibilityButton(content, id: "settings.pane." + pane.rawValue) { return true }
-        guard let frame = model.smokeSettingsFrames[pane], !frame.isEmpty else { return false }
-        return clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: window)
+        let marker = "settings.pane." + pane.rawValue
+        let deadline = ContinuousClock.now + .seconds(2)
+        model.smokeSettingsReveal = pane
+        defer { model.smokeSettingsReveal = nil }
+        repeat {
+            content.layoutSubtreeIfNeeded()
+            if let anchor = controlAnchor(in: content, marker: marker) {
+                let center = NSPoint(x: anchor.bounds.midX, y: anchor.bounds.midY)
+                if anchor.visibleRect.contains(center), content.visibleRect.contains(anchor.convert(center, to: content)) {
+                    if !pressAccessibilityButton(content, id: marker) {
+                        _ = clickWindowLocation(anchor.convert(center, to: nil), in: window)
+                    }
+                    while model.settingsPane != pane && ContinuousClock.now < deadline {
+                        try? await Task.sleep(for: .milliseconds(30))
+                    }
+                    if model.settingsPane == pane { return true }
+                    break
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(30))
+        } while ContinuousClock.now < deadline
+        settingsDiagnostics.append("Could not select the \(pane.rawValue) row. Selected: \(model.settingsPane.rawValue).")
+        return false
+    }
+
+    private func controlAnchor(in view: NSView, marker: String) -> NSView? {
+        guard !view.isHiddenOrHasHiddenAncestor else { return nil }
+        if view.identifier?.rawValue == marker { return view }
+        return view.subviews.lazy.compactMap { self.controlAnchor(in: $0, marker: marker) }.first
     }
 
     private func exerciseUnifiedSettings(model: BridgeAppModel) async -> Bool {
@@ -5274,8 +5299,7 @@ final class UnifiedMacSmoke {
         workspace.verifyAgentAnswers = false
         workspace.allowsWorkspaceWrites = true
         guard preferencesSaved else { return false }
-        guard clickSettingsPane(.permissions, model: model, in: window) else { return false }
-        try? await Task.sleep(for: .milliseconds(180))
+        guard await clickSettingsPane(.permissions, model: model, in: window) else { return false }
         guard model.settingsPane == .permissions, model.smokeAgentSettingsSheet === window else { return false }
         if let content = window.contentView {
             capture(content, extension: "settings-permissions.png")
@@ -5296,18 +5320,15 @@ final class UnifiedMacSmoke {
             workspace.allowsWorkspaceWrites = true
         } else { return false }
         for pane in [BridgeAppModel.SettingsPane.webSearch, .usage] {
-            guard clickSettingsPane(pane, model: model, in: window) else { return false }
-            let selectedDeadline = ContinuousClock.now + .seconds(2)
-            while model.settingsPane != pane && ContinuousClock.now < selectedDeadline {
-                try? await Task.sleep(for: .milliseconds(30))
-            }
+            guard await clickSettingsPane(pane, model: model, in: window) else { return false }
             guard model.settingsPane == pane, let content = window.contentView else { return false }
             try? await Task.sleep(for: .milliseconds(160))
             capture(content, extension: "settings-\(pane.rawValue).png")
         }
         guard (try? await workspace.usageStatistics()) != nil else { return false }
         model.openSettings(.models)
-        while model.settingsPane != .models && ContinuousClock.now < deadline {
+        let modelsDeadline = ContinuousClock.now + .seconds(2)
+        while model.settingsPane != .models && ContinuousClock.now < modelsDeadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
         guard model.settingsPane == .models, model.smokeAgentSettingsSheet === window else { return false }
@@ -5315,7 +5336,8 @@ final class UnifiedMacSmoke {
         if let content = window.contentView { capture(content, extension: "settings-models.png") }
 
         model.openSettings(.bridge)
-        while model.settingsPane != .bridge && ContinuousClock.now < deadline {
+        let bridgeDeadline = ContinuousClock.now + .seconds(2)
+        while model.settingsPane != .bridge && ContinuousClock.now < bridgeDeadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
         guard model.settingsPane == .bridge, model.isAgentMode, model.smokeAgentSettingsSheet === window,
