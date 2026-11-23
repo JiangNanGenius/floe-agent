@@ -6,24 +6,26 @@ import verify_selected_publication as review
 
 
 class SelectedPublicationTests(unittest.TestCase):
-    def fixture(self):
+    def fixture(self, identifier=review.COMPATIBILITY_ID):
         before = dict(schemaVersion=1, publisher="JiangNanGenius", generatedAt="before", entries=[
-            dict(id=review.COMPATIBILITY_ID, version="1.1.2", sha256="old-provider",
-                 path="content-hub/packages/floe.providers.compatibility/1.1.2/floe.providers.compatibility.zip"),
+            dict(id=identifier, version="1.1.2", sha256="old-package",
+                 path=f"content-hub/packages/{identifier}/1.1.2/{identifier}.zip"),
             dict(id="floe.search.providers", version="1.1.0", sha256="old-search",
                  path="content-hub/packages/floe.search.providers/1.1.0/floe.search.providers.zip"),
         ])
         after = copy.deepcopy(before)
         after["generatedAt"] = "after"
-        after["entries"][0].update(version="1.1.6", sha256="new-provider",
-            path="content-hub/packages/floe.providers.compatibility/1.1.6/floe.providers.compatibility.zip")
+        after["entries"][0].update(version="1.1.6", sha256="new-package",
+            path=f"content-hub/packages/{identifier}/1.1.6/{identifier}.zip")
         return before, after
 
     def test_only_selected_entry_and_optional_new_archive_are_allowed(self):
-        before, after = self.fixture()
-        changes = "M\tcontent-hub/index.json\nM\tcontent-hub/index.sig\n"
-        review.verify(before, after, changes, review.COMPATIBILITY_ID)
-        review.verify(before, after, changes + "A\t" + after["entries"][0]["path"], review.COMPATIBILITY_ID)
+        for identifier in (review.COMPATIBILITY_ID, review.HELP_ID):
+            before, after = self.fixture(identifier)
+            changes = "M\tcontent-hub/index.json\nM\tcontent-hub/index.sig\n"
+            with self.subTest(identifier=identifier):
+                review.verify(before, after, changes, identifier)
+                review.verify(before, after, changes + "A\t" + after["entries"][0]["path"], identifier)
 
     def test_full_publish_cannot_promote_an_unselected_staged_package(self):
         before, after = self.fixture()

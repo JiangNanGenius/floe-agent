@@ -56,15 +56,16 @@ class ContentHubPublicationScopeTests(unittest.TestCase):
             expected = 'both' if full else 'android' if android else 'content'
             self.assertEqual(output.read_text().strip(), 'channels=' + expected)
 
-    def test_package_selection_only_admits_compatibility_content_scope(self):
-        for selected in ('floe.providers.compatibility', 'floe.search.providers', 'unknown'):
+    def test_package_selection_only_admits_supported_content_packages(self):
+        supported = ('floe.providers.compatibility', 'floe.help.quickstart')
+        for selected in (*supported, 'floe.search.providers', 'unknown'):
             for full, android, content in itertools.product([False, True], repeat=3):
                 script = step('Resolve publication channels')
                 for key, value in [('publish', full), ('publish_android', android),
                                    ('publish_content', content)]:
                     script = script.replace('${{ inputs.' + key + ' }}', str(value).lower())
                 result = self.run_shell(script, ONLY_PACKAGE=selected)
-                allowed = selected == 'floe.providers.compatibility' and content and not full and not android
+                allowed = selected in supported and content and not full and not android
                 self.assertEqual(result.returncode == 0, allowed, result.stderr)
 
     def test_content_signing_forwards_only_the_selected_package(self):
@@ -79,7 +80,7 @@ with (Path(os.environ['MOCK_ROOT'])/'python-calls').open('a') as f:
 ''')
         python.chmod(0o700)
         calls = self.root / 'python-calls'
-        for selected in ('', 'floe.providers.compatibility'):
+        for selected in ('', 'floe.providers.compatibility', 'floe.help.quickstart'):
             calls.unlink(missing_ok=True)
             result = self.run_shell(step('Build signed content feed only'),
                 ONLY_PACKAGE=selected, MOCK_ROOT=str(self.root),
@@ -131,12 +132,12 @@ elif args[:1]==['rev-parse']: print('a'*40)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(c[0] in ('commit', 'push') for c in commands))
 
-    def test_selected_content_stages_only_compatibility_paths(self):
-        result, commands = self.execute_commit(only_package='floe.providers.compatibility')
+    def test_selected_help_content_stages_only_help_paths(self):
+        result, commands = self.execute_commit(only_package='floe.help.quickstart')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c for c in commands if c[0] == 'add'], [[
             'add', 'content-hub/index.json', 'content-hub/index.sig',
-            'content-hub/packages/floe.providers.compatibility']])
+            'content-hub/packages/floe.help.quickstart']])
 
     def test_selected_content_rejects_another_staged_package(self):
         result, commands = self.execute_commit('content-hub/packages/floe.search.providers/fixture.zip',

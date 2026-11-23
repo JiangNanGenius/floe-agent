@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       only_package:
-        description: Optional content-only package (floe.providers.compatibility); empty publishes all content sources
+        description: Optional content-only package (floe.providers.compatibility or floe.help.quickstart); empty publishes all content sources
         required: false
         type: string
         default: ''
@@ -93,7 +93,7 @@ jobs:
             echo "$unexpected"
             exit 1
           fi
-      - name: Verify selected compatibility publication independently
+      - name: Verify selected content publication independently
         if: ${{ needs.publish.outputs.commit != '' && needs.publish.outputs.channels == 'content' && inputs.only_package != '' }}
         env:
           DISPATCHED: ${{ github.sha }}
@@ -146,11 +146,14 @@ jobs:
           ONLY_PACKAGE: ${{ inputs.only_package }}
         run: |
           if [ -n "$ONLY_PACKAGE" ]; then
-            if [ "$ONLY_PACKAGE" != "floe.providers.compatibility" ] || \
-               [ "${{ inputs.publish_content }}" != "true" ] || \
+            case "$ONLY_PACKAGE" in
+              floe.providers.compatibility|floe.help.quickstart) ;;
+              *) echo 'Unsupported content package selection.'; exit 1 ;;
+            esac
+            if [ "${{ inputs.publish_content }}" != "true" ] || \
                [ "${{ inputs.publish }}" = "true" ] || \
                [ "${{ inputs.publish_android }}" = "true" ]; then
-              echo 'A package selection requires compatibility-only content publication.'
+              echo 'A package selection requires content-only publication.'
               exit 1
             fi
           fi
@@ -239,9 +242,11 @@ jobs:
             fi
           fi
           if [ -n "$ONLY_PACKAGE" ]; then
-            unexpected="$(git diff --cached --name-only | grep -Ev '^content-hub/(index\.(json|sig)$|packages/floe\.providers\.compatibility/)' || true)"
+            unexpected="$(git diff --cached --name-only | awk -v prefix="content-hub/packages/$ONLY_PACKAGE/" '
+              $0 != "content-hub/index.json" && $0 != "content-hub/index.sig" && index($0, prefix) != 1
+            ')"
             if [ -n "$unexpected" ]; then
-              echo 'Compatibility-only publication staged unrelated paths:'
+              echo 'Selected content publication staged unrelated paths:'
               echo "$unexpected"
               exit 1
             fi

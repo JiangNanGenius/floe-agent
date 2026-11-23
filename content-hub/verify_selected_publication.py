@@ -5,11 +5,13 @@ import re
 import subprocess
 
 COMPATIBILITY_ID = "floe.providers.compatibility"
+HELP_ID = "floe.help.quickstart"
+SELECTABLE_IDS = (COMPATIBILITY_ID, HELP_ID)
 
 
 def verify(before, after, changes, identifier):
-    if identifier != COMPATIBILITY_ID:
-        raise ValueError("only compatibility-package publication is supported")
+    if identifier not in SELECTABLE_IDS:
+        raise ValueError("unsupported content package selection")
     if set(before) != set(after) or any(before[key] != after[key]
             for key in before if key not in {"entries", "generatedAt"}):
         raise ValueError("publication changed feed metadata")
@@ -46,7 +48,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--before", required=True)
     parser.add_argument("--after", required=True)
-    parser.add_argument("--only-package", required=True, choices=[COMPATIBILITY_ID])
+    parser.add_argument("--only-package", required=True, choices=SELECTABLE_IDS)
     args = parser.parse_args()
     if not all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in (args.before, args.after)):
         parser.error("before and after must be immutable commit SHAs")
@@ -56,7 +58,7 @@ def main():
         "git", "diff", "--name-status", "--no-renames", args.before, args.after
     ], text=True)
     verify(index(args.before), index(args.after), changes, args.only_package)
-    print("Verified selected compatibility entry and unchanged publication boundaries")
+    print("Verified selected content entry and unchanged publication boundaries")
 
 
 if __name__ == "__main__":
