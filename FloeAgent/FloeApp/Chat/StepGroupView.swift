@@ -39,6 +39,7 @@ struct StepGroupView: View {
     private let onOpenGameFiles: ((UUID) -> Void)?
     private let conversationID: UUID?
     private let toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)?
+    private let onToolCompletionsPresented: ((Set<String>) -> Void)?
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
     @StateObject private var projection = StepGroupMetadata()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -85,24 +86,22 @@ struct StepGroupView: View {
                 reasoningCount > 0 ? FloeL10n.plural("chat.step_group_view.thinking_segments", count: reasoningCount) : nil]
             .compactMap { $0 }.joined(separator: " · ")
     }
-    private func stateTitle(displayed: [RunEventRecord], snapshot: StepGroupMetadata.Snapshot, pending: [PendingApproval]) -> String {
-        if !pending.isEmpty { return FloeL10n.l("chat.step_group_view.waiting_for_confirmation") }
-        let failed = failedTools(displayed, snapshot: snapshot, pending: pending)
-        if !failed.isEmpty { return FloeL10n.plural("chat.step_group_view.items_need_review", count: failed.count) }
-        let active = activeTools(displayed, snapshot: snapshot)
-        if !active.isEmpty { return FloeL10n.plural("chat.step_group_view.items_running", count: active.count) }
+    private func stateTitle(active: Int, failed: Int, hasPending: Bool) -> String {
+        if hasPending { return FloeL10n.l("chat.step_group_view.waiting_for_confirmation") }
+        if failed > 0 { return FloeL10n.plural("chat.step_group_view.items_need_review", count: failed) }
+        if active > 0 { return FloeL10n.plural("chat.step_group_view.items_running", count: active) }
         return isLive ? FloeL10n.l("chat.step_group_view.run_records") : FloeL10n.l("chat.step_group_view.view_run_records")
     }
-    private func stateColor(displayed: [RunEventRecord], snapshot: StepGroupMetadata.Snapshot, pending: [PendingApproval]) -> Color {
-        if !pending.isEmpty { return FloeTheme.pending }
-        if !failedTools(displayed, snapshot: snapshot, pending: pending).isEmpty { return FloeTheme.destructive }
-        return !activeTools(displayed, snapshot: snapshot).isEmpty ? FloeTheme.primary : .secondary
+    private func stateColor(active: Bool, failed: Bool, hasPending: Bool) -> Color {
+        if hasPending { return FloeTheme.pending }
+        if failed { return FloeTheme.destructive }
+        return active ? FloeTheme.primary : .secondary
     }
-    private func visibleEvents(_ displayed: [RunEventRecord], snapshot: StepGroupMetadata.Snapshot, pending: [PendingApproval]) -> [RunEventRecord] {
+    private func visibleEvents(_ displayed: [RunEventRecord], snapshot: StepGroupMetadata.Snapshot,
+                               pending: [PendingApproval], urgentEvents: [RunEventRecord]) -> [RunEventRecord] {
         if isExpanded { return displayed }
         // A collapsed batch never hides a decision, current activity or error.
-        var urgent = Set((activeTools(displayed, snapshot: snapshot)
-            + failedTools(displayed, snapshot: snapshot, pending: pending)).map(\.id))
+        var urgent = Set(urgentEvents.map(\.id))
         for event in displayed where decisionSummary(for: event, payloads: snapshot.payloads) != nil {
             urgent.insert(event.id)
         }
@@ -125,10 +124,15 @@ struct StepGroupView: View {
         let snapshot = projection.read(events, conversationID: conversationID)
         let pending = allPendingApprovals.filter { snapshot.requests.contains($0.toolCall.id) }
         let displayed = displayedEvents(snapshot)
-        let rows = visibleEvents(displayed, snapshot: snapshot, pending: pending)
+        let active = activeTools(displayed, snapshot: snapshot)
+        let failed = failedTools(displayed, snapshot: snapshot, pending: pending)
+        let rows = visibleEvents(displayed, snapshot: snapshot, pending: pending, urgentEvents: active + failed)
         let title = summary(displayed)
-        let state = stateTitle(displayed: displayed, snapshot: snapshot, pending: pending)
-        let color = stateColor(displayed: displayed, snapshot: snapshot, pending: pending)
+        let state = stateTitle(active: active.count, failed: failed.count, hasPending: !pending.isEmpty)
+        let color = stateColor(active: !active.isEmpty, failed: !failed.isEmpty, hasPending: !pending.isEmpty)
+        let completions = onToolCompletionsPresented.map { _ in
+            Set(snapshot.requests.filter { liveFinishedTools[$0] != nil || snapshot.results[$0] != nil })
+        } ?? []
         VStack(alignment: .leading, spacing: 10) {
             Button {
                 withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded.toggle() }
@@ -186,6 +190,9 @@ struct StepGroupView: View {
             }
         }
         .padding(.vertical, 6)
+        .onChange(of: completions, initial: true) { _, ids in
+            if !ids.isEmpty { onToolCompletionsPresented?(ids) }
+        }
         // Do not expand on every event update: an explicit collapse remains
         // effective throughout a long batch. Urgent rows remain visible above.
         .onChange(of: isLatest) { wasLatest, latest in
@@ -219,6 +226,7 @@ struct StepGroupView: View {
         conversationID: UUID? = nil,
         onOpenGameFiles: ((UUID) -> Void)? = nil,
         toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)? = nil,
+        onToolCompletionsPresented: ((Set<String>) -> Void)? = nil,
         onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
     ) {
         self.events = events
@@ -233,6 +241,7 @@ struct StepGroupView: View {
         self.onOpenGameFiles = onOpenGameFiles
         self.conversationID = conversationID
         self.toolDetailExpansion = toolDetailExpansion
+        self.onToolCompletionsPresented = onToolCompletionsPresented
         self.onResolveApproval = onResolveApproval
         // The active/latest group is the user's only view into current tool
         // progress. Historical groups stay compact, while the latest group

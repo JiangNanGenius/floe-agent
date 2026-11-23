@@ -712,7 +712,8 @@ public struct WorkspaceFileService: Sendable {
     @discardableResult
     public func importUserFile(
         from source: URL, to path: String, expectedSHA256: String?,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        validateBeforeCommit: (@Sendable () throws -> Void)? = nil
     ) throws -> WriteOutcome {
         let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
         lock.lock(); defer { lock.unlock() }
@@ -785,6 +786,7 @@ public struct WorkspaceFileService: Sendable {
         try cancellation?.throwIfCancelled()
         try guardResolver.assertWritable(destination)
         try assertNotFrozen(destination)
+        try validateBeforeCommit?()
         // FileManager.moveItem never overwrites a destination appearing late.
         try fileManager.moveItem(at: staging, to: destination)
         let modified = try destination.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate

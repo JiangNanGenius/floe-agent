@@ -132,6 +132,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:]
     /// Executor returns are transient; the persisted result always wins once available.
     @Published private(set) var liveFinishedTools: [String: String] = [:]
+    private var pendingToolPresentation: [String: UInt64] = [:]
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
     @Published private(set) var approvalReviewSummary: String?
@@ -2617,6 +2618,15 @@ final class ThreadDetailViewModel: ObservableObject {
 
     // MARK: - Live push stream
 
+    func toolCompletionsPresented(_ callIDs: Set<String>) {
+        guard let runID = selectedRunID, !pendingToolPresentation.isEmpty else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        for id in callIDs {
+            guard let emittedAt = pendingToolPresentation.removeValue(forKey: id), now >= emittedAt else { continue }
+            logger.debug("toolFinishPresented run=\(runID.uuidString) elapsedMs=\((now - emittedAt) / 1_000_000)")
+        }
+    }
+
     private func startSessionUpdates() {
         sessionEventTask?.cancel()
         let stream = center.sessionEvents(conversationID: conversationID)
@@ -2704,6 +2714,7 @@ final class ThreadDetailViewModel: ObservableObject {
         latestUsage = UsageSnapshot()
         nativeToolDiagnostics = [:]
         liveFinishedTools = [:]
+        pendingToolPresentation = [:]
         guard let run = selectedRun else {
             isRunning = false
             return
@@ -2802,6 +2813,7 @@ final class ThreadDetailViewModel: ObservableObject {
                     }
                 case .toolLifecycle(.requested(let call)):
                     self.liveFinishedTools.removeValue(forKey: call.id)
+                    self.pendingToolPresentation.removeValue(forKey: call.id)
                     if self.liveStateName == "preparingToolCall" { self.liveStateName = "streamingModel" }
                     // A new call starts: the previous settlement note is no
                     // longer the current truth.
@@ -2820,13 +2832,14 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.hasProviderActivity = true
                 case .toolLifecycle(.executionFinished(let callID, let status, let emittedAt)):
                     guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
-                    self.liveFinishedTools[callID] = status.rawValue
                     if let emittedAt {
+                        if self.pendingToolPresentation.count < 128 { self.pendingToolPresentation[callID] = emittedAt }
                         let now = DispatchTime.now().uptimeNanoseconds
                         if now >= emittedAt, (now - emittedAt) / 1_000_000 >= 250 {
                             self.logger.info("toolFinishUIQueue run=\(run.id.uuidString) delayMs=\((now - emittedAt) / 1_000_000)")
                         }
                     }
+                    self.liveFinishedTools[callID] = status.rawValue
                 case .userInputConsumed:
                     guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     answerTarget = ""

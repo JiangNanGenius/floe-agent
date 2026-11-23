@@ -18,6 +18,13 @@ enum BrowserURLPolicy {
         previewLock.withLock { _ = serviceOrigins.removeValue(forKey: owner) }
     }
 
+    static func isLiveService(_ url: URL, owner: UUID, conversationID: UUID) -> Bool {
+        previewLock.withLock {
+            guard let service = serviceOrigins[owner] else { return false }
+            return service.conversationID == conversationID && service.origin == url.originString
+        }
+    }
+
     static func authorizePreview(_ url: URL) {
         guard let prefix = previewPrefix(for: url) else { return }
         previewLock.withLock { _ = previewPrefixes.insert(prefix) }

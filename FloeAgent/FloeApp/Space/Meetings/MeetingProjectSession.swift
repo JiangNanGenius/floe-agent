@@ -36,7 +36,9 @@ import FloeTools
     /// A late stopped/cancelled callback from a previous recording must not
     /// clear the current recording's live state.
     var captureEventSession: CaptureSessionID?
+    var drainingCaptureSession: CaptureSessionID?
     var isUpdatingMinutes = false
+    var minutesRefreshPending = false
     var rollingSummaryGeneration = UUID()
     private var captureSettlement: Task<Void, Never>?
     private var audioHeld = false
@@ -344,6 +346,9 @@ import FloeTools
         }
         isPaused = !isRecording && pausedRecordingID != nil
         synchronizeSummaryTimer()
+        if succeeded, !pausing, continuousASR?.isLiveActive != true, liveTranscription?.isWorking != true {
+            updateRollingMinutes()
+        }
         return succeeded
     }
     /// True navigation uses this completion boundary. A pending permission/

@@ -13,12 +13,12 @@ extension MediaV2Session {
     /// Full originals preserve every typed object. External formats use their
     /// reviewed subset bridge and refuse unsupported content before export.
     func exportInterchange(_ format: MediaV2ExchangeFormat) async throws -> URL {
-        guard !store.hasWritePermitProvider else {
-            throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此工程暂不支持工程交换，请先在个人作品中处理。", "Project exchange is unavailable here. Use a personal project instead."))
-        }
+        let permit = try await store.beginOperationPermit(projectID: id)
+        defer { permit?.release() }
         let frozen = project, assets = try resolvedAssets()
-        let directory = root.appendingPathComponent("Exports")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try exportDirectory()
+        var delivered = false
+        defer { if store.hasWritePermitProvider || !delivered { try? FileManager.default.removeItem(at: directory) } }
         let output = directory.appendingPathComponent("project-r\(frozen.revision)-\(UUID().uuidString)." + (format == .original || format == .references ? "zip" : format.rawValue))
         if format == .original || format == .references {
             let stage = directory.appendingPathComponent(".original-\(UUID().uuidString)")
@@ -112,9 +112,11 @@ extension MediaV2Session {
                 try bytes.write(to: output, options: .atomic)
             }
         }
-        guard project.revision == frozen.revision else { throw MediaPreparedCoreError.documentChanged }
-        recordExport(output)
-        return output
+        guard project.id == frozen.id, project.revision == frozen.revision else { throw MediaPreparedCoreError.documentChanged }
+        let published = try await publishExport(output, permit: permit)
+        recordExport(published)
+        delivered = true
+        return published
     }
 }
 

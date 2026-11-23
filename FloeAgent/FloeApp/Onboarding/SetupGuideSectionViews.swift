@@ -1313,7 +1313,7 @@ struct SetupSummarySection: View {
                let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == id }) {
                 model.resources.prepareOnDeviceModel(entry)
             }
-        case .localRuntime: model.resources.prepareRuntime()
+        case .localRuntime: model.jump(to: .files)
         case .contentUpdate:
             if let id = row.jobSubjectID { model.resources.prepareContent(id) }
         case .skillHub:

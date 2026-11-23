@@ -351,14 +351,20 @@ final class LinuxImageInstallModel: ObservableObject {
         let cancellation = CancellationToken()
         recoveryCancellation = cancellation
         Task {
+            var notice: String?
+            var failure: String?
             do {
                 try await FloePlatformServices.shared.rebuildLinuxRuntimePreservingData(cancellation: cancellation, repairTicket: repairTicket)
-                recoveryNotice = String(localized: "execution.runtime_rebuild.complete")
-            } catch is CancellationError { recoveryNotice = String(localized: "envmgr.job_cancelled") }
-            catch { recoveryError = error.localizedDescription }
+                notice = String(localized: "execution.runtime_rebuild.complete")
+            } catch is CancellationError { notice = String(localized: "envmgr.job_cancelled") }
+            catch { failure = error.localizedDescription }
+            // Keep this operation visible until the installed state has
+            // been read back, then publish its real outcome.
+            await refresh()
+            recoveryNotice = notice
+            recoveryError = failure
             recoveryCancellation = nil
             rebuilding = false; recoveryCancelling = false
-            await refresh()
         }
     }
 

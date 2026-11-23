@@ -196,7 +196,13 @@ final class SetupResourcePreparation: ObservableObject {
     }
 
     func cancelRuntime() {
-        runtime.cancelDownload()
+        if runtime.recoveryRunning {
+            runtime.cancelPreservingRecovery()
+        } else if runtime.canUpgradeKnownOldImage, runtime.currentImageDownloadRunning {
+            EnvironmentPackageJobs.shared.cancel(id: runtime.currentImageJobID)
+        } else {
+            runtime.cancelDownload()
+        }
         scheduleRebuild()
     }
 
@@ -286,7 +292,7 @@ final class SetupResourcePreparation: ObservableObject {
             selectedSubjectID: runtimeReport.isInstalled ? runtime.imageID : nil,
             installedSubjectIDs: runtimeReport.isInstalled ? [runtime.imageID] : [],
             pendingSubjectID: SetupResourceStageRules.stage(for: runtimeReport).isPreparing
-                ? runtime.imageID : nil
+                ? runtimeReport.jobSubjectID : nil
         )
 
         let content = contentReports(environment.contentUpdateCenter)
@@ -491,52 +497,78 @@ final class SetupResourcePreparation: ObservableObject {
     /// renders an indeterminate bar instead of an invented total.
     private func runtimeReport() -> SetupResourceReport {
         let jobs = EnvironmentPackageJobs.shared
-        let running = jobs.running.contains(runtime.jobID)
-        let phase = jobs.phases[runtime.jobID]
-        let fraction = running ? jobs.fractions[runtime.jobID] : nil
-        let installed: Bool
-        switch runtime.state {
-        case .installedStopped, .running, .updateAvailable: installed = true
-        default: installed = false
+        let activeJob: (id: String, subject: String, cancelling: Bool)?
+        if runtime.recoveryRunning {
+            let id = runtime.recoveryJobID
+            activeJob = (id, id, runtime.recoveryCancelling || jobs.isCancelling(id: id))
+        } else if runtime.canUpgradeKnownOldImage, runtime.currentImageDownloadRunning {
+            let id = runtime.currentImageJobID
+            activeJob = (id, id, jobs.isCancelling(id: id))
+        } else if runtime.running {
+            activeJob = (runtime.jobID, runtime.imageID, runtime.cancelling)
+        } else {
+            activeJob = nil
         }
+        if let activeJob {
+            let phase = jobs.phases[activeJob.id]
+            let transfer = jobs.transfers[activeJob.id]
+            return SetupResourceReport(
+                kind: .localRuntime,
+                titleKey: "setup.resource.local_runtime",
+                jobSubjectID: activeJob.subject,
+                phase: Self.runtimePhase(phase),
+                totalBytes: transfer?.totalBytes ?? (activeJob.id == runtime.jobID ? runtime.sizeBytes : nil),
+                transferredBytes: transfer?.receivedBytes,
+                bytesPerSecond: transfer?.bytesPerSecond,
+                ownerFraction: phase == .downloading && transfer?.totalBytes != nil ? jobs.fractions[activeJob.id] : nil,
+                wasCancelled: activeJob.cancelling
+            )
+        }
+
+        let installed: Bool
         var resourcePhase: SetupResourcePhase = .idle
-        var failure: String?
+        var failure = runtime.recoveryError
+            ?? (jobs.failures.contains(runtime.recoveryJobID) ? jobs.messages[runtime.recoveryJobID] : nil)
+            ?? (runtime.failed ? runtime.message : nil)
+        if case .downloading(_, let cancelling) = runtime.state {
+            return SetupResourceReport(kind: .localRuntime, titleKey: "setup.resource.local_runtime",
+                                       jobSubjectID: runtime.imageID, phase: .queued, wasCancelled: cancelling)
+        }
         switch runtime.state {
-        case .storageInitializing: resourcePhase = running ? .queued : .idle
-        case .storageUnavailable: failure = "environment.backend.image_store_unavailable"
+        case .storageInitializing, .downloading:
+            installed = false
+        case .storageUnavailable:
+            installed = false
+            failure = failure ?? "environment.backend.image_store_unavailable"
         case .needsDownload(let verification):
-            resourcePhase = running ? .queued : .idle
-            failure = verification
-        case .downloading(_, let cancelling):
-            if cancelling { failure = nil }
-            resourcePhase = switch phase {
-            case .some(.downloading): .transferring
-            case .some(.checking), .some(.verifyingArchive), .some(.verifyingImage): .verifying
-            case .some(.extracting), .some(.finalizing), .some(.reconstructing),
-                 .some(.stoppingRuntime), .some(.creatingEnvironment), .some(.retainingEnvironment): .installing
-            case .none: .transferring
-            }
+            installed = false
+            failure = failure ?? verification
         case .imageRepairRequired(_, let message), .repairRequired(_, let message):
-            failure = message
+            installed = false
+            failure = failure ?? message
         case .installedStopped, .running, .updateAvailable:
+            installed = true
             resourcePhase = .finished
         }
-        let transfer = running ? jobs.transfers[runtime.jobID] : nil
-        let total = transfer?.totalBytes ?? runtime.sizeBytes
-        let ownerFraction = phase == .downloading && transfer?.totalBytes != nil ? fraction : nil
         return SetupResourceReport(
             kind: .localRuntime,
             titleKey: "setup.resource.local_runtime",
-            jobSubjectID: running || installed ? runtime.imageID : nil,
+            jobSubjectID: installed ? runtime.imageID : nil,
             phase: resourcePhase,
-            totalBytes: total,
-            transferredBytes: transfer?.receivedBytes,
-            bytesPerSecond: transfer?.bytesPerSecond,
-            ownerFraction: ownerFraction,
+            totalBytes: runtime.sizeBytes,
             isInstalled: installed,
-            wasCancelled: running ? runtime.cancelling : false,
             failureMessage: failure
         )
+    }
+
+    private static func runtimePhase(_ phase: LinuxGuestImageTransferPhase?) -> SetupResourcePhase {
+        switch phase {
+        case .none: .queued
+        case .downloading: .transferring
+        case .checking, .verifyingArchive, .verifyingImage: .verifying
+        case .extracting, .finalizing, .reconstructing, .stoppingRuntime,
+             .creatingEnvironment, .retainingEnvironment: .installing
+        }
     }
 
     /// The Skill Hub jobs the user already started, mirrored exactly. The

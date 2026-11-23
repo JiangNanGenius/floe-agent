@@ -162,6 +162,12 @@ extension MeetingProjectSession {
         documentExportTask = Task { [self] in
             defer { documentExportTask = nil; documentExportCancellation = nil; isExportingDocument = false }
             do {
+                if format == .word || format == .pdf {
+                    while !isRecording, intelligence.automaticSummary,
+                          drainingCaptureSession != nil || liveTranscription?.isWorking == true || rollingSummaryTask != nil {
+                        try await Task.sleep(for: .milliseconds(100))
+                    }
+                }
                 let snapshot = try await documentSnapshot()
                 let result = try await writeDocument(snapshot, format: format, cancellation: cancellation)
                 try Task.checkCancellation(); try cancellation.throwIfCancelled()

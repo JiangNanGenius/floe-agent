@@ -274,6 +274,7 @@ public actor ConversationRunService {
     /// end boundary. Recorded per call as each executor returns BEFORE the
     /// batch settles, so parallel calls keep their own real durations.
     private var toolCompletedAt: [String: ContinuousClock.Instant] = [:]
+    private var lastExecutorCompletionUptime: UInt64?
     private var toolNames: [String: String] = [:]
     private var finishedToolExecutions: [String: ToolResult.Status] = [:]
     /// Prevents the legacy Markdown fallback from overwriting a structured
@@ -868,6 +869,13 @@ public actor ConversationRunService {
 
     private func handleProviderAttempt(_ snapshot: ProviderAttemptSnapshot) async {
         if snapshot.status == .started { protocolReasoningText = "" }
+        if snapshot.status == .firstEvent, let completedAt = lastExecutorCompletionUptime {
+            lastExecutorCompletionUptime = nil
+            let now = DispatchTime.now().uptimeNanoseconds
+            if now >= completedAt {
+                logger.debug("toolFinishToProviderFirstEvent run=\(runID.uuidString) elapsedMs=\((now - completedAt) / 1_000_000)")
+            }
+        }
         providerAttempt = snapshot
         eventChannel.yield(.providerAttemptChanged(snapshot))
         var payload: [String: String] = [
@@ -1440,8 +1448,10 @@ public actor ConversationRunService {
     private func handleToolFinish(callID: String, status: ToolResult.Status, at stamp: ToolTimingStamp) {
         toolCompletedAt[callID] = stamp.monotonic
         finishedToolExecutions[callID] = status
+        let emittedAt = DispatchTime.now().uptimeNanoseconds
+        lastExecutorCompletionUptime = emittedAt
         eventChannel.yield(.toolLifecycle(.executionFinished(callID: callID, status: status,
-            emittedUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds)))
+            emittedUptimeNanoseconds: emittedAt)))
     }
 
     private func handleNativeDiagnostic(_ observation: TaskDiagnosticProgress, callID: String) {

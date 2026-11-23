@@ -153,6 +153,7 @@ extension MeetingProjectSession {
         guard !segments.isEmpty else {
             diagnostic = IDELanguageRunText.t("先录音或导入素材，再转写内容。", "Record or import media, then transcribe it first."); return
         }
+        let coveredTranscriptCount = transcript.count
         let targetLanguage = intelligence.translationLanguage
         var translationBindings: [UUID: MeetingTranslationBinding] = [:]
         if action == "translate" {
@@ -199,7 +200,7 @@ extension MeetingProjectSession {
                     try Task.checkCancellation()
                     let summary = try await service.recordSummary(meeting: MeetingID(id), kind: summaries.isEmpty ? .first : .rolling,
                         text: answer, window: .init(start: segments.first!.range.start, end: segments.last!.range.end))
-                    lastSummaryTranscriptCount = transcript.count
+                    lastSummaryTranscriptCount = max(lastSummaryTranscriptCount, coveredTranscriptCount)
                     await refresh()
                     rememberSummarySources(summary, segments: segments)
                 case "ask":
@@ -222,7 +223,11 @@ extension MeetingProjectSession {
 
     func synchronizeSummaryTimer() {
         summaryTimer?.cancel(); summaryTimer = nil
-        guard intelligence.automaticSummary, isRecording || liveTranscription?.isWorking == true else { return }
+        guard intelligence.automaticSummary else {
+            minutesRefreshPending = false
+            return
+        }
+        guard isRecording || liveTranscription?.isWorking == true else { return }
         summaryTimer = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.isRecording || self.liveTranscription?.isWorking == true else { return }

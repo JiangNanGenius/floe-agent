@@ -1102,6 +1102,8 @@ struct ThreadDetailView: View {
                     selectedGame = ChatGameProjectLink(conversationID: viewModel.conversationID, projectID: projectID)
                 },
                 toolDetailExpansion: { viewModel.toolDetailExpansion(for: $0) },
+                onToolCompletionsPresented: events.first?.runID == viewModel.selectedRunID
+                    ? { viewModel.toolCompletionsPresented($0) } : nil,
                 onResolveApproval: { approval, decision in
                     Task { await viewModel.resolve(approval, decision: decision) }
                 }

@@ -28,6 +28,10 @@ extension MeetingProjectSession {
                 return
             }
             captureEventSession = nil
+            drainingCaptureSession = session
+            defer {
+                if drainingCaptureSession == session { drainingCaptureSession = nil }
+            }
             speakerRecognition?.captureFinished(session)
             // Join the live drain BEFORE opening the file fallback. The pump
             // already delivered every frame; the coordinator commits the
@@ -91,14 +95,27 @@ extension MeetingProjectSession {
         }.sorted { $0.range.start < $1.range.start }
     }
     func updateRollingMinutes() {
-        guard intelligence.automaticSummary, !isUpdatingMinutes else { return }
+        guard intelligence.automaticSummary, !isStoppingForFileAction,
+              transcript.count > lastSummaryTranscriptCount else { return }
+        if isUpdatingMinutes {
+            minutesRefreshPending = true
+            return
+        }
         let segments = rollingTranscriptWindow()
         guard let first = segments.first, let last = segments.last else { return }
         let count = transcript.count
         let epoch = rollingSummaryGeneration
         isUpdatingMinutes = true
         rollingSummaryTask = Task { [self] in
-            defer { if rollingSummaryGeneration == epoch { rollingSummaryTask = nil; isUpdatingMinutes = false } }
+            defer {
+                if rollingSummaryGeneration == epoch {
+                    rollingSummaryTask = nil
+                    isUpdatingMinutes = false
+                    let refreshPending = minutesRefreshPending
+                    minutesRefreshPending = false
+                    if refreshPending { updateRollingMinutes() }
+                }
+            }
             do {
                 let provider = try MeetingIntelligenceProvider.configured(in: environment)
                 let source = segments.map { "[\($0.id.rawValue.uuidString) · \(sourceDescription(.recording(session: $0.sessionID, range: $0.range)) ?? meetingTime($0.range.start))] \($0.text)" }.joined(separator: "\n")
@@ -106,10 +123,10 @@ extension MeetingProjectSession {
                 let answer = try await provider.request(instruction: "\(minutesTemplate.instruction) Prepare independent rolling minutes from the latest five-minute source window and all cumulative decisions. Preserve earlier conclusions. Do not change personal notes or invent speakers.",
                     source: "Cumulative decisions:\n\(conclusions)\nRecent transcript:\n\(source)")
                 try Task.checkCancellation()
-                guard rollingSummaryGeneration == epoch else { throw CancellationError() }
+                guard rollingSummaryGeneration == epoch, intelligence.automaticSummary else { throw CancellationError() }
                 let summary = try await service.recordSummary(meeting: MeetingID(id), kind: summaries.isEmpty ? .first : .rolling,
                     text: answer, window: .init(start: first.range.start, end: last.range.end))
-                lastSummaryTranscriptCount = count
+                lastSummaryTranscriptCount = max(lastSummaryTranscriptCount, count)
                 await refresh()
                 rememberSummarySources(summary, segments: segments)
             } catch is CancellationError {} catch { diagnostic = error.localizedDescription }
@@ -121,6 +138,7 @@ extension MeetingProjectSession {
         let previousProcessing = cancelAnalysisForOwnedStop(), previousSummary = rollingSummaryTask
         rollingSummaryGeneration = UUID()
         previousSummary?.cancel(); rollingSummaryTask = nil; isUpdatingMinutes = false
+        minutesRefreshPending = false
         summaryTimer?.cancel(); summaryTimer = nil
         await cancelDocumentExportAndWait()
         await followups?.cancelAndWait()

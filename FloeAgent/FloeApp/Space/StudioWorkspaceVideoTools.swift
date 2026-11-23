@@ -7,6 +7,7 @@ import FloeCore
 import FloePersistence
 import FloeTools
 import FloeWorkbench
+import FloeWorkspace
 
 extension Notification.Name {
     static let floeWorkspaceVideoDidChange = Notification.Name("floe.workspace.video.didChange")
@@ -312,7 +313,8 @@ extension Notification.Name {
     }
 
     static func sessionForNativeUI(record: PersonalContentRecord, directory: URL, workspaceID: UUID,
-                                   environment: AppEnvironment, authority: StudioDocumentAccess? = nil) async throws -> MediaV2Session {
+                                   workspaceRoot: URL, environment: AppEnvironment,
+                                   authority: StudioDocumentAccess? = nil) async throws -> MediaV2Session {
         guard record.kind == .video else { throw PersonalContentError.invalidProject }
         let projectID = record.id
         let ownerAuthority = try authority ?? environment.studioCoordinator.access.get()
@@ -326,6 +328,31 @@ extension Notification.Name {
         let session = try await PersonalMediaFactory.session(id: projectID, directory: directory,
             acquireWritePermit: permit, writePermitIdentity: "workspace-video:\(workspaceID.uuidString):\(projectID.uuidString):\(ObjectIdentifier(ownerAuthority))")
         try openingPermit.validate()
+        let root = workspaceRoot.standardizedFileURL.resolvingSymlinksInPath()
+        guard let rootBinding = try await ownerAuthority.workspaceVideoRoot(workspaceID: workspaceID),
+              directory.standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent().path
+                == root.appendingPathComponent(rootBinding.relativePath).path else {
+            throw PersonalContentError.changedDocument
+        }
+        try openingPermit.validate()
+        let fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
+        let name = String(String.UnicodeScalarView(record.title.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == " " || $0 == "-"
+        }.prefix(32))).trimmingCharacters(in: .whitespaces)
+        session.publishWorkspaceExport = { file, permit in
+            let prefix = name.isEmpty ? "Video" : name
+            let path = "Exports/\(prefix)-\(String(UUID().uuidString.prefix(8))).\(file.pathExtension.lowercased())"
+            let cancellation = CancellationToken()
+            let work = Task.detached(priority: .userInitiated) {
+                try permit.validate()
+                _ = try fileService.importUserFile(from: file, to: path, expectedSHA256: nil,
+                                                   cancellation: cancellation, validateBeforeCommit: permit.validate)
+                return root.appendingPathComponent(path)
+            }
+            let output = try await withTaskCancellationHandler { try await work.value } onCancel: { cancellation.cancel() }
+            NotificationCenter.default.post(name: .floeWorkspaceVideoDidChange, object: workspaceID)
+            return output
+        }
         return session
     }
 
@@ -451,7 +478,8 @@ extension Notification.Name {
         }
         let (record, directory) = try await resolve(id, scope: scope, editing: false)
         guard let environment = coordinator.environment else { throw PersonalContentError.storageUnavailable }
-        let session = try await sessionForNativeUI(record: record, directory: directory, workspaceID: scope.workspaceID, environment: environment, authority: scope.authority)
+        let session = try await sessionForNativeUI(record: record, directory: directory, workspaceID: scope.workspaceID,
+                                                   workspaceRoot: scope.root, environment: environment, authority: scope.authority)
         let data = try StudioToolOutput.data(session.document)
         guard data.count <= 32 * 1_024 * 1_024 else { throw FloeError.validationFailed("Read a smaller project") }
         let text = String(decoding: data, as: UTF8.self)
@@ -484,7 +512,8 @@ extension Notification.Name {
         defer { scope.lease.release() }
         let (record, directory) = try await resolve(id, scope: scope, editing: true)
         guard let environment = coordinator.environment else { throw PersonalContentError.storageUnavailable }
-        let session = try await sessionForNativeUI(record: record, directory: directory, workspaceID: scope.workspaceID, environment: environment, authority: scope.authority)
+        let session = try await sessionForNativeUI(record: record, directory: directory, workspaceID: scope.workspaceID,
+                                                   workspaceRoot: scope.root, environment: environment, authority: scope.authority)
         if action == "edit", toolID == "video.importFrames" {
             let placement = try importPlacement(inputJSON)
             let input = try StudioMediaSourceContracts.decodeFrames(placement.payload)

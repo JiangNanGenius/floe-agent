@@ -102,21 +102,23 @@ extension MediaV2Session {
         let base = document.revision, actions = try captionImportActions(text)
         _ = try await apply(actions.map { .init(action: $0) }, expectedRevision: base)
     }
-    func exportCaptions(_ format: MediaV2SubtitleCodec.Format) throws -> URL {
-        guard !store.hasWritePermitProvider else {
-            throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此工程暂不支持单独导出字幕，请先在个人作品中处理。", "Separate caption export is unavailable here. Use a personal project instead."))
-        }
+    func exportCaptions(_ format: MediaV2SubtitleCodec.Format) async throws -> URL {
+        let permit = try await store.beginOperationPermit(projectID: id)
+        defer { permit?.release() }
         let cues = document.trackGraph.tracks.filter { $0.kind == .caption }.flatMap(\.clips).compactMap { clip -> MediaV2SubtitleCodec.Cue? in
             guard let text = clip.captionText else { return nil }
             return .init(start: clip.timelineRange.startSeconds, duration: clip.timelineRange.durationSeconds, text: text)
         }
         guard !cues.isEmpty else { throw MediaV2CommandError.missingSelection }
         let content = try MediaV2SubtitleCodec.encode(cues, format: format)
-        let folder = root.appendingPathComponent("Exports", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let folder = try exportDirectory()
+        var delivered = false
+        defer { if store.hasWritePermitProvider || !delivered { try? FileManager.default.removeItem(at: folder) } }
         let file = folder.appendingPathComponent("captions-\(document.revision)-\(UUID().uuidString)." + (format == .srt ? "srt" : "vtt"))
         try Data(content.utf8).write(to: file, options: .atomic)
-        return file
+        let published = try await publishExport(file, permit: permit)
+        delivered = true
+        return published
     }
 }
 private enum SubtitleImportError: LocalizedError {

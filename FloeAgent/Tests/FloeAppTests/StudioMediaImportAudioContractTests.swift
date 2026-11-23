@@ -408,7 +408,7 @@ import FloeMedia
             #expect(try directoryIdentity(original) == pending.projectIdentity)
             let record = try await PersonalContentLibrary(root: directory.deletingLastPathComponent()).resolve(id).record
             let session = try await StudioWorkspaceVideoService.sessionForNativeUI(record: record, directory: directory,
-                workspaceID: workspaceID, environment: environment, authority: authority)
+                workspaceID: workspaceID, workspaceRoot: workspaceRoot, environment: environment, authority: authority)
             let track = try #require(session.document.trackGraph.tracks.first(where: { $0.kind == .visual }))
             context.toolCallID = "import-workspace-video"
             let input = try encode(["expectedRevision": session.document.revision,
@@ -417,6 +417,22 @@ import FloeMedia
             #expect(try Data(contentsOf: source) == sourceBytes)
             let reopened = try #require(try await MediaProjectStore(directory: directory.appendingPathComponent("Media/Projects")).loadProject(id: id))
             #expect(reopened.prepared?.trackGraph.tracks.first(where: { $0.id == track.id })?.clips.count == 1)
+            try await session.reload()
+            var caption = MediaV2ToolInput()
+            caption.expectedRevision = session.document.revision
+            caption.text = "Workspace export"
+            caption.start = 1
+            caption.duration = 2
+            _ = try await session.performTool("video.caption", input: caption)
+            let subtitles = try await session.exportCaptions(.vtt)
+            let project = try await session.exportInterchange(.original)
+            let exportRoot = workspaceRoot.appendingPathComponent("Exports").resolvingSymlinksInPath().path
+            #expect(subtitles.deletingLastPathComponent().resolvingSymlinksInPath().path == exportRoot)
+            #expect(project.deletingLastPathComponent().resolvingSymlinksInPath().path == exportRoot)
+            #expect(try MediaV2SubtitleCodec.parse(String(contentsOf: subtitles, encoding: .utf8)).map(\.text) == ["Workspace export"])
+            #expect(try Data(contentsOf: project, options: .mappedIfSafe).prefix(2) == Data([0x50, 0x4B]))
+            let savedWithCaption = try #require(try await session.store.loadProject(id: id))
+            #expect(savedWithCaption.prepared?.trackGraph.tracks.flatMap(\.clips).contains(where: { $0.captionText == "Workspace export" }) == true)
             var stranger = try prepared(other, workspace: otherWorkspaceID)
             stranger.executionToolName = "studio.workspaceVideoRead"
             await #expect(throws: (any Error).self) {

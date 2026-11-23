@@ -208,7 +208,8 @@ struct FilePreviewView: View {
                 PersonalMediaEditorView(record: workspaceVideoOpen.record, directory: workspaceVideoOpen.directory,
                     sessionProvider: {
                         try await StudioWorkspaceVideoService.sessionForNativeUI(record: workspaceVideoOpen.record,
-                            directory: workspaceVideoOpen.directory, workspaceID: workspaceVideoOpen.workspaceID, environment: environment)
+                            directory: workspaceVideoOpen.directory, workspaceID: workspaceVideoOpen.workspaceID,
+                            workspaceRoot: workspaceVideoOpen.lease.url, environment: environment)
                     })
                     .id(workspaceVideoOpen.record.id)
             } else if let floecadDocument {

@@ -116,7 +116,8 @@ struct LocalServiceJobRow: View {
                     Text(failure).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }.padding(.vertical, 4)
-            if job.servicePreviewURL != nil, scenePhase == .active {
+            if (job.servicePreviewURL != nil || (job.targetTool == "exec.localService" && job.state.isTerminal)),
+               scenePhase == .active {
                 Button("services.preview", systemImage: "safari", action: onPreview)
                     .accessibilityIdentifier("services.preview.\(job.id.uuidString)")
             }
@@ -144,32 +145,105 @@ struct LocalServicePreview: View {
     var resolvedURL: URL? = nil
     @StateObject private var browser = BrowserSessionCenter(durableHandoffs: false, taskHandoffsEnabled: false)
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var environment: AppEnvironment
+    @State private var retryJob: BackgroundJob?
+    @State private var loadedURL: URL?
+    @State private var restarting = false
+    @State private var failure: String?
+
+    private var activeJobID: UUID { retryJob?.id ?? job.id }
+
     var body: some View {
         NavigationStack {
-            BrowserView(center: browser)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("action.done") { dismiss() }
-                            .accessibilityIdentifier("workspace.ide.service.preview.done")
+            Group {
+                if loadedURL != nil {
+                    BrowserView(center: browser)
+                } else if let retryJob, retryJob.state.isTerminal {
+                    ContentUnavailableView {
+                        Label(LocalizedStringKey(LocalServicePresentation.statusKey(for: retryJob)), systemImage: "server.rack")
+                    } description: {
+                        Text(failure ?? IDELanguageRunText.t("重新启动此任务的服务后即可预览。",
+                                                             "Restart this task’s service to load the preview."))
+                    } actions: {
+                        Button("services.restart", systemImage: "arrow.clockwise") { restart(retryJob) }
+                            .disabled(restarting)
+                            .accessibilityIdentifier("services.preview.restart")
+                        if restarting { ProgressView() }
                     }
+                } else if let failure {
+                    ContentUnavailableView {
+                        Label("services.state.failed", systemImage: "exclamationmark.triangle")
+                    } description: { Text(failure) }
+                } else {
+                    ProgressView("services.starting")
                 }
-        }
-        .task {
-            let url: URL?
-            if let resolvedURL {
-                url = resolvedURL
-            } else {
-                let progress = job.progressJSON.flatMap {
-                    try? JSONDecoder().decode(LocalServiceProgress.self, from: $0)
-                }
-                url = progress?.previewURL.flatMap { URL(string: $0) }
             }
-            guard let url else { return }
-            browser.bind(to: job.conversationID)
-            browser.addressText = url.absoluteString
-            browser.navigateFromAddressBar()
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("action.done") { dismiss() }
+                        .accessibilityIdentifier("workspace.ide.service.preview.done")
+                }
+            }
+        }
+        .task(id: scenePhase == .active ? activeJobID : nil) {
+            guard scenePhase == .active else { return }
+            if let resolvedURL {
+                open(resolvedURL)
+                return
+            }
+            await observe(activeJobID)
         }
         .onDisappear { browser.discard(conversationID: job.conversationID) }
+    }
+
+    @MainActor private func observe(_ id: UUID) async {
+        let store = BackgroundJobStore(database: environment.database)
+        do {
+            while !Task.isCancelled {
+                let latest = try await store.job(id: id)
+                guard !Task.isCancelled else { return }
+                guard let latest, latest.conversationID == job.conversationID,
+                      latest.targetTool == "exec.localService" else {
+                    loadedURL = nil
+                    failure = IDELanguageRunText.t("这项服务已从原任务移除。", "This service was removed from its task.")
+                    return
+                }
+                if let url = latest.servicePreviewURL,
+                   BrowserURLPolicy.isLiveService(url, owner: latest.id, conversationID: latest.conversationID) {
+                    open(url)
+                } else {
+                    if loadedURL != nil { browser.discard(conversationID: job.conversationID) }
+                    loadedURL = nil
+                    if latest.state.isTerminal {
+                        retryJob = latest
+                        return
+                    }
+                }
+                try await Task.sleep(for: .milliseconds(750))
+            }
+        } catch is CancellationError { }
+        catch { if !Task.isCancelled { failure = error.localizedDescription } }
+    }
+
+    @MainActor private func open(_ url: URL) {
+        guard loadedURL != url else { return }
+        failure = nil
+        loadedURL = url
+        browser.bind(to: job.conversationID)
+        browser.addressText = url.absoluteString
+        browser.navigateFromAddressBar()
+    }
+
+    @MainActor private func restart(_ previous: BackgroundJob) {
+        guard !restarting, let service = environment.backgroundJobService else { return }
+        restarting = true
+        failure = nil
+        Task {
+            defer { restarting = false }
+            do { retryJob = try await service.restartLocalService(id: previous.id) }
+            catch { failure = error.localizedDescription }
+        }
     }
 }
 #endif

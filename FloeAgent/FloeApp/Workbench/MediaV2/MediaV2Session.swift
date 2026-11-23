@@ -103,6 +103,7 @@ import FloeTools
     private let frameRenderer = PreparedVideoFrameRenderer()
     private let videoDelivery = MediaPreparedVideoDelivery()
     @ObservationIgnored var onCommit: ((MediaProject) -> Void)?
+    @ObservationIgnored var publishWorkspaceExport: (@MainActor (URL, MediaProjectWritePermit) async throws -> URL)?
 
     init(project: MediaProject, root: URL, store: MediaProjectStore, coordinator: MediaPreparedCoordinator) {
         id = project.id; self.project = project; self.root = root; self.store = store; self.coordinator = coordinator
@@ -661,12 +662,9 @@ import FloeTools
                 let frozen = project
                 let urls = try resolvedAssets()
                 try permit?.validate()
-                // Workspace output lives in the app's temporary area until the user
-                // explicitly saves/shares it, never in a replaceable project path.
-                let folder = (store.hasWritePermitProvider ? FileManager.default.temporaryDirectory.appendingPathComponent("FloeStudioExports") : root.appendingPathComponent("Exports")).appendingPathComponent(UUID().uuidString)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let folder = try exportDirectory()
                 var delivered = false
-                defer { if !delivered { try? FileManager.default.removeItem(at: folder) } }
+                defer { if store.hasWritePermitProvider || !delivered { try? FileManager.default.removeItem(at: folder) } }
                 let stem = imageOptions.fileName.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: "\\", with: "-")
                     .components(separatedBy: .controlCharacters).joined().trimmingCharacters(in: CharacterSet(charactersIn: ". ").union(.whitespacesAndNewlines))
                 let file = folder.appendingPathComponent((frozen.kind == .image ? (stem.isEmpty ? "export" : String(stem.prefix(100))) : "export") + "." + (frozen.kind == .image ? imageOptions.format.fileExtension : "mp4"))
@@ -682,7 +680,7 @@ import FloeTools
                 try token.check()
                 try permit?.validate()
                 guard project.id == frozen.id, project.revision == frozen.revision else { throw MediaPreparedCoreError.documentChanged }
-                exportedFile = file
+                exportedFile = try await publishExport(file, permit: permit)
                 delivered = true
             } catch {
                 exportError = error
@@ -708,6 +706,23 @@ import FloeTools
         return error.localizedDescription
     }
     func recordExport(_ url: URL) { exportedFile = url }
+
+    func exportDirectory() throws -> URL {
+        let parent = store.hasWritePermitProvider
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("FloeStudioExports", isDirectory: true)
+            : root.appendingPathComponent("Exports", isDirectory: true)
+        let folder = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    func publishExport(_ file: URL, permit: MediaProjectWritePermit?) async throws -> URL {
+        try Task.checkCancellation()
+        guard let permit else { return file }
+        try permit.validate()
+        guard let publishWorkspaceExport else { throw MediaV2CommandError.unavailable }
+        return try await publishWorkspaceExport(file, permit)
+    }
     func play(authority: NativeCreativeAudioSession) {
         stopPlayback()
         let generation = playbackGeneration
