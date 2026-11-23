@@ -419,6 +419,9 @@ final class HostAgentWorkspace: ObservableObject {
     var smokeConversationSearchMounted = false
     var smokeApprovalFrames: [Bool: CGRect] = [:]
     var smokeRunningModeFrame: CGRect?
+    var smokePendingInputsFrame: CGRect?
+    var smokeComposerSurfaceFrame: CGRect?
+    var smokeStopFrame: CGRect?
     var smokePromptFrame: CGRect?
     var smokeSteerFrame: CGRect?
     var smokeModeFrame: CGRect?
@@ -605,12 +608,15 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     @Published private var draftMode: HostAgentMode?
+    @Published var goalBuilderRequest: UUID?
     @Published private var taskModes: [String: String] = [:]
     private static let taskModesKey = "floe.mac.agent.taskModes"
 
     var composerMode: HostAgentMode {
         get {
-            if let visibleRun { return visibleRun.mode }
+            if let visibleRun {
+                return visibleRun.mode == .goal && visibleRun.handle != nil ? .agent : visibleRun.mode
+            }
             guard let id = selectedID else { return draftMode ?? defaultMode }
             if let raw = taskModes[id.uuidString], let mode = HostAgentMode(rawValue: raw) { return mode }
             if goal?.status.isTerminal == false { return .goal }
@@ -2062,6 +2068,7 @@ final class HostAgentWorkspace: ObservableObject {
             #if FLOE_UNIFIED_MAC
             if case .delete = change {
                 saveTaskMode(nil, for: id)
+                runningInputModeOverrides.removeValue(forKey: id)
                 HostAgentDatabase.removeComposerImages(for: id, runtimeDirectory: personalTaskLeaseBase)
             }
             #endif
@@ -2891,7 +2898,9 @@ final class HostAgentWorkspace: ObservableObject {
                     catch { if selectedID == taskID { notice = String(localized: "mac.agent.queueUnavailable") } }
                     await refreshQueue(taskID)
                 }
-                if !continuingFromHistory, onVoiceReply == nil { saveTaskMode(mode, for: taskID) }
+                if !continuingFromHistory, onVoiceReply == nil, automaticGoal == nil, queued == nil {
+                    saveTaskMode(mode == .goal ? .agent : mode, for: taskID)
+                }
                 if currentID == nil, hasOriginSelection { draftMode = nil; draftApprovalMode = nil }
                 #endif
                 if !drafts.isEmpty,
@@ -2973,6 +2982,7 @@ final class HostAgentWorkspace: ObservableObject {
                     case .harness(.approvalResolved):
                         await refreshTranscriptEvents(runID: handle.identity.runID, conversationID: taskID, runtime: runtime)
                     case .harness(.userInputConsumed):
+                        await refreshQueue(taskID)
                         if selectedID == taskID {
                             try? await refreshTranscript(for: taskID, runtime: runtime, runID: handle.identity.runID)
                         }
@@ -3256,8 +3266,9 @@ final class HostAgentWorkspace: ObservableObject {
         canChangeGoal(candidate) && [.active, .waitingApproval, .waitingUser, .verifying].contains(candidate.status)
     }
 
-    private func canChangeGoal(_ candidate: ConversationGoal) -> Bool {
-        candidate == goal && selectedID == candidate.conversationID
+    private func canChangeGoal(_ candidate: ConversationGoal, requiresCurrentRevision: Bool = true) -> Bool {
+        candidate.id == goal?.id && selectedID == candidate.conversationID
+            && (!requiresCurrentRevision || candidate == goal)
             && !isTerminating && !isAcceptingPlan && !changingGoals.contains(candidate.conversationID)
     }
 
@@ -3379,7 +3390,8 @@ final class HostAgentWorkspace: ObservableObject {
             let goals = try await runtime.goals(conversationID: conversationID)
             guard selection == historySelection, !Task.isCancelled else { return }
             plan = latest
-            goal = goals.first { !$0.status.isTerminal } ?? goals.first
+            goal = goals.first { !$0.status.isTerminal }
+                ?? goals.first.flatMap { $0.status == .cancelled ? nil : $0 }
         } catch {
             if selection == historySelection, !Task.isCancelled {
                 notice = String(localized: "mac.agent.planningLoadFailed")
@@ -3388,16 +3400,38 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     #if FLOE_UNIFIED_MAC
+    var isChangingSelectedGoal: Bool {
+        selectedID.map { changingGoals.contains($0) } ?? false
+    }
+
+    func deleteGoal(_ expected: ConversationGoal) async {
+        let id = expected.conversationID
+        guard canChangeGoal(expected, requiresCurrentRevision: false), let runtime, let release = admit() else { return }
+        let selection = historySelection
+        changingGoals.insert(id)
+        defer { changingGoals.remove(id); release() }
+        do {
+            try await runtime.deleteGoal(conversationID: id, goalID: expected.id,
+                                         expectedRevision: expected.revision ?? 1, expectedDefinition: expected)
+            if taskModes[id.uuidString] == HostAgentMode.goal.rawValue { saveTaskMode(.agent, for: id) }
+            if historySelection == selection {
+                notice = nil
+                await loadPlanning(conversationID: id, runtime: runtime)
+            }
+        } catch {
+            if historySelection == selection { notice = String(localized: "mac.agent.goalControlFailed") }
+        }
+    }
+
     func editGoal(_ expected: ConversationGoal, objective: String, criteria: [String],
                   blockers: [String], stops: [String]) async -> Bool {
         let id = expected.conversationID
-        guard selectedID == id, expected.id == goal?.id, !isTaskRunning(id), !isTerminating,
-              !changingGoals.contains(id), let runtime, let release = admit() else { return false }
+        guard canChangeGoal(expected, requiresCurrentRevision: false), let runtime, let release = admit() else { return false }
         changingGoals.insert(id)
         defer { changingGoals.remove(id); release() }
         do {
             _ = try await runtime.editGoalDefinition(conversationID: id, goalID: expected.id,
-                expectedRevision: expected.revision ?? 1, objective: objective, criteria: criteria,
+                expectedRevision: expected.revision ?? 1, expectedDefinition: expected, objective: objective, criteria: criteria,
                 blockers: blockers, stops: stops)
             await loadPlanning(conversationID: id, runtime: runtime)
             return true
@@ -3630,6 +3664,17 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    @Published private var runningInputModeOverrides: [UUID: RunningInputMode] = [:]
+
+    var conversationRunningInputMode: RunningInputMode {
+        selectedID.flatMap { runningInputModeOverrides[$0] } ?? runningInputMode
+    }
+
+    func selectConversationRunningInputMode(_ mode: RunningInputMode) {
+        guard let id = selectedID else { return }
+        runningInputModeOverrides[id] = mode
+    }
+
     @Published private(set) var queuedInputs: [UUID: [PendingUserInput]] = [:]
     private var drainingQueues = Set<UUID>()
     private var queueRefreshes: [UUID: UUID] = [:]
@@ -3642,7 +3687,7 @@ final class HostAgentWorkspace: ObservableObject {
             let store = try await runtime.runningInputStore()
             let rows = try await store.pending(conversationID: id)
             if queueRefreshes[id] == token {
-                // Mirror the iPad pending set so the disclosure can offer
+                // Mirror the iPad pending set so the row menu can offer
                 // "Back to queue" for accepted-but-unconsumed guidance and a
                 // converting caption for a row mid-promotion. Browser-handoff
                 // notice rows stay hidden: their execution mode never maps to
@@ -3657,32 +3702,29 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
-    /// Queues text plus an optional exact set of staged attachments as one
-    /// durable message for the active run's conversation. Only the submitted
-    /// set is consumed from the composer strip after the store commit, so
-    /// files staged later or in parallel are never touched. Text stays
-    /// required (an attachment-only payload is not part of the shared
-    /// contract) and is normalized the same way as an idle send.
-    func enqueue(_ text: String, attachments: [HostAgentAttachmentDraft] = [], onAccepted: @escaping () -> Void) {
+    /// Queue and Insert use the same committed message. Insert promotes it
+    /// into the active run; if the run cannot take it, it stays queued.
+    func submitRunningInput(_ text: String, mode: RunningInputMode,
+                            attachments: [HostAgentAttachmentDraft], onAccepted: @escaping () -> Void) {
         guard canSteer, let run = visibleRun, let id = selectedID, let handle = run.handle,
               let modelID = run.modelID, let runtime, let release = admit() else { return }
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.utf8.count <= 1_048_576, !text.utf8.contains(0) else {
+        guard !text.isEmpty, text.utf8.count <= Self.maximumQueuedContentBytes, !text.utf8.contains(0) else {
             release()
             notice = String(localized: "mac.agent.queueUnavailable")
             return
         }
-        let submitted = attachments
-        if submitted.contains(where: { $0.kind == .image }), !modelAcceptsImages(modelID) {
+        if attachments.contains(where: { $0.kind == .image }), !modelAcceptsImages(modelID) {
             release()
             notice = String(localized: "mac.workspace.selectVisionModel")
             return
         }
-        let input = PendingUserInput(conversationID: id, targetRunID: handle.identity.runID,
+        let runID = handle.identity.runID
+        let executionMode = run.mode == .goal ? HostAgentMode.agent : run.mode
+        let input = PendingUserInput(conversationID: id, targetRunID: runID,
                                      content: text, mode: .queue, status: .queued, position: 0,
-                                     attachments: submitted.map(\.reference),
-                                     selectedModelID: modelID, workspaceID: handle.identity.workspaceID,
-                                     executionMode: run.mode.rawValue)
+                                     attachments: attachments.map(\.reference), selectedModelID: modelID,
+                                     workspaceID: handle.identity.workspaceID, executionMode: executionMode.rawValue)
         liveRuns[id]?.steering = true
         Task {
             defer {
@@ -3692,10 +3734,18 @@ final class HostAgentWorkspace: ObservableObject {
             do {
                 let store = try await runtime.runningInputStore()
                 _ = try await store.enqueue(input)
-                consumeStaged(submitted, for: id)
+                // The durable row owns the text and attachments from here.
+                consumeStaged(attachments, for: id)
                 onAccepted()
+                if mode == .steer {
+                    let promoted = (try? await handle.steer(text: text, inputID: input.id, expectedConversationID: id,
+                                                             expectedRunID: runID, executionMode: executionMode.rawValue)) == true
+                    if promoted, liveRuns[id]?.handle?.identity == handle.identity {
+                        liveRuns[id]?.lastSteer = text
+                    }
+                }
                 await refreshQueue(id)
-                // The original run may have finished during the store commit.
+                // The run can finish between the queue commit and promotion.
                 if liveRuns[id] == nil, let receipt = await handle.waitForTerminal(),
                    receipt.confirmed, receipt.outcome == .completed { await startNextQueued(id) }
             } catch {
@@ -3866,12 +3916,14 @@ final class HostAgentWorkspace: ObservableObject {
                 await refreshQueue(conversationID)
                 return
             }
+            let goalFollowUp = run.mode == .goal && row.executionMode == HostAgentMode.agent.rawValue
+                && row.targetRunID == handle.identity.runID
             guard row.workspaceID == handle.identity.workspaceID, row.selectedModelID == run.modelID,
-                  row.executionMode == run.mode.rawValue else {
+                  row.executionMode == run.mode.rawValue || goalFollowUp else {
                 if selectedID == conversationID { notice = String(localized: "mac.agent.queueHeld") }
                 return
             }
-            if run.mode == .goal {
+            if run.mode == .goal, !goalFollowUp {
                 guard let source = row.targetRunID,
                       let goalID = try await runtime.runRecord(runID: source)?.goalID,
                       try await runtime.runRecord(runID: handle.identity.runID)?.goalID == goalID,
@@ -4032,82 +4084,6 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     var lastSteer: String? { visibleRun?.lastSteer }
-
-    /// Steers the active run with text plus an optional exact set of staged
-    /// attachments. Attachments travel through the same durable pending row
-    /// as queued messages (iPad `submitRunningInput` parity), so a rejected
-    /// or stale steer restores to the ordinary queue with its attachments
-    /// intact instead of dropping them; only a consumed steer consumes the
-    /// staged set. Text stays required by the shared contract.
-    func steer(_ text: String, attachments: [HostAgentAttachmentDraft] = [], onAccepted: @escaping () -> Void) {
-        guard canSteer, let run = visibleRun, let handle = run.handle, let id = selectedID else { return }
-        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, let release = admit() else { return }
-        let runID = handle.identity.runID
-        let inputID = UUID()
-        let submitted = attachments
-        liveRuns[id]?.steering = true
-        Task {
-            defer {
-                if liveRuns[id]?.handle?.identity.runID == runID { liveRuns[id]?.steering = false }
-                release()
-            }
-            do {
-                if !submitted.isEmpty, let runtime {
-                    if submitted.contains(where: { $0.kind == .image }),
-                       let modelID = run.modelID, !modelAcceptsImages(modelID) {
-                        if selectedID == id { notice = String(localized: "mac.workspace.selectVisionModel") }
-                        return
-                    }
-                    // Commit the row (with attachments) before promotion so a
-                    // rejected steer remains an ordinary queued message, the
-                    // iPad lifecycle for a failed steer conversion.
-                    let store = try await runtime.runningInputStore()
-                    _ = try await store.enqueue(PendingUserInput(
-                        id: inputID, conversationID: id, targetRunID: runID,
-                        content: content, mode: .queue, status: .queued, position: 0,
-                        attachments: submitted.map(\.reference),
-                        selectedModelID: run.modelID, workspaceID: handle.identity.workspaceID,
-                        executionMode: run.mode.rawValue))
-                    if try await handle.steer(text: content, inputID: inputID, expectedConversationID: id,
-                                              expectedRunID: runID, executionMode: run.mode.rawValue) {
-                        consumeStaged(submitted, for: id)
-                        onAccepted()
-                        if liveRuns[id]?.handle?.identity.runID == runID { liveRuns[id]?.lastSteer = content }
-                        return
-                    }
-                    // Rejected: the session restored the row to the durable
-                    // queue. Confirm that exact durable state, then clear the
-                    // composer copy (text and the consumed attachments) so
-                    // the user cannot submit the same message twice, and
-                    // surface queued feedback instead of an error.
-                    if let row = try await store.input(id: inputID), row.status == .queued {
-                        consumeStaged(submitted, for: id)
-                        onAccepted()
-                        if selectedID == id {
-                            notice = MacComposerInputText.t("消息已加入队列。", "Message added to the queue.")
-                        }
-                        if liveRuns[id] == nil, let receipt = await handle.waitForTerminal(),
-                           receipt.confirmed, receipt.outcome == .completed { await startNextQueued(id) }
-                    } else if selectedID == id {
-                        notice = String(localized: "mac.agent.steerNotAccepted")
-                    }
-                    await refreshQueue(id)
-                    return
-                } else if try await handle.steer(text: content, inputID: inputID, expectedConversationID: id,
-                                                 expectedRunID: runID, executionMode: run.mode.rawValue) {
-                    onAccepted()
-                    if liveRuns[id]?.handle?.identity.runID == runID { liveRuns[id]?.lastSteer = content }
-                    return
-                } else if let runtime {
-                    let store = try await runtime.runningInputStore()
-                    if try await store.input(id: inputID)?.status == .queued { try await store.cancel(id: inputID) }
-                    await refreshQueue(id)
-                }
-            } catch { /* Keep the draft available if the store cannot confirm delivery. */ }
-            if selectedID == id { notice = String(localized: "mac.agent.steerNotAccepted") }
-        }
-    }
     #endif
 
     func stop() {

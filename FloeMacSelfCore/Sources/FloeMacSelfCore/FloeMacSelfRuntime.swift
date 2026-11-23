@@ -1153,6 +1153,7 @@ public actor FloeMacSelfRuntime {
     /// Retained criteria keep their identities and evidence, including duplicates in order.
     @discardableResult
     public func editGoalDefinition(conversationID: UUID, goalID: UUID, expectedRevision: Int,
+                                   expectedDefinition: ConversationGoal? = nil,
                                    objective: String, criteria: [String], blockers: [String],
                                    stops: [String]) async throws -> ConversationGoal {
         try ensureAdmissionStillAllowed()
@@ -1162,7 +1163,11 @@ public actor FloeMacSelfRuntime {
         activeAdmissions.insert(operation)
         defer { activeAdmissions.remove(operation) }
         var goal = try await controlledGoal(stores: stores, conversationID: conversationID,
-                                           goalID: goalID, expectedRevision: expectedRevision)
+                                           goalID: goalID, expectedRevision: expectedRevision,
+                                           includingTerminal: true, expectedDefinition: expectedDefinition)
+        let active = try await stores.intelligence.goals(conversationID: conversationID).first { !$0.status.isTerminal }
+        guard active == nil || active?.id == goalID else { throw Self.goalControlConflict() }
+        let revision = goal.revision ?? 1
         let title = objective.trimmingCharacters(in: .whitespacesAndNewlines)
         let clean = { (list: [String]) in list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
         let texts = clean(criteria)
@@ -1183,13 +1188,36 @@ public actor FloeMacSelfRuntime {
         goal.stoppingConditions = stopping
         goal.status = .paused
         goal.updatedAt = Date()
-        guard try await stores.intelligence.saveGoalIfRevisionMatches(goal, expectedRevision: expectedRevision),
+        guard try await stores.intelligence.saveGoalIfRevisionMatches(goal, expectedRevision: revision),
               let saved = try await stores.intelligence.goal(id: goalID), saved.status == .paused,
               saved.objective == title, saved.acceptanceCriteria == goal.acceptanceCriteria,
               saved.blockingConditions == blocking, saved.stoppingConditions == stopping else {
             throw Self.goalControlConflict()
         }
         return saved
+    }
+
+    /// Retire this exact Goal without stopping its admitted round or
+    /// removing its conversation, files or prior results.
+    public func deleteGoal(conversationID: UUID, goalID: UUID, expectedRevision: Int,
+                           expectedDefinition: ConversationGoal? = nil) async throws {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let operation = UUID()
+        activeAdmissions.insert(operation)
+        defer { activeAdmissions.remove(operation) }
+        var goal = try await controlledGoal(stores: stores, conversationID: conversationID,
+                                            goalID: goalID, expectedRevision: expectedRevision,
+                                            includingTerminal: true, expectedDefinition: expectedDefinition)
+        let unfinished = try await stores.intelligence.goals(conversationID: conversationID)
+            .first { !$0.status.isTerminal }
+        guard unfinished == nil || unfinished?.id == goalID else { throw Self.goalControlConflict() }
+        let revision = goal.revision ?? 1
+        goal.status = .cancelled
+        goal.updatedAt = Date()
+        guard try await stores.intelligence.saveGoalIfRevisionMatches(goal, expectedRevision: revision)
+        else { throw Self.goalControlConflict() }
     }
 
     /// Durable user Pause for one exact Goal revision. Persisting `.paused`
@@ -1336,13 +1364,15 @@ public actor FloeMacSelfRuntime {
         let provider = try FloeMacSelfCapabilityResolver.resolveProvider(binding)
         let newEvidence = GoalEvidenceReviewContract.currentRoundEvidence(goal: goal, runID: runID, events: events)
         let current = Array(newEvidence.suffix(24))
+        let failures = GoalEvidenceReviewContract.currentRoundFailedChecks(runID: runID, events: events)
         var review = GoalEvidenceReviewContract.Result()
         let wallRemaining = goal.budgets.maxWallClockSeconds.map {
             $0 - Date().timeIntervalSince(goal.progress.startedAt ?? run.startedAt)
         }
         let callsRemain = goal.budgets.maxModelCalls.map { goal.progress.modelCallCount < $0 } ?? true
         var revision = goal.revision ?? 1
-        if !current.isEmpty, callsRemain, wallRemaining.map({ $0 > 0 }) ?? true, await mayContinue(), !Task.isCancelled {
+        if !current.isEmpty || !failures.isEmpty, callsRemain, wallRemaining.map({ $0 > 0 }) ?? true,
+           await mayContinue(), !Task.isCancelled {
             // Reserve the one auxiliary model call in the same durable budget.
             // User Pause or an edit can supersede this revision during review.
             let used = goal.progress.modelCallCount.addingReportingOverflow(1)
@@ -1356,9 +1386,9 @@ public actor FloeMacSelfRuntime {
             let evidence = Array(goal.evidence.filter { !allNew.contains($0.id) }.suffix(24)) + current
             let currentIDs = Set(current.map(\.id))
             let input = try GoalEvidenceReviewContract.input(goal: goal, evidence: evidence, currentEvidenceIDs: currentIDs,
-                                                             includeStoppingConditions: true)
+                                                             includeStoppingConditions: true, failedChecks: failures)
             let request = ProviderStreamRequest(provider: provider.provider, model: provider.model, contentMessages: [
-                .init(role: "system", text: GoalEvidenceReviewContract.instructionsIncludingStops),
+                .init(role: "system", text: GoalEvidenceReviewContract.instructionsInferringBlockers),
                 .init(role: "user", text: input)
             ])
             var output = ""
@@ -1371,7 +1401,7 @@ public actor FloeMacSelfRuntime {
                     }
                 }
                 review = GoalEvidenceReviewContract.parse(output, goal: goal, evidence: evidence, currentEvidenceIDs: currentIDs,
-                                                          includeStoppingConditions: true)
+                                                          includeStoppingConditions: true, failedChecks: failures)
             } catch is CancellationError {
                 return nil
             } catch {
@@ -1388,6 +1418,10 @@ public actor FloeMacSelfRuntime {
             goal.progress.repeatedBlockerCount = 3
         } else if verdict?.mayComplete == true {
             goal.status = .completed
+        } else if let inferred = review.inferredBlocker {
+            goal.status = .blocked
+            goal.progress.repeatedBlockerKey = "model-condition:" + SecretRedactor.redact(inferred, secret: provider.credentials.apiKey)
+            goal.progress.repeatedBlockerCount = 3
         } else if let verdict, !verdict.blockers.isEmpty, verdict.blockers.allSatisfy({
             if case .userConfirmationRequired = $0 { return true }
             return false
@@ -1570,20 +1604,29 @@ public actor FloeMacSelfRuntime {
         }
     }
 
-    /// Revision-checked Goal lookup shared by the user controls. Terminal
-    /// or moved Goals fail closed exactly like the launch-time binding.
+    /// User controls bind to the exact revision, or to an open editor's
+    /// unchanged definition so that live progress does not block editing.
     private func controlledGoal(
         stores: FloeMacSelfStores,
         conversationID: UUID,
         goalID: UUID,
-        expectedRevision: Int
+        expectedRevision: Int,
+        includingTerminal: Bool = false,
+        expectedDefinition: ConversationGoal? = nil
     ) async throws -> ConversationGoal {
         guard let conversation = try await stores.conversations.conversation(id: conversationID),
               conversation.isVisibleInOrdinaryList,
               let goal = try await stores.intelligence.goal(id: goalID),
               goal.conversationID == conversationID,
-              (goal.revision ?? 1) == expectedRevision,
-              !goal.status.isTerminal else {
+              goal.status != .cancelled, includingTerminal || !goal.status.isTerminal else {
+            throw Self.goalControlConflict()
+        }
+        if let expectedDefinition {
+            guard expectedDefinition.id == goalID, expectedDefinition.conversationID == conversationID,
+                  (expectedDefinition.revision ?? 1) == expectedRevision,
+                  try GoalRunDefinitionFingerprint.make(expectedDefinition) == GoalRunDefinitionFingerprint.make(goal)
+            else { throw Self.goalControlConflict() }
+        } else if (goal.revision ?? 1) != expectedRevision {
             throw Self.goalControlConflict()
         }
         return goal
@@ -1642,7 +1685,8 @@ public actor FloeMacSelfRuntime {
         }
         switch goal.status {
         case .blocked:
-            return "the Goal is blocked; review the task results and address the issue, then continue"
+            return GoalEvidenceReviewContract.blockerExplanation(for: goal)
+                ?? "the Goal is blocked; review the task results and address the issue, then continue"
         case .waitingApproval:
             return "the Goal is waiting for approval"
         case .waitingUser:

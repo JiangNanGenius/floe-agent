@@ -15,6 +15,11 @@ public enum GoalEvidenceReviewContract {
     When stoppingConditions is supplied, also return stoppingCondition and stoppingEvidenceIDs. Use the exact supplied condition only when current evidence proves it. This can stop the next cycle even when criteria remain unfinished.
     """
 
+    public static let instructionsInferringBlockers = instructionsIncludingStops + """
+
+    Return inferredBlocker as null or {"reason":"one sentence in the goal's language","evidenceIDs":["uuid"]}. Infer a blocker only when current evidence or failedChecks establishes a concrete prerequisite that prevents the remaining objective. Say what prerequisite is missing. Do not infer a blocker from a mere lack of progress, unverified claims, or an unrelated failure. Cite only currentEvidenceIDs or failedChecks IDs in inferredBlocker. Failed checks never support progress, criteria, or steps.
+    """
+
     public struct Result: Sendable {
         public var reviewSucceeded = false
         public var isValid = false
@@ -22,6 +27,7 @@ public enum GoalEvidenceReviewContract {
         public var stepEvidence: [UUID: Set<UUID>] = [:]
         public var blockingCondition: String?
         public var stoppingCondition: String?
+        public var inferredBlocker: String?
         public init() {}
     }
 
@@ -33,12 +39,18 @@ public enum GoalEvidenceReviewContract {
         var stoppingConditions: [String]?
         var evidence: [GoalEvidence]
         var currentEvidenceIDs: [UUID]?
+        var failedChecks: [GoalEvidence]?
     }
     private struct Claim: Decodable {
         var id: UUID
         var evidenceIDs: [UUID]
     }
     private struct Reply: Decodable {
+        struct Blocker: Decodable {
+            var reason: String
+            var evidenceIDs: [UUID]
+        }
+
         var valid: Bool
         var progressEvidenceIDs: [UUID]
         var criteria: [Claim]
@@ -47,22 +59,23 @@ public enum GoalEvidenceReviewContract {
         var blockingEvidenceIDs: [UUID]
         var stoppingCondition: String?
         var stoppingEvidenceIDs: [UUID]?
+        var inferredBlocker: Blocker?
     }
 
     public static func input(goal: ConversationGoal, evidence: [GoalEvidence], currentEvidenceIDs: Set<UUID>? = nil,
-                             includeStoppingConditions: Bool = false) throws -> String {
+                             includeStoppingConditions: Bool = false, failedChecks: [GoalEvidence]? = nil) throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(Input(objective: goal.objective,
             criteria: goal.acceptanceCriteria, steps: goal.steps,
             blockingConditions: goal.blockingConditions ?? [],
             stoppingConditions: includeStoppingConditions ? goal.stoppingConditions : nil, evidence: evidence,
-            currentEvidenceIDs: currentEvidenceIDs?.sorted { $0.uuidString < $1.uuidString }))
+            currentEvidenceIDs: currentEvidenceIDs?.sorted { $0.uuidString < $1.uuidString }, failedChecks: failedChecks))
         return String(decoding: data, as: UTF8.self)
     }
 
     public static func parse(_ output: String, goal: ConversationGoal, evidence: [GoalEvidence], currentEvidenceIDs: Set<UUID>? = nil,
-                             includeStoppingConditions: Bool = false) -> Result {
+                             includeStoppingConditions: Bool = false, failedChecks: [GoalEvidence]? = nil) -> Result {
         guard output.utf8.count <= 16_384,
               let reply = try? JSONDecoder().decode(Reply.self, from: Data(output.utf8)) else { return Result() }
         let knownEvidence = Set(evidence.map(\.id))
@@ -100,7 +113,40 @@ public enum GoalEvidenceReviewContract {
            currentEvidenceIDs.map({ !stopEvidence.isDisjoint(with: $0) }) ?? true {
             result.stoppingCondition = condition
         }
+        if let failedChecks, let blocker = reply.inferredBlocker {
+            let current = (currentEvidenceIDs ?? []).intersection(knownEvidence).union(failedChecks.map(\.id))
+            let cited = Set(blocker.evidenceIDs)
+            let reason = blocker.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cited.isEmpty, cited.isSubset(of: current), !reason.isEmpty, reason.utf8.count <= 1_024,
+               !reason.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+                result.inferredBlocker = reason
+            }
+        }
         return result
+    }
+
+    /// Failed dispatches can explain a blocker. They never become durable
+    /// completion evidence or count as progress for the goal.
+    public static func currentRoundFailedChecks(runID: UUID, events: [RunEventRecord]) -> [GoalEvidence] {
+        var checks: [GoalEvidence] = []
+        for event in events.reversed() where event.kind == .toolResult && event.runID == runID {
+            guard let receipt = try? JSONDecoder().decode(GoalRunEventPayload.self, from: Data(event.payloadJSON.utf8)),
+                  receipt.dispatched, !receipt.outcomeUnknown, receipt.status == ToolResult.Status.failed.rawValue,
+                  let tool = receipt.tool, !tool.isEmpty, !isPreparationTool(tool),
+                  let summary = receipt.summary, !summary.isEmpty else { continue }
+            checks.append(.init(kind: .toolResult, reference: "run:\(runID.uuidString):event:\(event.sequence)",
+                                summary: String(summary.prefix(600)), capturedAt: event.createdAt))
+            if checks.count == 12 { break }
+        }
+        return checks
+    }
+
+    public static func blockerExplanation(for goal: ConversationGoal) -> String? {
+        guard goal.status == .blocked, let key = goal.progress.repeatedBlockerKey else { return nil }
+        for prefix in ["model-condition:", "user-condition:"] where key.hasPrefix(prefix) {
+            return String(key.dropFirst(prefix.count))
+        }
+        return nil
     }
 
     /// Selects new evidence already committed by GoalRunSettlement, joined

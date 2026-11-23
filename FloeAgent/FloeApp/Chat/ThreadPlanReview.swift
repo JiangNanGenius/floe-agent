@@ -183,12 +183,16 @@ struct GoalBuilderSheet: View {
     @State private var isSubmitting = false
     @State private var hasSubmitted = false
     let goal: ConversationGoal?
+    let showsDefinitionFields: Bool
     let errorMessage: String?
     let onCreate: @MainActor (String, [String], [String], [String]) async -> Bool
 
-    init(goal: ConversationGoal? = nil, errorMessage: String?,
+    init(goal: ConversationGoal? = nil, showsDefinitionFields: Bool = true, errorMessage: String?,
         onCreate: @escaping @MainActor (String, [String], [String], [String]) async -> Bool) {
-        self.goal = goal; self.errorMessage = errorMessage; self.onCreate = onCreate
+        self.goal = goal
+        self.showsDefinitionFields = showsDefinitionFields
+        self.errorMessage = errorMessage
+        self.onCreate = onCreate
         _objective = State(initialValue: goal?.objective ?? "")
         _criteria = State(initialValue: goal?.acceptanceCriteria.map(\.text).joined(separator: "\n") ?? "")
         _blockers = State(initialValue: goal?.blockingConditions?.joined(separator: "\n") ?? "")
@@ -198,17 +202,22 @@ struct GoalBuilderSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("chat.thread_detail_view.final_goal") {
+                Section {
                     TextEditor(text: $objective).frame(minHeight: 90)
+                        .accessibilityLabel(planReviewText("目标", "Goal"))
+                } header: {
+                    if showsDefinitionFields { Text("chat.thread_detail_view.final_goal") }
                 }
-                Section("chat.thread_detail_view.acceptance_criteria_one_per_line") {
-                    TextEditor(text: $criteria).frame(minHeight: 80)
-                }
-                Section("chat.thread_detail_view.blocking_conditions_one_per_line") {
-                    TextEditor(text: $blockers).frame(minHeight: 80)
-                }
-                Section("chat.thread_detail_view.stop_conditions_one_per_line") {
-                    TextEditor(text: $stops).frame(minHeight: 80)
+                if showsDefinitionFields {
+                    Section("chat.thread_detail_view.acceptance_criteria_one_per_line") {
+                        TextEditor(text: $criteria).frame(minHeight: 80)
+                    }
+                    Section("chat.thread_detail_view.blocking_conditions_one_per_line") {
+                        TextEditor(text: $blockers).frame(minHeight: 80)
+                    }
+                    Section("chat.thread_detail_view.stop_conditions_one_per_line") {
+                        TextEditor(text: $stops).frame(minHeight: 80)
+                    }
                 }
                 if goal != nil {
                     Section {
@@ -226,28 +235,53 @@ struct GoalBuilderSheet: View {
             .formStyle(.grouped)
             #endif
             .disabled(isSubmitting)
-            .navigationTitle(goal == nil ? String(localized: "chat.thread_detail_view.set_goal") : planReviewText("编辑目标", "Edit goal"))
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("workspace.workspace_canvas_view.cancel") { dismiss() }
-                        .disabled(isSubmitting)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(goal == nil ? String(localized: "chat.thread_detail_view.create_and_start") : String(localized: "workspace.workspace_canvas_view.save")) {
-                        isSubmitting = true
-                        hasSubmitted = true
-                        Task {
-                            let created = await onCreate(objective, lines(criteria), lines(blockers), lines(stops))
-                            isSubmitting = false
-                            if created { dismiss() }
-                        }
+            .navigationTitle(title)
+            #if os(macOS)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    HStack(spacing: 8) {
+                        Spacer()
+                        cancelButton
+                        commitButton.buttonStyle(.borderedProminent)
                     }
-                    .disabled(isSubmitting || objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("goal.builder.create")
+                    .padding(12)
                 }
+                .background(.regularMaterial)
             }
+            #else
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { cancelButton }
+                ToolbarItem(placement: .confirmationAction) { commitButton }
+            }
+            #endif
         }
         .interactiveDismissDisabled(isSubmitting)
+    }
+
+    private var title: String {
+        if goal != nil { return planReviewText("编辑目标", "Edit goal") }
+        return showsDefinitionFields ? String(localized: "chat.thread_detail_view.set_goal") : planReviewText("设置目标", "Set goal")
+    }
+
+    private var cancelButton: some View {
+        Button("workspace.workspace_canvas_view.cancel", role: .cancel) { dismiss() }
+            .disabled(isSubmitting)
+            .accessibilityIdentifier("goal.builder.cancel")
+    }
+
+    private var commitButton: some View {
+        Button(goal == nil ? String(localized: "chat.thread_detail_view.create_and_start") : String(localized: "workspace.workspace_canvas_view.save")) {
+            isSubmitting = true
+            hasSubmitted = true
+            Task {
+                let created = await onCreate(objective, lines(criteria), lines(blockers), lines(stops))
+                isSubmitting = false
+                if created { dismiss() }
+            }
+        }
+        .disabled(isSubmitting || objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityIdentifier("goal.builder.create")
     }
 
     private func lines(_ value: String) -> [String] {

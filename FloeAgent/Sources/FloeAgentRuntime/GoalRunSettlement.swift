@@ -89,9 +89,10 @@ struct GoalRunEventPayload: Decodable {
     let summary: String?
     let outputDigest: String?
     let dispatched: Bool
+    let outcomeUnknown: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case kind, status, id, tool, input, summary, outputDigest, dispatched
+        case kind, status, id, tool, input, summary, outputDigest, dispatched, outcomeUnknown
     }
 
     init(from decoder: any Decoder) throws {
@@ -108,5 +109,7 @@ struct GoalRunEventPayload: Decodable {
         } else {
             dispatched = (try? fields.decode(String.self, forKey: .dispatched)) == "true"
         }
+        outcomeUnknown = (try? fields.decode(Bool.self, forKey: .outcomeUnknown))
+            ?? ((try? fields.decode(String.self, forKey: .outcomeUnknown)) == "true")
     }
 }

@@ -121,6 +121,10 @@ final class UnifiedMacSmoke {
             await exerciseTaskTerminals(model)
             return
         }
+        if CommandLine.arguments.contains("--goal-composer-parity-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseGoalComposerParity(model, endpoint: endpoint)
+            return
+        }
         if CommandLine.arguments.contains("--composer-paste-only") {
             await exerciseComposerPaste(model)
             return
@@ -204,8 +208,9 @@ final class UnifiedMacSmoke {
             await exerciseGoalControls(model)
             return
         }
-        if CommandLine.arguments.contains("--goal-evidence-only"), let endpoint = projectTaskFixtureEndpoint {
-            await exerciseGoalEvidence(model, endpoint: endpoint)
+        let goalBlocker = CommandLine.arguments.contains("--goal-blocker-only")
+        if (CommandLine.arguments.contains("--goal-evidence-only") || goalBlocker), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseGoalEvidence(model, endpoint: endpoint, blocker: goalBlocker)
             return
         }
         let firstLaunch = CommandLine.arguments.contains("--verify-first-launch")
@@ -809,8 +814,9 @@ final class UnifiedMacSmoke {
             if (try? Data(token.utf8).write(to: file)) != nil, agent.canSteer {
                 let items = agent.stageAttachments([file])
                 if !items.isEmpty {
-                    if guidance { agent.steer(prompt, attachments: items) { consumedFromDraft = true } }
-                    else { agent.enqueue(prompt, attachments: items) { consumedFromDraft = true } }
+                    agent.submitRunningInput(prompt, mode: guidance ? .steer : .queue, attachments: items) {
+                        consumedFromDraft = true
+                    }
                 }
             }
             let done = ContinuousClock.now + .seconds(19)
@@ -1176,6 +1182,72 @@ final class UnifiedMacSmoke {
             _ = await unified.closeTaskTerminals()
             finish(["terminalStarted": false, "diagnostic": String(describing: type(of: error))])
         }
+    }
+
+    private func exerciseGoalComposerParity(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model),
+              let draftStore = model.macWorkspace?.smokeDraftStore, let window = visibleWorkbench,
+              agent.addProvider(name: "Goal Builder Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "draft-stream",
+                                key: "", supportsTools: true, allowsPlainHTTP: true) else {
+            finish(["configured": false]); return
+        }
+        let objective = "Verify the fixture and report the outcome"
+        agent.verifyAgentAnswers = false
+        let owner = agent.attachmentOwnerID
+        let file = root.appendingPathComponent("goal-note.txt")
+        guard (try? "Use this fixture".write(to: file, atomically: true, encoding: .utf8)) != nil,
+              let staged = agent.stageAttachments([file]).first,
+              await selectComposerMode(.goal, workspace: agent), window.attachedSheet == nil,
+              let frame = agent.smokePromptFrame,
+              clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: window) else {
+            finish(["selectedGoalInComposer": false, "diagnostics": settingsDiagnostics]); return
+        }
+        await Task.yield()
+        guard let editor = window.firstResponder as? NSTextView else { finish(["ordinaryComposer": false]); return }
+        editor.insertText(objective, replacementRange: editor.selectedRange())
+        await Task.yield()
+        guard clickWorkbenchButton(ids: ["composer.send"], frame: agent.smokeSteerFrame, screenshot: "goal-in-composer.png")
+        else { finish(["sentGoal": false]); return }
+        let ready = ContinuousClock.now + .seconds(4)
+        while (agent.goal == nil || agent.selectedID == nil || !agent.canSteer), ContinuousClock.now < ready {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard let goal = agent.goal, let id = agent.selectedID else {
+            finish(["definitionLoaded": false]); return
+        }
+        let savedDefinition = goal.objective == objective && goal.acceptanceCriteria.count == 1
+            && goal.blockingConditions?.isEmpty != false && goal.stoppingConditions?.isEmpty != false
+        let noSeparateInput = window.attachedSheet == nil && draftStore.text(for: owner).isEmpty
+        let modeWhileRunning = agent.composerMode
+        let followUp = "Send this once as a normal Agent message."
+        var followUpAccepted = false
+        agent.submitRunningInput(followUp, mode: .queue, attachments: []) { followUpAccepted = true }
+        let queueDeadline = ContinuousClock.now + .seconds(2)
+        while agent.queuedInputs[id]?.first?.content != followUp && ContinuousClock.now < queueDeadline {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        let followUpWasQueued = followUpAccepted && agent.queuedInputs[id]?.first?.executionMode == HostAgentMode.agent.rawValue
+        await agent.deleteGoal(goal)
+        let keptRunning = agent.isTaskRunning(id) && agent.goal == nil
+        let deadline = ContinuousClock.now + .seconds(18)
+        while (agent.isTaskRunning(id) || !agent.messages.contains(where: { $0.content == followUp })),
+              ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        await agent.select(nil)
+        await agent.select(id)
+        let keptConversation = agent.messages.contains { $0.role == "user" && $0.content == objective }
+            && agent.messages.contains { $0.role == "assistant" && !$0.content.isEmpty }
+        let sentAttachment = agent.messages.contains { message in
+            message.role == "user" && message.content == objective
+                && message.parts.contains { $0.attachmentID == staged.id }
+        }
+        finish(["usedNormalComposer": noSeparateInput, "savedDefinition": savedDefinition, "deletionKeptRunning": keptRunning,
+                "keptConversation": keptConversation, "goalStayedDeleted": agent.goal == nil,
+                "sentAttachment": sentAttachment, "agentReadyForNextInput": modeWhileRunning == .agent && agent.composerMode == .agent,
+                "deliveredFollowUp": followUpWasQueued && agent.messages.filter { $0.role == "user" && $0.content == followUp }.count == 1,
+                "noNewGoalRound": agent.transcriptRuns.count == 2 && agent.transcriptRuns.filter { $0.goalID == goal.id }.count == 1])
     }
 
     private func exerciseComposerPaste(_ model: BridgeAppModel) async {
@@ -2306,12 +2378,13 @@ final class UnifiedMacSmoke {
         return agent.goal?.id == id && agent.goal?.status == .completed
     }
 
-    private func exerciseGoalEvidence(_ model: BridgeAppModel, endpoint: URL) async {
+    private func exerciseGoalEvidence(_ model: BridgeAppModel, endpoint: URL, blocker: Bool) async {
         guard let agent = await readyFixtureWorkbench(model) else { finish(["ready": false]); return }
         let folder = root.appendingPathComponent("Goal Evidence Project", isDirectory: true)
         guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil,
               let project = await agent.addWorkspace(name: "Goal Evidence Project", rootURL: folder, selectForNewTask: false),
-              agent.startNamedAgentFixture("Create and verify the two fixture deliverables.", modelID: "goal-evidence-fixture",
+              agent.startNamedAgentFixture(blocker ? "Read the required receipt before writing the fixture report."
+                                                    : "Create and verify the two fixture deliverables.", modelID: "goal-evidence-fixture",
                                            endpoint: endpoint, projectID: project.id, mode: .goal) else {
             finish(["started": false]); return
         }
@@ -2323,10 +2396,20 @@ final class UnifiedMacSmoke {
                 clicked.insert(path)
             }
             if !agent.isSending, agent.goal?.status == .completed { break }
+            if blocker, !agent.isSending, let status = agent.goal?.status, [.blocked, .verifying].contains(status) { break }
             try? await Task.sleep(for: .milliseconds(35))
         }
         if let id = agent.selectedID { await agent.select(nil); await agent.select(id) }
         let goal = agent.goal
+        if blocker {
+            finish(["state": goal?.status.rawValue ?? "",
+                    "blocker": goal.flatMap { GoalEvidenceReviewContract.blockerExplanation(for: $0) } ?? "",
+                    "oneRound": agent.transcriptRuns.count == 1 && agent.transcriptRuns.first?.state == "completed",
+                    "noCompletionClaim": goal?.acceptanceCriteria.allSatisfy { !$0.isSatisfied } ?? false,
+                    "noUserDefinedBlockers": goal?.blockingConditions?.isEmpty != false,
+                    "diagnostics": agent.smokeRunDiagnostics + settingsDiagnostics])
+            return
+        }
         finish(["state": goal?.status.rawValue ?? "", "cycles": goal?.progress.cycleCount ?? -1,
                 "calls": goal?.progress.modelCallCount ?? -1, "approvals": clicked.sorted(),
                 "distinctGoalRounds": agent.transcriptRuns.count == 2 && agent.transcriptRuns.allSatisfy {
@@ -3979,21 +4062,62 @@ final class UnifiedMacSmoke {
             guard let field = window.firstResponder as? NSTextView else { return false }
             field.insertText(text, replacementRange: field.selectedRange())
             await Task.yield()
-            return clickWorkbenchButton(ids: ["composer.running.send"], frame: workspace.smokeSteerFrame, screenshot: nil)
+            return clickWorkbenchButton(ids: ["composer.send"], frame: workspace.smokeSteerFrame, screenshot: nil)
         }
+        workspace.smokePendingInputsFrame = nil
         let next = "Summarize the saved project report."
         let guidance = "Mention the checked attachment in your reply."
+        let editedText = "Edited queue fixture"
         let titles = ["chat.thread_composer_view.add_to_message_queue", "chat.thread_composer_view.steer_the_current_run"].map { NSLocalizedString($0, comment: "") }
         guard await selectMenuChoice(frame: workspace.smokeRunningModeFrame, titles: titles, target: titles[0]),
-              workspace.runningInputMode == .queue, await submit(next) else { return false }
+              workspace.conversationRunningInputMode == .queue, await submit(next) else { return false }
         var deadline = ContinuousClock.now + .seconds(2)
         while workspace.queuedInputs[id]?.first?.content != next && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
-        guard let original = workspace.queuedInputs[id]?.first, original.content == next else { return false }
-        await workspace.editQueued(original, content: "Edited queue fixture")
+        content.layoutSubtreeIfNeeded()
+        refreshButtonFrames(in: content)
+        guard let original = workspace.queuedInputs[id]?.first, original.content == next,
+              let queueFrame = workspace.smokePendingInputsFrame,
+              let composerFrame = workspace.smokeComposerSurfaceFrame,
+              let stopFrame = workspace.smokeStopFrame, let sendFrame = workspace.smokeSteerFrame,
+              abs(queueFrame.minY - composerFrame.maxY) <= 1,
+              abs(queueFrame.minX - composerFrame.minX) <= 1,
+              abs(queueFrame.width - composerFrame.width) <= 1,
+              stopFrame.midX < sendFrame.midX else {
+            settingsDiagnostics.append("The pending messages must share the composer column, with Stop before Send.")
+            return false
+        }
+        capture(content, extension: "project-pending-above-composer.png")
+        let editTitle = NSLocalizedString("workspace.workspace_canvas_view.edit", comment: "")
+        PendingInputEditor.smokeSaveFrame = nil
+        guard await selectMenuChoice(frame: PendingInputQueueView.smokeMenuFrames[original.id],
+                                     titles: [editTitle], target: editTitle),
+              let sheet = window.attachedSheet, let sheetContent = sheet.contentView,
+              let editor = descendant(NSTextView.self, in: sheetContent) else {
+            settingsDiagnostics.append("The queued row did not open the shared editor sheet.")
+            return false
+        }
+        sheet.makeKey()
+        _ = sheet.makeFirstResponder(editor)
+        editor.insertText(editedText, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        try? await Task.sleep(for: .milliseconds(75))
+        sheetContent.layoutSubtreeIfNeeded()
+        refreshButtonFrames(in: sheetContent)
+        capture(sheetContent, extension: "project-pending-editor.png")
+        let clickedSave = pressAccessibilityButton(sheetContent, id: "thread.pendingInputs.edit.save")
+            || PendingInputEditor.smokeSaveFrame.map { clickWindowLocation(NSPoint(x: $0.midX, y: $0.midY), in: sheet) } == true
+        guard clickedSave else {
+            _ = await closeFixtureSheet(sheet, id: "thread.pendingInputs.edit.cancel")
+            settingsDiagnostics.append("The shared queued editor had no Save button.")
+            return false
+        }
+        deadline = ContinuousClock.now + .seconds(2)
+        while (window.attachedSheet != nil || workspace.queuedInputs[id]?.first?.content != editedText),
+              ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
         guard let edited = workspace.queuedInputs[id]?.first, edited.id == original.id,
-              edited.content == "Edited queue fixture" else { return false }
+              edited.content == editedText, window.attachedSheet == nil else { return false }
+        window.makeKeyAndOrderFront(nil)
         await workspace.editQueued(edited, content: next)
         guard await submit("Discard this queue fixture") else { return false }
         deadline = ContinuousClock.now + .seconds(2)
@@ -4007,12 +4131,20 @@ final class UnifiedMacSmoke {
         guard workspace.queuedInputs[id]?.map(\.id) == [original.id],
               workspace.queuedInputs[id]?.first?.content == next,
               await selectMenuChoice(frame: workspace.smokeRunningModeFrame, titles: titles, target: titles[1]),
-              workspace.runningInputMode == .steer, await submit(guidance) else { return false }
+              workspace.conversationRunningInputMode == .steer, await submit(guidance) else { return false }
         deadline = ContinuousClock.now + .seconds(2)
-        while workspace.lastSteer != guidance && ContinuousClock.now < deadline {
+        while !((workspace.queuedInputs[id] ?? []).contains { $0.content == guidance && $0.status == .steerPending }),
+              ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
-        return workspace.lastSteer == guidance && workspace.pendingApproval != nil
+        guard workspace.lastSteer == guidance, workspace.pendingApproval != nil, workspace.runningInputMode == .queue,
+              let inserted = workspace.queuedInputs[id]?.first(where: { $0.status == .steerPending && $0.content == guidance })
+        else { return false }
+        await workspace.demoteQueuedGuidance(inserted)
+        guard let queued = workspace.queuedInputs[id]?.first(where: { $0.id == inserted.id }),
+              queued.status == .queued else { return false }
+        await workspace.promoteQueuedToGuidance(queued)
+        return workspace.queuedInputs[id]?.contains { $0.id == inserted.id && $0.status == .steerPending } == true
     }
 
     private func selectComposerMode(_ mode: HostAgentMode, workspace: HostAgentWorkspace) async -> Bool {

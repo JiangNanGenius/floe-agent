@@ -1254,6 +1254,13 @@ struct MacWorkspaceRootView: View {
                                 .accessibilityIdentifier(inspectorEntryID(item))
                         }
                     }
+                    if workspace.goal != nil {
+                        Button("mac.agent.editGoal", systemImage: "target") {
+                            workspace.goalBuilderRequest = UUID()
+                        }
+                        .disabled(!canSelectTask || destinationConversationID != workspace.selectedID || workspace.isChangingSelectedGoal)
+                        .accessibilityIdentifier("workspace.task.editGoal")
+                    }
                     if let id = destinationConversationID {
                         Button(workspaceText("定时任务", "Scheduled Tasks"), systemImage: "calendar.badge.clock") {
                             let project = workspace.selectedConversationWorkspace.flatMap { $0.kind == .project ? $0.id : nil }

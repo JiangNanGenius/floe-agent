@@ -54,8 +54,8 @@ struct HostAgentWorkspaceView: View {
     @State private var textImportAttachmentID: UUID?
     @State private var showTextImportError = false
     @State private var textImportFoundNoText = false
-    @State private var criterion = ""
     @State private var goalToEdit: ConversationGoal?
+    @State private var goalPendingDeletion: ConversationGoal?
     @State private var goalForConfirmation: ConversationGoal?
     @State private var editingQueuedInput: PendingUserInput?
     @State private var hiddenPlanConfirmations: Set<ThreadPlanConfirmationPresentationKey> = []
@@ -104,31 +104,16 @@ struct HostAgentWorkspaceView: View {
         workspaceDraft ?? $standaloneDraft
     }
 
-    private func submitDraft(workspaceID: UUID? = nil, mode: HostAgentMode = .chat, criterion: String = "") {
+    private func submitDraft(workspaceID: UUID? = nil, mode: HostAgentMode = .chat) {
         let binding = draft
         let submitted = binding.wrappedValue
-        workspace.send(submitted, workspaceID: workspaceID, mode: mode, criterion: criterion,
+        workspace.send(submitted, workspaceID: workspaceID, mode: mode,
             onAdmitted: draftCommit(for: binding, submitted: submitted))
     }
 
     private func draftCommit(for binding: Binding<String>, submitted: String) -> () -> Void {
         captureDraftCommit?() ?? { if binding.wrappedValue == submitted { binding.wrappedValue = "" } }
     }
-
-    #if FLOE_UNIFIED_MAC
-    /// Status caption for a non-queued queue row. Queued rows stay quiet;
-    /// a guidance row waiting for a safe insertion point, or mid-promotion,
-    /// tells the user what is happening in aligned bilingual copy.
-    private func queueStatusText(_ status: PendingUserInputStatus) -> String {
-        switch status {
-        case .queued: ""
-        case .promoting: String(localized: "mac.agent.guidanceConverting")
-        case .steerPending: String(localized: "mac.agent.guidanceWaiting")
-        case .consumed: String(localized: "mac.agent.guidanceSent")
-        case .cancelled: String(localized: "mac.agent.guidanceCancelled")
-        }
-    }
-    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -174,88 +159,8 @@ struct HostAgentWorkspaceView: View {
                         #endif
                 }
                 pendingPlanReview
-                if let goal = workspace.goal { goalCard(goal) }
                 if let id = workspace.selectedID {
                     MacChildTasksView(controller: workspace.childSubagents, conversationID: id)
-                }
-                if let id = workspace.selectedID, let inputs = workspace.queuedInputs[id], !inputs.isEmpty {
-                    DisclosureGroup {
-                        let queued = inputs.filter { $0.status == .queued }
-                        ForEach(inputs) { input in
-                            HStack(spacing: 8) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(verbatim: input.content).lineLimit(2).textSelection(.enabled)
-                                    if input.status != .queued {
-                                        Text(queueStatusText(input.status))
-                                            .font(.caption)
-                                            .foregroundStyle(FloeTheme.pending)
-                                    }
-                                }
-                                Spacer(minLength: 4)
-                                if let text = CredentialMessagePart.clipboardText(input.content) {
-                                    ChatMessageCopyButton(text: text)
-                                }
-                                if input.status == .queued || input.status == .steerPending {
-                                    let queuedIndex = queued.firstIndex(where: { $0.id == input.id })
-                                    Menu {
-                                        Button("mac.agent.editQueued", systemImage: "pencil") {
-                                            editingQueuedInput = input
-                                        }
-                                        Button("mac.agent.moveQueuedUp", systemImage: "arrow.up") {
-                                            Task { await workspace.moveQueued(input, offset: -1) }
-                                        }
-                                        .disabled(queuedIndex == nil || queuedIndex == queued.startIndex)
-                                        Button("mac.agent.moveQueuedDown", systemImage: "arrow.down") {
-                                            Task { await workspace.moveQueued(input, offset: 1) }
-                                        }
-                                        .disabled(queuedIndex == nil || queuedIndex == queued.indices.last)
-                                        // Both directions come from one policy:
-                                        // a queued row can convert into guidance
-                                        // for the active run, an accepted
-                                        // guidance row can return to the queue —
-                                        // but only while it has NOT been
-                                        // consumed. Consumed rows offer no mode
-                                        // action at all.
-                                        let modeActions = RunningInputModePolicy.modeActions(
-                                            status: input.status, canSteer: workspace.canSteer)
-                                        if modeActions.contains(.promoteToSteer) {
-                                            Button("mac.agent.convertToGuidance",
-                                                   systemImage: "arrow.triangle.turn.up.right.diamond") {
-                                                Task { await workspace.promoteQueuedToGuidance(input) }
-                                            }
-                                            .disabled(!workspace.canSteer)
-                                        }
-                                        if modeActions.contains(.demoteToQueue) {
-                                            Button("mac.agent.backToQueue", systemImage: "arrow.uturn.left") {
-                                                Task { await workspace.demoteQueuedGuidance(input) }
-                                            }
-                                        }
-                                        Divider()
-                                        Button("mac.agent.removeQueued", systemImage: "trash", role: .destructive) {
-                                            Task { await workspace.cancelQueued(input) }
-                                        }
-                                    } label: {
-                                        Image(systemName: "ellipsis.circle")
-                                            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                                    }
-                                    .accessibilityLabel("mac.agent.queueMessageActions")
-                                } else {
-                                    ProgressView().controlSize(.small)
-                                }
-                            }
-                        }
-                        if !workspace.isSending {
-                            Button("mac.agent.sendNextQueued") { Task { await workspace.startNextQueued(id) } }
-                        }
-                    } label: { Label { Text("mac.agent.queueCount \(inputs.count)") } icon: { Image(systemName: "text.badge.plus") } }
-                    .font(.callout).padding(.horizontal, 18)
-                }
-                if let steer = workspace.lastSteer {
-                    Label {
-                        Text(verbatim: String(localized: "mac.agent.steerSent") + " · " + steer)
-                            .lineLimit(1).help(steer)
-                    } icon: { Image(systemName: "arrow.turn.up.right") }
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
                 }
                 conversation
                 if let question = workspace.pendingQuestion {
@@ -320,6 +225,7 @@ struct HostAgentWorkspaceView: View {
                     .disabled(!draft.wrappedValue.isEmpty || !workspace.stagedAttachments.isEmpty)
                     .padding(.horizontal, 16)
                 }
+                if let goal = workspace.goal { goalCard(goal) }
                 composer
                 #else
                 conversation
@@ -446,22 +352,37 @@ struct HostAgentWorkspaceView: View {
                 ? MacComposerInputText.t("在这张图片中没有识别到可用文字。", "No usable text was recognized in this image.")
                 : MacComposerInputText.t("图片无法读取或识别失败，请重试。", "The image could not be read or recognition failed. Try again."))
         }
+        .onChange(of: workspace.goalBuilderRequest, initial: true) {
+            guard workspace.goalBuilderRequest != nil else { return }
+            workspace.goalBuilderRequest = nil
+            if let editableGoal { presentGoalEditor(editableGoal) }
+        }
         .sheet(item: $goalToEdit) { goal in
-            GoalBuilderSheet(goal: goal, errorMessage: workspace.notice) { objective, criteria, blockers, stops in
+            GoalBuilderSheet(goal: goal, showsDefinitionFields: false, errorMessage: workspace.notice) { objective, criteria, blockers, stops in
                 await workspace.editGoal(goal, objective: objective, criteria: criteria, blockers: blockers, stops: stops)
             }
-            .frame(minWidth: 420, idealWidth: 520, minHeight: 420, idealHeight: 580)
+            .frame(minWidth: 420, idealWidth: 485, minHeight: 225, idealHeight: 285)
         }
+        .confirmationDialog(MacPermissionsText.t("删除目标？", "Delete goal?"),
+            isPresented: Binding(get: { goalPendingDeletion != nil }, set: { if !$0 { goalPendingDeletion = nil } }),
+            titleVisibility: .visible, presenting: goalPendingDeletion) { goal in
+                Button(MacPermissionsText.t("删除目标", "Delete goal"), role: .destructive) {
+                    Task { await workspace.deleteGoal(goal) }
+                }
+            } message: { _ in
+                Text(MacPermissionsText.t("目标将停止推进后续回合。本轮继续，会话、文件和已有结果会保留。",
+                                         "The goal stops advancing after this round. The conversation, files, and results are kept."))
+            }
         .sheet(item: $goalForConfirmation) { goal in
             MacGoalConfirmationView(goal: goal) { steps, criteria in
                 await workspace.confirmGoal(goal, completedSteps: steps, confirmedCriteria: criteria)
             }
         }
         .sheet(item: $editingQueuedInput) { input in
-            MacQueuedInputEditor(input: input) { text in
-                let target = input
-                Task { await workspace.editQueued(target, content: text) }
+            PendingInputEditor(input: input) { text in
+                Task { await workspace.editQueued(input, content: text) }
             }
+            .frame(minWidth: 420, idealWidth: 500, minHeight: 270)
         }
         #else
         .padding(20)
@@ -496,7 +417,30 @@ struct HostAgentWorkspaceView: View {
 
     #if FLOE_UNIFIED_MAC
     private var composerSendRoute: RunningInputSendRoute {
-        RunningInputModePolicy.sendRoute(isRunActive: workspace.isSending, mode: workspace.runningInputMode)
+        RunningInputModePolicy.sendRoute(isRunActive: workspace.isSending, mode: workspace.conversationRunningInputMode)
+    }
+
+    @ViewBuilder private var pendingInputs: some View {
+        if let id = workspace.selectedID, let inputs = workspace.queuedInputs[id], !inputs.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                PendingInputQueueView(
+                    inputs: inputs, canSteer: workspace.canSteer,
+                    onEdit: { editingQueuedInput = $0 },
+                    onDelete: { input in Task { await workspace.cancelQueued(input) } },
+                    onMove: { input, offset in Task { await workspace.moveQueued(input, offset: offset) } },
+                    onSteer: { input in Task { await workspace.promoteQueuedToGuidance(input) } },
+                    onDemote: { input in Task { await workspace.demoteQueuedGuidance(input) } }
+                )
+                if !workspace.isSending {
+                    Button("mac.agent.sendNextQueued") { Task { await workspace.startNextQueued(id) } }
+                        .padding(.horizontal, 12)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { workspace.smokePendingInputsFrame = $0 })
+            #endif
+        }
     }
 
     private var composerSubmitLabel: LocalizedStringKey {
@@ -505,7 +449,7 @@ struct HostAgentWorkspaceView: View {
 
     private var composerPlaceholder: String {
         guard workspace.isSending else { return String(localized: "host.chat.prompt") }
-        return workspace.runningInputMode == .steer
+        return workspace.conversationRunningInputMode == .steer
             ? String(localized: "mac.agent.steerPrompt") : String(localized: "mac.agent.queuePrompt")
     }
 
@@ -530,16 +474,26 @@ struct HostAgentWorkspaceView: View {
             let binding = draft
             let text = binding.wrappedValue
             let clear = draftCommit(for: binding, submitted: text)
-            if workspace.runningInputMode == .steer { workspace.steer(text, attachments: attachments, onAccepted: clear) }
-            else { workspace.enqueue(text, attachments: attachments, onAccepted: clear) }
+            workspace.submitRunningInput(text, mode: workspace.conversationRunningInputMode,
+                                         attachments: attachments, onAccepted: clear)
         } else {
             let project = workspace.selectedID == nil ? workspace.selectedWorkspaceID : nil
-            let isNewGoal = mode == .goal && workspace.goal?.status.isTerminal != false
-            submitDraft(workspaceID: project, mode: mode, criterion: isNewGoal ? criterion : "")
+            submitDraft(workspaceID: project, mode: mode)
         }
     }
 
     private var composer: some View {
+        VStack(spacing: 0) {
+            pendingInputs
+            inlineComposer
+        }
+        .frame(maxWidth: 824)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 3)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var inlineComposer: some View {
         VStack(alignment: .leading, spacing: 2) {
             if !workspace.isSending, mode != .chat, let provider = workspace.composerProvider,
                !provider.model.capabilities.contains(.tools) {
@@ -570,13 +524,6 @@ struct HostAgentWorkspaceView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if mode == .goal, workspace.goal?.status.isTerminal != false {
-                TextField("mac.agent.goalCriterionHint", text: $criterion, axis: .vertical)
-                    .lineLimit(1...3)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("mac.agent.goalCriterion")
-                    .disabled(workspace.isSending || workspace.isTerminating)
-            }
             ComposerResponsiveRow(spacing: 4, stackedSpacing: 2) {
                 composerAttachments
                     .composerResponsiveLeadingControl()
@@ -595,35 +542,30 @@ struct HostAgentWorkspaceView: View {
                 #endif
                 .disabled(workspace.isTerminating || (workspace.isSending && workspace.selectedID == nil))
                 if workspace.isSending {
-                    Button(action: submitComposer) {
-                        Label(composerSubmitLabel, systemImage: composerSendRoute.composerSymbol)
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(ComposerButtonStyle())
-                    .help(Text(composerSubmitLabel))
-                    .disabled(!canSubmitComposer)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .accessibilityIdentifier("composer.running.send")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(MacWorkbenchButtonFrameReader { workspace.smokeSteerFrame = $0 })
-                    #endif
                     Button(action: workspace.stop) {
                         FloeComposerActionGlyph(systemImage: "stop.fill", enabled: workspace.canStop, destructive: true)
                     }
                     .buttonStyle(ComposerButtonStyle())
                     .accessibilityLabel("host.chat.stop")
+                    .accessibilityIdentifier("composer.stop")
                     .disabled(!workspace.canStop)
-                } else {
-                    Button(action: submitComposer) {
-                        FloeComposerActionGlyph(systemImage: composerSendRoute.composerSymbol, enabled: canSubmitComposer)
-                    }
-                    .buttonStyle(ComposerButtonStyle())
-                    .accessibilityLabel(Text(composerSubmitLabel))
-                    .accessibilityIdentifier("composer.send")
-                    .help(workspace.composerProvider == nil ? Text("host.chat.configureFirst") : Text("mac.workspace.sendShortcut"))
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!canSubmitComposer)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { workspace.smokeStopFrame = $0 })
+                    #endif
                 }
+                Button(action: submitComposer) {
+                    FloeComposerActionGlyph(systemImage: composerSendRoute.composerSymbol, enabled: canSubmitComposer)
+                }
+                .buttonStyle(ComposerButtonStyle())
+                .accessibilityLabel(Text(composerSubmitLabel))
+                .accessibilityIdentifier("composer.send")
+                .help(workspace.isSending ? Text(composerSubmitLabel)
+                      : (workspace.composerProvider == nil ? Text("host.chat.configureFirst") : Text("mac.workspace.sendShortcut")))
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!canSubmitComposer)
+                #if FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { workspace.smokeSteerFrame = $0 })
+                #endif
             }
             if voiceSession.isActive || voiceSession.problem != nil {
                 voiceStatus
@@ -645,16 +587,15 @@ struct HostAgentWorkspaceView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .modifier(FloeThreadComposerChrome())
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { workspace.smokeComposerSurfaceFrame = $0 })
+        #endif
         .dropDestination(for: URL.self) { urls, _ in
             guard acceptsAttachmentImport else { return false }
             let staged = workspace.stageAttachments(urls.filter(\.isFileURL))
             showAttachmentError = staged.count < urls.count
             return !staged.isEmpty
         }
-        .frame(maxWidth: 824)
-        .padding(.horizontal, 6)
-        .padding(.bottom, 3)
-        .frame(maxWidth: .infinity)
     }
 
     private var composerInput: some View {
@@ -740,8 +681,8 @@ struct HostAgentWorkspaceView: View {
     }
 
     private var runningInputControl: some View {
-        FloeComposerRunningInputMenu(queue: Binding(get: { workspace.runningInputMode == .queue },
-                                                   set: { workspace.runningInputMode = $0 ? .queue : .steer }))
+        FloeComposerRunningInputMenu(queue: Binding(get: { workspace.conversationRunningInputMode == .queue },
+                                                   set: { workspace.selectConversationRunningInputMode($0 ? .queue : .steer) }))
         .menuStyle(.button)
         .buttonStyle(ComposerButtonStyle())
         .menuIndicator(.hidden)
@@ -949,76 +890,91 @@ struct HostAgentWorkspaceView: View {
         return { workspace.runAcceptedPlan(snapshot) }
     }
 
-    /// iPad `ThreadDetailView.goalStatusRow` parity for the Mac card slice:
-    /// Continue is the primary action for an idle resumable goal, with Pause
-    /// kept reachable from the goal menu when both controls are eligible.
-    /// Progress, the paused-while-running note and the criteria/steps/evidence
-    /// list read only the saved goal fields.
+    private func presentGoalEditor(_ goal: ConversationGoal) {
+        goalToEdit = goal
+        workspace.notice = nil
+    }
+
     private func goalCard(_ goal: ConversationGoal) -> some View {
-        let showsMenuPause = workspace.canContinueGoal(goal) && workspace.canPauseGoal(goal)
-        let canEditGoal = editableGoal?.id == goal.id && !workspace.isSending
-        // Concatenate before LocalizedStringKey: an interpolated literal key
-        // would be looked up as a format key and render raw on macOS.
-        let statusKey = "mac.agent.goal." + goal.status.rawValue
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Label("mac.agent.goalStatus", systemImage: "scope").font(.callout.weight(.semibold))
-                Text(LocalizedStringKey(statusKey))
-                    .font(.caption).foregroundStyle(.secondary)
+        let statusKey = LocalizedStringKey("mac.agent.goal." + goal.status.rawValue)
+        let canEdit = editableGoal?.id == goal.id && !workspace.isChangingSelectedGoal
+        let summary = VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("mac.agent.goalStatus", systemImage: "target").font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(statusKey).font(.caption).foregroundStyle(.secondary)
                     .accessibilityIdentifier("mac.agent.goal.status")
-                Spacer(minLength: 0)
-                if workspace.canContinueGoal(goal) {
-                    Button("mac.agent.continueGoal", systemImage: "play") { workspace.continueGoal(goal) }
-                        .accessibilityIdentifier("mac.agent.goal.continue")
-                        #if FLOE_MAC_HOST_SMOKE
-                        .background(MacWorkbenchButtonFrameReader { Self.smokeGoalContinueFrame = $0 })
-                        #endif
-                } else if workspace.canPauseGoal(goal) {
-                    Button("mac.agent.pauseGoal", systemImage: "pause") { Task { await workspace.pauseGoal(goal) } }
-                        .accessibilityIdentifier("mac.agent.goal.pause")
-                }
-                if workspace.canConfirmGoal(goal) {
-                    Button("mac.agent.confirmGoal", systemImage: "checkmark") { goalForConfirmation = goal }
-                        .accessibilityIdentifier("mac.agent.goal.confirm")
-                }
-                if showsMenuPause || canEditGoal {
-                    Menu {
-                        if showsMenuPause {
-                            Button("mac.agent.pauseGoal", systemImage: "pause") {
-                                Task { await workspace.pauseGoal(goal) }
-                            }
-                            .accessibilityIdentifier("mac.agent.goal.pause")
-                        }
-                        if canEditGoal {
-                            Button("mac.agent.editGoal", systemImage: "pencil") { goalToEdit = goal }
-                                .accessibilityIdentifier("mac.agent.goal.edit")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                    }
-                    .accessibilityLabel("mac.agent.goalActions")
-                    .accessibilityIdentifier("mac.agent.goal.actions")
-                }
             }
-            if canEditGoal {
-                Button { goalToEdit = goal } label: {
-                    Text(verbatim: goal.objective).lineLimit(2).help(goal.objective)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+            Text(verbatim: goal.objective).font(.subheadline).lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                if canEdit {
+                    Button { presentGoalEditor(goal) } label: { summary }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("mac.agent.editGoal")
+                        .accessibilityValue(goal.objective)
+                        .accessibilityIdentifier("mac.agent.goal.editSummary")
+                } else {
+                    summary
                 }
+                Group {
+                    if workspace.isChangingSelectedGoal {
+                        ProgressView().controlSize(.small)
+                    } else if workspace.canContinueGoal(goal) {
+                        Button("mac.agent.continueGoal", systemImage: "play.fill") { workspace.continueGoal(goal) }
+                            .accessibilityIdentifier("mac.agent.goal.continue")
+                            #if FLOE_MAC_HOST_SMOKE
+                            .background(MacWorkbenchButtonFrameReader { Self.smokeGoalContinueFrame = $0 })
+                            #endif
+                    } else if workspace.canPauseGoal(goal) {
+                        Button("mac.agent.pauseGoal", systemImage: "pause.fill") { Task { await workspace.pauseGoal(goal) } }
+                            .accessibilityIdentifier("mac.agent.goal.pause")
+                    }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                Menu {
+                    if workspace.canContinueGoal(goal), workspace.canPauseGoal(goal) {
+                        Button("mac.agent.pauseGoal", systemImage: "pause") { Task { await workspace.pauseGoal(goal) } }
+                            .accessibilityIdentifier("mac.agent.goal.pause")
+                    }
+                    if canEdit {
+                        Button("mac.agent.editGoal", systemImage: "pencil") { presentGoalEditor(goal) }
+                            .accessibilityIdentifier("mac.agent.goal.edit")
+                    }
+                    Button(MacPermissionsText.t("删除目标", "Delete goal"), systemImage: "trash", role: .destructive) {
+                        goalPendingDeletion = goal
+                    }
+                    .accessibilityIdentifier("mac.agent.goal.delete")
+                } label: {
+                    Image(systemName: "ellipsis.circle").frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                }
+                .menuIndicator(.hidden)
+                .menuStyle(.button)
                 .buttonStyle(.plain)
-                .accessibilityLabel("mac.agent.editGoal")
-                .accessibilityValue(goal.objective)
-                .accessibilityIdentifier("mac.agent.goal.editSummary")
-            } else {
-                Text(verbatim: goal.objective).lineLimit(2).help(goal.objective)
+                .accessibilityLabel("mac.agent.goalActions")
+                .accessibilityIdentifier("mac.agent.goal.actions")
+                .disabled(workspace.isChangingSelectedGoal)
             }
             let completedSteps = goal.steps.filter { $0.status == .completed }.count
             ProgressView(value: Double(completedSteps), total: Double(max(1, goal.steps.count)))
                 .accessibilityLabel("mac.agent.goalProgress")
                 .accessibilityValue(Text("mac.agent.goalProgressValue \(completedSteps) \(max(1, goal.steps.count))"))
                 .accessibilityIdentifier("mac.agent.goal.progress")
+            if let reason = GoalEvidenceReviewContract.blockerExplanation(for: goal) {
+                Text(verbatim: reason)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("thread.goal.blockedReason")
+            }
+            if workspace.canConfirmGoal(goal) {
+                Button("mac.agent.confirmGoal", systemImage: "checkmark") { goalForConfirmation = goal }
+                    .accessibilityIdentifier("mac.agent.goal.confirm")
+            }
             if goal.status == .paused, workspace.isSending {
                 Text("mac.agent.goalPausedRunning")
                     .font(.caption).foregroundStyle(.secondary)
@@ -1066,10 +1022,7 @@ struct HostAgentWorkspaceView: View {
         .accessibilityIdentifier("mac.agent.goalCard")
     }
 
-    private var editableGoal: ConversationGoal? {
-        guard let goal = workspace.goal, !goal.status.isTerminal else { return nil }
-        return goal
-    }
+    private var editableGoal: ConversationGoal? { workspace.goal }
 
     /// Saved step state shown in the goal disclosure, aligned with the
     /// criterion icons: open circle until done, crossed out on failure.
@@ -1124,7 +1077,7 @@ struct HostAgentWorkspaceView: View {
                              selection: Binding(get: { mode }, set: { workspace.composerMode = $0 }),
                              title: { $0.title }, symbol: { $0.symbol },
                              editGoalTitle: String(localized: "mac.agent.editGoal"),
-                             editGoal: editableGoal.map { goal in { goalToEdit = goal } }, goal: .goal)
+                             editGoal: editableGoal.map { goal in { presentGoalEditor(goal) } }, goal: .goal)
         .menuStyle(.button)
         .buttonStyle(ComposerButtonStyle())
         .menuIndicator(.hidden)
@@ -1494,40 +1447,6 @@ struct HostAgentProviderForm: View {
 /// Editor sheet for one queued or accepted-guidance message. Saving routes
 /// through the workspace so a guidance row is withdrawn before its text
 /// changes; the runtime never consumes an edited message.
-private struct MacQueuedInputEditor: View {
-    let input: PendingUserInput
-    let onSave: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var text: String
-
-    init(input: PendingUserInput, onSave: @escaping (String) -> Void) {
-        self.input = input
-        self.onSave = onSave
-        _text = State(initialValue: input.content)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("mac.agent.editQueuedMessage")
-                .font(.headline)
-            TextField("mac.agent.queueMessage", text: $text, axis: .vertical)
-                .lineLimit(3...10)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Spacer()
-                Button("host.chat.cancel", role: .cancel) { dismiss() }
-                Button("host.chat.save") {
-                    onSave(text)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(16)
-        .frame(minWidth: 420)
-    }
-}
 #endif
 
 #if FLOE_UNIFIED_MAC
