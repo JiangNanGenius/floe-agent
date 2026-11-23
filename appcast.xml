@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.27</title>
+      <pubDate>Mon, 23 Nov 2026 18:37:13 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.27</link>
+      <sparkle:version>57</sparkle:version>
+      <sparkle:shortVersionString>1.11.27</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>聊天支持自动思考强度，同一轮续跑沿用原强度。 Automatic reasoning for Chat and consistent effort when resuming.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.27/Floe-Agent-1.11.27.dmg" length="64894014" type="application/octet-stream" sparkle:edSignature="PQSaiUchXKmvXZtMwIkVTPWmbysjBzEwtQEpWjCdI9MpxVEZ2IwLBJjeKvupQgZCwrQUkW2DfGwNfJAp1op7CA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.26</title>
       <pubDate>Mon, 23 Nov 2026 18:10:47 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.26</link>
