@@ -36,7 +36,7 @@ private struct MacDesktopStatus: AgentTool, MacAgentWorkspaceExecutable {
 }
 
 struct MacDesktopControl: AgentTool, MacAgentWorkspaceExecutable {
-    enum Action: String, Codable, Sendable { case windows, inspect, screenshot, click, setValue }
+    enum Action: String, Codable, Sendable { case windows, inspect, screenshot, click, setValue, keys, drag }
     struct Arguments: Codable, Sendable {
         let action: Action
         let app: String
@@ -45,16 +45,27 @@ struct MacDesktopControl: AgentTool, MacAgentWorkspaceExecutable {
         let snapshotID: String?
         let index: Int?
         let value: String?
+        let keys: String?
+        let fromX: Double?
+        let fromY: Double?
+        let toX: Double?
+        let toY: Double?
+        let steps: Int?
+        let stepMs: Int?
+        let holdMs: Int?
     }
 
     static let name = "mac.desktop.control"
-    static let toolDescription = "Control one running Mac app by bundle ID in the background using Kimi CU. List its windows, inspect a specific window for a snapshot and node indices, then click or set a value. Re-inspect after each action and verify its effect. Captures only the selected window. Never activates an app or requests foreground fallback."
+    static let toolDescription = "Control one running Mac app by bundle ID in the background using Kimi CU. List its windows, inspect a specific window for a snapshot and node indices, then click or set a value. Send one key or shortcut to the focused control in that window, or drag between two points on its current screenshot. Verify the window state after each action. Captures only the selected window and keeps it in the background."
     static let parametersJSON = #"""
-    {"type":"object","properties":{"action":{"type":"string","enum":["windows","inspect","screenshot","click","setValue"]},"app":{"type":"string","description":"Target application's bundle identifier"},"pid":{"type":"integer","description":"Process ID when the app has several running instances"},"windowID":{"type":"integer","description":"Window ID from windows"},"snapshotID":{"type":"string","description":"AX snapshot_id from inspect"},"index":{"type":"integer","description":"Node index from that snapshot"},"value":{"type":"string","description":"Text for setValue"}},"required":["action","app"],"additionalProperties":false}
+    {"type":"object","properties":{"action":{"type":"string","enum":["windows","inspect","screenshot","click","setValue","keys","drag"]},"app":{"type":"string","description":"Target application's bundle identifier"},"pid":{"type":"integer","description":"Process ID when the app has several running instances"},"windowID":{"type":"integer","description":"Window ID from windows"},"snapshotID":{"type":"string","description":"AX snapshot_id from inspect or screenshot of this window"},"index":{"type":"integer","description":"Node index from that snapshot (click, setValue)"},"value":{"type":"string","description":"Text for setValue"},"keys":{"type":"string","description":"Single xdotool-style key or chord for keys, e.g. \"cmd+a\" or \"return\""},"fromX":{"type":"number","description":"Drag start x in screenshot pixels of the current screenshot action"},"fromY":{"type":"number","description":"Drag start y in screenshot pixels of the current screenshot action"},"toX":{"type":"number","description":"Drag end x in screenshot pixels of the current screenshot action"},"toY":{"type":"number","description":"Drag end y in screenshot pixels of the current screenshot action"},"steps":{"type":"integer","description":"Drag interpolation points 1...500 (optional)"},"stepMs":{"type":"integer","description":"Gap between drag move events 0...100 ms (optional)"},"holdMs":{"type":"integer","description":"Press-and-hold before the drag move 0...1000 ms (optional)"}},"required":["action","app"],"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
     static let executionBoundary: ToolExecutionBoundary = .mainRunOnly
+    /// Screenshot-pixel drag stays inside one observation and one transport deadline.
+    static let maxDragCoordinate = 16_384.0
+    static let maxDragDurationMilliseconds = 15_000
     let root: MacAgentWorkspaceRoot
     let client = MacKimiComputerUse()
 
@@ -68,6 +79,28 @@ struct MacDesktopControl: AgentTool, MacAgentWorkspaceExecutable {
         }
         if args.action == .setValue {
             guard let value = args.value, value.utf8.count <= 4096 else { throw MacKimiError.invalidTarget }
+        }
+        if args.action == .keys {
+            guard let id = args.snapshotID, UUID(uuidString: id) != nil,
+                  let keys = args.keys, !keys.isEmpty, keys.utf8.count <= 48,
+                  keys.utf8.allSatisfy({ (0x21...0x7E).contains($0) }) else {
+                throw MacKimiError.invalidTarget
+            }
+        }
+        if args.action == .drag {
+            guard let id = args.snapshotID, UUID(uuidString: id) != nil else { throw MacKimiError.invalidTarget }
+            guard let fromX = args.fromX, let fromY = args.fromY, let toX = args.toX, let toY = args.toY,
+                  fromX.isFinite, fromY.isFinite, toX.isFinite, toY.isFinite,
+                  (0...Self.maxDragCoordinate).contains(fromX), (0...Self.maxDragCoordinate).contains(fromY),
+                  (0...Self.maxDragCoordinate).contains(toX), (0...Self.maxDragCoordinate).contains(toY) else {
+                throw MacKimiError.invalidTarget
+            }
+            guard max(abs(toX - fromX), abs(toY - fromY)) >= 1 else { throw MacKimiError.invalidTarget }
+            if let steps = args.steps, !(1...500).contains(steps) { throw MacKimiError.invalidTarget }
+            if let stepMs = args.stepMs, !(0...100).contains(stepMs) { throw MacKimiError.invalidTarget }
+            if let holdMs = args.holdMs, !(0...1000).contains(holdMs) { throw MacKimiError.invalidTarget }
+            let duration = (args.steps ?? 24) * (args.stepMs ?? 12) + (args.holdMs ?? 0)
+            guard duration <= Self.maxDragDurationMilliseconds else { throw MacKimiError.invalidTarget }
         }
     }
 
@@ -88,13 +121,14 @@ struct MacDesktopControl: AgentTool, MacAgentWorkspaceExecutable {
         let reply: MacKimiComputerUse.Reply
         do {
             reply = try await client.perform(args, pid: pid, context: context)
-        } catch where args.action == .click || args.action == .setValue {
+        } catch where args.action == .click || args.action == .setValue || args.action == .keys || args.action == .drag {
             return .init(digesting: error.localizedDescription + " Inspect the target before trying again.",
                          exitStatus: 1, outcomeUnknown: true)
         }
         if let bytes = reply.image, let mime = reply.mime {
             let artifact = try save(bytes, mime: mime, context: context)
-            return .init(digesting: "Window capture saved to " + artifact.relativePath, artifacts: [artifact])
+            let text = reply.text.isEmpty ? "" : "\nWindow observation:\n" + reply.text
+            return .init(digesting: "Window capture saved to " + artifact.relativePath + text, artifacts: [artifact])
         }
         return .init(digesting: reply.text, maximumSummaryCharacters: 24_000)
     }

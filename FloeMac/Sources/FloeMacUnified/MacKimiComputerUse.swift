@@ -2,6 +2,7 @@
 import Darwin
 import AppKit
 import Foundation
+import ImageIO
 import Security
 import FloeTools
 
@@ -27,6 +28,9 @@ final class MacKimiComputerUse: @unchecked Sendable {
     private var buffered = Data()
     private var sequence = 0
     private var snapshot: (id: String, pid: Int32, window: Int)?
+    /// The companion screenshot observation paired with the current AX snapshot.
+    /// Drag coordinates are only accepted in this screenshot's pixel space.
+    private var screenshot: (id: String, snapshotID: String, width: Double, height: Double)?
     private var serverTools: Set<String> = []
 
     static func isInstalled() -> Bool {
@@ -64,6 +68,7 @@ final class MacKimiComputerUse: @unchecked Sendable {
         buffered.removeAll()
         serverTools.removeAll()
         snapshot = nil
+        screenshot = nil
     }
 
     struct Reply: Sendable {
@@ -112,11 +117,13 @@ final class MacKimiComputerUse: @unchecked Sendable {
             let catalog = try request("tools/list", [:], context)
             let tools = catalog["tools"] as? [[String: Any]] ?? []
             // Older versions may default to a foreground click; require an explicit opt-out.
+            // press_key must expose the background-default activate flag for the same reason.
             for tool in tools {
                 guard let name = tool["name"] as? String,
                       let schema = tool["inputSchema"] as? [String: Any],
                       let props = schema["properties"] as? [String: Any] else { continue }
                 if name == "click" && props["allow_foreground_fallback"] == nil { continue }
+                if name == "press_key" && props["activate"] == nil { continue }
                 serverTools.insert(name)
             }
         } catch { stop(); throw error }
@@ -135,23 +142,67 @@ final class MacKimiComputerUse: @unchecked Sendable {
             args["limit"] = 100
             args["disable_diff"] = true
             snapshot = nil
+            screenshot = nil
         case .screenshot:
             name = "get_window_state"
-            args["include_text"] = false
+            // Keep the coordinate text: drag points are picked from this observation.
+            args["include_text"] = true
             args["include_screenshot"] = true
-        case .click, .setValue:
+            snapshot = nil
+            screenshot = nil
+        case .click, .setValue, .keys, .drag:
             guard let snapshot, snapshot.id == action.snapshotID, snapshot.pid == pid,
-                  snapshot.window == action.windowID, let index = action.index else { throw MacKimiError.invalidTarget }
-            args["snapshot_id"] = snapshot.id
-            args["index"] = index
+                  snapshot.window == action.windowID else { throw MacKimiError.invalidTarget }
+            // One delivered input consumes the observation; the next action needs a
+            // fresh inspect or screenshot of the same window. Capture the paired
+            // screenshot before clearing it: drag anchors to it in this call.
+            let anchoredScreenshot = screenshot
             self.snapshot = nil
-            if action.action == .click {
+            self.screenshot = nil
+            switch action.action {
+            case .click:
+                guard let index = action.index else { throw MacKimiError.invalidTarget }
                 name = "click"
+                args["snapshot_id"] = snapshot.id
+                args["index"] = index
                 args["allow_foreground_fallback"] = false
-            } else {
+            case .setValue:
+                guard let index = action.index, let value = action.value else { throw MacKimiError.invalidTarget }
                 name = "set_value"
-                args["value"] = action.value
+                args["snapshot_id"] = snapshot.id
+                args["index"] = index
+                args["value"] = value
                 args["autosubmit"] = false
+            case .keys:
+                // Pure background delivery: activate stays false even though the
+                // companion already defaults it to false; press_key accepts no
+                // snapshot/screenshot id, so the client-side AX snapshot binding is
+                // the freshness contract.
+                guard let keys = action.keys else { throw MacKimiError.invalidTarget }
+                name = "press_key"
+                args["keys"] = keys
+                args["activate"] = false
+            case .drag:
+                // Coordinates must come from the screenshot observation paired with the
+                // accepted AX snapshot; the companion rejects a stale screenshot id.
+                guard let anchoredScreenshot, anchoredScreenshot.snapshotID == snapshot.id,
+                      let fromX = action.fromX, let fromY = action.fromY,
+                      let toX = action.toX, let toY = action.toY,
+                      [fromX, toX].allSatisfy({ $0 >= 0 && $0 < anchoredScreenshot.width }),
+                      [fromY, toY].allSatisfy({ $0 >= 0 && $0 < anchoredScreenshot.height }) else {
+                    throw MacKimiError.invalidTarget
+                }
+                name = "drag"
+                args["screenshot_id"] = anchoredScreenshot.id
+                args["from_x"] = fromX
+                args["from_y"] = fromY
+                args["to_x"] = toX
+                args["to_y"] = toY
+                if let steps = action.steps { args["steps"] = steps }
+                if let stepMs = action.stepMs { args["step_ms"] = stepMs }
+                if let holdMs = action.holdMs { args["hold_ms"] = holdMs }
+            case .windows, .inspect, .screenshot:
+                throw MacKimiError.invalidTarget
             }
         }
         guard serverTools.contains(name) else { throw MacKimiError.unavailable }
@@ -165,10 +216,11 @@ final class MacKimiComputerUse: @unchecked Sendable {
             throw MacKimiError.message(String(text.prefix(1600)))
         }
         var reply = Reply(text: String(text.prefix(24_000)))
-        if action.action == .inspect, let window = action.windowID {
+        if action.action == .inspect || action.action == .screenshot, let window = action.windowID {
             recordSnapshot(text, pid: pid, window: window)
         }
-        if (action.action == .click || action.action == .setValue), let window = action.windowID {
+        if (action.action == .click || action.action == .setValue || action.action == .keys || action.action == .drag),
+           let window = action.windowID {
             // Never repeat input to verify it. Observe the same window after the single delivery.
             do {
                 let observation = try request("tools/call", ["name": "get_app_state", "arguments": [
@@ -191,6 +243,15 @@ final class MacKimiComputerUse: @unchecked Sendable {
             }
             reply.image = data
             reply.mime = mime
+            if let snapshot,
+               let shot = text.range(of: #"(?<=screenshot_id=)[A-Fa-f0-9-]{36}"#, options: .regularExpression),
+               let source = CGImageSourceCreateWithData(data as CFData, nil),
+               let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+               let width = metadata[kCGImagePropertyPixelWidth as String] as? NSNumber,
+               let height = metadata[kCGImagePropertyPixelHeight as String] as? NSNumber,
+               width.doubleValue > 0, height.doubleValue > 0 {
+                screenshot = (String(text[shot]), snapshot.id, width.doubleValue, height.doubleValue)
+            }
         }
         return reply
     }
