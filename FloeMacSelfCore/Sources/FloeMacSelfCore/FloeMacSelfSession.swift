@@ -40,6 +40,13 @@ actor FloeMacSelfSession {
     /// queued follow-up relaunches with the user's original model choice.
     private let steerModelID: UUID?
     private let steerSupportsImages: Bool
+    /// The configured dedicated vision helper (and its reasoning flag) for a
+    /// text-only primary. Steering verified image attachments through this
+    /// route mirrors the prepared-turn `FloeMacSelfAuxiliaryAdapter` path:
+    /// the helper describes the images and the text model receives only the
+    /// bounded description. Nil when the primary model reads images natively
+    /// or no helper is configured.
+    private let steerVisionRoute: (binding: FloeMacSelfProviderBinding, reasoning: Bool)?
     /// Exact durable attachments the prepared user turn must still carry when
     /// the run is re-checked immediately before dispatch.
     private let preparedAttachments: [AttachmentRef]
@@ -91,6 +98,7 @@ actor FloeMacSelfSession {
         runningInputStore: any RunningInputStore,
         steerModelID: UUID?,
         steerSupportsImages: Bool = false,
+        steerVisionRoute: (binding: FloeMacSelfProviderBinding, reasoning: Bool)? = nil,
         verifyPreparedInput: @escaping @Sendable (PersistedMessage) throws -> Void,
         verifyWorkspaceLease: (@Sendable () async throws -> Void)? = nil,
         questionCenter: FloeMacSelfQuestionCenter? = nil,
@@ -120,6 +128,7 @@ actor FloeMacSelfSession {
         self.runningInputStore = runningInputStore
         self.steerModelID = steerModelID
         self.steerSupportsImages = steerSupportsImages
+        self.steerVisionRoute = steerVisionRoute
         self.verifyPreparedInput = verifyPreparedInput
         self.verifyWorkspaceLease = verifyWorkspaceLease
         self.questionCenter = questionCenter
@@ -608,10 +617,44 @@ actor FloeMacSelfSession {
             }
             let supportsImages = steerSupportsImages
             do {
-                (images, attachmentText) = try await Task.detached(priority: .userInitiated) {
-                    try FloeMacSelfRuntime.guidanceAttachments(attachments, supportsImages: supportsImages)
-                }.value
+                if supportsImages {
+                    // Native vision primary: inline the verified images like a
+                    // prepared turn with a vision-capable model.
+                    (images, attachmentText) = try await Task.detached(priority: .userInitiated) {
+                        try FloeMacSelfRuntime.guidanceAttachments(attachments, supportsImages: true)
+                    }.value
+                } else if let route = steerVisionRoute {
+                    // Text-only primary with the configured helper: the images
+                    // travel through the same shared auxiliary visual evidence
+                    // route as a prepared turn. The helper sees verified
+                    // inline parts; the text model receives only the bounded,
+                    // credential-redacted description as untrusted reference
+                    // data. Raw image bytes never reach the primary.
+                    let inlineImages = try await Task.detached(priority: .userInitiated) {
+                        try FloeMacSelfRuntime.guidanceAuxiliaryImages(attachments)
+                    }.value
+                    if !inlineImages.isEmpty {
+                        let description = try await FloeMacSelfAuxiliaryVision.describe(
+                            inlineImages, using: route.binding, reasoningEnabled: route.reasoning)
+                        let evidence = String(decoding: try JSONEncoder().encode(description), as: UTF8.self)
+                        attachmentText.append(FloeMacSelfRuntime.auxiliaryVisionEvidencePreamble + evidence)
+                    }
+                    let documentText = try await Task.detached(priority: .userInitiated) {
+                        try FloeMacSelfRuntime.guidanceDocuments(attachments)
+                    }.value
+                    attachmentText.append(contentsOf: documentText)
+                } else {
+                    // No native vision and no helper: preserve the original
+                    // refusal so the row stays queued with honest status.
+                    (_, attachmentText) = try await Task.detached(priority: .userInitiated) {
+                        try FloeMacSelfRuntime.guidanceAttachments(attachments, supportsImages: false)
+                    }.value
+                }
             } catch {
+                // Genuine prep/permission failure (unreadable or changed
+                // attachment, unavailable helper, provider failure): nothing
+                // enters the transcript and the original queued row — same id,
+                // same text, same attachments — is restored for the host.
                 try await runningInputStore.restoreQueued(id: inputID)
                 return false
             }

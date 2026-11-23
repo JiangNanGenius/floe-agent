@@ -51,6 +51,9 @@ import Foundation
 import CryptoKit
 import Darwin
 import UniformTypeIdentifiers
+import AppKit
+import PDFKit
+import Vision
 import FloeAgentRuntime
 import FloeCore
 import FloeModels
@@ -190,11 +193,19 @@ public enum MacAgentWorkspaceTools {
     /// Stable labels for the host gate (provenance, not secrets).
     public static let toolCorpusIdentifier = "floe.macunified.workspace-tools.v1"
     public static let issuer = "floe.macunified.mac-agent-workspace-tools"
+    /// Local vision reads that stay offered in read-only benches (see the
+    /// binding composition below).
+    public static let readOnlyVisionToolNames: Set<String> = [
+        "image.ocr", "image.barcode.scan"
+    ]
 
     /// Bounded sizes shared by every tool in this catalog.
     public static let maxReadBytes = 10 * 1024 * 1024
     public static let maxWriteBytes = 4 * 1024 * 1024
     public static let readChunkBytes = 64 * 1024
+    /// OCR/scan output is a full page of text with per-line boxes; keep the
+    /// same generous envelope the long read tools use.
+    public static let visionReadSummaryCharacters = 196_608
     public static let listPageSize = 200
     /// Search bounds, mirroring the existing public workspace search
     /// contract (`WorkspaceFileService`).
@@ -281,6 +292,13 @@ public enum MacAgentWorkspaceTools {
         )
         let taskReadTools = Set(baseExecutor.allDescriptors.filter { ConversationToolAccess.plan.allows($0) }.map(\.name))
         var allowed = chatOnly ? taskReadTools.intersection(ConversationToolAccess.chatNames) : taskReadTools
+        if readOnly, !chatOnly {
+            // Local on-device vision reads need no staging, no provider and no
+            // writable run: a read-only bench keeps them offered next to
+            // workspace.readFile. The pinned-path admission and size bounds
+            // still apply to every call.
+            allowed.formUnion(Self.readOnlyVisionToolNames)
+        }
         if !readOnly && !chatOnly { allowed.formUnion(baseExecutor.allDescriptors.map(\.name)) }
         if let taskPolicy {
             let permitted = baseExecutor.allDescriptors.filter { taskPolicy.allowsToolEffect($0) }.map(\.name)
@@ -1945,18 +1963,372 @@ public struct MacAgentWorkspaceReadDocumentTool: AgentTool, MacAgentWorkspaceExe
     }
 }
 
-/// Bind an existing workspace image to its bytes for the shared vision
-/// delivery route. The original file remains in place.
+// MARK: - Native visual tools (OCR, barcode, PDF page evidence)
+
+// MAC_VISION_CORE_BEGIN
+/// Local, on-device visual processing shared by `image.ocr`,
+/// `image.barcode.scan` and the `image.inspect` PDF page renderer. This is
+/// the Mac port of the iPad `FloeExecution/Tools/VisionTools.swift` +
+/// `RemoteImageInspectTool` page rendering: Apple Vision runs locally and
+/// privately, no bytes leave the machine from this core, and every input is
+/// bounded before decoding. Pure Foundation/Vision/PDFKit/AppKit by design —
+/// no Floe types — so the exact production bodies can be exercised by the
+/// standalone focused check without linking the app.
+enum MacWorkspaceVisionSupport {
+    /// iPad `image.ocr` / `image.barcode.scan` input ceiling.
+    static let maximumInputBytes = 10 * 1_024 * 1_024
+    /// iPad `image.inspect` source ceiling (raster or PDF).
+    static let maximumSourceBytes = 20 * 1_024 * 1_024
+    /// Rendered page-artifact ceiling; keep in lockstep with
+    /// `VerifiedToolImageArtifact.maximumStoredImageBytes` (24 MiB).
+    static let maximumRenderedBytes = 24 * 1_024 * 1_024
+    /// Longest edge of a rendered PDF page, matching the iPad renderer.
+    static let renderedPageMaxDimension: CGFloat = 2_048
+    /// JPEG quality for rendered pages, matching the iPad renderer.
+    static let renderedPageJPEGQuality = 0.86
+    /// iPad OCR / Notes recognition language policy: Chinese first
+    /// (simplified, then traditional), then English, with automatic
+    /// per-line detection. Intersected with the languages this device
+    /// reports so an absent model fails closed to what is supported.
+    static let preferredRecognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+
+    enum Failure: Error, LocalizedError {
+        case emptyInput
+        case notReadableImage
+        case recognitionFailed(String)
+        case pdfUnavailable
+        case pdfPageOutOfRange(page: Int, pageCount: Int)
+        case pdfPageRenderFailed(String)
+        case renderedPageTooLarge(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyInput:
+                "no visual input was supplied"
+            case .notReadableImage:
+                "the input is not a readable PNG/JPEG image"
+            case .recognitionFailed(let message):
+                "vision recognition failed: \(message)"
+            case .pdfUnavailable:
+                "the PDF could not be opened"
+            case .pdfPageOutOfRange(let page, let pageCount):
+                "PDF page must be between 1 and \(pageCount) (requested \(page))"
+            case .pdfPageRenderFailed(let message):
+                "the PDF page could not be rendered: \(message)"
+            case .renderedPageTooLarge(let limit):
+                "the rendered page exceeds the \(limit)-byte artifact limit"
+            }
+        }
+    }
+
+    /// True when the bytes (or the path extension) identify a PDF document.
+    static nonisolated func isPDF(_ data: Data, path: String) -> Bool {
+        data.starts(with: Data("%PDF".utf8))
+            || URL(fileURLWithPath: path).pathExtension.lowercased() == "pdf"
+    }
+
+    /// True when the bytes carry one of the raster signatures Vision accepts
+    /// for OCR/scan (PNG, JPEG, GIF, WebP). This is the readability gate that
+    /// keeps undecodable input an ordinary tool error; encoded bytes are then
+    /// handed straight to Vision.
+    static nonisolated func hasRasterSignature(_ data: Data) -> Bool {
+        if data.count >= 3, data.starts(with: [0xFF, 0xD8, 0xFF]) { return true }
+        if data.count >= 8, data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { return true }
+        if data.count >= 6, data.starts(with: Array("GIF8".utf8)) { return true }
+        if data.count >= 12,
+           data.prefix(4) == Data("RIFF".utf8),
+           data.dropFirst(8).prefix(4) == Data("WEBP".utf8) { return true }
+        return false
+    }
+
+    /// Runs Apple Vision text recognition and returns the iPad-format lines
+    /// (`text [x,y wxh]`, percentages). Throws when the image is unreadable or
+    /// recognition fails; an image with no text returns an empty array.
+    ///
+    /// The encoded bytes go straight into `VNImageRequestHandler(data:)`
+    /// — the exact native path `MacComposerImageTextImport` proves in the App
+    /// — so no AppKit `NSImage` lazy decode can stall a detached task or touch
+    /// the UI actor.
+    static nonisolated func recognizeText(from data: Data, language: String? = nil) throws -> [String] {
+        guard !data.isEmpty else { throw Failure.emptyInput }
+        #if canImport(Vision)
+        guard hasRasterSignature(data) else { throw Failure.notReadableImage }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        if let language, !language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.recognitionLanguages = [language]
+        } else if let supported = try? request.supportedRecognitionLanguages() {
+            let kept = preferredRecognitionLanguages.filter { supported.contains($0) }
+            request.recognitionLanguages = kept.isEmpty ? preferredRecognitionLanguages : kept
+        } else {
+            request.recognitionLanguages = preferredRecognitionLanguages
+        }
+        request.automaticallyDetectsLanguage = true
+        let handler = VNImageRequestHandler(data: data, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            throw Failure.recognitionFailed(error.localizedDescription)
+        }
+        return (request.results ?? []).compactMap { observation in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            let box = observation.boundingBox
+            return "\(candidate.string) [\(Int(box.origin.x * 100)),\(Int(box.origin.y * 100)) \(Int(box.width * 100))x\(Int(box.height * 100))]"
+        }
+        #else
+        throw Failure.recognitionFailed("Vision framework not available")
+        #endif
+    }
+
+    /// Runs Apple Vision barcode/QR detection and returns the iPad-format
+    /// lines (`- [symbology] payload`). An image with no codes returns an
+    /// empty array. Uses the same encoded-byte handler as OCR.
+    static nonisolated func scanBarcodes(from data: Data) throws -> [String] {
+        guard !data.isEmpty else { throw Failure.emptyInput }
+        #if canImport(Vision)
+        guard hasRasterSignature(data) else { throw Failure.notReadableImage }
+        let request = VNDetectBarcodesRequest()
+        let handler = VNImageRequestHandler(data: data, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            throw Failure.recognitionFailed(error.localizedDescription)
+        }
+        return (request.results ?? []).map { observation in
+            let content = observation.payloadStringValue ?? "cannot decode"
+            return "- [\(observation.symbology.rawValue)] \(content)"
+        }
+        #else
+        throw Failure.recognitionFailed("Vision framework not available")
+        #endif
+    }
+
+    /// Renders one 1-based PDF page to a bounded JPEG, mirroring the iPad
+    /// `RemoteImageInspectTool` renderer: white background, page drawn in its
+    /// media box, longest edge capped at 2,048 points with scale at most 2.
+    /// `PDFKitGate` serialization is applied by the caller.
+    static nonisolated func renderPDFPage(
+        from data: Data, page requestedPage: Int
+    ) throws -> (data: Data, page: Int, pageCount: Int) {
+        guard !data.isEmpty else { throw Failure.emptyInput }
+        guard requestedPage >= 1 else {
+            throw Failure.pdfPageOutOfRange(page: requestedPage, pageCount: 0)
+        }
+        #if canImport(PDFKit) && canImport(AppKit)
+        guard let document = PDFDocument(data: data), document.pageCount > 0 else {
+            throw Failure.pdfUnavailable
+        }
+        guard requestedPage <= document.pageCount,
+              let page = document.page(at: requestedPage - 1) else {
+            throw Failure.pdfPageOutOfRange(page: requestedPage, pageCount: document.pageCount)
+        }
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 0, bounds.height > 0 else {
+            throw Failure.pdfPageRenderFailed("the page has invalid bounds")
+        }
+        let scale = min(renderedPageMaxDimension / max(bounds.width, bounds.height), 2)
+        let size = CGSize(
+            width: max(1, floor(bounds.width * scale)),
+            height: max(1, floor(bounds.height * scale))
+        )
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil, width: Int(size.width), height: Int(size.height),
+            bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw Failure.pdfPageRenderFailed("a drawing context could not be created")
+        }
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: size))
+        // A raw CG bitmap context is already a y-up Quartz space, exactly the
+        // PDF user space; only the uniform page scale is needed. (The iPad
+        // renderer flips because UIGraphicsImageRenderer is a UIKit top-left
+        // space — copying that flip here renders a blank white page.)
+        context.saveGState()
+        context.scaleBy(x: scale, y: scale)
+        page.draw(with: .mediaBox, to: context)
+        context.restoreGState()
+        guard let cgImage = context.makeImage() else {
+            throw Failure.pdfPageRenderFailed("the page produced no image")
+        }
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        guard let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: renderedPageJPEGQuality]) else {
+            throw Failure.pdfPageRenderFailed("the rendered page could not be encoded as JPEG")
+        }
+        guard jpeg.count <= maximumRenderedBytes else {
+            throw Failure.renderedPageTooLarge(maximumRenderedBytes)
+        }
+        return (jpeg, requestedPage, document.pageCount)
+        #else
+        throw Failure.pdfUnavailable
+        #endif
+    }
+}
+// MAC_VISION_CORE_END
+
+/// Resolves the two supported vision tool inputs without exposing arbitrary
+/// file URLs: a workspace-relative path is pinned and read through the shared
+/// verified-file machinery; inline base64 is bounded before decoding. The
+/// layout mirrors the iPad `WorkspaceVisionInput` helper.
+enum MacWorkspaceVisionInput {
+    static func load(base64: String?, path: String?, root: MacAgentWorkspaceRoot, context: ToolContext) throws -> Data {
+        if let base64, !base64.isEmpty {
+            guard let data = Data(base64Encoded: base64), !data.isEmpty else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("imageBase64 must be valid base64 image data")
+            }
+            guard data.count <= MacWorkspaceVisionSupport.maximumInputBytes else {
+                throw MacAgentWorkspaceToolsError.tooLarge(limit: MacWorkspaceVisionSupport.maximumInputBytes)
+            }
+            return data
+        }
+        guard let path else {
+            throw MacAgentWorkspaceToolsError.invalidArguments("No image input was supplied")
+        }
+        try macWorkspacePreflight(path: path, context: context, scopeArgument: nil)
+        let (physical, relative) = try macWorkspacePinSetup(root: root, path: path)
+        return try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physical, relative: relative, root: root) { pin in
+            let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(pin, physicalRoot: physical, displayPath: path)
+            defer { Darwin.close(descriptor) }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0, info.st_size > 0, info.st_nlink == 1 else {
+                throw MacAgentWorkspaceToolsError.notFound(path)
+            }
+            guard info.st_size <= MacWorkspaceVisionSupport.maximumInputBytes else {
+                throw MacAgentWorkspaceToolsError.tooLarge(limit: MacWorkspaceVisionSupport.maximumInputBytes)
+            }
+            let data = try FileHandle(fileDescriptor: descriptor, closeOnDealloc: true).read(upToCount: MacWorkspaceVisionSupport.maximumInputBytes + 1) ?? Data()
+            guard data.count == info.st_size else { throw MacAgentWorkspaceToolsError.revisionChanged }
+            return data
+        }
+    }
+}
+
+/// OCR tool: recognizes text in a workspace image using on-device Apple
+/// Vision. Mirrors the upstream iPad `image.ocr` name, schema and per-line
+/// output format; recognition stays local and private.
+struct MacAgentWorkspaceOCRTool: AgentTool, MacAgentWorkspaceExecutable {
+    struct Arguments: Decodable, Sendable {
+        var imageBase64: String?
+        var path: String?
+        var language: String?
+    }
+
+    static let name = "image.ocr"
+    static let toolDescription =
+        "Recognize text in a PNG/JPEG image using on-device Apple Vision OCR. Pass either a workspace-relative path (preferred for uploaded files) or base64 bytes. Returns recognized Chinese/English text with bounding boxes."
+    static let parametersJSON = #"""
+    {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Workspace-relative path to an uploaded PNG/JPEG image, for example Attachments/.../photo.jpg"},
+        "imageBase64": {"type": "string", "description": "Base64-encoded PNG/JPEG bytes; omit when path is supplied"},
+        "language": {"type": "string", "description": "Recognition language: zh-Hans, zh-Hant, en-US, etc. (default: auto-detect)"}
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+    """#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+
+    let root: MacAgentWorkspaceRoot
+
+    func validate(_ args: Arguments) throws {
+        let hasBase64 = !(args.imageBase64?.isEmpty ?? true)
+        let hasPath = !(args.path?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        guard hasBase64 != hasPath else {
+            throw MacAgentWorkspaceToolsError.invalidArguments("Supply exactly one of path or imageBase64")
+        }
+        if let language = args.language, language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MacAgentWorkspaceToolsError.invalidArguments("language must not be empty when supplied")
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let imageData = try MacWorkspaceVisionInput.load(base64: args.imageBase64, path: args.path, root: root, context: context)
+        let language = args.language
+        let lines = try await Task.detached(priority: .userInitiated) {
+            try MacWorkspaceVisionSupport.recognizeText(from: imageData, language: language)
+        }.value
+        try context.cancellation.throwIfCancelled()
+        let body = lines.isEmpty
+            ? "no text recognized"
+            : "recognized \(lines.count) lines of text:\n" + lines.joined(separator: "\n")
+        return .init(digesting: body, maximumSummaryCharacters: MacAgentWorkspaceTools.visionReadSummaryCharacters)
+    }
+}
+
+/// Barcode/QR scanner tool: reads codes in a workspace image using on-device
+/// Apple Vision. Mirrors the upstream iPad `image.barcode.scan` name, schema
+/// and output format; decoding stays local and private.
+struct MacAgentWorkspaceBarcodeScanTool: AgentTool, MacAgentWorkspaceExecutable {
+    struct Arguments: Decodable, Sendable {
+        var imageBase64: String?
+        var path: String?
+    }
+
+    static let name = "image.barcode.scan"
+    static let toolDescription =
+        "Scan barcodes and QR codes in a PNG/JPEG image using on-device Apple Vision. Pass a workspace-relative path (preferred) or base64 bytes."
+    static let parametersJSON = #"""
+    {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Workspace-relative path to an uploaded PNG/JPEG image"},
+        "imageBase64": {"type": "string", "description": "Base64-encoded PNG/JPEG bytes; omit when path is supplied"}
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+    """#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+
+    let root: MacAgentWorkspaceRoot
+
+    func validate(_ args: Arguments) throws {
+        let hasBase64 = !(args.imageBase64?.isEmpty ?? true)
+        let hasPath = !(args.path?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        guard hasBase64 != hasPath else {
+            throw MacAgentWorkspaceToolsError.invalidArguments("Supply exactly one of path or imageBase64")
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let imageData = try MacWorkspaceVisionInput.load(base64: args.imageBase64, path: args.path, root: root, context: context)
+        let codes = try await Task.detached(priority: .userInitiated) {
+            try MacWorkspaceVisionSupport.scanBarcodes(from: imageData)
+        }.value
+        try context.cancellation.throwIfCancelled()
+        let body = codes.isEmpty
+            ? "no barcode or QR code recognized"
+            : "recognized \(codes.count) barcode/QR code(s):\n" + codes.joined(separator: "\n")
+        return .init(digesting: body, maximumSummaryCharacters: MacAgentWorkspaceTools.visionReadSummaryCharacters)
+    }
+}
+
+/// Bind an existing workspace image — or one rendered page of a workspace
+/// PDF — to its bytes for the shared vision delivery route. The original file
+/// remains in place; a rendered PDF page is retained as a tool-owned,
+/// content-addressed derived JPEG under `InspectPages/` so the runtime's
+/// verified-artifact evidence route can reload and digest-check it.
 struct MacAgentWorkspaceInspectImageTool: AgentTool, MacAgentWorkspaceExecutable {
     struct Arguments: Decodable, Sendable {
         let path: String
         let question: String
+        let page: Int?
         let sha256: String?
     }
 
     static let name = "image.inspect"
-    static let toolDescription = "Inspect a PNG, JPEG, WebP or GIF in the current workspace, including a window screenshot. Provide the workspace-relative path and a focused visual question. If the producing tool reported a SHA-256 digest, pass it to inspect that exact image. The next model request receives verified visual evidence for the question."
-    static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"},"question":{"type":"string"},"sha256":{"type":"string"}},"required":["path","question"],"additionalProperties":false}"#
+    static let toolDescription = "Inspect a PNG, JPEG, WebP, GIF or PDF page in the current workspace, including a window screenshot. Provide the workspace-relative path and a focused visual question. For a PDF, pass the 1-based page to inspect (defaults to page 1); the selected page is rendered locally and delivered as verified visual evidence. If the producing tool reported a SHA-256 digest, pass it to inspect that exact file. The next model request receives verified visual evidence for the question."
+    static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"},"question":{"type":"string"},"page":{"type":"integer","minimum":1,"description":"1-based PDF page; omit for ordinary images"},"sha256":{"type":"string"}},"required":["path","question"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .sendsDataToProvider]
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
@@ -1965,8 +2337,9 @@ struct MacAgentWorkspaceInspectImageTool: AgentTool, MacAgentWorkspaceExecutable
     func validate(_ args: Arguments) throws {
         let question = args.question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !args.path.isEmpty, !question.isEmpty, question.utf8.count <= 2_000,
+              args.page.map({ $0 >= 1 }) != false,
               args.sha256.map({ $0.range(of: #"^[a-fA-F0-9]{64}$"#, options: .regularExpression) != nil }) != false else {
-            throw MacAgentWorkspaceToolsError.invalidArguments("provide an image path, a focused question and an optional SHA-256")
+            throw MacAgentWorkspaceToolsError.invalidArguments("provide an image/PDF path, a focused question, an optional 1-based page and an optional SHA-256")
         }
     }
 
@@ -1976,25 +2349,65 @@ struct MacAgentWorkspaceInspectImageTool: AgentTool, MacAgentWorkspaceExecutable
         let artifact = try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physical, relative: relative, root: root) { pin in
             let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(pin, physicalRoot: physical, displayPath: args.path)
             let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-            let limit = VerifiedToolImageArtifact.maximumStoredImageBytes
             var info = stat()
             guard fstat(descriptor, &info) == 0, info.st_size > 0, info.st_nlink == 1 else {
                 throw MacAgentWorkspaceToolsError.revisionChanged
             }
-            guard info.st_size <= limit else { throw MacAgentWorkspaceToolsError.tooLarge(limit: limit) }
-            let data = try file.read(upToCount: limit + 1) ?? Data()
+            let sourceLimit = MacWorkspaceVisionSupport.maximumSourceBytes
+            guard info.st_size <= sourceLimit else { throw MacAgentWorkspaceToolsError.tooLarge(limit: sourceLimit) }
+            let data = try file.read(upToCount: sourceLimit + 1) ?? Data()
             guard data.count == info.st_size else { throw MacAgentWorkspaceToolsError.revisionChanged }
-            guard let mime = ProviderImageEvidencePolicy.sniffedMIME(data) else {
-                throw MacAgentWorkspaceToolsError.invalidArguments("choose a valid PNG, JPEG, WebP or GIF")
-            }
             let hash = FloeDigest.sha256Hex(data)
             guard args.sha256.map({ $0.lowercased() == hash }) != false else {
                 throw MacAgentWorkspaceToolsError.revisionChanged
             }
+            if MacWorkspaceVisionSupport.isPDF(data, path: args.path) {
+                let rendered = try PDFKitGate.run {
+                    try MacWorkspaceVisionSupport.renderPDFPage(from: data, page: args.page ?? 1)
+                }
+                try context.cancellation.throwIfCancelled()
+                return try retainRenderedPage(rendered, sourceDigest: hash, context: context)
+            }
+            guard args.page == nil else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("page is only valid for PDF inputs")
+            }
+            guard let mime = ProviderImageEvidencePolicy.sniffedMIME(data) else {
+                throw MacAgentWorkspaceToolsError.invalidArguments("choose a valid PNG, JPEG, WebP or GIF, or a PDF")
+            }
+            let limit = VerifiedToolImageArtifact.maximumStoredImageBytes
+            guard data.count <= limit else { throw MacAgentWorkspaceToolsError.tooLarge(limit: limit) }
             return ToolArtifactReference(id: UUID(), relativePath: relative, mimeType: mime, byteCount: data.count, sha256: hash)
         }
         try context.cancellation.throwIfCancelled()
         return .init(digesting: "Image verified for visual delivery: \(relative)\nVisual question: \(args.question)", artifacts: [artifact])
+    }
+
+    /// Publishes the rendered page through the shared verified media commit
+    /// (pinned parent, staged write, fsync, digest-verified exclusive
+    /// rename). Re-inspecting the same page reuses the retained derived file
+    /// when its digest still matches; a changed source re-renders and
+    /// republishes under the content-addressed source directory.
+    private func retainRenderedPage(
+        _ rendered: (data: Data, page: Int, pageCount: Int),
+        sourceDigest: String,
+        context: ToolContext
+    ) throws -> ToolArtifactReference {
+        let directory = "InspectPages/" + String(sourceDigest.prefix(24))
+        let folder = try MacTaskMediaDirectory(
+            root: root, relativeDirectory: directory, context: context
+        )
+        let name = "page-\(rendered.page).jpg"
+        let digest = FloeDigest.sha256Hex(rendered.data)
+        if let retained = try? folder.read(name: name, maximumBytes: MacWorkspaceVisionSupport.maximumRenderedBytes, context: context),
+           FloeDigest.sha256Hex(retained) == digest {
+            return ToolArtifactReference(
+                id: UUID(), relativePath: directory + "/" + name,
+                mimeType: "image/jpeg", byteCount: retained.count, sha256: digest
+            )
+        }
+        return try folder.commit(
+            name: name, mimeType: "image/jpeg", data: rendered.data, context: context
+        )
     }
 }
 
@@ -2354,6 +2767,11 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
         if imageInspectionAvailable, !readOnly {
             table[MacAgentWorkspaceInspectImageTool.name] = MacAgentWorkspaceInspectImageTool(root: MacAgentWorkspaceRoot(root))
         }
+        // Local Apple Vision tools mirror the iPad execution registry: they
+        // run on-device and return text, so they stay available for every
+        // task model, including text-only primaries.
+        table[MacAgentWorkspaceOCRTool.name] = MacAgentWorkspaceOCRTool(root: MacAgentWorkspaceRoot(root))
+        table[MacAgentWorkspaceBarcodeScanTool.name] = MacAgentWorkspaceBarcodeScanTool(root: MacAgentWorkspaceRoot(root))
         for tool in conversations?.tools ?? [] where !readOnly || ConversationToolAccess.plan.allows(tool.descriptor) {
             table[tool.descriptor.name] = tool
         }
@@ -2433,9 +2851,10 @@ public struct MacAgentWorkspaceToolExecutor: ToolExecutor {
                 : ((output.exitStatus ?? 0) == 0 ? .ok : .failed)
             // Match the runtime's page-size treatment for bounded JSON pages.
             let longReads = [MacAgentWorkspaceTools.readFileToolName, MacAgentWorkspaceTools.readDocumentToolName, MacPublicWebFetch.name]
+            let visionReads: Set<String> = [MacAgentWorkspaceOCRTool.name, MacAgentWorkspaceBarcodeScanTool.name]
             let summaryCap = FloeMacConversationTools.readToolNames.contains(call.toolName) ? ConversationEnvelope.maximumEnvelopeCharacters
                 : call.toolName == MacTaskImageModelsTool.name ? 262_144
-                : longReads.contains(call.toolName) ? 196_608
+                : longReads.contains(call.toolName) || visionReads.contains(call.toolName) ? 196_608
                 : (call.toolName == MacAgentWorkspaceTools.searchFilesToolName ? 32_768 : 4096)
             return ToolResult(
                 callID: call.id,

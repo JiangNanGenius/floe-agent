@@ -3854,9 +3854,15 @@ final class HostAgentWorkspace: ObservableObject {
                 onAccepted()
                 if mode == .steer {
                     let promoted = (try? await handle.steer(text: text, inputID: input.id, expectedConversationID: id,
-                                                             expectedRunID: runID, executionMode: executionMode.rawValue)) == true
+                                                              expectedRunID: runID, executionMode: executionMode.rawValue)) == true
                     if promoted, liveRuns[id]?.handle?.identity == handle.identity {
                         liveRuns[id]?.lastSteer = text
+                    } else if !promoted, selectedID == id {
+                        // Direct Insert failed to become running guidance
+                        // (run ended, stop raced it, or an attachment could
+                        // not be prepared). The durable row stays queued with
+                        // its original text and attachments; say so honestly.
+                        notice = String(localized: "mac.agent.queueHeld")
                     }
                 }
                 await refreshQueue(id)
