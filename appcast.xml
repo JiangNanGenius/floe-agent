@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.22</title>
+      <pubDate>Mon, 23 Nov 2026 14:54:04 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.22</link>
+      <sparkle:version>52</sparkle:version>
+      <sparkle:shortVersionString>1.11.22</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>支持配对设备之间同步工作区文件。 Sync workspace files between paired devices.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.22/Floe-Agent-1.11.22.dmg" length="64708711" type="application/octet-stream" sparkle:edSignature="v9jDvjDDAL+8AJE24leelY7v0GAaENuDaSwAaIFZrU18QTxbD/3Gh/rDDq3YyfkOmrprZxPZjO3CwnKtY3aMCA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.21</title>
       <pubDate>Mon, 23 Nov 2026 11:20:46 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.21</link>
