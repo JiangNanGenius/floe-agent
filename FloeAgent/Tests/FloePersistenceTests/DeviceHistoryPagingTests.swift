@@ -8,6 +8,78 @@ import Testing
 
 @Suite("Device history paging")
 struct DeviceHistoryPagingTests {
+    @Test("A historical v1 archive imports without the attachment list and part kind")
+    func legacyArchiveWithoutNewKeysImports() async throws {
+        let payload = Data(#"""
+        {
+          "version": 1, "id": "10000000-0000-0000-0000-000000000001",
+          "title": "Legacy fixture", "createdAt": 0, "updatedAt": 1,
+          "messages": [{
+            "id": "20000000-0000-0000-0000-000000000001",
+            "role": "user", "content": "Original message", "createdAt": 1,
+            "parts": [{
+              "id": "30000000-0000-0000-0000-000000000001",
+              "index": 0, "text": "Original message", "createdAt": 1
+            }]
+          }]
+        }
+        """#.utf8)
+        let history = try DeviceConversationHistory(data: payload)
+        let message = try #require(history.messages.first)
+        #expect(history.attachments.isEmpty)
+        #expect(message.parts.first?.kind == .text)
+
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteConversationStore(database: database)
+        #expect(try await store.importDeviceHistory(history).addedMessages == 1)
+        #expect(try await store.parts(messageID: message.id).count == 1)
+        #expect(try await store.importDeviceHistory(history).addedMessages == 0)
+    }
+
+    @Test("Typed history fills links only after restore and keeps v1 replay idempotent")
+    func attachmentAndToolHistoryRestoresWithoutDanglingParts() async throws {
+        let db = try DatabaseManager.inMemory()
+        try await db.migrate()
+        let store = SQLiteConversationStore(database: db)
+        let owner = UUID(), message = UUID(), toolMessage = UUID(), attachment = UUID()
+        let time = Date(timeIntervalSince1970: 200)
+        let digest = String(repeating: "a", count: 64)
+        let record = DeviceConversationHistory.Attachment(id: attachment, kind: "document",
+            displayName: "report.txt", uti: "public.plain-text", byteCount: 14, sha256: digest, createdAt: time)
+        let content = DeviceConversationHistory.Message(id: message, role: "user", content: "See report", createdAt: time,
+            parts: [.init(id: UUID(), index: 0, kind: .attachment, attachmentID: attachment, createdAt: time)])
+        let answer = DeviceConversationHistory.Message(id: toolMessage, role: "assistant", content: "Read", createdAt: time,
+            parts: [.init(id: UUID(), index: 0, kind: .tool, text: "Read the report", toolName: "workspace.readFile",
+                          toolStatus: "ok", createdAt: time)])
+        let archive = DeviceConversationHistory(id: owner, title: "Shared", createdAt: time, updatedAt: time,
+            messages: [content, answer], attachments: [record], version: 2)
+        _ = try await store.importDeviceHistory(try DeviceConversationHistory(data: archive.encoded()))
+        #expect(try await store.parts(messageID: message).isEmpty)
+        #expect(try await store.parts(messageID: toolMessage).first?.metadata["deviceHistory.tool"] == "workspace.readFile")
+        #expect(try await store.attachment(id: attachment)?.storage == AttachmentRef.Storage.none)
+
+        let foreignOwner = UUID()
+        let forgedMessage = DeviceConversationHistory.Message(id: UUID(), role: "user", content: "Different owner",
+            createdAt: time, parts: [.init(id: UUID(), index: 0, kind: .attachment, attachmentID: attachment, createdAt: time)])
+        let foreign = DeviceConversationHistory(id: foreignOwner, title: "Another task", createdAt: time, updatedAt: time,
+            messages: [forgedMessage], attachments: [record], version: 2)
+        await #expect(throws: DeviceConversationHistoryError.messageConflict(forgedMessage.id)) {
+            try await store.importDeviceHistory(foreign, sourcePeerID: "foreign", nextCursor: "candidate")
+        }
+        #expect(try await store.deviceHistoryCursor(from: "foreign", conversationID: foreignOwner) == nil)
+        #expect(try await store.attachment(id: attachment)?.conversationID == owner)
+
+        #expect(try await store.restoreDeviceHistoryAttachment(conversationID: owner, attachmentID: attachment,
+            messageID: message, digest: digest, relativePath: "verified.txt"))
+        #expect(try await store.parts(messageID: message).map(\.attachmentID) == [attachment])
+        let legacy = try await store.deviceHistory(conversationID: owner)
+        #expect(legacy.version == 1 && legacy.messages.allSatisfy { $0.parts.isEmpty })
+        #expect(try await store.importDeviceHistory(legacy).addedMessages == 0)
+        #expect(try await store.importDeviceHistory(archive).addedMessages == 0)
+        #expect(try await store.parts(messageID: message).count == 1)
+    }
+
     @Test("A history above the old limit resumes after reopening and sends only new commits")
     func resumesAcrossStoreRestart() async throws {
         let sourceDB = try DatabaseManager.inMemory()

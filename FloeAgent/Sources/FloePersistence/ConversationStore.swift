@@ -1,6 +1,7 @@
 // FloePersistence — Conversation / message / content-part / attachment store.
 // See docs/ALPHA_DAILY_PLAN.md (Persistence v3). Secret-free by construction.
 
+import CryptoKit
 import Foundation
 import GRDB
 import FloeCore
@@ -719,8 +720,11 @@ public actor SQLiteConversationStore: ConversationStore {
 
     /// Export a single committed task from a consistent database read. Local
     /// permissions, attachments, and live run state stay with their owner.
-    public func deviceHistory(conversationID: UUID) async throws -> DeviceConversationHistory {
-        try await database.reader { db in
+    /// Version 2 adds restorable user-attachment metadata and a display-only
+    /// tool-result projection; version 1 remains the pre-upgrade shape.
+    public func deviceHistory(conversationID: UUID, version: Int = 1) async throws -> DeviceConversationHistory {
+        let requested = try Self.boundDeviceHistoryVersion(version)
+        return try await database.reader { db in
             guard let row = try Row.fetchOne(db, sql: "SELECT * FROM conversations WHERE id = ?",
                                              arguments: [conversationID.uuidString]) else {
                 throw DeviceConversationHistoryError.conversationUnavailable
@@ -743,11 +747,14 @@ public actor SQLiteConversationStore: ConversationStore {
             }
             let ids = try rows.map(Self.messageID(from:))
             let parts = try Self.fetchParts(messageIDs: ids, db: db)
+            let context = try Self.deviceExportContext(messageRows: rows, ids: ids, parts: parts, db: db,
+                                                       version: requested)
             let messages = try zip(rows, ids).map { row, id in
-                try Self.portableDeviceMessage(row, id: id, parts: parts[id, default: []])
+                try Self.portableDeviceMessage(row, id: id, parts: parts[id, default: []], context: context)
             }
             return DeviceConversationHistory(id: conversationID, title: SecretRedactor.redact(conversation.title),
-                createdAt: conversation.createdAt, updatedAt: conversation.updatedAt, messages: messages)
+                createdAt: conversation.createdAt, updatedAt: conversation.updatedAt, messages: messages,
+                attachments: context.attachmentList, version: requested)
         }
     }
 
@@ -755,9 +762,10 @@ public actor SQLiteConversationStore: ConversationStore {
     /// The first read pins an upper bound so new activity cannot extend a
     /// transfer indefinitely. Nothing in this cursor depends on wall time.
     public func deviceHistoryPage(
-        conversationID: UUID, after: String?, through: Int64?
+        conversationID: UUID, after: String?, through: Int64?, version: Int = 1
     ) async throws -> DeviceConversationHistoryPage {
-        try await database.reader { db in
+        let requested = try Self.boundDeviceHistoryVersion(version)
+        return try await database.reader { db in
             let id = conversationID.uuidString
             guard let row = try Row.fetchOne(db, sql: "SELECT * FROM conversations WHERE id = ?", arguments: [id]) else {
                 throw DeviceConversationHistoryError.conversationUnavailable
@@ -794,11 +802,17 @@ public actor SQLiteConversationStore: ConversationStore {
                 SELECT h.sequence, m.id, length(CAST(m.content AS BLOB)) + COALESCE((
                     SELECT sum(length(CAST(p.text AS BLOB)) + 128)
                     FROM message_parts AS p WHERE p.message_id = m.id AND p.kind = 'text'
-                ), 0) AS bytes
+                ), 0) + CASE WHEN ? = 2 THEN COALESCE((
+                    SELECT count(*) * 256
+                    FROM message_parts AS p WHERE p.message_id = m.id AND p.kind IN ('image', 'file')
+                ), 0) + COALESCE((
+                    SELECT count(*) * 640
+                    FROM run_events AS e WHERE e.run_id = m.run_id AND e.kind = 'toolResult'
+                ), 0) ELSE 0 END AS bytes
                 FROM device_history_order AS h JOIN messages AS m ON m.id = h.message_id
                 WHERE h.conversation_id = ? AND h.sequence > ? AND h.sequence <= ?
                 ORDER BY h.sequence LIMIT ?
-                """, arguments: [id, lowerBound, upperBound, pageLimit + 1])
+                """, arguments: [requested, id, lowerBound, upperBound, pageLimit + 1])
             // Account for JSON escaping before materializing bodies. A single
             // large message may use the full archive bound of the prior wire.
             let textBudget = Int64(2 * 1_024 * 1_024 / 6)
@@ -821,12 +835,15 @@ public actor SQLiteConversationStore: ConversationStore {
                 SELECT m.* FROM device_history_order AS h JOIN messages AS m ON m.id = h.message_id
                 WHERE h.conversation_id = ? AND h.sequence > ? AND h.sequence <= ? ORDER BY h.sequence
                 """, arguments: [id, lowerBound, lastPosition])
+            let context = try Self.deviceExportContext(messageRows: rows, ids: ids, parts: parts, db: db,
+                                                       version: requested)
             let messages = try zip(rows, ids).map { row, id in
-                try Self.portableDeviceMessage(row, id: id, parts: parts[id, default: []])
+                try Self.portableDeviceMessage(row, id: id, parts: parts[id, default: []], context: context)
             }
             let history = DeviceConversationHistory(
                 id: conversationID, title: SecretRedactor.redact(conversation.title), createdAt: conversation.createdAt,
-                updatedAt: conversation.updatedAt, messages: messages
+                updatedAt: conversation.updatedAt, messages: messages,
+                attachments: context.attachmentList, version: requested
             )
             let nextCursor = chosen.last.map { row in
                 let position: Int64 = row["sequence"]
@@ -872,15 +889,23 @@ public actor SQLiteConversationStore: ConversationStore {
                     updatedAt: history.updatedAt, titleOrigin: .manual), in: db)
                 _ = try SQLiteWorkspaceStore.ensureWorkspace(conversationID: history.id, title: history.title, db: db)
             }
+            let attachments = Dictionary(uniqueKeysWithValues: history.attachments.map { ($0.id, $0) })
             var added = 0
             for message in history.messages {
                 if let row = try Row.fetchOne(db, sql: "SELECT * FROM messages WHERE id = ?",
                                               arguments: [message.id.uuidString]) {
-                    let parts = try Self.fetchParts(messageID: message.id, db: db)
-                    let current = try Self.portableDeviceMessage(row, id: message.id, parts: parts)
+                    let storedParts = try Self.fetchParts(messageID: message.id, db: db)
+                    let current = try Self.portableDeviceV1Message(row, id: message.id, parts: storedParts)
+                    // Conflict detection stays on the portable text projection
+                    // so a v1 import followed by a v2 re-send merges instead of
+                    // conflicting; only real content edits abort the page.
                     guard (row["conversation_id"] as String) == conversationID,
-                          current == message else {
+                          current == Self.deviceV1Projection(message) else {
                         throw DeviceConversationHistoryError.messageConflict(message.id)
+                    }
+                    if history.version >= 2 {
+                        try Self.recordImportedAttachments(for: message, records: attachments, conversationID: history.id, db: db)
+                        try Self.mergeImportedParts(message, history: history, storedParts: storedParts, db: db)
                     }
                     continue
                 }
@@ -889,9 +914,13 @@ public actor SQLiteConversationStore: ConversationStore {
                     VALUES (?, ?, ?, ?, ?)
                     """, arguments: [message.id.uuidString, conversationID, message.role, message.content,
                                       PersistenceCodec.encode(message.createdAt)])
+                try Self.recordImportedAttachments(for: message, records: attachments, conversationID: history.id, db: db)
                 for part in message.parts {
-                    try Self.insertPart(.init(id: part.id, messageID: message.id, partIndex: part.index,
-                        kind: .text, text: part.text, createdAt: part.createdAt), db: db)
+                    guard let devicePart = try Self.importedDevicePart(part, history: history,
+                                                                       messageID: message.id, db: db) else {
+                        continue
+                    }
+                    try Self.insertPart(devicePart, db: db)
                 }
                 added += 1
             }
@@ -917,16 +946,295 @@ public actor SQLiteConversationStore: ConversationStore {
         }
     }
 
-    private static func portableDeviceMessage(_ row: Row, id: UUID, parts: [MessagePart]) throws -> DeviceConversationHistory.Message {
+    /// Everything a versioned export needs beyond the message rows: the
+    /// restorable attachment records and the per-message tool projections.
+    private struct DeviceExportContext {
+        let version: Int
+        /// Restorable attachments keyed by id.
+        let attachments: [UUID: AttachmentRef]
+        /// Display-only tool parts keyed by target message id.
+        let toolResults: [UUID: [DeviceConversationHistory.Part]]
+        let attachmentList: [DeviceConversationHistory.Attachment]
+    }
+
+    private static func boundDeviceHistoryVersion(_ version: Int) throws -> Int {
+        guard version == 1 || version == 2 else { throw DeviceConversationHistoryError.unsupportedVersion }
+        return version
+    }
+
+    private static func deviceExportContext(
+        messageRows: [Row], ids: [UUID], parts: [UUID: [MessagePart]], db: Database, version: Int
+    ) throws -> DeviceExportContext {
+        guard version >= 2 else {
+            return DeviceExportContext(version: version, attachments: [:], toolResults: [:], attachmentList: [])
+        }
+        var owners: [UUID: UUID] = [:]
+        for (row, id) in zip(messageRows, ids) where (row["role"] as String) == "user" {
+            for part in parts[id, default: []] where part.kind == .image || part.kind == .file {
+                if let attachmentID = part.attachmentID { owners[attachmentID] = id }
+            }
+        }
+        let restorable = try restorableDeviceAttachments(ids: Array(owners.keys), db: db).filter {
+            $0.value.messageID == owners[$0.key]
+        }
+        let attachmentList = restorable.values
+            .sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
+            .map {
+                DeviceConversationHistory.Attachment(
+                    id: $0.id, kind: $0.kind.rawValue,
+                    displayName: truncatingUTF8(SecretRedactor.redact($0.displayName), to: 256),
+                    uti: truncatingUTF8($0.uti, to: 128), byteCount: $0.byteCount,
+                    sha256: $0.sha256, createdAt: $0.createdAt)
+            }
+        let toolResults = try deviceToolResults(messageRows: messageRows, db: db)
+        return DeviceExportContext(version: version, attachments: restorable,
+                                   toolResults: toolResults, attachmentList: attachmentList)
+    }
+
+    /// Only app-owned, digest-tagged attachment bytes can be restored on the
+    /// peer. Security-scoped bookmarks and missing/oversized payloads stay
+    /// local and are reported as not fully restorable.
+    private static func restorableDeviceAttachments(ids: [UUID], db: Database) throws -> [UUID: AttachmentRef] {
+        var candidates: [AttachmentRef] = []
+        for start in stride(from: 0, to: ids.count, by: 400) {
+            let chunk = Array(ids[start..<min(start + 400, ids.count)])
+            guard !chunk.isEmpty else { continue }
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM attachments WHERE id IN (\(placeholders))",
+                                        arguments: StatementArguments(chunk.map(\.uuidString)))
+            for row in rows {
+                let ref = try attachment(from: row)
+                guard ref.storage == .applicationSupport, ref.relativePath != nil, !ref.displayName.isEmpty,
+                      DeviceConversationHistory.isValidDigest(ref.sha256),
+                      (0...DeviceConversationHistory.maximumRestorableAttachmentBytesPerItem).contains(ref.byteCount) else { continue }
+                candidates.append(ref)
+            }
+        }
+        var result: [UUID: AttachmentRef] = [:]
+        var total: Int64 = 0
+        for ref in candidates.sorted(by: { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }) {
+            guard result.count < DeviceConversationHistory.maximumRestorableAttachments,
+                  total + Int64(ref.byteCount) <= DeviceConversationHistory.maximumRestorableAttachmentBytes else { break }
+            result[ref.id] = ref
+            total += Int64(ref.byteCount)
+        }
+        return result
+    }
+
+    /// Projects persisted tool-result run events into display-only history
+    /// parts. The payload is the redacted string map persisted by the run
+    /// service; only tool name, status, and a bounded summary cross the
+    /// wire — never arguments, full output, or replayable identifiers.
+    private static func deviceToolResults(
+        messageRows: [Row], db: Database
+    ) throws -> [UUID: [DeviceConversationHistory.Part]] {
+        var lastMessageByRun: [UUID: UUID] = [:]
+        for row in messageRows {
+            guard let id = try? Self.messageID(from: row),
+                  let runID = (row["run_id"] as String?).flatMap(UUID.init(uuidString:)) else { continue }
+            lastMessageByRun[runID] = id
+        }
+        var result: [UUID: [DeviceConversationHistory.Part]] = [:]
+        for (runID, messageID) in lastMessageByRun {
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT sequence, payload_json, created_at FROM run_events
+                WHERE run_id = ? AND kind = 'toolResult' ORDER BY sequence LIMIT ?
+                """, arguments: [runID.uuidString, DeviceConversationHistory.maximumToolResultsPerMessage])
+            var parts: [DeviceConversationHistory.Part] = []
+            for row in rows {
+                guard let payload = try? PersistenceCodec.jsonDictionary(row["payload_json"]),
+                      let tool = payload["tool"], !tool.isEmpty else { continue }
+                let summary = truncatingUTF8(SecretRedactor.redact(payload["summary"] ?? ""),
+                                             to: DeviceConversationHistory.maximumToolResultSummaryBytes)
+                guard !summary.isEmpty else { continue }
+                let createdAt = (try? PersistenceCodec.decodeDate(row["created_at"])) ?? Date()
+                let sequence: Int = row["sequence"]
+                parts.append(DeviceConversationHistory.Part(
+                    id: deterministicDevicePartID(messageID: messageID, tag: "tool", sequence: sequence),
+                    index: 0, kind: .tool, text: summary,
+                    toolName: truncatingUTF8(tool, to: 256),
+                    toolStatus: payload["status"].map { truncatingUTF8($0, to: 32) },
+                    createdAt: createdAt))
+            }
+            if !parts.isEmpty { result[messageID] = parts }
+        }
+        return result
+    }
+
+    /// Stable part identifiers let retries and re-imports deduplicate on the
+    /// same rows instead of minting fresh UUIDs per export.
+    static func deterministicDevicePartID(messageID: UUID, tag: String, sequence: Int) -> UUID {
+        var hash = SHA256()
+        hash.update(data: Data("floe-device-part\0\(tag)\0\(messageID.uuidString)\0\(sequence)".utf8))
+        let digest = hash.finalize()
+        var bytes = Array(digest.prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
+    private static func truncatingUTF8(_ value: String, to maxBytes: Int) -> String {
+        guard value.utf8.count > maxBytes else { return value }
+        var prefix = value.utf8.prefix(maxBytes)
+        while let last = prefix.last, last >= 128, String(prefix) == nil { prefix = prefix.dropLast() }
+        return String(prefix) ?? ""
+    }
+
+    private static func portableDeviceMessage(
+        _ row: Row, id: UUID, parts: [MessagePart], context: DeviceExportContext
+    ) throws -> DeviceConversationHistory.Message {
         guard UUID(uuidString: row["conversation_id"]) != nil else {
             throw DeviceConversationHistoryError.invalidHistory
         }
-        let safeParts: [DeviceConversationHistory.TextPart] = parts.compactMap {
-            guard $0.kind == .text, let text = $0.text else { return nil }
-            return .init(id: $0.id, index: $0.partIndex, text: SecretRedactor.redact(text), createdAt: $0.createdAt)
+        var safeParts: [DeviceConversationHistory.Part] = parts.compactMap {
+            guard $0.kind == .text, $0.metadata["deviceHistory.tool"] == nil, let text = $0.text else { return nil }
+            return .init(id: $0.id, index: $0.partIndex, kind: .text,
+                         text: SecretRedactor.redact(text), createdAt: $0.createdAt)
+        }
+        if context.version >= 2 {
+            let role: String = row["role"]
+            for part in parts {
+                switch part.kind {
+                case .image, .file:
+                    guard role == "user", let attachmentID = part.attachmentID,
+                          context.attachments[attachmentID]?.messageID == id else { break }
+                    safeParts.append(.init(id: part.id, index: part.partIndex, kind: .attachment,
+                                           attachmentID: attachmentID, createdAt: part.createdAt))
+                case .text:
+                    if let tool = part.metadata["deviceHistory.tool"], let summary = part.text {
+                        safeParts.append(.init(id: part.id, index: part.partIndex, kind: .tool, text: summary,
+                            toolName: tool, toolStatus: part.metadata["deviceHistory.toolStatus"], createdAt: part.createdAt))
+                    }
+                default:
+                    break
+                }
+            }
+            if let tools = context.toolResults[id] {
+                var nextIndex = (safeParts.map(\.index).max() ?? -1) + 1
+                for tool in tools {
+                    safeParts.append(.init(id: tool.id, index: nextIndex, kind: .tool, text: tool.text,
+                                           toolName: tool.toolName, toolStatus: tool.toolStatus,
+                                           createdAt: tool.createdAt))
+                    nextIndex += 1
+                }
+            }
         }
         return .init(id: id, role: row["role"], content: SecretRedactor.redact(row["content"]),
                      createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: safeParts)
+    }
+
+    /// The conflict-detection projection: text parts only. Stable across
+    /// archive versions so a v1 import and a later v2 re-send of the same
+    /// message compare equal and merge.
+    private static func portableDeviceV1Message(
+        _ row: Row, id: UUID, parts: [MessagePart]
+    ) throws -> DeviceConversationHistory.Message {
+        guard UUID(uuidString: row["conversation_id"]) != nil else {
+            throw DeviceConversationHistoryError.invalidHistory
+        }
+        let safeParts: [DeviceConversationHistory.Part] = parts.compactMap {
+            guard $0.kind == .text, $0.metadata["deviceHistory.tool"] == nil, let text = $0.text else { return nil }
+            return .init(id: $0.id, index: $0.partIndex, kind: .text,
+                         text: SecretRedactor.redact(text), createdAt: $0.createdAt)
+        }
+        return .init(id: id, role: row["role"], content: SecretRedactor.redact(row["content"]),
+                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: safeParts)
+    }
+
+    private static func deviceV1Projection(_ message: DeviceConversationHistory.Message) -> DeviceConversationHistory.Message {
+        let textParts = message.parts.filter { $0.kind == .text }.map {
+            DeviceConversationHistory.Part(id: $0.id, index: $0.index, kind: .text,
+                                           text: $0.text, createdAt: $0.createdAt)
+        }
+        return .init(id: message.id, role: message.role, content: message.content,
+                     createdAt: message.createdAt, parts: textParts)
+    }
+
+    /// Binds an imported part to the native message_parts row. Attachment
+    /// parts are only bound when the bytes already exist locally (re-import
+    /// after a successful restore); otherwise the restore phase binds them
+    /// after verifying the transferred bytes, so no dangling link appears.
+    private static func importedDevicePart(
+        _ part: DeviceConversationHistory.Part, history: DeviceConversationHistory,
+        messageID: UUID, db: Database
+    ) throws -> MessagePart? {
+        switch part.kind {
+        case .text:
+            return .init(id: part.id, messageID: messageID, partIndex: part.index, kind: .text,
+                         text: part.text, createdAt: part.createdAt)
+        case .tool:
+            var metadata = ["deviceHistory.tool": part.toolName ?? ""]
+            if let status = part.toolStatus { metadata["deviceHistory.toolStatus"] = status }
+            return .init(id: part.id, messageID: messageID, partIndex: part.index, kind: .text,
+                         text: part.text, metadata: metadata, createdAt: part.createdAt)
+        case .attachment:
+            guard let attachmentID = part.attachmentID,
+                  let record = history.attachments.first(where: { $0.id == attachmentID }),
+                  try attachmentRestored(id: attachmentID, db: db) else { return nil }
+            let kind: MessagePart.Kind = record.kind == "image" ? .image : .file
+            return .init(id: part.id, messageID: messageID, partIndex: part.index, kind: kind,
+                         attachmentID: attachmentID, metadata: ["name": record.displayName],
+                         createdAt: part.createdAt)
+        }
+    }
+
+    /// Merges v2-only parts into an already-imported message without touching
+    /// existing rows. Idempotent by part id and by attachment id.
+    private static func mergeImportedParts(
+        _ message: DeviceConversationHistory.Message, history: DeviceConversationHistory,
+        storedParts: [MessagePart], db: Database
+    ) throws {
+        var storedIDs = Set(storedParts.map(\.id))
+        var storedAttachmentIDs = Set(storedParts.compactMap(\.attachmentID))
+        for part in message.parts where part.kind != .text {
+            guard !storedIDs.contains(part.id) else { continue }
+            if let attachmentID = part.attachmentID {
+                guard storedAttachmentIDs.insert(attachmentID).inserted,
+                      let devicePart = try importedDevicePart(part, history: history,
+                                                              messageID: message.id, db: db) else { continue }
+                try insertPartIfAbsent(devicePart, db: db)
+            } else if let devicePart = try importedDevicePart(part, history: history,
+                                                              messageID: message.id, db: db) {
+                try insertPartIfAbsent(devicePart, db: db)
+            }
+            storedIDs.insert(part.id)
+        }
+    }
+
+    private static func attachmentRestored(id: UUID, db: Database) throws -> Bool {
+        guard let row = try Row.fetchOne(db, sql: "SELECT storage, relative_path FROM attachments WHERE id = ?",
+                                         arguments: [id.uuidString]) else { return false }
+        let storage: String = row["storage"]
+        let path: String? = row["relative_path"]
+        return storage == "applicationSupport" && path != nil
+    }
+
+    private static func recordImportedAttachments(for message: DeviceConversationHistory.Message,
+        records: [UUID: DeviceConversationHistory.Attachment], conversationID: UUID, db: Database
+    ) throws {
+        for part in message.parts where part.kind == .attachment {
+            guard let id = part.attachmentID, let info = records[id] else {
+                throw DeviceConversationHistoryError.invalidHistory
+            }
+            if let row = try Row.fetchOne(db, sql: "SELECT * FROM attachments WHERE id = ?", arguments: [id.uuidString]) {
+                let local = try attachment(from: row)
+                guard local.conversationID == conversationID, local.messageID == message.id,
+                      local.kind.rawValue == info.kind, local.byteCount == info.byteCount,
+                      local.sha256.isEmpty || local.sha256 == info.sha256 else {
+                    throw DeviceConversationHistoryError.messageConflict(message.id)
+                }
+                continue
+            }
+            try db.execute(sql: """
+                INSERT INTO attachments (
+                    id, conversation_id, message_id, kind, display_name, uti,
+                    byte_count, sha256, storage, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'none', ?)
+                """, arguments: [id.uuidString, conversationID.uuidString, message.id.uuidString,
+                    info.kind, info.displayName, info.uti, info.byteCount, info.sha256,
+                    PersistenceCodec.encode(info.createdAt)])
+        }
     }
 
     public func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {
@@ -1118,6 +1426,71 @@ public actor SQLiteConversationStore: ConversationStore {
         }
     }
 
+    /// Only attachments originating in a user message of this exact task are
+    /// candidates for sending or retrying a deferred import.
+    public func deviceHistoryUserAttachments(conversationID: UUID, storage: AttachmentRef.Storage) async throws -> [AttachmentRef] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT a.* FROM attachments AS a JOIN messages AS m ON m.id = a.message_id
+                WHERE a.conversation_id = ? AND m.conversation_id = a.conversation_id
+                  AND m.role = 'user' AND a.storage = ? AND a.byte_count BETWEEN 0 AND ?
+                ORDER BY a.created_at, a.id LIMIT ?
+                """, arguments: [conversationID.uuidString, storage.rawValue,
+                    DeviceConversationHistory.maximumRestorableAttachmentBytesPerItem,
+                    DeviceConversationHistory.maximumRestorableAttachments]).map(Self.attachment(from:))
+        }
+    }
+
+    public func deviceHistoryUserAttachment(conversationID: UUID, id: UUID) async throws -> AttachmentRef? {
+        try await database.reader { db in
+            try Row.fetchOne(db, sql: """
+                SELECT a.* FROM attachments AS a JOIN messages AS m ON m.id = a.message_id
+                WHERE a.id = ? AND a.conversation_id = ? AND m.conversation_id = a.conversation_id AND m.role = 'user'
+                """, arguments: [id.uuidString, conversationID.uuidString]).map(Self.attachment(from:))
+        }
+    }
+
+    public func noteDeviceAttachmentDigest(_ digest: String, for previous: AttachmentRef) async throws {
+        guard DeviceConversationHistory.isValidDigest(digest), let owner = previous.conversationID,
+              let message = previous.messageID, let relative = previous.relativePath else { return }
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE attachments SET sha256 = ? WHERE id = ? AND conversation_id = ?
+                  AND message_id = ? AND relative_path = ? AND storage = 'applicationSupport'
+                  AND byte_count = ? AND sha256 = ''
+                """, arguments: [digest, previous.id.uuidString, owner.uuidString, message.uuidString,
+                    relative, previous.byteCount])
+        }
+    }
+
+    /// Commits the already verified local file and its visible message part
+    /// together. A retry can reuse the verified file and the native part.
+    public func restoreDeviceHistoryAttachment(conversationID: UUID, attachmentID: UUID, messageID: UUID,
+                                               digest: String, relativePath: String) async throws -> Bool {
+        guard DeviceConversationHistory.isValidDigest(digest), !relativePath.isEmpty,
+              relativePath == URL(fileURLWithPath: relativePath).lastPathComponent else { return false }
+        return try await database.writer { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT a.* FROM attachments AS a JOIN messages AS m ON m.id = a.message_id
+                WHERE a.id = ? AND a.message_id = ? AND a.conversation_id = ?
+                  AND m.conversation_id = a.conversation_id AND m.role = 'user'
+                """, arguments: [attachmentID.uuidString, messageID.uuidString, conversationID.uuidString]) else { return false }
+            let info = try Self.attachment(from: row)
+            guard info.sha256 == digest else { return false }
+            if info.storage == .applicationSupport { return info.relativePath == relativePath }
+            guard info.storage == .none else { return false }
+            try db.execute(sql: "UPDATE attachments SET storage = 'applicationSupport', relative_path = ? WHERE id = ?",
+                           arguments: [relativePath, attachmentID.uuidString])
+            let index = try Int.fetchOne(db, sql: "SELECT coalesce(max(part_index), -1) + 1 FROM message_parts WHERE message_id = ?",
+                                         arguments: [messageID.uuidString]) ?? 0
+            let id = Self.deterministicDevicePartID(messageID: messageID, tag: attachmentID.uuidString, sequence: 0)
+            try Self.insertPart(.init(id: id, messageID: messageID, partIndex: index,
+                kind: info.kind == .image ? .image : .file, attachmentID: attachmentID,
+                metadata: ["name": info.displayName], createdAt: info.createdAt), db: db)
+            return true
+        }
+    }
+
     // MARK: - Row mapping
 
     private static func editorOwnership(from row: Row) throws -> ConversationEditorOwnership? {
@@ -1171,6 +1544,30 @@ public actor SQLiteConversationStore: ConversationStore {
                     text = excluded.text,
                     attachment_id = excluded.attachment_id,
                     metadata_json = excluded.metadata_json
+                """,
+            arguments: [
+                part.id.uuidString,
+                part.messageID.uuidString,
+                part.partIndex,
+                part.kind.rawValue,
+                part.text,
+                part.attachmentID?.uuidString,
+                try PersistenceCodec.jsonObject(part.metadata),
+                PersistenceCodec.encode(part.createdAt)
+            ]
+        )
+    }
+
+    /// Import merging never rewrites an existing part row: the first import
+    /// and the attachment restore own their (message, index) slots.
+    private static func insertPartIfAbsent(_ part: MessagePart, db: Database) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO message_parts (
+                    id, message_id, part_index, kind, text, attachment_id,
+                    metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id, part_index) DO NOTHING
                 """,
             arguments: [
                 part.id.uuidString,
