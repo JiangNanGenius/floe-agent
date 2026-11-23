@@ -37,10 +37,13 @@ field.frame = NSRect(x: 15, y: 150, width: 300, height: 24)
 field.setAccessibilityIdentifier("fixture-title")
 let button = NSButton(title: "Record fixture click", target: handler, action: #selector(Handler.click(_:)))
 button.frame = NSRect(x: 15, y: 95, width: 220, height: 28)
+let canvasWindow = NSWindow(contentRect: NSRect(x: 400, y: 40, width: 340, height: 220),
+                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+canvasWindow.title = "Floe Background Drag"
 let dragSurface = DragSurfaceView(frame: NSRect(x: 0, y: 0, width: 340, height: 220))
 dragSurface.wantsLayer = true
 dragSurface.layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.25).cgColor
-panel.contentView?.addSubview(dragSurface)
+canvasWindow.contentView = dragSurface
 panel.contentView?.addSubview(field)
 panel.contentView?.addSubview(button)
 panel.initialFirstResponder = field
@@ -53,12 +56,18 @@ let keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
     else { keysPressed.append("key\(event.keyCode)") }
     return event
 }
-DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { panel.orderBack(nil) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+    canvasWindow.orderBack(nil)
+    panel.orderBack(nil)
+}
 var activated = false
 func record() {
     let current = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
     if current == getpid() { activated = true }
-    let state: [String: Any] = ["pid": getpid(), "window": panel.isVisible ? panel.windowNumber : 0, "value": field.stringValue, "clicked": handler.pressed, "foregroundBefore": before, "foregroundNow": current, "becameFrontmost": activated, "keysPressed": keysPressed, "drags": drags]
+    let state: [String: Any] = ["pid": getpid(), "window": panel.isVisible ? panel.windowNumber : 0,
+        "dragWindow": canvasWindow.isVisible ? canvasWindow.windowNumber : 0,
+        "value": field.stringValue, "clicked": handler.pressed, "foregroundBefore": before,
+        "foregroundNow": current, "becameFrontmost": activated, "keysPressed": keysPressed, "drags": drags]
     if let data = try? JSONSerialization.data(withJSONObject: state) { try? data.write(to: evidence.appendingPathComponent("state.json"), options: .atomic) }
 }
 _ = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { _ in record() }

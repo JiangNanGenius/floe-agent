@@ -97,7 +97,12 @@ struct MacSavedApprovalGrantsView: View {
             Spacer()
             Button("mac.permissions.revoke", role: .destructive) {
                 Task { await revoke(grant) }
-            }.disabled(busy)
+            }
+            .disabled(busy)
+            .accessibilityIdentifier("settings.permissions.revoke." + grant.id.uuidString)
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader(marker: "settings.permissions.revoke." + grant.id.uuidString) { _ in })
+            #endif
         }
     }
 

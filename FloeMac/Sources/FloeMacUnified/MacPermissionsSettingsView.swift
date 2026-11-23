@@ -159,7 +159,9 @@ struct MacPermissionsSettingsView: View {
             Section {
                 Picker(selection: defaultModeBinding) {
                     ForEach(TaskApprovalMode.allCases, id: \.self) { mode in
-                        Text(mode.macPermissionsTitle).tag(mode)
+                        Text(mode.macPermissionsTitle)
+                            .accessibilityIdentifier("settings.permissions.mode." + mode.rawValue)
+                            .tag(mode)
                     }
                 } label: {
                     Text(MacPermissionsText.t("新任务默认审批模式", "Default Approval Mode"))
@@ -322,6 +324,7 @@ extension View {
         alert(asDefault ? Text("mac.permissions.confirmDefault") : Text("mac.permissions.confirmTask"), isPresented: isPresented) {
             Button("host.chat.cancel", role: .cancel) {}
             Button("mac.permissions.verifyOwner", role: .destructive, action: confirm)
+                .accessibilityIdentifier("settings.permissions.confirmOwner")
         } message: { Text(MacPermissionsText.t("命令可直接访问工作区外的本机文件。仅为可信任务启用。", "Commands can access files outside the workspace without asking. Enable this for trusted tasks.")) }
     }
 }

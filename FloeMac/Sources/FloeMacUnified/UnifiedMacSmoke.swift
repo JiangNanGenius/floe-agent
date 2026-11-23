@@ -4,6 +4,7 @@
 import AVKit
 import AppKit
 import CloudKit
+import CoreImage
 import CoreText
 import CryptoKit
 import Darwin
@@ -32,11 +33,22 @@ final class UnifiedMacSmoke {
     let preferences: UserDefaults
     private let preferenceSuite: String
     let serverKey = Curve25519.Signing.PrivateKey()
-    private let clientKey = Curve25519.Signing.PrivateKey()
+    private let ephemeralClientKey = Curve25519.Signing.PrivateKey()
+    private var clientKey: Curve25519.Signing.PrivateKey {
+        if CommandLine.arguments.contains("--stage-bridge-agent-upgrade")
+            || CommandLine.arguments.contains("--verify-bridge-agent-relaunch") {
+            // The deterministic client is used only by this two-process,
+            // temporary Bridge profile. No Keychain item is read or written.
+            let seed = SHA256.hash(data: Data(("Bridge upgrade fixture\n" + root.path).utf8))
+            if let client = try? Curve25519.Signing.PrivateKey(rawRepresentation: Data(seed)) { return client }
+        }
+        return ephemeralClientKey
+    }
     private var settingsDiagnostics: [String] = []
     private var browserOpenedFromMessageLink = false
     private var browserReturnButtonPressed = false
     private static let recoveryPathKey = "floe.mac.smoke.workbenchRecoveryPath"
+    private static let upgradeTaskKey = "floe.mac.smoke.upgradeTask"
 
     static func configured() -> UnifiedMacSmoke? {
         let args = CommandLine.arguments
@@ -81,6 +93,9 @@ final class UnifiedMacSmoke {
             throw BridgeFailure.unsafePath
         }
         self.root = root
+        if CommandLine.arguments.contains("--stage-bridge-agent-upgrade") {
+            preferences.set("bridge", forKey: "floe.mac.launchMode")
+        }
     }
 
     func seedLegacyState() throws -> BridgePaths {
@@ -90,12 +105,22 @@ final class UnifiedMacSmoke {
                                       acceptedAt: Date(), verification: nil, nonce: nil)
         let encoded = try BridgeWire.encode([BridgeWire.digest(key): pair])
         let file = paths.root.appendingPathComponent("State/paired-clients.json")
+        if CommandLine.arguments.contains("--verify-bridge-agent-relaunch") {
+            let saved = try BridgeWire.decode([String: BridgeService.Pair].self, from: Data(contentsOf: file))
+            guard saved[BridgeWire.digest(key)]?.key == key else { throw BridgeFailure.unsafePath }
+            return paths
+        }
         try encoded.write(to: file, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         return paths
     }
 
     func exercise(model: BridgeAppModel) async {
+        let stagesBridgeUpgrade = CommandLine.arguments.contains("--stage-bridge-agent-upgrade")
+        if stagesBridgeUpgrade || CommandLine.arguments.contains("--verify-bridge-agent-relaunch") {
+            await exerciseBridgeAgentUpgrade(model, stagesUpgrade: stagesBridgeUpgrade)
+            return
+        }
         if CommandLine.arguments.contains("--verify-ark-provider") {
             await exerciseArkProvider(model)
             return
@@ -392,6 +417,10 @@ final class UnifiedMacSmoke {
             while temporary.session != nil && ContinuousClock.now < left { try? await Task.sleep(for: .milliseconds(40)) }
             checks["temporaryNewTaskCleared"] = closed && temporary.session == nil && temporary.draft.isEmpty
             finish(["checks": checks, "diagnostics": settingsDiagnostics])
+            return
+        }
+        if CommandLine.arguments.contains("--permissions-controls-only") {
+            await exercisePermissionControls(model)
             return
         }
         if CommandLine.arguments.contains("--thread-ownership-only"), let endpoint = projectTaskFixtureEndpoint {
@@ -764,26 +793,60 @@ final class UnifiedMacSmoke {
         }
         let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root,
                                   cancellation: CancellationToken(), approvalOrigin: .humanCard)
+        let gestures = CommandLine.arguments.contains("--background-input-gestures")
+        let dragWindow = CommandLine.arguments.firstIndex(of: "--background-drag-window").flatMap { flag in
+            CommandLine.arguments.indices.contains(flag + 1) ? Int(CommandLine.arguments[flag + 1]) : nil
+        }
         func invoke(_ action: MacDesktopControl.Action, snapshot: String? = nil, index: Int? = nil,
-                    value: String? = nil) async throws -> ToolExecutionOutput {
-            try await desktop.execute(.init(action: action, app: app, pid: fixturePID, windowID: window,
-                                            snapshotID: snapshot, index: index, value: value), context: context)
+                    value: String? = nil, keys: String? = nil,
+                    from: CGPoint? = nil, to: CGPoint? = nil, targetWindow: Int? = nil) async throws -> ToolExecutionOutput {
+            var input: [String: Any] = ["action": action.rawValue, "app": app, "pid": fixturePID,
+                                        "windowID": targetWindow ?? window]
+            input["snapshotID"] = snapshot
+            input["index"] = index
+            input["value"] = value
+            input["keys"] = keys
+            input["fromX"] = from.map { Double($0.x) }
+            input["fromY"] = from.map { Double($0.y) }
+            input["toX"] = to.map { Double($0.x) }
+            input["toY"] = to.map { Double($0.y) }
+            let data = try JSONSerialization.data(withJSONObject: input)
+            let arguments = try JSONDecoder().decode(MacDesktopControl.Arguments.self, from: data)
+            return try await desktop.execute(arguments, context: context)
+        }
+        func snapshotID(_ text: String) throws -> String {
+            let pattern = #"(?<=snapshot_id=)[A-Fa-f0-9-]{36}"#
+            guard let id = text.range(of: pattern, options: .regularExpression) else { throw MacKimiError.invalidTarget }
+            return String(text[id])
         }
         func snapshot(_ text: String, role: String) throws -> (String, Int) {
-            let pattern = #"(?<=snapshot_id=)[A-Fa-f0-9-]{36}"#
-            guard let id = text.range(of: pattern, options: .regularExpression),
-                  let line = text.split(separator: "\n").first(where: { $0.contains(role) }),
+            guard let line = text.split(separator: "\n").first(where: { $0.contains(role) }),
                   let range = line.range(of: #"(?<=\[)[0-9]+(?=\])"#, options: .regularExpression),
                   let index = Int(line[range]) else { throw MacKimiError.invalidTarget }
-            return (String(text[id]), index)
+            return (try snapshotID(text), index)
         }
         var result: [String: Any] = [:]
         do {
             let fieldState = try await invoke(.inspect)
             let field = try snapshot(fieldState.summary, role: "AXTextField")
             _ = try await invoke(.setValue, snapshot: field.0, index: field.1, value: "Floe background edit")
-            let buttonState = try await invoke(.inspect)
+            var buttonState = try await invoke(.inspect)
             result["fieldVerified"] = buttonState.summary.contains("Floe background edit")
+            if gestures {
+                let field = try snapshot(buttonState.summary, role: "AXTextField")
+                _ = try await invoke(.click, snapshot: field.0, index: field.1)
+                let focus = try await invoke(.inspect)
+                result["fieldFocused"] = focus.summary.split(separator: "\n").contains {
+                    $0.contains("AXTextField") && $0.contains("(focused)")
+                }
+                let selected = try await invoke(.keys, snapshot: snapshotID(focus.summary), keys: "cmd+a")
+                let refreshed = try await invoke(.inspect)
+                let pressed = try await invoke(.keys, snapshot: snapshotID(refreshed.summary), keys: "z")
+                result["keysDelivered"] = selected.exitStatus != 1 && pressed.exitStatus != 1
+                    && pressed.summary.contains("Window after action:")
+                result["keysReceipt"] = String(pressed.summary.prefix(1200))
+                buttonState = try await invoke(.inspect)
+            }
             let button = try snapshot(buttonState.summary, role: "Record fixture click")
             let clicked = try await invoke(.click, snapshot: button.0, index: button.1)
             result["clickDelivered"] = clicked.exitStatus != 1 && clicked.summary.contains("Window after action:")
@@ -791,6 +854,14 @@ final class UnifiedMacSmoke {
             if let item = capture.artifacts.first {
                 let data = try Data(contentsOf: root.appendingPathComponent(item.relativePath))
                 result["imageVerified"] = NSImage(data: data) != nil && FloeDigest.sha256Hex(data) == item.sha256
+            }
+            if gestures {
+                guard let dragWindow, dragWindow != window else { throw MacKimiError.invalidTarget }
+                let canvas = try await invoke(.screenshot, targetWindow: dragWindow)
+                let moved = try await invoke(.drag, snapshot: snapshotID(canvas.summary),
+                    from: CGPoint(x: 120, y: 220), to: CGPoint(x: 320, y: 220), targetWindow: dragWindow)
+                result["dragDelivered"] = moved.exitStatus != 1 && moved.summary.contains("Window after action:")
+                result["dragReceipt"] = String(moved.summary.prefix(1200))
             }
             result["foregroundPreserved"] = NSWorkspace.shared.frontmostApplication?.processIdentifier == before
         } catch { result["error"] = error.localizedDescription }
@@ -805,6 +876,7 @@ final class UnifiedMacSmoke {
     private func exerciseVisionRouting(_ model: BridgeAppModel, endpoint: URL) async {
         let auxiliaryOnly = CommandLine.arguments.contains("--auxiliary-vision")
         let captureWindow = CommandLine.arguments.contains("--fixture-window-capture")
+        let documentTools = CommandLine.arguments.contains("--visual-document-tools")
         guard let agent = await readyFixtureWorkbench(model),
               agent.addProvider(name: "Vision Fixture", endpoint: endpoint.absoluteString,
                                 protocolKind: .openAIChatCompletions, modelID: "vision-primary-fixture",
@@ -835,13 +907,18 @@ final class UnifiedMacSmoke {
               (try? attached.write(to: attachment)) != nil,
               let project = await agent.addWorkspace(name: "Vision Project", rootURL: folder),
               let staged = agent.stageAttachments([attachment]).first else { finish(["staged": false]); return }
+        if documentTools {
+            do { try writeVisualToolFixtures(in: folder) }
+            catch { finish(["visualFixture": false]); return }
+        }
         agent.verifyAgentAnswers = false
         guard agent.send("Compare the supplied image and the project diagram.", workspaceID: project.id, mode: .agent)
         else { finish(["sent": false]); return }
         var approvals = Set<String>()
         let deadline = ContinuousClock.now + .seconds(32)
         while agent.isSending, ContinuousClock.now < deadline {
-            if let card = agent.pendingApproval, ["image.inspect", "mac.desktop.control"].contains(card.toolName),
+            if let card = agent.pendingApproval,
+               ["image.inspect", "image.ocr", "image.barcode.scan", "mac.desktop.control"].contains(card.toolName),
                !approvals.contains(card.callID), clickApproval(in: agent, allow: true, screenshot: "visual-approval.png") {
                 approvals.insert(card.callID)
             }
@@ -859,6 +936,35 @@ final class UnifiedMacSmoke {
                 "capturedWindow": !captureWindow || ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
                     .contains { $0.hasPrefix("Window-") },
                 "diagnostics": agent.smokeRunDiagnostics])
+    }
+
+    private func writeVisualToolFixtures(in folder: URL) throws {
+        let canvas = NSImage(size: NSSize(width: 660, height: 180))
+        canvas.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: canvas.size)).fill()
+        ("Floe document number 421" as NSString).draw(at: NSPoint(x: 24, y: 48), withAttributes: [
+            .font: NSFont.systemFont(ofSize: 42), .foregroundColor: NSColor.black,
+        ])
+        canvas.unlockFocus()
+        guard let tiff = canvas.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]), let raster = bitmap.cgImage,
+              let barcodeFilter = CIFilter(name: "CIQRCodeGenerator", parameters: [
+                  "inputMessage": Data("FLOE-BARCODE-421".utf8)
+              ]), let code = barcodeFilter.outputImage?.transformed(by: .init(scaleX: 10, y: 10)),
+              let barcode = CIContext().createCGImage(code, from: code.extent),
+              let barcodePNG = NSBitmapImageRep(cgImage: barcode).representation(using: .png, properties: [:])
+        else { throw CocoaError(.fileWriteUnknown) }
+        try png.write(to: folder.appendingPathComponent("ocr.png"), options: .atomic)
+        try barcodePNG.write(to: folder.appendingPathComponent("barcode.png"), options: .atomic)
+        var page = CGRect(x: 0, y: 0, width: 660, height: 180)
+        guard let pdf = CGContext(folder.appendingPathComponent("scan.pdf") as CFURL, mediaBox: &page, nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        pdf.beginPDFPage(nil)
+        pdf.draw(raster, in: page)
+        pdf.endPDFPage()
+        pdf.closePDF()
     }
 
     private func exerciseRunningAttachments(_ model: BridgeAppModel, endpoint: URL) async {
@@ -1494,10 +1600,37 @@ final class UnifiedMacSmoke {
         let queued = "Use the queued steering message."
         let direct = "Use the direct steering message."
         let followUp = "Assistant continued after both messages."
+        let attachedImage = CommandLine.arguments.contains("--auxiliary-steer-image")
         guard let agent = await readyFixtureWorkbench(model) else { finish(["ready": false]); return }
         agent.verifyAgentAnswers = false
-        guard agent.startNamedAgentFixture(prompt, modelID: "steer-order-fixture", endpoint: endpoint, projectID: nil)
-        else { finish(["started": false]); return }
+        if attachedImage {
+            guard agent.addProvider(name: "Steering Fixture", endpoint: endpoint.absoluteString,
+                                    protocolKind: .openAIChatCompletions, modelID: "steer-order-fixture",
+                                    key: "", supportsImages: false, supportsTools: true, allowsPlainHTTP: true),
+                  agent.addProvider(name: "Steering Vision", endpoint: endpoint.absoluteString,
+                                    protocolKind: .openAIChatCompletions, modelID: "steer-vision-fixture",
+                                    key: "", supportsImages: true, allowsPlainHTTP: true),
+                  let helper = agent.auxiliaryCandidates(.vision).first(where: { $0.model.remoteModelID == "steer-vision-fixture" })
+            else { finish(["configured": false]); return }
+            agent.setAuxiliaryModel(helper.model.id, for: .vision)
+            guard agent.send(prompt, mode: .agent) else { finish(["started": false]); return }
+        } else if !agent.startNamedAgentFixture(prompt, modelID: "steer-order-fixture", endpoint: endpoint, projectID: nil) {
+            finish(["started": false]); return
+        }
+
+        func stageImage(named name: String, color: NSColor) -> [HostAgentAttachmentDraft] {
+            guard attachedImage else { return [] }
+            let image = NSImage(size: NSSize(width: 24, height: 16))
+            image.lockFocus()
+            color.setFill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: image.size)).fill()
+            image.unlockFocus()
+            let file = root.appendingPathComponent(name + ".png")
+            guard let tiff = image.tiffRepresentation,
+                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]),
+                  (try? png.write(to: file, options: .atomic)) != nil else { return [] }
+            return agent.stageAttachments([file])
+        }
 
         func order() -> [String] {
             let items = ThreadTimelineBuilder.buildConversation(messages: agent.messages, runs: agent.transcriptRuns,
@@ -1518,7 +1651,9 @@ final class UnifiedMacSmoke {
         }
         guard let id = agent.selectedID, let runID = agent.transcriptLiveRunID,
               agent.canSteer, agent.streamedText.contains(first) else { finish(["runReady": false]); return }
-        agent.submitRunningInput(queued, mode: .queue, attachments: []) {}
+        let queuedImages = stageImage(named: "queued-steer", color: .systemRed)
+        guard !attachedImage || queuedImages.count == 1 else { finish(["queuedImageStaged": false]); return }
+        agent.submitRunningInput(queued, mode: .queue, attachments: queuedImages) {}
         let queuedDeadline = ContinuousClock.now + .seconds(2)
         while (agent.queuedInputs[id]?.first?.content != queued || !agent.canSteer), ContinuousClock.now < queuedDeadline {
             try? await Task.sleep(for: .milliseconds(25))
@@ -1527,7 +1662,9 @@ final class UnifiedMacSmoke {
         await agent.promoteQueuedToGuidance(item)
         let promoted = agent.queuedInputs[id]?.contains { $0.id == item.id && $0.status == .steerPending } == true
         var accepted = false
-        agent.submitRunningInput(direct, mode: .steer, attachments: []) { accepted = true }
+        let directImages = stageImage(named: "direct-steer", color: .systemBlue)
+        guard !attachedImage || directImages.count == 1 else { finish(["directImageStaged": false]); return }
+        agent.submitRunningInput(direct, mode: .steer, attachments: directImages) { accepted = true }
 
         let prefix = ["user:" + prompt, "assistant:" + first, "user:" + queued, "user:" + direct]
         let liveExpected = prefix + ["live:" + followUp]
@@ -1548,11 +1685,17 @@ final class UnifiedMacSmoke {
         await agent.select(id)
         let reopened = order()
         let saved = agent.messages.filter { $0.content == queued || $0.content == direct }
-        finish(["queueConverted": promoted, "directAccepted": accepted, "guideWasUserLive": live == liveExpected,
+        var report: [String: Any] = ["queueConverted": promoted, "directAccepted": accepted, "guideWasUserLive": live == liveExpected,
                 "settledInOrder": settled == finalExpected, "reopenedInOrder": reopened == finalExpected,
                 "exactUserMessages": saved.count == 2 && saved.contains { $0.id == item.id && $0.content == queued }
                     && saved.allSatisfy { $0.role == "user" && $0.runID == runID },
-                "live": live, "settled": settled, "reopened": reopened])
+                "live": live, "settled": settled, "reopened": reopened]
+        if attachedImage {
+            let attachments = Set((queuedImages + directImages).map(\.id))
+            report["imagesRetained"] = attachments.count == 2
+                && Set(saved.flatMap(\.parts).compactMap(\.attachmentID)) == attachments
+        }
+        finish(report)
     }
 
     private actor DeviceHistoryFixturePages {
@@ -3308,6 +3451,43 @@ final class UnifiedMacSmoke {
         return selected && located
     }
 
+    private func exerciseBridgeAgentUpgrade(_ model: BridgeAppModel, stagesUpgrade: Bool) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !model.listenerReady && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard let port = model.smokePort, (try? await callPairedBridge(port: port)) == true else {
+            finish(["oldPairingResponds": false])
+            return
+        }
+        if stagesUpgrade {
+            let bridgeOnly = !model.isAgentMode && model.macWorkspace == nil
+            guard bridgeOnly, await exerciseBridgeSwitch(model: model),
+                  let agent = await readyFixtureWorkbench(model),
+                  await agent.verifyChatSmoke(reply: "Agent task survived the Bridge upgrade."),
+                  let taskID = agent.selectedID, await agent.setApprovalMode(.automatic, asDefault: true) else {
+                finish(["pureBridgeFirst": bridgeOnly, "agentTaskSaved": false])
+                return
+            }
+            preferences.set(root.path, forKey: Self.recoveryPathKey)
+            preferences.set(taskID.uuidString, forKey: Self.upgradeTaskKey)
+            finish(["pureBridgeFirst": true, "oldPairingResponds": true, "agentTaskSaved": true,
+                    "agentModeSaved": preferences.string(forKey: "floe.mac.launchMode") == "agent"])
+            return
+        }
+        let agentModeRestored = model.isAgentMode && preferences.string(forKey: "floe.mac.launchMode") == "agent"
+        guard agentModeRestored, let agent = await readyFixtureWorkbench(model),
+              let rawID = preferences.string(forKey: Self.upgradeTaskKey), let taskID = UUID(uuidString: rawID) else {
+            finish(["oldPairingResponds": true, "agentModeRestored": agentModeRestored, "taskReopened": false])
+            return
+        }
+        await agent.select(taskID)
+        finish(["oldPairingResponds": true, "agentModeRestored": true,
+                "taskReopened": agent.selectedID == taskID && agent.selectedConversationWorkspace?.kind == .privateTask
+                    && agent.messages.map(\.content) == ["Synthetic Mac chat", "Agent task survived the Bridge upgrade."],
+                "approvalDefaultRestored": agent.defaultApprovalMode == .automatic])
+    }
+
     private func finish(_ output: [String: Any]) {
         if let bytes = try? JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted, .sortedKeys]) {
             try? bytes.write(to: report, options: .atomic)
@@ -3327,7 +3507,8 @@ final class UnifiedMacSmoke {
     }
 
     func cleanup() {
-        if CommandLine.arguments.contains("--browser-download-and-restore"),
+        if (CommandLine.arguments.contains("--browser-download-and-restore")
+            || CommandLine.arguments.contains("--stage-bridge-agent-upgrade")),
            !CommandLine.arguments.contains("--workbench-reopen"),
            preferences.string(forKey: Self.recoveryPathKey) == root.path { return }
         if !CommandLine.arguments.contains("--keep-launch-preference-for-relaunch") {
@@ -3352,9 +3533,14 @@ final class UnifiedMacSmoke {
         let zoneName = "FloeMacVerification-\(UUID().uuidString)"
         let zoneID = CKRecordZone.ID(zoneName: zoneName, ownerName: CKCurrentUserDefaultName)
         let secondRoot = root.appendingPathComponent("Second Repository", isDirectory: true)
+        func recordStage(_ stage: String) {
+            FileHandle.standardError.write(Data(("CloudKit fixture: " + stage + "\n").utf8))
+        }
         do {
+            recordStage("checking system account")
             guard try await container.accountStatus() == .available else { status = "noSystemICloudAccount"; return }
             let accountID = try await container.userRecordID()
+            recordStage("preparing isolated stores")
             let firstRuntime = try HostAgentDatabase.open(applicationSupport: root, namespace: namespace)
             _ = try await firstRuntime.bootstrap()
             try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: false,
@@ -3374,12 +3560,33 @@ final class UnifiedMacSmoke {
                                                capabilities: [.text])
             do {
                 let entry = MacCloudModelEntry(provider: profile, model: configuredModel)
-                let published = try await sender.synchronize(publishing: entry)
-                verified["published"] = published.contains { $0.id == configuredModel.id }
-                let downloaded = try await receiver.synchronize()
+                let sharedSettings = MacSharedSettingsSnapshot(appearance: "dark", verifyAnswers: true, runningInput: .steer)
+                let selection = ModelSelectionPreferences(defaultAgentModelID: configuredModel.id)
+                let request = MacCloudConfiguration(entries: [entry], preferences: selection, settings: try sharedSettings.records())
+                recordStage("publishing configuration")
+                let published = try await sender.synchronizeConfiguration(publishing: request, credentialAccount: nil)
+                verified["published"] = published.configuration.entries.contains { $0.id == configuredModel.id }
+                recordStage("reading configuration into the second store")
+                let received = try await receiver.synchronizeConfiguration(credentialAccount: nil)
+                let downloaded = received.configuration.entries
+                let settings = MacSharedSettingsSnapshot(records: received.configuration.settings)
                 verified["downloaded"] = downloaded.count == 1 && downloaded.first?.id == configuredModel.id
-                    && downloaded.first?.provider.id == profile.id
-                    && downloaded.first?.provider.secretRef == nil
+                    && downloaded.first?.provider.id == profile.id && downloaded.first?.provider.secretRef == nil
+                verified["configurationApplied"] = received.configuration.preferences?.defaultAgentModelID == configuredModel.id
+                    && settings.appearance == "dark" && settings.verifyAnswers == true && settings.runningInput == .steer
+                    && received.providerKeys.isEmpty
+
+                var updated = configuredModel
+                updated.displayName = "Floe Cloud Fixture Revised"
+                let returnSettings = MacSharedSettingsSnapshot(appearance: "light", verifyAnswers: false, runningInput: .queue)
+                let response = MacCloudConfiguration(entries: [.init(provider: profile, model: updated)],
+                    preferences: selection, settings: try returnSettings.records())
+                recordStage("reading changes in reverse")
+                _ = try await receiver.synchronizeConfiguration(publishing: response, credentialAccount: nil)
+                let echoed = try await sender.synchronizeConfiguration(credentialAccount: nil)
+                let readBack = MacSharedSettingsSnapshot(records: echoed.configuration.settings)
+                verified["reverseReadBack"] = echoed.configuration.entries.first?.model.displayName == updated.displayName
+                    && readBack.appearance == "light" && readBack.verifyAnswers == false && readBack.runningInput == .queue
                 status = verified.values.allSatisfy { $0 } ? "passed" : "readBackMismatch"
             } catch let error as CKError {
                 status = "cloudKit-\(error.code.rawValue)"
@@ -3393,6 +3600,7 @@ final class UnifiedMacSmoke {
             }
             guard try await container.userRecordID() == accountID else { status = "accountChanged"; return }
             do {
+                recordStage("removing test zone")
                 _ = try await container.privateCloudDatabase.deleteRecordZone(withID: zoneID)
                 removedZone = true
             } catch let error as CKError where error.code == .zoneNotFound {
@@ -5267,6 +5475,114 @@ final class UnifiedMacSmoke {
         guard !view.isHiddenOrHasHiddenAncestor else { return nil }
         if view.identifier?.rawValue == marker { return view }
         return view.subviews.lazy.compactMap { self.controlAnchor(in: $0, marker: marker) }.first
+    }
+
+    private func exercisePermissionControls(_ model: BridgeAppModel) async {
+        var checks: [String: Bool] = [:]
+        defer { finish(["checks": checks, "diagnostics": settingsDiagnostics]) }
+        guard let workspace = await readyFixtureWorkbench(model), await workspace.verifyChatSmoke(),
+              let taskID = workspace.selectedID, let owner = workspace.selectedConversationWorkspace else { return }
+        do {
+            let url = try MacAgentWorkspaceTools.resolvePrivateTaskRoot(owner, base: workspace.personalTaskLeaseBase)
+            let store = try await workspace.approvalGrantStore()
+            try await store.remember(scope: .task, workspaceID: owner.id, conversationID: taskID,
+                toolName: MacAgentWorkspaceTools.createFileToolName, path: "approval-fixture.txt",
+                authorizationIdentity: "permission-controls-fixture", workspaceRoot: url)
+            guard let grant = try await store.list(workspaceID: owner.id).first else { return }
+            model.openSettings(.permissions)
+            let opened = ContinuousClock.now + .seconds(3)
+            while model.smokeAgentSettingsSheet?.isVisible != true && ContinuousClock.now < opened {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            guard let sheet = model.smokeAgentSettingsSheet, let body = sheet.contentView,
+                  model.settingsPane == .permissions else { return }
+            checks["permissionSheet"] = true
+
+            func choose(_ mode: TaskApprovalMode) -> Bool {
+                body.layoutSubtreeIfNeeded()
+                if pressAccessibilityButton(body, id: "settings.permissions.mode." + mode.rawValue) { return true }
+                guard let picker = descendant(NSSegmentedControl.self, in: body),
+                      picker.segmentCount == TaskApprovalMode.allCases.count,
+                      let index = TaskApprovalMode.allCases.firstIndex(of: mode) else { return false }
+                picker.selectedSegment = index
+                return picker.sendAction(picker.action, to: picker.target)
+            }
+            func waitFor(_ mode: TaskApprovalMode) async -> Bool {
+                let deadline = ContinuousClock.now + .seconds(2)
+                while workspace.defaultApprovalMode != mode && ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+                return workspace.defaultApprovalMode == mode
+                    && preferences.string(forKey: "floe.mac.agent.defaultApprovalMode") == mode.rawValue
+            }
+            if choose(.automatic) {
+                checks["automaticSaved"] = await waitFor(.automatic)
+                await workspace.select(nil)
+                checks["newTaskInherits"] = workspace.taskApprovalMode == .automatic
+            }
+            workspace.smokeOwnerAuthentication = { true }
+            defer { workspace.smokeOwnerAuthentication = nil }
+            if choose(.fullAccess) {
+                let deadline = ContinuousClock.now + .seconds(2)
+                var confirmed = false
+                let title = String(localized: "mac.permissions.verifyOwner")
+                func confirmationButton(in view: NSView) -> NSButton? {
+                    guard !view.isHiddenOrHasHiddenAncestor else { return nil }
+                    if let button = view as? NSButton, button.isEnabled, button.title == title { return button }
+                    return view.subviews.lazy.compactMap(confirmationButton).first
+                }
+                while !confirmed && ContinuousClock.now < deadline {
+                    let windows = [NSApp.modalWindow, sheet.attachedSheet, NSApp.keyWindow].compactMap { $0 }
+                        + NSApp.windows.filter(\.isVisible)
+                    for window in windows {
+                        guard let content = window.contentView else { continue }
+                        if pressAccessibilityButton(content, id: "settings.permissions.confirmOwner") {
+                            confirmed = true
+                            break
+                        }
+                        if let button = confirmationButton(in: content) {
+                            button.performClick(nil)
+                            confirmed = true
+                            break
+                        }
+                    }
+                    if !confirmed { try? await Task.sleep(for: .milliseconds(30)) }
+                }
+                checks["fullAccessConfirmed"] = confirmed
+                if confirmed { checks["fullAccessSaved"] = await waitFor(.fullAccess) }
+                else {
+                    settingsDiagnostics.append("Full Access confirmation not found in \(NSApp.windows.filter(\.isVisible).map(\.title)).")
+                }
+            }
+            if choose(.ask) { checks["askRestored"] = await waitFor(.ask) }
+
+            let marker = "settings.permissions.revoke." + grant.id.uuidString
+            let grantDeadline = ContinuousClock.now + .seconds(3)
+            var pressed = false
+            while !pressed && ContinuousClock.now < grantDeadline {
+                body.layoutSubtreeIfNeeded()
+                if let anchor = controlAnchor(in: body, marker: marker) {
+                    _ = anchor.scrollToVisible(anchor.bounds)
+                    body.layoutSubtreeIfNeeded()
+                    let center = NSPoint(x: anchor.bounds.midX, y: anchor.bounds.midY)
+                    if anchor.visibleRect.contains(center), body.visibleRect.contains(anchor.convert(center, to: body)) {
+                        pressed = pressAccessibilityButton(body, id: marker)
+                            || clickWindowLocation(anchor.convert(center, to: nil), in: sheet)
+                    }
+                }
+                if !pressed { try? await Task.sleep(for: .milliseconds(40)) }
+            }
+            let revoked = ContinuousClock.now + .seconds(2)
+            while pressed && ContinuousClock.now < revoked {
+                if try await store.list(workspaceID: owner.id).isEmpty {
+                    checks["grantRevoked"] = true
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+        } catch {
+            settingsDiagnostics.append("Permissions controls fixture: " + error.localizedDescription)
+        }
     }
 
     private func exerciseUnifiedSettings(model: BridgeAppModel) async -> Bool {

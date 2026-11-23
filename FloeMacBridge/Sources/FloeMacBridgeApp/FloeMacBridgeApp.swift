@@ -283,7 +283,9 @@ final class BridgeAppModel: ObservableObject {
         #endif
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         if let smoke {
-            presentStartupMode()
+            let headlessProbe = CommandLine.arguments.contains("--icloud-model-sync-smoke")
+                || CommandLine.arguments.contains("--background-input-gestures")
+            if !headlessProbe { presentStartupMode() }
             Task { await smoke.exercise(model: self) }
             return
         }
