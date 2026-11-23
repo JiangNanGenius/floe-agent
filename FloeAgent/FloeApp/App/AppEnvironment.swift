@@ -11,6 +11,7 @@ import SwiftUI
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeDeviceSync
 import FloeSecurity
 import FloeSync
 import FloeWorkspace
@@ -109,7 +110,14 @@ final class AppEnvironment: ObservableObject {
     let conversationStore: any ConversationStore
     private(set) lazy var deviceHistorySync: DeviceHistorySyncHost? = {
         guard !isEphemeral, let store = conversationStore as? SQLiteConversationStore else { return nil }
-        return DeviceHistorySyncHost(store: store) { [weak self] conversationID in
+        let folder = URL.applicationSupportDirectory.appending(path: "FloeAgent/DeviceWorkspaceSync", directoryHint: .isDirectory)
+        let workspace = DeviceWorkspaceSyncHost(resolve: { [weak self] conversationID, receiving in
+            guard let self else { throw DeviceHistorySyncError.unavailable }
+            return try await self.workspaceCenter.acquireDeviceWorkspaceRoot(conversationID: conversationID, receiving: receiving)
+        }, ledgerDirectory: folder, didImport: { [weak self] conversationID in
+            await self?.workspaceCenter.deviceWorkspaceDidImport(conversationID: conversationID)
+        })
+        return DeviceHistorySyncHost(store: store, workspaceHost: workspace) { [weak self] conversationID in
             await self?.conversationCenter.deviceHistoryDidImport(conversationID)
         }
     }()

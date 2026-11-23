@@ -14,7 +14,8 @@ final class DeviceHistorySyncHost {
     private var activation: Task<Void, Never>?
     private var suspension: Task<Void, Never>?
 
-    init(store: SQLiteConversationStore, didImport: @escaping @MainActor (UUID) async -> Void) {
+    init(store: SQLiteConversationStore, workspaceHost: DeviceWorkspaceSyncHost? = nil,
+         didImport: @escaping @MainActor (UUID) async -> Void) {
         let keychain = KeychainStore(service: "org.floeagent.ios.device-history",
                                      synchronizable: false, accessibility: .whenUnlockedThisDeviceOnly)
         let account = "endpoint-identity-v1"
@@ -51,7 +52,7 @@ final class DeviceHistorySyncHost {
             try await store.deviceHistoryCursor(from: peerID, conversationID: id)
         }, commit: { peerID, id, data, cursor in
             try await Self.importMessages(id, data, store: store, peerID: peerID, cursor: cursor)
-        }), didImport: didImport)
+        }), workspaceHost: workspaceHost, didImport: didImport)
     }
 
     private nonisolated static func importMessages(
@@ -95,5 +96,6 @@ final class DeviceHistorySyncHost {
 
 extension Notification.Name {
     static let floeDeviceHistoryDidImport = Notification.Name("floe.deviceHistory.didImport")
+    static let floeWorkspaceFilesDidSync = Notification.Name("floe.workspace.files.didSync")
 }
 #endif

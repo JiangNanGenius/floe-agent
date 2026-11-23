@@ -2183,6 +2183,12 @@ final class ConversationCenter: ObservableObject {
         NotificationCenter.default.post(name: .floeDeviceHistoryDidImport, object: conversationID)
     }
 
+    func deviceWorkspaceIsBusy(conversations: Set<UUID>) -> Bool {
+        activeRuns.values.contains { conversations.contains($0.conversationID) }
+            || runServices.values.contains { conversations.contains($0.conversationID) }
+            || pendingRunPreparations.values.contains { conversations.contains($0.conversationID) }
+    }
+
     private func refreshConversationInList(_ conversationID: UUID) async {
         // Temporary conversations never enter the saved list projection.
         guard !isTemporaryConversation(conversationID) else { return }

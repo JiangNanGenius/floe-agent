@@ -316220,55 +316220,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Device Conversation Sync"
+            "value": "Paired Devices"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "跨设备会话同步"
+            "value": "配对设备"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "跨裝置對話同步"
+            "value": "配對裝置"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "デバイス間のチャット同期"
+            "value": "ペアリング済みデバイス"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "기기 간 대화 동기화"
+            "value": "페어링된 기기"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Synchronisation des conversations entre appareils"
+            "value": "Appareils jumelés"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Unterhaltungen zwischen Geräten synchronisieren"
+            "value": "Gekoppelte Geräte"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sincronización de conversaciones entre dispositivos"
+            "value": "Dispositivos enlazados"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sincronização de conversas entre dispositivos"
+            "value": "Dispositivos emparelhados"
           }
         }
       }
@@ -316338,55 +316338,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sync Conversations"
+            "value": "Sync Across Devices"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "同步会话"
+            "value": "跨设备同步"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "同步對話"
+            "value": "跨裝置同步"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "チャットを同期"
+            "value": "デバイス間で同期"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "대화 동기화"
+            "value": "기기 간 동기화"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Synchroniser les conversations"
+            "value": "Synchroniser entre appareils"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Unterhaltungen synchronisieren"
+            "value": "Geräteübergreifend synchronisieren"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sincronizar conversaciones"
+            "value": "Sincronizar entre dispositivos"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sincronizar conversas"
+            "value": "Sincronizar entre dispositivos"
           }
         }
       }
@@ -316397,55 +316397,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pair a device and choose which conversations to share."
+            "value": "Pair a device and choose which conversations and workspace files to share."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "配对设备后，可选择要共享的会话。"
+            "value": "配对后，可选择要共享的会话和工作区文件。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "配對裝置後，可選擇要共享的對話。"
+            "value": "配對後，可選擇要共享的對話和工作區檔案。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "デバイスをペアリングして、共有するチャットを選びます。"
+            "value": "デバイスをペアリングして、共有するチャットとワークスペースのファイルを選びます。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "기기를 페어링한 다음 공유할 대화를 선택하세요."
+            "value": "기기를 페어링한 다음 공유할 대화와 작업 공간 파일을 선택하세요."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Jumelez un appareil et choisissez les conversations à partager."
+            "value": "Jumelez un appareil et choisissez les conversations et les fichiers de l’espace de travail à partager."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Kopple ein Gerät und wähle die Unterhaltungen aus, die du freigeben möchtest."
+            "value": "Kopple ein Gerät und wähle die Unterhaltungen und Arbeitsbereichsdateien aus, die du freigeben möchtest."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enlaza un dispositivo y elige qué conversaciones quieres compartir."
+            "value": "Enlaza un dispositivo y elige qué conversaciones y archivos del espacio de trabajo quieres compartir."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Emparelhe um dispositivo e escolha quais conversas compartilhar."
+            "value": "Emparelhe um dispositivo e escolha quais conversas e arquivos do espaço de trabalho deseja compartilhar."
           }
         }
       }

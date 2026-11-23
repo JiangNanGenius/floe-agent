@@ -19,6 +19,7 @@ import FloePersistence
 import FloeWorkspace
 import FloeExecution
 import FloeSync
+import FloeDeviceSync
 
 /// Coordinates workspaces for the UI layer. Views bind only to this center,
 /// never to WorkspaceStore or WorkspaceFileService directly.
@@ -595,6 +596,85 @@ final class WorkspaceCenter: ObservableObject {
         }
         let rootLease = try await acquireMemorySourceRoot(record)
         return TaskRootLease(url: rootLease.root, release: { Task { await rootLease.release() } })
+    }
+
+    /// The local binding is resolved independently of the visible file tree.
+    /// A sender or receiver can never choose a root supplied by the network.
+    func acquireDeviceWorkspaceRoot(conversationID: UUID, receiving: Bool) async throws -> DeviceWorkspaceRoot {
+        let record = try await deviceWorkspaceRecord(conversationID: conversationID, receiving: receiving)
+        let lease: TaskRootLease
+        if record.kind == .privateTask {
+            let relative = record.internalRelativePath ?? "PrivateTasks/\(conversationID.uuidString)"
+            let components = relative.split(separator: "/", omittingEmptySubsequences: false)
+            guard components.count == 2, components[0] == "PrivateTasks",
+                  UUID(uuidString: String(components[1])) == conversationID else {
+                throw DeviceHistorySyncError.unavailable
+            }
+            let support = URL.applicationSupportDirectory.appending(path: "FloeAgent", directoryHint: .isDirectory)
+                .resolvingSymlinksInPath()
+            let root = support.appending(path: relative, directoryHint: .isDirectory)
+            guard root.resolvingSymlinksInPath().path == root.path else { throw DeviceHistorySyncError.unavailable }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            guard root.resolvingSymlinksInPath().path == root.path else { throw DeviceHistorySyncError.unavailable }
+            lease = TaskRootLease(url: root, release: {})
+        } else {
+            lease = try await acquireDocumentRootOnly(record, ownerConversationID: conversationID)
+        }
+        do {
+            let root = lease.url.resolvingSymlinksInPath()
+            guard let identity = DesignFreezeRegistry.fileIdentity(of: root) else { throw DeviceHistorySyncError.unavailable }
+            let checked = try await deviceWorkspaceRecord(conversationID: conversationID, receiving: receiving)
+            guard record.id == checked.id, record.kind == checked.kind,
+                  record.internalRelativePath == checked.internalRelativePath else {
+                throw DeviceHistorySyncError.notShared
+            }
+            if record.kind == .project && record.rootBookmark != checked.rootBookmark {
+                let refreshed = try await acquireDocumentRootOnly(checked, ownerConversationID: conversationID)
+                defer { refreshed.release() }
+                guard refreshed.url.resolvingSymlinksInPath() == root else { throw DeviceHistorySyncError.notShared }
+            }
+            let scope = FloeDigest.sha256Hex(Data("\(checked.id)\0\(root.path)\0\(identity.device):\(identity.inode)".utf8))
+            return DeviceWorkspaceRoot(scope: scope, url: root, guardCurrent: { [weak self] in
+                guard let self else { throw DeviceHistorySyncError.unavailable }
+                let current = try await self.deviceWorkspaceRecord(conversationID: conversationID, receiving: receiving)
+                guard current.id == checked.id, current.kind == checked.kind,
+                      current.internalRelativePath == checked.internalRelativePath,
+                      current.rootBookmark == checked.rootBookmark,
+                      let pinned = DesignFreezeRegistry.fileIdentity(of: root),
+                      pinned.device == identity.device, pinned.inode == identity.inode else {
+                    throw DeviceHistorySyncError.notShared
+                }
+            }, mutate: { url, operation in
+                let lock = ManagedFileMutationLock.shared
+                lock.lock()
+                defer { lock.unlock() }
+                guard DesignFreezeRegistry.shared.protection(for: url) == nil else { throw DeviceHistorySyncError.busy }
+                try operation()
+            }, release: lease.release)
+        } catch {
+            lease.release()
+            throw error
+        }
+    }
+
+    private func deviceWorkspaceRecord(conversationID: UUID, receiving: Bool) async throws -> WorkspaceRecord {
+        guard let conversation = try await environment.conversationStore.conversation(id: conversationID),
+              conversation.isVisibleInOrdinaryList,
+              let record = try await store.ownedWorkspace(conversationID: conversationID),
+              record.activeTarget == .local else { throw DeviceHistorySyncError.unavailable }
+        if receiving {
+            let owners = try await store.conversations(workspaceID: record.id)
+            guard !environment.conversationCenter.deviceWorkspaceIsBusy(conversations: Set(owners)) else {
+                throw DeviceHistorySyncError.busy
+            }
+        }
+        return record
+    }
+
+    func deviceWorkspaceDidImport(conversationID: UUID) async {
+        guard let workspaceID = try? await store.workspaceID(conversationID: conversationID) else { return }
+        await reload()
+        NotificationCenter.default.post(name: .floeWorkspaceFilesDidSync, object: workspaceID)
     }
 
     /// Acquires the root belonging to a specific task. Private chats receive

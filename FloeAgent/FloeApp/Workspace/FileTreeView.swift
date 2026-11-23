@@ -138,6 +138,10 @@ struct FileTreeView: View {
             guard note.object as? UUID == workspaceContext.currentWorkspace?.id else { return }
             Task { await viewModel.loadRoot() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .floeWorkspaceFilesDidSync)) { note in
+            guard note.object as? UUID == workspaceContext.currentWorkspace?.id else { return }
+            Task { await viewModel.loadRoot() }
+        }
         .onDisappear { cancelPendingDeletion() }
         .onChange(of: compressFormatID) { oldValue, newValue in
             updateCompressNameExtension(from: oldValue, to: newValue)
