@@ -1,15 +1,15 @@
-<!-- docs-updated: 2026-11-23 -->
+<!-- docs-updated: 2026-11-24 -->
 # 当前版本与验证状态 / Current release and verification status
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-内部 TestFlight 的 Floe QA 可安装 1.8.76（397）。本版支持按会话共享工作区文件，并修复运行中发送的引导消息。 / Floe QA can install 1.8.76 (397), which adds workspace-file sharing for selected conversations and fixes the display of guidance sent during a run. [397 交付记录 / Delivery](releases/builds/FLOE_1.8.76_BUILD397_DELIVERY.md)
+内部 TestFlight 的 Floe QA 可安装 1.8.78（399）。本版修复任务接续及后台状态，支持配对设备同步用户附件，并更新图文帮助。 / Floe QA can install 1.8.78 (399), which fixes run continuation and background status, adds paired-device attachment sync, and updates illustrated help. [399 交付记录 / Delivery](releases/builds/FLOE_1.8.78_BUILD399_DELIVERY.md)
 
-397 已加入 `publictest1` 并提交公开 TestFlight 审核。Apple 显示「等待 Beta 审核」，通过后自动开放。 / Build 397 is awaiting external TestFlight review, with automatic distribution after approval. [公开测试 / Public beta](https://testflight.apple.com/join/nz6qeT2J)
+399 已加入 `publictest1` 并提交公开 TestFlight 审核。Apple 显示「等待 Beta 审核」，通过后自动通知。 / Build 399 is awaiting external TestFlight review, with automatic notification enabled after approval. [公开测试 / Public beta](https://testflight.apple.com/join/nz6qeT2J)
 
-GitHub 和 Feather 最近核验的版本为 1.8.72（393）。 / The latest verified GitHub and Feather delivery is 1.8.72 (393). [393 交付记录 / Delivery](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md)
+GitHub 无签名包和在线 Feather 源已核对至 1.8.78（399）。 / The GitHub unsigned IPA and live Feather feed have been verified for 1.8.78 (399). [GitHub Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.78)
 
-1.8.72（393）已带新版 iPad 宣传图重新提交 App Store 正式审核，Apple 显示「等待审核」。通过后自动发布。 / Apple shows build 393 as Waiting for Review with the updated iPad screenshot and automatic release after approval. [审核记录 / Review](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md#app-store-正式审核)
+1.8.72（393）于 2026-11-23 带新版 iPad 宣传图重新提交 App Store 正式审核，当日回读为「等待审核」，设置为审核通过后自动发布。 / Build 393 was submitted again on 2026-11-23 with the updated iPad screenshot. Apple reported Waiting for Review that day, with automatic release after approval. [审核记录 / Review](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md#app-store-正式审核)
 
 ## 2026-11-19 iOS 1.8.45（366）
 

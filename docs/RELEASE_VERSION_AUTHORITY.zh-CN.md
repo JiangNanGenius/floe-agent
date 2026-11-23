@@ -1,9 +1,9 @@
-<!-- docs-updated: 2026-11-23 -->
+<!-- docs-updated: 2026-11-24 -->
 # iOS 发布版本依据
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的 iOS TestFlight 构建为 1.8.77（398）。** Floe QA 可安装，`publictest1` 等待 Beta 审核。GitHub 和 Feather 最近核验的版本为 1.8.72（393）。 [398 交付记录](releases/builds/FLOE_1.8.77_BUILD398_DELIVERY.md)
+**最近已核验的 iOS 构建为 1.8.78（399）。** Floe QA 可安装，`publictest1` 等待 Beta 审核。GitHub 无签名包和 Feather 更新源均已核验。 [399 交付记录](releases/builds/FLOE_1.8.78_BUILD399_DELIVERY.md)
 
 ## 依据与判定
 
@@ -12,6 +12,8 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+1.8.78（399）固定于 `05cae68a0f879e23d3348f58a290321c683955d8`／`v1.8.78`。本版修复任务接续和后台状态，减少日常工具审批，补齐配对设备附件同步，并加入原生游戏运行、Studio 像素帧转视频和新版图文帮助。 [399 交付记录](releases/builds/FLOE_1.8.78_BUILD399_DELIVERY.md)
 
 1.8.77（398）固定于 `faa202ea3be60b188661bd55d1b10ac0f6eb3a94`／`v1.8.77`。合并读取任务中心的运行状态并修复手记回收站搜索。Apple 确认 Floe QA 可安装，公开 `publictest1` 已送审。 [398 交付记录](releases/builds/FLOE_1.8.77_BUILD398_DELIVERY.md)
 
