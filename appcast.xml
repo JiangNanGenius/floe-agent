@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.26</title>
+      <pubDate>Mon, 23 Nov 2026 18:10:47 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.26</link>
+      <sparkle:version>56</sparkle:version>
+      <sparkle:shortVersionString>1.11.26</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>新建任务、任务搜索、模型目录和工具箱对齐 iPad。 New tasks, task search, model catalog, and toolbox follow iPad.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.26/Floe-Agent-1.11.26.dmg" length="64885534" type="application/octet-stream" sparkle:edSignature="y+f8ORrT2NM+vf5g64dsfKOWq91Z6OcFO1Rvb1jxRPtmINVLYZYUmOxe0S5EVRWCvGDm/EJxIeLbYmUQucQMBg==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.25</title>
       <pubDate>Mon, 23 Nov 2026 17:18:14 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.25</link>
