@@ -32,6 +32,7 @@ data class ConnectionProbeUi(
     val credentialDraft: String?,
     val allowsPlainHttp: Boolean,
     val toolNameCompatibility: Boolean,
+    val supplierPresetId: String? = null,
 ) {
     /** Explicit redaction: never includes the credential or header values. */
     override fun toString(): String =

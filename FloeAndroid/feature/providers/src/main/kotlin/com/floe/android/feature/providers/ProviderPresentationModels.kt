@@ -98,7 +98,7 @@ sealed interface ConnectionTestUi {
     data object Idle : ConnectionTestUi
     data object Testing : ConnectionTestUi
     /** Confirmed success only — the host produced this from a real round trip. */
-    data class Succeeded(val discoveredModelCount: Int) : ConnectionTestUi
+    data class Succeeded(val discoveredModelCount: Int, val fromCatalog: Boolean = false) : ConnectionTestUi
     /** Secret-free, user-presentable failure reason supplied by the host. */
     data class Failed(val reason: String) : ConnectionTestUi
 }
@@ -281,6 +281,7 @@ data class SupplierCatalogUiState(
     /** False while the shared-core bridge cannot run any network action;
      * buttons report this honestly instead of faking availability. */
     val networkActionsAvailable: Boolean,
+    val loadFailed: Boolean = false,
 )
 
 /* ------------------------------- service offers ---------------------------- */
@@ -490,6 +491,7 @@ data class ProviderEditorUiState(
     /** Honest availability of the shared-core network/save bridge. */
     val networkActionsAvailable: Boolean,
     val networkActionsUnavailableReason: String?,
+    val discoveryState: ConnectionTestUi = ConnectionTestUi.Idle,
 )
 
 /** Everything the destination renders for one moment in time. */

@@ -695,4 +695,8 @@
     <string name="preview_components_download_cache">组件下载缓存</string>
     <string name="preview_components_clearing">正在清理下载缓存…</string>
     <string name="phone_automation_relock_failed">未能确认任务结束后已锁屏，请手动锁定设备。</string>
+    <string name="providers_probe_subscription_catalog">从订阅目录添加模型后，发送一条消息验证账号权限。</string>
+    <string name="providers_probe_subscription_unavailable">暂时无法读取订阅模型目录，请稍后再试。</string>
+    <string name="providers_probe_credential">请输入这组连接设置对应的 API 密钥，再试一次。</string>
+    <string name="providers_discovery_failed">无法拉取模型。请检查端点、API 密钥和网络，也可以手动添加。</string>
 </resources>

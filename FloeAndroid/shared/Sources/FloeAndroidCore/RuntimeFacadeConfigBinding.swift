@@ -236,14 +236,18 @@ public actor ModelConfigurationCommandRouter {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "catalogQueryMissing")
                 }
                 try ConfigJSON.closed(payload,
-                                      allowed: ["query", "filter", "cursor"],
+                                      allowed: ["query", "filter", "cursor", "projection"],
                                       required: ["query"],
                                       context: "catalogSearch")
                 let filter = try ModelConfigurationFacade.catalogFilter(from: payload["filter"] as? String)
+                if let projection = payload["projection"], (projection as? String) != "picker" {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "catalogProjection")
+                }
                 let catalogCursor = try ModelConfigurationFacade.pageCursor(from: payload)
                 value = try await facade.catalogSearch(query: query,
                                                        filter: filter,
-                                                       cursor: catalogCursor)
+                                                       cursor: catalogCursor,
+                                                       pickerProjection: payload["projection"] != nil)
                 return Self.completed(value)
             case .preferencesGet:
                 let reply = try await facade.getPreferences()
@@ -322,14 +326,23 @@ public actor ModelConfigurationCommandRouter {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "probeProviderID")
                 }
                 try ConfigJSON.closed(payload,
-                                      allowed: ["providerID"],
+                                      allowed: ["providerID", "mode"],
                                       required: ["providerID"],
                                       context: "providerProbe")
+                let mode: ConfigProviderProbeMode
+                if let supplied = payload["mode"] {
+                    guard (supplied as? String) == ConfigProviderProbeMode.test.rawValue else {
+                        throw ConfigDomainError(code: .invalidEnvelope, reason: "providerProbeMode")
+                    }
+                    mode = .test
+                } else {
+                    mode = .combined
+                }
                 // Runs under the facade service lifetime; the drain Task is
                 // RB1's owned operation. Cancellation yields the typed
                 // cancelled outcome (read-only probe: provably no local
                 // effect; nothing is auto-installed either way).
-                let outcome = await facade.probeForEffect(providerID: providerID)
+                let outcome = await facade.probeForEffect(providerID: providerID, mode: mode)
                 return Self.completed(try outcome.jsonObject())
             }
         } catch let error as ConfigDomainError {

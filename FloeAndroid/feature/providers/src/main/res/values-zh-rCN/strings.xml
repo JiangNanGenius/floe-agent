@@ -154,4 +154,9 @@
     <string name="model_media_footer">媒体模型按官方接口能力配置，不使用对话上下文或输出 Token 设置。</string>
 
     <!-- debug-only synthetic preview (never live data) -->
+    <string name="catalog_load_failed">无法加载供应商目录，请刷新重试。</string>
+    <string name="providers_discovery_empty">供应商未返回模型，也可以手动添加。</string>
+    <string name="providers_discovery_count">找到 %1$d 个模型</string>
+    <string name="providers_discovery_catalog">订阅目录中有 %1$d 个模型</string>
+    <string name="providers_cancel_discovery">取消拉取模型</string>
 </resources>

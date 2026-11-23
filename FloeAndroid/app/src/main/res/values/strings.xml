@@ -695,4 +695,8 @@
     <string name="preview_components_download_cache">Downloaded component cache</string>
     <string name="preview_components_clearing">Clearing download cache…</string>
     <string name="phone_automation_relock_failed">Could not confirm that the device locked after the task. Please lock it manually.</string>
+    <string name="providers_probe_subscription_catalog">Add a model from the subscription catalog, then try a chat to verify access.</string>
+    <string name="providers_probe_subscription_unavailable">The subscription model catalog is unavailable. Try again later.</string>
+    <string name="providers_probe_credential">Enter the API key for these connection settings and try again.</string>
+    <string name="providers_discovery_failed">Couldn\'t load models. Check the endpoint, API key and network, or add a model manually.</string>
 </resources>

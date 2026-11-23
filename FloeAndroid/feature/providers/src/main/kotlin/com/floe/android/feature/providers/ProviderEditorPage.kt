@@ -29,9 +29,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -104,6 +105,12 @@ fun ProviderEditorPage(
     val formMessage = projected?.formMessage
     val credentialRequirementMessage = projected?.credentialRequirementMessage
     val testing = testState == ConnectionTestUi.Testing
+    val discoveryState = projected?.discoveryState ?: ConnectionTestUi.Idle
+    val discovering = discoveryState == ConnectionTestUi.Testing
+    val probeInFlight = testing || discovering
+    val modelGroups = remember(draft.models) {
+        draft.models.filter { it.selectedForSave }.chunked(PROVIDER_MODEL_GROUP_SIZE)
+    }
     val protocolOptions = (projected?.availableProtocols ?: listOf(draft.protocol)).map {
         ProviderProtocolOption(it.name, ProviderFormLogic.protocolLabel(it))
     }
@@ -149,10 +156,13 @@ fun ProviderEditorPage(
     // Save is possible only with an authoritative host projection and the
     // shared-core save path actually available.
     val saveEnabled = projected != null && networkAvailable && !inFlight
-    val formScroll = rememberScrollState()
+    val formScroll = rememberLazyListState()
     var titleHeightPx by remember { mutableStateOf(0) }
     val titleCollapsed by remember(formScroll) {
-        derivedStateOf { titleHeightPx > 0 && formScroll.value >= titleHeightPx }
+        derivedStateOf {
+            formScroll.firstVisibleItemIndex > 0 ||
+                (titleHeightPx > 0 && formScroll.firstVisibleItemScrollOffset >= titleHeightPx)
+        }
     }
     val editorTitle = stringResource(
         if (projected?.isEditingExisting == true) R.string.editor_edit_title else R.string.editor_add_title,
@@ -176,323 +186,333 @@ fun ProviderEditorPage(
             onSave = onSave,
         )
 
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .testTag("provider.editorForm")
-                .verticalScroll(formScroll),
+                .testTag("provider.editorForm"),
+            state = formScroll,
         ) {
-            FloeText(
-                text = editorTitle,
-                style = Floe.typography.navLargeTitle,
-                color = Floe.colors.label,
-                modifier = Modifier
-                    .onSizeChanged { titleHeightPx = it.height }
-                    .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 18.dp),
-            )
-
-            if (projected == null) {
-                FloeStatusLine(
-                    icon = FloeIcons.InfoCircle,
-                    text = stringResource(R.string.editor_waiting_host),
-                    color = Floe.colors.secondaryLabel,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
-                )
-            } else if (!networkAvailable) {
-                FloeStatusLine(
-                    icon = FloeIcons.WarningTriangle,
-                    text = networkUnavailableReason
-                        ?: stringResource(R.string.network_actions_unavailable_cd),
-                    color = Floe.colors.pending,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
-                )
-            }
-
-            // 1. Service purpose (fixed for this editor, ⇄ initialRole).
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = stringResource(R.string.purpose_section)) {
-                    FloeSectionRow(
-                        title = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                com.floe.android.design.IconGlyph(roleIcon(draft.role), Floe.colors.accent, 20.dp)
-                                FloeText(rolePurposeTitle(draft.role), style = Floe.typography.body)
-                            }
-                        },
-                    )
-                }
-                if (draft.role == ProviderServiceRoleUi.VIDEO) {
-                    ProviderSectionFooter(stringResource(R.string.purpose_video_note))
-                }
-            }
-
-            // 2. Enable / name / supplier (one unified chooser).
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = null) {
-                    FloeSwitchRow(
-                        title = stringResource(R.string.providers_enabled),
-                        checked = draft.enabled,
-                        onCheckedChange = { holder.setEnabled(identity, it) },
-                    )
-                    FloeFormTextField(
-                        label = stringResource(R.string.providers_display_name),
-                        value = draft.displayName,
-                        onValueChange = { holder.setDisplayName(identity, it) },
-                        isError = projected.hasIssue(ProviderFieldUi.DISPLAY_NAME),
-                    )
-                    FloeFormChooserRow(
-                        label = stringResource(R.string.providers_supplier_field),
-                        valueSummary = draft.supplier?.displayName.orEmpty(),
-                        onClick = {
-                            holder.openSupplierChooser(identity)
-                        },
+            item(key = "connection-form") {
+                Column {
+                    FloeText(
+                        text = editorTitle,
+                        style = Floe.typography.navLargeTitle,
+                        color = Floe.colors.label,
                         modifier = Modifier
-                            .onGloballyPositioned { coordinates ->
-                                supplierAnchorBounds = coordinates.boundsInWindow()
-                            }
-                            .testTag("provider.supplierRow"),
+                            .onSizeChanged { titleHeightPx = it.height }
+                            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 18.dp),
                     )
-                }
-                projected.issueMessages(ProviderFieldUi.SUPPLIER).forEach { ProviderIssueLine(it) }
-            }
 
-            // 3. Applicable additional service offers (opt-in roles only).
-            if (projected != null) {
-                val visibleOffers = ProviderFormLogic.visibleOffers(
-                    offers = projected.offers,
-                    draftDecisions = draft.offerDecisions,
-                    roleDiscoveryPending = { role ->
-                        projected.offers.any {
-                            it.role == role && it.discoveryState == ConnectionTestUi.Testing
-                        }
-                    },
-                )
-                if (visibleOffers.isNotEmpty()) {
-                    Column(Modifier.padding(horizontal = 16.dp)) {
-                        FloeSettingsSectionCard(title = stringResource(R.string.offers_section)) {
-                            visibleOffers.forEach { offer ->
-                                ProviderOfferRow(
-                                    offer = offer,
-                                    onEnabledChange = { holder.setOfferDecision(identity, offer.role, it) },
-                                    onConfigureSeparately = { seed ->
-                                        holder.openSeparateOffer(seed, offer.role)
-                                    },
-                                )
-                            }
-                        }
-                        ProviderSectionFooter(stringResource(R.string.offers_footer))
-                    }
-                }
-            }
-
-            // 4. Protocol — the three real protocol types, locked only when
-            // the selected supplier offers one. The picker opens the compact
-            // right-aligned floating menu over the retained row; it never
-            // expands inline and is not a supplier-card-sized popover.
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = stringResource(R.string.providers_protocol)) {
-                    ProviderProtocolMenuField(
-                        label = stringResource(R.string.providers_protocol),
-                        options = protocolOptions,
-                        selectedKey = draft.protocol.name,
-                        enabled = (projected?.availableProtocols?.size ?: 0) > 1,
-                        onClick = { protocolMenuOpen = true },
-                        onAnchorChanged = { protocolAnchorBounds = it },
-                    )
-                }
-                projected.issueMessages(ProviderFieldUi.PROTOCOL).forEach { ProviderIssueLine(it) }
-            }
-
-            // 5. Endpoint + non-secret headers (+ plain-HTTP acknowledgement).
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = stringResource(R.string.providers_endpoint)) {
-                    FloeFormTextField(
-                        label = stringResource(R.string.providers_base_url),
-                        value = draft.baseUrl,
-                        onValueChange = { holder.setBaseUrl(identity, it) },
-                        monospaced = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        isError = projected.hasIssue(ProviderFieldUi.BASE_URL),
-                    )
-                    FloeFormTextField(
-                        label = stringResource(R.string.providers_headers_placeholder),
-                        value = draft.nonSecretHeaders,
-                        onValueChange = { holder.setHeaders(identity, it) },
-                        singleLine = false,
-                        minLines = 2,
-                        maxLines = 5,
-                        monospaced = true,
-                        isError = projected.hasIssue(ProviderFieldUi.HEADERS),
-                    )
-                    if (draft.supplier?.supportsPlainHttpChoice == true ||
-                        draft.baseUrl.trim().startsWith("http://", ignoreCase = true)
-                    ) {
-                        FloeSwitchRow(
-                            title = stringResource(R.string.providers_allow_plain_http),
-                            checked = draft.allowsPlainHttp,
-                            onCheckedChange = { holder.setAllowsPlainHttp(identity, it) },
+                    if (projected == null) {
+                        FloeStatusLine(
+                            icon = FloeIcons.InfoCircle,
+                            text = stringResource(R.string.editor_waiting_host),
+                            color = Floe.colors.secondaryLabel,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                         )
-                    }
-                }
-                ProviderSectionFooter(stringResource(R.string.providers_headers_hint))
-                projected.issueMessages(ProviderFieldUi.BASE_URL).forEach { ProviderIssueLine(it) }
-                projected.issueMessages(ProviderFieldUi.HEADERS).forEach { ProviderIssueLine(it) }
-            }
-
-            // 6. Credentials — secure input stays in RAM only.
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = stringResource(R.string.providers_credentials)) {
-                    FloeSecureFormField(
-                        label = stringResource(R.string.providers_api_key),
-                        value = slot.secureInput.value.orEmpty(),
-                        onValueChange = { holder.setSecureInput(identity, it) },
-                        revealed = slot.revealSecureInput.value,
-                        onRevealedChange = { holder.toggleReveal(identity) },
-                        revealOnLabel = stringResource(R.string.providers_show_api_key),
-                        revealOffLabel = stringResource(R.string.providers_hide_api_key),
-                        isError = projected.hasIssue(ProviderFieldUi.CREDENTIAL),
-                    )
-                    if (projected?.isEditingExisting == true &&
-                        projected.credentialState == ProviderCredentialStateUi.AWAITING_CONFIGURATION
-                    ) {
-                        ProviderHintRow(
-                            icon = FloeIcons.Key,
-                            text = stringResource(R.string.providers_waiting_key_hint),
-                            color = Floe.colors.pending,
-                        )
-                    }
-                    if (credentialRequirementMessage != null) {
-                        ProviderHintRow(
+                    } else if (!networkAvailable) {
+                        FloeStatusLine(
                             icon = FloeIcons.WarningTriangle,
-                            text = credentialRequirementMessage,
+                            text = networkUnavailableReason
+                                ?: stringResource(R.string.network_actions_unavailable_cd),
                             color = Floe.colors.pending,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                         )
                     }
-                }
-                ProviderSectionFooter(stringResource(R.string.providers_api_key_hint))
-                projected.issueMessages(ProviderFieldUi.CREDENTIAL).forEach { ProviderIssueLine(it) }
-            }
 
-            // 7. Tool-name compatibility.
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = null) {
-                    FloeSwitchRow(
-                        title = stringResource(R.string.providers_tool_name_compatibility),
-                        checked = draft.toolNameCompatibility,
-                        onCheckedChange = { holder.setToolNameCompatibility(identity, it) },
-                    )
-                }
-                ProviderSectionFooter(stringResource(R.string.providers_tool_name_compatibility_hint))
-                projected.issueMessages(ProviderFieldUi.COMPATIBILITY).forEach { ProviderIssueLine(it) }
-            }
+                    // 1. Service purpose (fixed for this editor, ⇄ initialRole).
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        FloeSettingsSectionCard(title = stringResource(R.string.purpose_section)) {
+                            FloeSectionRow(
+                                title = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        com.floe.android.design.IconGlyph(roleIcon(draft.role), Floe.colors.accent, 20.dp)
+                                        FloeText(rolePurposeTitle(draft.role), style = Floe.typography.body)
+                                    }
+                                },
+                            )
+                        }
+                        if (draft.role == ProviderServiceRoleUi.VIDEO) {
+                            ProviderSectionFooter(stringResource(R.string.purpose_video_note))
+                        }
+                    }
 
-            // 8. Test connection — explicit network action with honest state.
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = null) {
-                    FloeActionRow(
-                        label = stringResource(R.string.providers_test_connection),
-                        onClick = { holder.testConnection(identity, testing) },
-                        enabled = projected != null && networkAvailable && !testing,
-                        trailing = {
-                            when (testState) {
-                                ConnectionTestUi.Idle -> Unit
-                                ConnectionTestUi.Testing -> FloeActivityIndicator()
-                                is ConnectionTestUi.Succeeded -> FloeStatusLine(
-                                    icon = FloeIcons.CheckCircle,
-                                    text = "${stringResource(R.string.providers_test_ok)} (${testState.discoveredModelCount})",
-                                    color = Floe.colors.success,
+                    // 2. Enable / name / supplier (one unified chooser).
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        FloeSettingsSectionCard(title = null) {
+                            FloeSwitchRow(
+                                title = stringResource(R.string.providers_enabled),
+                                checked = draft.enabled,
+                                onCheckedChange = { holder.setEnabled(identity, it) },
+                            )
+                            FloeFormTextField(
+                                label = stringResource(R.string.providers_display_name),
+                                value = draft.displayName,
+                                onValueChange = { holder.setDisplayName(identity, it) },
+                                isError = projected.hasIssue(ProviderFieldUi.DISPLAY_NAME),
+                            )
+                            FloeFormChooserRow(
+                                label = stringResource(R.string.providers_supplier_field),
+                                valueSummary = draft.supplier?.displayName.orEmpty(),
+                                onClick = {
+                                    holder.openSupplierChooser(identity)
+                                },
+                                modifier = Modifier
+                                    .onGloballyPositioned { coordinates ->
+                                        supplierAnchorBounds = coordinates.boundsInWindow()
+                                    }
+                                    .testTag("provider.supplierRow"),
+                            )
+                        }
+                        projected.issueMessages(ProviderFieldUi.SUPPLIER).forEach { ProviderIssueLine(it) }
+                    }
+
+                    // 3. Applicable additional service offers (opt-in roles only).
+                    if (projected != null) {
+                        val visibleOffers = ProviderFormLogic.visibleOffers(
+                            offers = projected.offers,
+                            draftDecisions = draft.offerDecisions,
+                            roleDiscoveryPending = { role ->
+                                projected.offers.any {
+                                    it.role == role && it.discoveryState == ConnectionTestUi.Testing
+                                }
+                            },
+                        )
+                        if (visibleOffers.isNotEmpty()) {
+                            Column(Modifier.padding(horizontal = 16.dp)) {
+                                FloeSettingsSectionCard(title = stringResource(R.string.offers_section)) {
+                                    visibleOffers.forEach { offer ->
+                                        ProviderOfferRow(
+                                            offer = offer,
+                                            onEnabledChange = { holder.setOfferDecision(identity, offer.role, it) },
+                                            onConfigureSeparately = { seed ->
+                                                holder.openSeparateOffer(seed, offer.role)
+                                            },
+                                        )
+                                    }
+                                }
+                                ProviderSectionFooter(stringResource(R.string.offers_footer))
+                            }
+                        }
+                    }
+
+                    // 4. Protocol — the three real protocol types, locked only when
+                    // the selected supplier offers one. The picker opens the compact
+                    // right-aligned floating menu over the retained row; it never
+                    // expands inline and is not a supplier-card-sized popover.
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        FloeSettingsSectionCard(title = stringResource(R.string.providers_protocol)) {
+                            ProviderProtocolMenuField(
+                                label = stringResource(R.string.providers_protocol),
+                                options = protocolOptions,
+                                selectedKey = draft.protocol.name,
+                                enabled = (projected?.availableProtocols?.size ?: 0) > 1,
+                                onClick = { protocolMenuOpen = true },
+                                onAnchorChanged = { protocolAnchorBounds = it },
+                            )
+                        }
+                        projected.issueMessages(ProviderFieldUi.PROTOCOL).forEach { ProviderIssueLine(it) }
+                    }
+
+                    // 5. Endpoint + non-secret headers (+ plain-HTTP acknowledgement).
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        FloeSettingsSectionCard(title = stringResource(R.string.providers_endpoint)) {
+                            FloeFormTextField(
+                                label = stringResource(R.string.providers_base_url),
+                                value = draft.baseUrl,
+                                onValueChange = { holder.setBaseUrl(identity, it) },
+                                monospaced = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                isError = projected.hasIssue(ProviderFieldUi.BASE_URL),
+                            )
+                            FloeFormTextField(
+                                label = stringResource(R.string.providers_headers_placeholder),
+                                value = draft.nonSecretHeaders,
+                                onValueChange = { holder.setHeaders(identity, it) },
+                                singleLine = false,
+                                minLines = 2,
+                                maxLines = 5,
+                                monospaced = true,
+                                isError = projected.hasIssue(ProviderFieldUi.HEADERS),
+                            )
+                            if (draft.supplier?.supportsPlainHttpChoice == true ||
+                                draft.baseUrl.trim().startsWith("http://", ignoreCase = true)
+                            ) {
+                                FloeSwitchRow(
+                                    title = stringResource(R.string.providers_allow_plain_http),
+                                    checked = draft.allowsPlainHttp,
+                                    onCheckedChange = { holder.setAllowsPlainHttp(identity, it) },
                                 )
-                                is ConnectionTestUi.Failed -> FloeStatusLine(
-                                    icon = FloeIcons.XOctagon,
-                                    text = stringResource(R.string.providers_test_failed),
+                            }
+                        }
+                        ProviderSectionFooter(stringResource(R.string.providers_headers_hint))
+                        projected.issueMessages(ProviderFieldUi.BASE_URL).forEach { ProviderIssueLine(it) }
+                        projected.issueMessages(ProviderFieldUi.HEADERS).forEach { ProviderIssueLine(it) }
+                    }
+
+                    // 6. Credentials — secure input stays in RAM only.
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        FloeSettingsSectionCard(title = stringResource(R.string.providers_credentials)) {
+                            FloeSecureFormField(
+                                label = stringResource(R.string.providers_api_key),
+                                value = slot.secureInput.value.orEmpty(),
+                                onValueChange = { holder.setSecureInput(identity, it) },
+                                revealed = slot.revealSecureInput.value,
+                                onRevealedChange = { holder.toggleReveal(identity) },
+                                revealOnLabel = stringResource(R.string.providers_show_api_key),
+                                revealOffLabel = stringResource(R.string.providers_hide_api_key),
+                                isError = projected.hasIssue(ProviderFieldUi.CREDENTIAL),
+                            )
+                            if (projected?.isEditingExisting == true &&
+                                projected.credentialState == ProviderCredentialStateUi.AWAITING_CONFIGURATION
+                            ) {
+                                ProviderHintRow(
+                                    icon = FloeIcons.Key,
+                                    text = stringResource(R.string.providers_waiting_key_hint),
+                                    color = Floe.colors.pending,
+                                )
+                            }
+                            if (credentialRequirementMessage != null) {
+                                ProviderHintRow(
+                                    icon = FloeIcons.WarningTriangle,
+                                    text = credentialRequirementMessage,
+                                    color = Floe.colors.pending,
+                                )
+                            }
+                        }
+                        ProviderSectionFooter(stringResource(R.string.providers_api_key_hint))
+                        projected.issueMessages(ProviderFieldUi.CREDENTIAL).forEach { ProviderIssueLine(it) }
+                    }
+
+                    // 7. Tool-name compatibility.
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        FloeSettingsSectionCard(title = null) {
+                            FloeSwitchRow(
+                                title = stringResource(R.string.providers_tool_name_compatibility),
+                                checked = draft.toolNameCompatibility,
+                                onCheckedChange = { holder.setToolNameCompatibility(identity, it) },
+                            )
+                        }
+                        ProviderSectionFooter(stringResource(R.string.providers_tool_name_compatibility_hint))
+                        projected.issueMessages(ProviderFieldUi.COMPATIBILITY).forEach { ProviderIssueLine(it) }
+                    }
+
+                    // 8. Test connection — explicit network action with honest state.
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        FloeSettingsSectionCard(title = null) {
+                            FloeActionRow(
+                                label = stringResource(R.string.providers_test_connection),
+                                onClick = { holder.testConnection(identity, probeInFlight) },
+                                enabled = projected != null && networkAvailable && !probeInFlight && draft.baseUrl.isNotBlank(),
+                                trailing = {
+                                    when (testState) {
+                                        ConnectionTestUi.Idle -> Unit
+                                        ConnectionTestUi.Testing -> FloeActivityIndicator()
+                                        is ConnectionTestUi.Succeeded -> FloeStatusLine(
+                                            icon = FloeIcons.CheckCircle,
+                                            text = stringResource(R.string.providers_test_ok),
+                                            color = Floe.colors.success,
+                                        )
+                                        is ConnectionTestUi.Failed -> FloeStatusLine(
+                                            icon = FloeIcons.XOctagon,
+                                            text = stringResource(R.string.providers_test_failed),
+                                            color = Floe.colors.destructive,
+                                        )
+                                    }
+                                },
+                            )
+                            if (testing) {
+                                FloeActionRow(
+                                    label = stringResource(R.string.providers_cancel_test),
+                                    onClick = { holder.cancelConnectionTest(identity) },
+                                )
+                            }
+                            (testState as? ConnectionTestUi.Failed)?.let { failed ->
+                                ProviderHintRow(
+                                    icon = FloeIcons.WarningTriangle,
+                                    text = failed.reason,
                                     color = Floe.colors.destructive,
                                 )
                             }
-                        },
-                    )
-                    if (testing) {
-                        FloeActionRow(
-                            label = stringResource(R.string.providers_cancel_test),
-                            onClick = { holder.cancelConnectionTest(identity) },
-                        )
+                        }
                     }
-                    (testState as? ConnectionTestUi.Failed)?.let { failed ->
-                        ProviderHintRow(
-                            icon = FloeIcons.WarningTriangle,
-                            text = failed.reason,
-                            color = Floe.colors.destructive,
-                        )
-                    }
+
                 }
             }
 
-            // 9. Models: selected rows + manage + explicit refresh.
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                FloeSettingsSectionCard(title = stringResource(R.string.providers_models_section)) {
-                    val selectedModels = draft.models.filter { it.selectedForSave }
-                    if (selectedModels.isEmpty()) {
-                        FloeSectionRow(
-                            title = {
+            item(key = "model-actions") {
+                Column(Modifier.padding(horizontal = 16.dp)) {
+                    FloeSettingsSectionCard(title = stringResource(R.string.providers_models_section)) {
+                        FloeActionRow(
+                            label = stringResource(R.string.providers_manage_models),
+                            onClick = { holder.openModelManager(identity) },
+                        )
+                        if (discoverySupported) {
+                            FloeActionRow(
+                                label = stringResource(R.string.providers_refresh_models),
+                                onClick = { holder.discoverModels(identity, probeInFlight) },
+                                enabled = networkAvailable && !probeInFlight && draft.baseUrl.isNotBlank(),
+                                trailing = { if (discovering) FloeActivityIndicator() },
+                            )
+                            if (discovering) {
+                                FloeActionRow(
+                                    label = stringResource(R.string.providers_cancel_discovery),
+                                    onClick = { holder.cancelModelDiscovery(identity) },
+                                )
+                            }
+                        }
+                        if (modelGroups.isEmpty()) {
+                            FloeSectionRow(title = {
                                 FloeText(
                                     stringResource(R.string.providers_no_models),
                                     style = Floe.typography.metadata,
                                     color = Floe.colors.secondaryLabel,
                                 )
-                            },
+                            })
+                        }
+                    }
+                    ProviderDiscoveryFeedback(discoveryState, Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                    ProviderSectionFooter(
+                        stringResource(
+                            if (discoverySupported) R.string.providers_manual_entry_hint
+                            else R.string.providers_manual_fallback_hint,
+                        ),
+                    )
+                    projected.issueMessages(ProviderFieldUi.MODELS).forEach { ProviderIssueLine(it) }
+                }
+            }
+
+            itemsIndexed(modelGroups, key = { _, models -> "selected-" + models.first().draftModelId }) { _, models ->
+                FloeSettingsSectionCard(title = null, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+                    for (model in models) {
+                        ProviderModelRow(
+                            model = model,
+                            isDefault = draft.defaultModelDraftId == model.draftModelId,
+                            onOpen = { holder.openModelEditor(identity, model.draftModelId) },
+                            onEnabledChange = { holder.setModelEnabled(identity, model.draftModelId, it) },
                         )
-                    } else {
-                        selectedModels.forEach { model ->
-                            ProviderModelRow(
-                                model = model,
-                                isDefault = draft.defaultModelDraftId == model.draftModelId,
-                                onOpen = { holder.openModelEditor(identity, model.draftModelId) },
-                                onEnabledChange = { holder.setModelEnabled(identity, model.draftModelId, it) },
+                    }
+                }
+            }
+
+            item(key = "end") {
+                Column {
+                    if (formMessage != null) {
+                        Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            FloeText(
+                                formMessage,
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.destructive,
                             )
                         }
                     }
-                    FloeActionRow(
-                        label = stringResource(R.string.providers_manage_models),
-                        onClick = { holder.openModelManager(identity) },
-                    )
-                    if (discoverySupported) {
-                        FloeActionRow(
-                            label = stringResource(R.string.providers_refresh_models),
-                            onClick = { holder.discoverModels(identity, testing) },
-                            enabled = networkAvailable && !testing,
-                            trailing = {
-                                if (testing) {
-                                    FloeActivityIndicator()
-                                }
-                            },
-                        )
-                    }
-                }
-                ProviderSectionFooter(
-                    stringResource(
-                        if (discoverySupported) {
-                            R.string.providers_manual_entry_hint
-                        } else {
-                            R.string.providers_manual_fallback_hint
-                        },
-                    )
-                )
-                projected.issueMessages(ProviderFieldUi.MODELS).forEach { ProviderIssueLine(it) }
-            }
-
-            // 10. Inline contextual errors (⇄ errorMessage section).
-            if (formMessage != null) {
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    FloeText(
-                        formMessage,
-                        style = Floe.typography.metadata,
-                        color = Floe.colors.destructive,
-                    )
+                    Spacer(Modifier.height(24.dp))
                 }
             }
-            Spacer(Modifier.height(24.dp))
         }
     }
 

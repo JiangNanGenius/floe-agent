@@ -1324,7 +1324,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) throws -> URLRequest {
-        let url = request.provider.baseURL.appendingPathComponent("v1/messages")
+        let url = ModelDiscovery.anthropicEndpoint(baseURL: request.provider.baseURL, resource: "messages")
         var urlRequest = URLRequest(url: url)
         if request.ephemeralTransport {
             urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
