@@ -66,6 +66,7 @@ public actor ConfigSyncEngine {
     private let automaticallySync: Bool
     private let configuredZoneName: String
     private let expectedAccountRecordName: String?
+    private let synchronizedKeychainAccessGroup: String?
 
     private var supportedRecordTypeNames: [String] {
         ConfigSyncRecordType.allCases.filter { recordTypes.contains($0) }.map(\.rawValue)
@@ -117,7 +118,8 @@ public actor ConfigSyncEngine {
         recordTypes: Set<ConfigSyncRecordType> = Set(ConfigSyncRecordType.allCases),
         automaticallySync: Bool = true,
         zoneName: String = ConfigSyncEngine.zoneName,
-        expectedAccountRecordName: String? = nil
+        expectedAccountRecordName: String? = nil,
+        synchronizedKeychainAccessGroup: String? = nil
     ) {
         let (stream, signal) = AsyncStream<UInt64>.makeStream(bufferingPolicy: .bufferingNewest(1))
         self.remoteConfigurationStream = stream
@@ -130,6 +132,7 @@ public actor ConfigSyncEngine {
         self.automaticallySync = automaticallySync
         self.configuredZoneName = zoneName
         self.expectedAccountRecordName = expectedAccountRecordName
+        self.synchronizedKeychainAccessGroup = synchronizedKeychainAccessGroup
     }
 
     /// AppEnvironment creates the v11 credential store after the sync engine.
@@ -562,7 +565,8 @@ public actor ConfigSyncEngine {
             return await secretExistenceReader(service, account, synchronizable)
         }
         do {
-            _ = try KeychainStore(service: service, synchronizable: synchronizable)
+            _ = try KeychainStore(service: service, synchronizable: synchronizable,
+                                  accessGroup: synchronizable ? synchronizedKeychainAccessGroup : nil)
                 .read(account: account)
             return true
         } catch {

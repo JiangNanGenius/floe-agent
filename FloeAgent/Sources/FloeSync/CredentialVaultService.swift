@@ -83,10 +83,11 @@ public actor CredentialVaultService {
     /// so synthetic migration tests never mutate real App sync settings.
     private let preferencesDefaults: UserDefaults
 
-    public init(records: CredentialStore) {
+    public init(records: CredentialStore, synchronizedAccessGroup: String? = nil) {
         self.records = records
         self.local = KeychainStore(service: Self.serviceName, synchronizable: false)
-        self.synchronized = KeychainStore(service: Self.serviceName, synchronizable: true)
+        self.synchronized = KeychainStore(service: Self.serviceName, synchronizable: true,
+                                          accessGroup: synchronizedAccessGroup)
         self.deviceBound = KeychainStore(
             service: Self.serviceName,
             synchronizable: false,

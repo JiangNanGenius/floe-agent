@@ -48,15 +48,20 @@ public struct KeychainStore: Sendable {
     /// `WhenUnlocked` default; device-bound skill credentials opt in to
     /// `WhenUnlockedThisDeviceOnly`.
     public var accessibility: KeychainAccessibility
+    /// A signing-authorized access group for explicitly shared items. Nil
+    /// keeps the platform's normal lookup and default write group.
+    public var accessGroup: String?
 
     public init(
         service: String,
         synchronizable: Bool = true,
-        accessibility: KeychainAccessibility = .whenUnlocked
+        accessibility: KeychainAccessibility = .whenUnlocked,
+        accessGroup: String? = nil
     ) {
         self.service = service
         self.synchronizable = synchronizable
         self.accessibility = accessibility
+        self.accessGroup = accessGroup
     }
 
     #if canImport(Security)
@@ -155,12 +160,18 @@ public struct KeychainStore: Sendable {
     }
 
     private func baseQuery(account: String, includeAccessible: Bool = true) -> [String: Any] {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: synchronizable
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+            #if os(macOS)
+            query[kSecUseDataProtectionKeychain as String] = true
+            #endif
+        }
         _ = includeAccessible // accessibility is applied by the caller when writing
         return query
     }

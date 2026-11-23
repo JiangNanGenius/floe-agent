@@ -7,6 +7,7 @@ import CloudKit
 import CoreText
 import CryptoKit
 import Darwin
+import FloeAgentRuntime
 import FloeCore
 import FloeDeviceSync
 import FloeMacBridgeProtocol
@@ -120,6 +121,16 @@ final class UnifiedMacSmoke {
         }
         if CommandLine.arguments.contains("--memory-only") {
             await exerciseMemoryLibrary(model)
+            return
+        }
+        if CommandLine.arguments.contains("--memory-runtime-only"), let endpoint = projectTaskFixtureEndpoint,
+           endpoint.host == "127.0.0.1" {
+            await exerciseMemoryRuntime(model, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--voice-host-only"), let endpoint = projectTaskFixtureEndpoint,
+           endpoint.host == "127.0.0.1" {
+            await exerciseVoiceTurn(model, endpoint: endpoint)
             return
         }
         if CommandLine.arguments.contains("--concurrent-drafts-only"), let endpoint = projectTaskFixtureEndpoint,
@@ -1253,6 +1264,50 @@ final class UnifiedMacSmoke {
         } catch {
             finish(["memorySettingsShown": false])
         }
+    }
+
+    private func exerciseMemoryRuntime(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model),
+              agent.startNamedAgentFixture("Look for my preference and ask to remember it.", modelID: "memory-fixture",
+                                           endpoint: endpoint, projectID: nil, mode: .chat) else {
+            finish(["started": false]); return
+        }
+        let deadline = ContinuousClock.now + .seconds(20)
+        var pressed = false
+        while agent.activeRunCount > 0 && ContinuousClock.now < deadline {
+            if !pressed, agent.pendingApproval?.toolName == MemoryRememberTool.name {
+                pressed = clickApproval(in: agent, allow: true, screenshot: "memory-approval.png")
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        let finished = agent.activeRunCount == 0 && agent.messages.contains { $0.content == "Memory saved." }
+        if agent.activeRunCount > 0 { agent.stop() }
+        let saved = (try? await agent.withMemoryLibrary { library in
+            try await library.list(scope: .userProfile, cursor: nil).entries.contains {
+                $0.content == "Use numbered review notes"
+            }
+        }) ?? false
+        finish(["approvalPressed": pressed, "completed": finished, "stored": saved])
+    }
+
+    private func exerciseVoiceTurn(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model), agent.useNativeCommandFixture(endpoint: endpoint),
+              let pdf = try? writePDFTextAttachment() else {
+            finish(["ready": false]); return
+        }
+        let owner = agent.attachmentOwnerID
+        let staged = agent.stageAttachments([pdf]).map(\.id)
+        var rejectedOtherOwner = false
+        do { _ = try await agent.runVoiceTurn("Ignored voice source", owner: UUID()) }
+        catch { rejectedOtherOwner = true }
+        do {
+            let answer = try await agent.runVoiceTurn("A voice fixture question.", owner: owner)
+            let runMode = agent.transcriptRuns.last?.conversationMode
+            finish(["otherOwnerRejected": rejectedOtherOwner, "ownedAnswer": agent.attachmentOwnerID == owner
+                && agent.selectedID == owner && answer == "Confirmed fixture response.",
+                "chatCeiling": runMode == "chat", "attachmentsPreserved": !staged.isEmpty
+                    && agent.stagedAttachments.map(\.id) == staged])
+        } catch { finish(["ownedAnswer": false, "otherOwnerRejected": rejectedOtherOwner]) }
     }
 
     private func exerciseExtensionTools(_ model: BridgeAppModel, endpoint: URL) async {
