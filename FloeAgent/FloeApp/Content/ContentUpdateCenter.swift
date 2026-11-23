@@ -538,6 +538,7 @@ final class ContentUpdateCenter: ObservableObject {
     private func applyAutomaticUpdates(store: ContentUpdateStore, snapshot: FeedSnapshot?) async {
         guard let snapshot else { return }
         for id in dependencyOrder(snapshot) {
+            guard !Task.isCancelled else { return }
             guard let decision = snapshot.plannedByID[id], decision.isUpdate else { continue }
             guard let entry = snapshot.feed.entries.first(where: { $0.id == id }) else { continue }
             guard ContentUpdateActionPolicy.automaticUpdateAllowed(id: id, version: entry.version,
@@ -555,6 +556,8 @@ final class ContentUpdateCenter: ObservableObject {
             do {
                 try await commitEntries([id], snapshot: snapshot, store: store, automatic: true)
                 FloeLogger(category: .app).info("contentAutoUpdated id=\(id) version=\(entry.version)")
+            } catch is CancellationError {
+                return
             } catch {
                 FloeLogger(category: .app).warning(
                     "automatic content update failed id=\(id): \(error.localizedDescription)"

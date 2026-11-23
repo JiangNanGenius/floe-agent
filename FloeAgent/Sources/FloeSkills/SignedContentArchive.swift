@@ -79,6 +79,8 @@ public enum SignedContentArchive {
             }
         } catch let failure as SignedContentFailure {
             throw failure
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw SignedContentFailure.archive
         }

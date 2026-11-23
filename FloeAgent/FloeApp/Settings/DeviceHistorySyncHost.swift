@@ -18,8 +18,8 @@ final class DeviceHistorySyncHost {
     private var activation: Task<Void, Never>?
     private var suspension: Task<Void, Never>?
 
-    init(store: SQLiteConversationStore, workspaceHost: DeviceWorkspaceSyncHost? = nil,
-         didImport: @escaping @MainActor (UUID) async -> Void) {
+    convenience init(store: SQLiteConversationStore, workspaceHost: DeviceWorkspaceSyncHost? = nil,
+                     didImport: @escaping @MainActor (UUID) async -> Void) {
         let keychain = KeychainStore(service: "org.floeagent.ios.device-history",
                                      synchronizable: false, accessibility: .whenUnlockedThisDeviceOnly)
         let account = "endpoint-identity-v1"
@@ -32,6 +32,12 @@ final class DeviceHistorySyncHost {
         let settingsURL = URL.applicationSupportDirectory
             .appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent("device-history-sync.json")
+        self.init(store: store, settingsURL: settingsURL, identityStorage: identity,
+                  workspaceHost: workspaceHost, didImport: didImport)
+    }
+
+    init(store: SQLiteConversationStore, settingsURL: URL, identityStorage: DeviceHistoryIdentityStorage,
+         workspaceHost: DeviceWorkspaceSyncHost?, didImport: @escaping @MainActor (UUID) async -> Void) {
         let source = DeviceHistorySource(list: { allowed in
             try await store.conversations().filter { allowed.contains($0.id) }.map(Self.offer)
         }, export: { id, version in
@@ -83,7 +89,7 @@ final class DeviceHistorySyncHost {
             return try await store.restoreDeviceHistoryAttachment(conversationID: owner,
                 attachmentID: item.attachmentID, messageID: item.messageID, digest: item.digest, relativePath: name)
         })
-        center = DeviceHistorySyncCenter(settingsURL: settingsURL, identityStorage: identity, source: source,
+        center = DeviceHistorySyncCenter(settingsURL: settingsURL, identityStorage: identityStorage, source: source,
                                          localTasks: { try await store.conversations().map(Self.offer) },
                                          importHistory: { id, data in
             try await Self.importMessages(id, data, store: store)

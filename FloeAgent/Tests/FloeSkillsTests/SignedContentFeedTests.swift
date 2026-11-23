@@ -347,6 +347,19 @@ struct SignedContentFeedTests {
         #expect(a != SignedContentArchive.canonicalDigest(["a": Data("1".utf8)]))
     }
 
+    @Test("Cancelled extraction retains cancellation and stages no files")
+    func cancelledExtraction() async throws {
+        let zip = try Self.zip(["content.json": Data("{}".utf8)])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let extraction = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try SignedContentArchive.extract(zip, at: root)
+        }
+        await #expect(throws: CancellationError.self) { try await extraction.value }
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+    }
+
     // MARK: - Install transaction
 
     @Test("Staging verifies signed size/hash/digest and domain validation before install")
