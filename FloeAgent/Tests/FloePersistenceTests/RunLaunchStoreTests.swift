@@ -30,6 +30,39 @@ struct RunLaunchStoreTests {
         return database
     }
 
+    @Test("Latest conversation summaries match the single-run reader, including ties and legacy dates")
+    func latestRunSummariesMatchScopedHistory() async throws {
+        let db = try await database()
+        let conversations = SQLiteConversationStore(database: db)
+        let store: any RunStore = SQLiteRunStore(database: db)
+        let first = UUID(), second = UUID(), unrequested = UUID()
+        let time = Date(timeIntervalSince1970: 1_700_000_000)
+        for id in [first, second, unrequested] {
+            try await conversations.saveConversation(.init(id: id, title: "Task", createdAt: time, updatedAt: time))
+        }
+        let higher = try #require(UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"))
+        let lower = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+        let legacy = UUID()
+        let modelID = UUID()
+        try await store.saveRun(.init(id: higher, conversationID: first, state: "running", goal: "Latest", startedAt: time, modelID: modelID))
+        try await store.saveRun(.init(id: lower, conversationID: first, state: "failed", goal: "Older tie", startedAt: time))
+        try await store.saveRun(.init(id: legacy, conversationID: second, state: "completed", goal: "Legacy", startedAt: time))
+        try await store.saveRun(.init(id: UUID(), conversationID: unrequested, state: "running", goal: "Other task", startedAt: time))
+        try await db.writer { db in
+            try db.execute(sql: "UPDATE runs SET started_at = ? WHERE id = ?",
+                           arguments: ["2023-11-14T22:13:20Z", legacy.uuidString])
+        }
+        let requested = [first, second, first] + (0..<1_200).map { _ in UUID() }
+        let summaries = try await store.latestRunSummaries(conversationIDs: requested)
+        #expect(summaries.count == 2)
+        #expect(summaries[first] == .init(state: "running", startedAt: time, modelID: modelID))
+        for id in [first, second] {
+            let single = try #require(try await store.recentRuns(conversationID: id, limit: 1).first)
+            #expect(summaries[id] == .init(state: single.state, startedAt: single.startedAt, modelID: single.modelID))
+        }
+        #expect(try await store.latestRunSummaries(conversationIDs: []).isEmpty)
+    }
+
     @Test("Unavailable provider/model fails preflight without creating a conversation")
     func unavailableModelFailsBeforeLaunch() async throws {
         let database = try await database()

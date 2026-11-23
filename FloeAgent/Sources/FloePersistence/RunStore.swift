@@ -71,6 +71,19 @@ public struct ConversationRunPage: Sendable, Hashable {
     }
 }
 
+/// The latest run fields needed to render a conversation in the task list.
+public struct ConversationRunSummary: Sendable, Equatable {
+    public let state: String
+    public let startedAt: Date
+    public let modelID: UUID?
+
+    public init(state: String, startedAt: Date, modelID: UUID?) {
+        self.state = state
+        self.startedAt = startedAt
+        self.modelID = modelID
+    }
+}
+
 /// Durable run + event-thread access. Events are append-only and ordered by
 /// a per-run monotonic sequence; checkpoints upsert by run.
 public protocol RunStore: Sendable {
@@ -78,6 +91,7 @@ public protocol RunStore: Sendable {
     func run(id: UUID) async throws -> RunRecord?
     func runs(conversationID: UUID) async throws -> [RunRecord]
     func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord]
+    func latestRunSummaries(conversationIDs: [UUID]) async throws -> [UUID: ConversationRunSummary]
     func runPage(conversationID: UUID, before cursor: ConversationRunCursor?, limit: Int) async throws -> ConversationRunPage
     func nonTerminalRuns() async throws -> [RunRecord]
     func updateRunState(id: UUID, state: String, endedAt: Date?) async throws
@@ -123,6 +137,17 @@ public extension RunStore {
     }
     func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord] {
         Array(try await runs(conversationID: conversationID).prefix(max(1, limit)))
+    }
+
+    func latestRunSummaries(conversationIDs: [UUID]) async throws -> [UUID: ConversationRunSummary] {
+        var summaries: [UUID: ConversationRunSummary] = [:]
+        for id in Set(conversationIDs) {
+            try Task.checkCancellation()
+            if let run = try? await recentRuns(conversationID: id, limit: 1).first {
+                summaries[id] = .init(state: run.state, startedAt: run.startedAt, modelID: run.modelID)
+            }
+        }
+        return summaries
     }
 
     func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
@@ -443,6 +468,38 @@ public actor SQLiteRunStore: RunStore {
                     """,
                 arguments: [conversationID.uuidString, max(1, limit)]
             ).map(Self.run(from:))
+        }
+    }
+
+    public func latestRunSummaries(conversationIDs: [UUID]) async throws -> [UUID: ConversationRunSummary] {
+        guard !conversationIDs.isEmpty else { return [:] }
+        let ids = String(decoding: try JSONEncoder().encode(Set(conversationIDs)), as: UTF8.self)
+        return try await database.reader { db in
+            // The v31 conversation cursor index supplies the first run for each
+            // requested ID. One JSON binding also works beyond SQLite's parameter limit.
+            let rows = try Row.fetchCursor(db, sql: """
+                SELECT r.conversation_id, r.state, r.started_at, r.model_id
+                FROM json_each(?) AS requested
+                JOIN runs r ON r.id = (
+                    SELECT id FROM runs
+                    WHERE conversation_id = requested.value
+                    ORDER BY started_at DESC, id DESC
+                    LIMIT 1
+                )
+                """, arguments: [ids])
+            let formatter = PersistenceCodec.fractionalDateFormatter()
+            var summaries: [UUID: ConversationRunSummary] = [:]
+            while let row = try rows.next() {
+                guard let conversationID = UUID(uuidString: row["conversation_id"]),
+                      let startedAt = try? PersistenceCodec.decodeDate(row["started_at"], fractional: formatter)
+                else { continue }
+                summaries[conversationID] = .init(
+                    state: row["state"],
+                    startedAt: startedAt,
+                    modelID: (row["model_id"] as String?).flatMap(UUID.init(uuidString:))
+                )
+            }
+            return summaries
         }
     }
 

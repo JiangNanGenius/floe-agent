@@ -414,7 +414,7 @@ struct NotesRootView: View {
                 ProgressView(FloeL10n.l("notes.notes_root_view.indexing", session.documents.first(where: { $0.id == id })?.title ?? FloeL10n.l("notes.notes_root_view.documents")))
                     .font(.caption).padding(.horizontal)
             }
-            if !query.isEmpty {
+            if !query.isEmpty && section != .trash {
                 let incomplete = session.documents.filter { $0.deletedAt == nil && (($0.kind == .office && ($0.officeTextResourceID != $0.officeResourceID || $0.officeTextError != nil)) || $0.pages.contains { $0.textExtractionTruncated == true || ($0.needsVisualIndex && ($0.ocrSourceKey != $0.visualIndexKey || $0.ocrError != nil)) }) }.count
                 if incomplete > 0 { Text(FloeL10n.plural("notes.notes_root_view.documents_are_not_fully_indexed_yet", count: incomplete)).font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
             }
@@ -565,8 +565,14 @@ struct NotesRootView: View {
     }
 
     private var filtered: [NoteDocument] {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let recentOrder = Dictionary(uniqueKeysWithValues: session.recentDocumentIDs.enumerated().map { ($0.element, $0.offset) })
         return session.documents.filter { value in
+            if !search.isEmpty {
+                // Search across notebooks within either the library or Trash.
+                return (value.deletedAt != nil) == (section == .trash)
+                    && value.searchableText.localizedStandardContains(search)
+            }
             let matchesSection: Bool
             switch section {
             case .trash: matchesSection = value.deletedAt != nil
@@ -574,11 +580,6 @@ struct NotesRootView: View {
             case .favorites: matchesSection = value.deletedAt == nil && value.isFavorite
             case .recent: matchesSection = value.deletedAt == nil && recentOrder[value.id] != nil
             case .all: matchesSection = value.deletedAt == nil
-            }
-            let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !search.isEmpty {
-                // Global search must include documents outside Recently Opened or the current notebook.
-                return value.deletedAt == nil && value.searchableText.localizedStandardContains(search)
             }
             return matchesSection && (selectedBook == nil || value.notebookID == selectedBook)
         }.sorted { first, second in

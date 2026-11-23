@@ -36,7 +36,9 @@ final class DesignEntryStateCenter: ObservableObject {
     func refresh(conversationID: UUID, environment: AppEnvironment) async {
         let assessment = await derive(
             conversationID: conversationID, environment: environment)
-        presentations[conversationID] = assessment.presentation
+        if presentations[conversationID] != assessment.presentation {
+            presentations[conversationID] = assessment.presentation
+        }
     }
 
     func refreshAll(conversationIDs: [UUID], environment: AppEnvironment) async {
@@ -46,7 +48,9 @@ final class DesignEntryStateCenter: ObservableObject {
     }
 
     func clear(conversationID: UUID) {
-        presentations.removeValue(forKey: conversationID)
+        if presentations[conversationID] != nil {
+            presentations.removeValue(forKey: conversationID)
+        }
     }
 
     /// The shared derivation — pure inputs, testable through real stores.

@@ -311,9 +311,8 @@ final class HomeLaunchpadViewModel: ObservableObject {
         // Nil is a deliberate private-chat scope. Never inherit whatever
         // project happens to be open in another task or inspector.
 
-        var states: [UUID: String] = [:]
         var newestRun: (date: Date, modelID: UUID)?
-        // Ordinary rows and bound file assistants share one run-state pass.
+        // Ordinary rows and bound file assistants share one database read.
         // The projection splits them: bound conversations never render twice
         // in the task center, and running/failed file tasks stay globally
         // visible alongside the ordinary buckets.
@@ -321,10 +320,10 @@ final class HomeLaunchpadViewModel: ObservableObject {
         var seenIDs: Set<UUID> = []
         let records = (center.conversations + center.fileAssistantConversations + center.canvasAssistantConversations)
             .filter { seenIDs.insert($0.id).inserted }
+        let latestRuns = (try? await environment.runStore.latestRunSummaries(conversationIDs: records.map(\.id))) ?? [:]
+        let states = latestRuns.mapValues(\.state)
         for conversation in records {
-            let recent = (try? await environment.runStore.recentRuns(conversationID: conversation.id, limit: 1)) ?? []
-            guard let latest = recent.first else { continue }
-            states[conversation.id] = latest.state
+            guard let latest = latestRuns[conversation.id] else { continue }
             if let modelID = latest.modelID,
                newestRun == nil || latest.startedAt > newestRun!.date {
                 newestRun = (latest.startedAt, modelID)
