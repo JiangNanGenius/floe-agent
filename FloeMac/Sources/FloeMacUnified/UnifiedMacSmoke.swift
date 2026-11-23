@@ -118,6 +118,10 @@ final class UnifiedMacSmoke {
             await exerciseDeviceHistory(model)
             return
         }
+        if CommandLine.arguments.contains("--memory-only") {
+            await exerciseMemoryLibrary(model)
+            return
+        }
         if CommandLine.arguments.contains("--concurrent-drafts-only"), let endpoint = projectTaskFixtureEndpoint,
            endpoint.host == "127.0.0.1" {
             await exerciseConcurrentDrafts(model, endpoint: endpoint)
@@ -1213,6 +1217,44 @@ final class UnifiedMacSmoke {
         }
     }
 
+    private func exerciseMemoryLibrary(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model) else { finish(["ready": false]); return }
+        do {
+            let saved = try await agent.withMemoryLibrary { library in
+                try await library.save(content: "Fixture preference", scope: .userProfile,
+                                       pinned: false, forReview: true)
+                guard let pending = try await library.pendingReview().candidates.first else { return false }
+                try await library.resolveReview(id: pending.id, keep: true)
+                return try await library.list(scope: .userProfile, cursor: nil).entries.contains { $0.id == pending.id }
+            }
+            model.openSettings(.memories)
+            var shown = false
+            var pressed = false
+            var editor = false
+            let deadline = ContinuousClock.now + .seconds(4)
+            while ContinuousClock.now < deadline {
+                if let window = model.smokeAgentSettingsSheet, let content = window.contentView,
+                   let frame = MacMemorySettingsView.smokeAddFrame, !frame.isEmpty {
+                    shown = model.settingsPane == .memories
+                    capture(content, extension: "memory-settings.png")
+                    pressed = pressAccessibilityButton(content, id: "settings.memory.add")
+                        || clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: window)
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            while pressed, ContinuousClock.now < deadline {
+                editor = MacMemorySettingsView.smokeEditorMounted
+                if editor { break }
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            model.closeSettingsWindow()
+            finish(["savedInWorkbenchStore": saved, "memorySettingsShown": shown, "openedMemoryEditor": editor])
+        } catch {
+            finish(["memorySettingsShown": false])
+        }
+    }
+
     private func exerciseExtensionTools(_ model: BridgeAppModel, endpoint: URL) async {
         guard let agent = await readyFixtureWorkbench(model), let connector = agent.workbenchConnectors else {
             finish(["ready": false]); return
@@ -1697,6 +1739,21 @@ final class UnifiedMacSmoke {
         let terminals = items.indices.filter { if case .terminal = items[$0] { true } else { false } }
         let savedOrder = prompts.count == 1 && answers.count == 1 && terminals.count == 1
             && prompts[0] < answers[0] && answers[0] < terminals[0]
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let legacyQuestion = PersistedMessage(id: UUID(), conversationID: id, role: "user",
+                                              content: "Legacy question", createdAt: timestamp)
+        let legacyReply = PersistedMessage(id: UUID(), conversationID: id, role: "assistant",
+                                           content: "Legacy reply", createdAt: timestamp.addingTimeInterval(2))
+        let legacyRuns = [0.0, 1.0].map { offset in
+            RunRecord(id: UUID(), conversationID: id, state: "completed", goal: legacyQuestion.content,
+                      startedAt: timestamp.addingTimeInterval(offset), endedAt: timestamp.addingTimeInterval(3))
+        }
+        let legacy = ThreadTimelineBuilder.buildConversation(messages: [legacyQuestion, legacyReply], runs: legacyRuns,
+            eventsByRun: [:], liveRunID: nil, isRunning: false, liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
+        let legacyQuestions = legacy.filter { if case .userMessage(let message) = $0 { message.id == legacyQuestion.id } else { false } }
+        let legacyReplies = legacy.filter {
+            if case .assistantMessage(_, let suffix, _) = $0 { suffix == legacyReply.id.uuidString } else { false }
+        }
         let history: Bool
         if let pdf = try? writePDFTextAttachment() { history = await agent.verifyConversationHistorySmoke(reference: pdf) }
         else { history = false }
@@ -1719,7 +1776,8 @@ final class UnifiedMacSmoke {
                 return true
             }
         }
-        finish(["orderedSingleAnswer": savedOrder, "historyPagingAndExactSearch": history,
+        finish(["orderedSingleAnswer": savedOrder, "legacyRowsClaimedOnce": legacyQuestions.count == 1 && legacyReplies.count == 1,
+                "historyPagingAndExactSearch": history,
                 "openedEarlierMessageFromTaskCenter": foundEarlierMessage,
                 "approvalButtonsReached": pressed == [true, false],
                 "approvalRespected": approvals.allowed && approvals.denied,

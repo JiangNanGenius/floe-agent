@@ -145,7 +145,7 @@ private struct BridgeMenuView: View {
 @MainActor
 final class BridgeAppModel: ObservableObject {
     enum SettingsPane: String, CaseIterable {
-        case general, models, auxiliary, webSearch, skills, connectors, deviceSync, usage, permissions, diagnostics, bridge
+        case general, models, auxiliary, memories, webSearch, skills, connectors, deviceSync, usage, permissions, diagnostics, bridge
     }
 
     @Published var error: String?
@@ -787,6 +787,8 @@ private struct UnifiedMacSettingsView: View {
             }
         case .auxiliary:
             MacAuxiliaryModelsView(workspace: workspace)
+        case .memories:
+            MacMemorySettingsView(workspace: workspace)
         case .usage:
             UsageStatisticsView(loadStatistics: workspace.usageStatistics)
         case .webSearch:
@@ -920,6 +922,7 @@ private extension BridgeAppModel.SettingsPane {
         case .general: "General"
         case .models: "mac.settings.providerModels"
         case .auxiliary: "mac.aux.title"
+        case .memories: "mac.settings.memories"
         case .usage: "settings.section.usage"
         case .webSearch: "mac.settings.webSearch"
         case .skills: "mac.settings.skills"
@@ -936,6 +939,7 @@ private extension BridgeAppModel.SettingsPane {
         case .general: "通用 外观 默认模式 排队 引导 答案核验 自动检查更新 General appearance mode queue steer verify software updates"
         case .models: "供应商 服务商 账户 模型 模型配置 密钥 连接 生图 绘图 图片 视频生成 图像 模型 Provider Accounts Models API key endpoints image video generation"
         case .auxiliary: "辅助模型 通用辅助 视觉 推理 审批模型 Auxiliary Models vision reasoning reviewer"
+        case .memories: "记忆 个性化 用户偏好 Memories personalization profile"
         case .usage: "用量统计 模型 供应商 任务 Usage Statistics Tokens Models Providers"
         case .webSearch: "网页 联网 搜索 供应商 浏览器 Web Search Providers Brave Tavily Volcengine DeepSeek"
         case .skills: "技能 技能库 Skills Catalog"
@@ -952,6 +956,7 @@ private extension BridgeAppModel.SettingsPane {
         case .general: "gearshape"
         case .models: "antenna.radiowaves.left.and.right"
         case .auxiliary: "photo.badge.plus"
+        case .memories: "person.crop.circle.badge.checkmark"
         case .usage: "chart.bar"
         case .webSearch: "magnifyingglass"
         case .skills: "shippingbox"

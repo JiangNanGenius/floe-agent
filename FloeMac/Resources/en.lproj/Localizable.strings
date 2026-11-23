@@ -738,6 +738,7 @@
 "mac.settings.skills" = "Skills";
 "mac.settings.connectors" = "Connectors";
 "mac.settings.deviceSync" = "Device Sync";
+"mac.settings.memories" = "Memories & Personalization";
 "mac.settings.diagnostics" = "Diagnostics";
 "mac.settings.toolsUnavailable" = "Tools Unavailable";
 "mac.settings.appVersion" = "App version";

@@ -1,4 +1,5 @@
 "NSCameraUsageDescription" = "Floe uses the camera when you scan documents or codes, or use the magnifier.";
-"NSMicrophoneUsageDescription" = "Floe uses the microphone when you start the sound analyzer.";
+"NSMicrophoneUsageDescription" = "Floe uses the microphone when you start dictation, a voice conversation, or the sound analyzer.";
+"NSSpeechRecognitionUsageDescription" = "Floe uses speech recognition to turn your voice into text when you start dictation or a voice conversation.";
 "NSLocationUsageDescription" = "Floe uses your location when you choose to use the location tool.";
 "NSLocalNetworkUsageDescription" = "Floe uses your local network to discover services and sync selected conversations with your paired devices.";

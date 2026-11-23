@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 import FloeAgentRuntime
+import FloeCore
 import FloeModels
+import FloeSecurity
 import FloeTools
 import Foundation
 
@@ -14,6 +16,13 @@ struct MacTaskActionPreview {
     init?(_ call: ToolCall) {
         let decoder = JSONDecoder()
         switch call.toolName {
+        case MemoryRememberTool.name:
+            guard let args = try? decoder.decode(MemoryRememberTool.Arguments.self, from: call.argumentsJSON),
+                  !args.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  args.content.utf8.count <= 4_096, SecretRedactor.redact(args.content) == args.content else { return nil }
+            title = MacPermissionsText.t("保存记忆", "Save Memory")
+            detail = args.content
+            changesState = true
         case "image.generate", "video.generate", "video.status", "video.cancel":
             guard let fields = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
                   let json = try? JSONSerialization.data(withJSONObject: fields, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return nil }
@@ -75,5 +84,24 @@ struct MacTaskActionPreview {
         default:
             return nil
         }
+    }
+}
+
+struct MacMemoryApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
+    let base: any ApprovalPolicy
+
+    var policyName: String { base.policyName }
+
+    func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        if action.toolCall.toolName == MemoryRememberTool.name {
+            guard MacTaskActionPreview(action.toolCall) != nil else { return .deny(reason: "Invalid memory content") }
+            return .escalateToHuman(reason: "Saving durable memory requires explicit approval")
+        }
+        return try await base.decide(action)
+    }
+
+    func requiresModelReview(_ action: ProposedAction) -> Bool {
+        guard action.toolCall.toolName != MemoryRememberTool.name else { return false }
+        return (base as? any ApprovalReviewRouting)?.requiresModelReview(action) ?? false
     }
 }

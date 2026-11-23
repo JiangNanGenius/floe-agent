@@ -231,7 +231,7 @@ private struct MacProjectApprovalContext {
             primaryIsOnDevice: primaryIsOnDevice, isOffline: networkStatus.isOffline)
         let files = grants.wrapping(taskPolicy, workspaceID: workspaceID, conversationID: conversationID,
                                    workspaceRoot: root, authorizationIdentities: identities)
-        return MacNativeCommandPolicy(mode: mode, base: files)
+        return MacMemoryApprovalPolicy(base: MacNativeCommandPolicy(mode: mode, base: files))
     }
 }
 
@@ -316,6 +316,8 @@ final class HostAgentWorkspace: ObservableObject {
     @Published private var liveRuns: [UUID: LiveRun] = [:]
     #if !FLOE_UNIFIED_MAC
     private var newDraftRunID: UUID?
+    #else
+    private var voiceTurns: [UUID: UUID] = [:]
     #endif
     private var liveSnapshotVersions: [UUID: Int] = [:]
 
@@ -2237,6 +2239,55 @@ final class HostAgentWorkspace: ObservableObject {
         return try await runtime.installedSkillStore()
     }
 
+    func withMemoryLibrary<T: Sendable>(_ operation: (FloeMacMemoryLibrary) async throws -> T) async throws -> T {
+        guard let runtime, isReady, !isTerminating else { throw CocoaError(.userCancelled) }
+        let release = try admitWork()
+        defer { release() }
+        let library = try await runtime.memoryLibrary()
+        return try await operation(library)
+    }
+
+    func runVoiceTurn(_ text: String, owner: UUID) async throws -> String {
+        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isReady, !isTerminating, !isSending, !isLoadingHistory, !historyLoadFailed, !isAcceptingPlan,
+              !prompt.isEmpty, attachmentOwnerID == owner, voiceTurns[owner] == nil,
+              queuedInputs[owner]?.isEmpty != false, let runtime, let provider = try configuration() else {
+            throw CocoaError(.featureUnsupported)
+        }
+        let project = selectedID == nil ? selectedWorkspaceID : nil
+        let token = UUID()
+        let answer: String = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled, attachmentOwnerID == owner else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                voiceTurns[owner] = token
+                let launched = beginSend(prompt, runtime: runtime, provider: provider.binding(), workspaceID: project,
+                                         mode: .chat, onVoiceReply: { [weak self] reply in
+                    guard let self, self.voiceTurns.removeValue(forKey: owner) == token,
+                          self.attachmentOwnerID == owner else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    if let reply { continuation.resume(returning: reply) }
+                    else { continuation.resume(throwing: CocoaError(.featureUnsupported)) }
+                })
+                if !launched {
+                    voiceTurns.removeValue(forKey: owner)
+                    continuation.resume(throwing: CocoaError(.featureUnsupported))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard self?.voiceTurns[owner] == token else { return }
+                self?.stopTask(owner)
+            }
+        }
+        try Task.checkCancellation()
+        return answer
+    }
+
     func deviceHistoryOffers(shared: Set<UUID>? = nil) -> [DeviceHistoryOffer] {
         guard isReady, !isTerminating else { return [] }
         return conversations.compactMap { task in
@@ -2334,7 +2385,8 @@ final class HostAgentWorkspace: ObservableObject {
                             automaticGoal: (predecessor: UUID, goal: ConversationGoal)? = nil,
                             queuedAttachments: [HostAgentAttachmentDraft] = [],
                             scheduled: ScheduledRun? = nil,
-                            onAdmitted: (() -> Void)? = nil) -> Bool {
+                            onAdmitted: (() -> Void)? = nil,
+                            onVoiceReply: ((String?) -> Void)? = nil) -> Bool {
         #if FLOE_UNIFIED_MAC
         let auxRoutes = auxiliaryRoutes(for: provider)
         let titleHelper = auxiliaryText(for: provider)
@@ -2395,7 +2447,7 @@ final class HostAgentWorkspace: ObservableObject {
             showsModelSettingsForFailure = false
             #endif
         }
-        let drafts = continuingFromHistory || resumingGoal || acceptedPlan != nil || automaticGoal != nil || scheduled != nil ? []
+        let drafts = onVoiceReply != nil || continuingFromHistory || resumingGoal || acceptedPlan != nil || automaticGoal != nil || scheduled != nil ? []
             : (queued != nil ? queuedAttachments : stagedAttachments)
         // Bind delegation to the same durable run as plan execution, queued
         // input, or a manually started round.
@@ -2410,6 +2462,7 @@ final class HostAgentWorkspace: ObservableObject {
         Task {
             var admitted = false
             var finishedNormally = false
+            var voiceAnswer: String?
             #if FLOE_UNIFIED_MAC
             var nextGoalRound: (predecessor: UUID, goal: ConversationGoal)?
             #endif
@@ -2419,6 +2472,7 @@ final class HostAgentWorkspace: ObservableObject {
                 #endif
                 liveSnapshotVersions.removeValue(forKey: taskID)
                 liveRuns.removeValue(forKey: taskID)
+                onVoiceReply?(voiceAnswer)
                 #if FLOE_UNIFIED_MAC
                 shellOutputByConversation.removeValue(forKey: taskID)
                 if (finishedNormally && queuedInputs[taskID]?.isEmpty == false) || (queued != nil && !admitted) {
@@ -2522,12 +2576,15 @@ final class HostAgentWorkspace: ObservableObject {
                     if !readOnly, mode != .chat {
                         extensionTools.append(contentsOf: workbenchConnectors?.publishedTools ?? [])
                     }
+                    let memory = try await runtime.memoryLibrary()
                     let binding = try MacAgentWorkspaceTools.binding(workspace: toolWorkspace,
                         privateTaskRootBase: personalTaskLeaseBase, runOutputArtifactRoot: runOutputArtifactRoot, readOnly: readOnly,
                         chatOnly: mode == .chat, taskPolicy: taskPolicy, delegationRegistry: delegationRegistry,
                         search: webSearch.access, conversations: conversations, imageTools: images, videoTools: videoTools,
                         browserTools: { root in self.makeTaskBrowserTools?(taskID, root) ?? [] },
                         extensionTools: extensionTools,
+                        memoryTools: memory.tools(conversationID: taskID,
+                            workspaceID: toolWorkspace.kind == .project ? toolWorkspace.id : nil, allowWrites: !readOnly),
                         observeShellOutput: { [weak self] update in await self?.receiveShellOutput(update) }
                     ) { root, identities in
                         let context = MacProjectApprovalContext(grants: grants, workspaceID: toolWorkspace.id,
@@ -2667,7 +2724,7 @@ final class HostAgentWorkspace: ObservableObject {
                     catch { if selectedID == taskID { notice = String(localized: "mac.agent.queueUnavailable") } }
                     await refreshQueue(taskID)
                 }
-                if !continuingFromHistory { saveTaskMode(mode, for: taskID) }
+                if !continuingFromHistory, onVoiceReply == nil { saveTaskMode(mode, for: taskID) }
                 if currentID == nil, hasOriginSelection { draftMode = nil; draftApprovalMode = nil }
                 #endif
                 if !drafts.isEmpty,
@@ -2759,6 +2816,9 @@ final class HostAgentWorkspace: ObservableObject {
                 }
                 let terminal = await handle.waitForTerminal()
                 finishedNormally = terminal?.confirmed == true && terminal?.outcome == .completed && liveRuns[taskID]?.stopping != true
+                if onVoiceReply != nil, finishedNormally, let terminal {
+                    voiceAnswer = try? await runtime.voiceFinalAnswer(terminal)
+                }
                 #if FLOE_UNIFIED_MAC
                 endTaskBrowserRun?(handle.identity.runID)
                 if let scheduled {

@@ -247,6 +247,7 @@ public enum MacAgentWorkspaceTools {
         imageTools: MacTaskImageTools? = nil, videoTools: [AnyAgentTool] = [],
         browserTools: ((URL) -> [AnyAgentTool])? = nil,
         extensionTools: [AnyAgentTool] = [],
+        memoryTools: [AnyAgentTool] = [],
         observeShellOutput: (@Sendable (MacShellOutputUpdate) async -> Void)? = nil,
         approvalPolicy: ((URL, [String: String]) -> any ApprovalPolicy)? = nil
     ) throws -> FloeMacSelfToolBinding {
@@ -273,7 +274,7 @@ public enum MacAgentWorkspaceTools {
             conversations: chatOnly ? nil : conversations,
             imageTools: imageTools, videoTools: videoTools,
             browserTools: readOnly || chatOnly ? [] : browserTools?(root) ?? [],
-            extensionTools: chatOnly ? [] : extensionTools,
+            extensionTools: memoryTools + (chatOnly ? [] : extensionTools),
             observeShellOutput: observeShellOutput
         )
         let taskReadTools = Set(baseExecutor.allDescriptors.filter { ConversationToolAccess.plan.allows($0) }.map(\.name))

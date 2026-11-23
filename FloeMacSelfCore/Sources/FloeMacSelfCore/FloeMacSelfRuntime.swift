@@ -1034,6 +1034,8 @@ public actor FloeMacSelfRuntime {
                         _ = try? await stores.runs.appendEvent(runID: id, kind: .status, payloadJSON: decision.payloadJSON())
                     })
             } else { serviceAdapter = documentAdapter }
+            let personalization = SQLitePersonalizationStore(database: database)
+            let personalizationWorkspaceID = prepared.workspace.kind == .project ? prepared.workspace.id : nil
             let service = ConversationRunService(
                 configuration: configuration,
                 adapter: serviceAdapter,
@@ -1060,7 +1062,8 @@ public actor FloeMacSelfRuntime {
                 ]),
                 conversationHistory: conversationHistory,
                 currentUserImages: needsVision ? [] : currentUserImages,
-                runContext: runContext
+                runContext: runContext,
+                personalizationProvider: { try await personalization.liveSnapshot(workspaceID: personalizationWorkspaceID) }
             )
 
             // The durable prepared CAS happens before any process object can
@@ -3185,6 +3188,25 @@ public actor FloeMacSelfRuntime {
         try ensureOpen()
         try requireAuthority()
         return SQLiteSkillStore(database: database)
+    }
+
+    public func memoryLibrary() throws -> FloeMacMemoryLibrary {
+        try ensureOpen()
+        try requireAuthority()
+        let stores = try requireStores()
+        return FloeMacMemoryLibrary(entries: stores.intelligence, runs: stores.runs,
+                                    documents: SQLitePersonalizationStore(database: database))
+    }
+
+    public func voiceFinalAnswer(_ receipt: FloeMacSelfTerminalReceipt) async throws -> String? {
+        try ensureOpen()
+        try requireAuthority()
+        guard receipt.confirmed, receipt.finalMessageVerified, receipt.outcome == .completed,
+              let id = receipt.finalMessageID else { return nil }
+        let message = try await requireStores().conversations.message(id: id, conversationID: receipt.conversationID)
+        guard let message, message.runID == receipt.runID, message.role == "assistant" else { return nil }
+        let answer = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return answer.isEmpty ? nil : answer
     }
 
     public func deviceHistory(conversationID: UUID) async throws -> DeviceConversationHistory {

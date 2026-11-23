@@ -424,6 +424,10 @@ enum ThreadTimelineBuilder {
                 unboundAssistantMessages.append(message)
             }
         }
+        // A legacy row without a run ID may fit more than one run's time
+        // window. Give it a single owner before rendering the next run.
+        let legacyIDs = Set((unboundUserMessages + unboundAssistantMessages).map(\.id))
+        var claimedLegacyIDs = Set<UUID>()
         let blocks = sortedRuns.map { run -> (startedAt: Date, rows: [ThreadTimelineItem]) in
             let isLive = run.id == liveRunID && isRunning
             var rows: [ThreadTimelineItem] = []
@@ -432,8 +436,10 @@ enum ThreadTimelineBuilder {
             }
             let runItems = build(
                 messagesForRun: boundByRun[run.id, default: []],
-                unboundUserMessages: unboundUserMessages,
-                unboundAssistantMessages: unboundAssistantMessages,
+                unboundUserMessages: claimedLegacyIDs.isEmpty ? unboundUserMessages
+                    : unboundUserMessages.filter { !claimedLegacyIDs.contains($0.id) },
+                unboundAssistantMessages: claimedLegacyIDs.isEmpty ? unboundAssistantMessages
+                    : unboundAssistantMessages.filter { !claimedLegacyIDs.contains($0.id) },
                 events: eventsByRun[run.id, default: []],
                 run: run,
                 isRunning: isLive,
@@ -445,6 +451,17 @@ enum ThreadTimelineBuilder {
                 pendingApprovals: pendingApprovals.filter { $0.runID == run.id },
                 payloadCache: payloadCache
             )
+            if !legacyIDs.isEmpty {
+                for item in runItems {
+                    switch item {
+                    case .userMessage(let message) where legacyIDs.contains(message.id):
+                        claimedLegacyIDs.insert(message.id)
+                    case .assistantMessage(_, let suffix, _):
+                        if let id = UUID(uuidString: suffix), legacyIDs.contains(id) { claimedLegacyIDs.insert(id) }
+                    default: break
+                    }
+                }
+            }
             rows += runItems.map { item in
                 if run.id != liveRunID, case .stepGroup(let events, _) = item {
                     return .stepGroup(events: events, isLatest: false)

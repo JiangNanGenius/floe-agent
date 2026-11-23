@@ -16,7 +16,8 @@
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSCameraUsageDescription</key><string>Floe uses the camera when you scan documents or codes, or use the magnifier.</string>
-<key>NSMicrophoneUsageDescription</key><string>Floe uses the microphone when you start the sound analyzer.</string>
+<key>NSMicrophoneUsageDescription</key><string>Floe uses the microphone when you start dictation, a voice conversation, or the sound analyzer.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Floe uses speech recognition to turn your voice into text when you start dictation or a voice conversation.</string>
 <key>NSLocationUsageDescription</key><string>Floe uses your location when you choose to use the location tool.</string>
 <key>NSLocalNetworkUsageDescription</key><string>Floe uses your local network to discover services and sync selected conversations with your paired devices.</string>
 <key>NSBonjourServices</key><array>

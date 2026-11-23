@@ -878,6 +878,31 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
+    /// A library edit must not overwrite a concurrent model update or bring
+    /// back a deleted memory. Keep the original provenance and evidence.
+    public func editMemory(_ original: MemoryEntry, content: String, pinned: Bool) async throws {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = text.lowercased()
+        guard !text.isEmpty, text.utf8.count <= 4_096, !Self.looksLikeSecret(normalized) else {
+            throw FloeError.validationFailed("Invalid memory content")
+        }
+        try await database.writer { db in
+            let id = original.id.uuidString
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM memory_entries WHERE id = ?", arguments: [id]),
+                  try Self.memory(row) == original else {
+                throw FloeError.validationFailed("Memory changed; reload it before saving")
+            }
+            guard text != original.content || pinned != original.isPinned else { return }
+            try db.execute(sql: """
+                UPDATE memory_entries SET content = ?, normalized_content = ?, is_pinned = ?, updated_at = ?
+                WHERE id = ?
+                """, arguments: [text, normalized, pinned, Self.date(Date()), id])
+            if text != original.content {
+                try db.execute(sql: "DELETE FROM memory_embeddings WHERE memory_id = ?", arguments: [id])
+            }
+        }
+    }
+
     /// Shared transaction body: pending review can commit activation and its
     /// compare-and-swap status change without an intervening eviction writer.
     static func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference], in db: Database) throws {
