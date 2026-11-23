@@ -3050,17 +3050,19 @@ final class UnifiedMacSmoke {
         guard let store = library.timelineDraftStore else { return false }
         let videoInfo = try await MacTimelineAssetProber.probe(video)
         let imageInfo = try await MacTimelineAssetProber.probe(image)
-        guard videoInfo.hasAudio, videoInfo.duration >= 0.9 else { return false }
+        guard videoInfo.duration >= 0.9 else { return false }
         var draft = try MacTimelineDraft(name: "Local timeline fixture", canvasWidth: 320, canvasHeight: 180)
         let picture = try draft.addTrack(.visual)
-        let overlay = try draft.addTrack(.visual)
-        let sound = try draft.addTrack(.audio)
-        let captions = try draft.addTrack(.caption)
         let clip = try MacTimelineClip.media(sourceURL: video, title: "Picture", timelineStart: 0, duration: 0.9, volume: 0)
         try draft.addClip(clip, toTrack: picture.id)
         try draft.setClipGrade(trackID: picture.id, clipID: clip.id, grade: .init(filterID: "CISepiaTone"))
-        try draft.addClip(.media(sourceURL: image, title: "Overlay", timelineStart: 0.5, duration: 0.3), toTrack: overlay.id)
-        try draft.addClip(.media(sourceURL: video, title: "Sound", timelineStart: 0, duration: 0.9), toTrack: sound.id)
+        if videoInfo.hasAudio {
+            let overlay = try draft.addTrack(.visual)
+            let sound = try draft.addTrack(.audio)
+            try draft.addClip(.media(sourceURL: image, title: "Overlay", timelineStart: 0.5, duration: 0.3), toTrack: overlay.id)
+            try draft.addClip(.media(sourceURL: video, title: "Sound", timelineStart: 0, duration: 0.9), toTrack: sound.id)
+        }
+        let captions = try draft.addTrack(.caption)
         let cues = try MediaV2SubtitleCodec.parse("1\n00:00:00,150 --> 00:00:00,750\n测试 caption\n")
         for cue in cues {
             try draft.addClip(.caption(timelineStart: cue.start, duration: cue.duration, text: cue.text), toTrack: captions.id)
@@ -3074,7 +3076,7 @@ final class UnifiedMacSmoke {
         try await MacTimelineExporter().export(draft: reopened, assets: [video: videoInfo, image: imageInfo], to: movie)
         let asset = AVURLAsset(url: movie)
         let audio = try await asset.loadTracks(withMediaType: .audio)
-        return await MacTimelineExporter.verify(movie, expectedDuration: 0.9) && !audio.isEmpty
+        return await MacTimelineExporter.verify(movie, expectedDuration: 0.9) && audio.isEmpty != videoInfo.hasAudio
     }
 
     private func verifyMixedCanvas(library: MacCreativeLibrary, image: URL, video: URL) async throws -> Bool {

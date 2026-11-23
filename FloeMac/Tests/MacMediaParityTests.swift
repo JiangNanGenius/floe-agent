@@ -142,8 +142,10 @@ final class MacMediaParityTests: XCTestCase {
         let isoDecoder = JSONDecoder()
         isoDecoder.dateDecodingStrategy = .iso8601
         let isoRestored = try isoDecoder.decode(MacTimelineDraft.self, from: isoBytes)
+        // ISO8601 keeps whole seconds only, so a sub-second fraction is
+        // truncated by up to a second in either direction.
         XCTAssertEqual(isoRestored.createdAt.timeIntervalSinceReferenceDate,
-                       draft.createdAt.timeIntervalSinceReferenceDate, accuracy: 0.5)
+                       draft.createdAt.timeIntervalSinceReferenceDate, accuracy: 1.0)
 
         // Unknown fields are rejected, never silently dropped.
         var object = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
@@ -254,7 +256,9 @@ final class MacMediaParityTests: XCTestCase {
         let sourceBytes = try Self.renderedBytes(solid, context: context)
         let liftedBytes = try Self.renderedBytes(try lifted.apply(to: solid), context: context)
         XCTAssertNotEqual(sourceBytes, liftedBytes)
-        XCTAssertGreaterThan(liftedBytes.reduce(0, +), sourceBytes.reduce(0, +))
+        // Sum in Int: a UInt8 accumulator traps on overflow.
+        XCTAssertGreaterThan(liftedBytes.reduce(0) { $0 + Int($1) },
+                             sourceBytes.reduce(0) { $0 + Int($1) })
     }
 
     func testHSLAndLUTBaking() throws {

@@ -235,8 +235,10 @@ enum MacTimelineCompositionBuilder {
         var insertedAnyVideo = false
 
         for track in draft.tracks where track.kind == .visual && !track.isMuted {
-            guard let compositionTrack = composition.addMutableTrack(
-                withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+            // Lazily created on the first movie insert: an empty video
+            // track breaks the export pipeline the same way an empty audio
+            // track does, and image-only tracks never need one.
+            var compositionTrack: AVMutableCompositionTrack? = nil
             for clip in track.clips where !clip.isMuted {
                 guard let url = clip.sourceURL, let info = assets[url] else { continue }
                 if info.isVisualMovie {
@@ -244,6 +246,13 @@ enum MacTimelineCompositionBuilder {
                     let sourceTrack = try await asset.loadTracks(withMediaType: .video).first
                     guard let sourceTrack else {
                         throw MacTimelineExportError.unsupportedSource(url.lastPathComponent)
+                    }
+                    if compositionTrack == nil {
+                        compositionTrack = composition.addMutableTrack(
+                            withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                    }
+                    guard let compositionTrack else {
+                        throw MacTimelineExportError.exporterUnavailable
                     }
                     do {
                         try compositionTrack.insertTimeRange(
@@ -276,49 +285,37 @@ enum MacTimelineCompositionBuilder {
         guard insertedAnyVideo else { throw MacTimelineExportError.emptyTimeline }
 
         // Audio: audio tracks, plus clip audio from unmuted visual clips.
+        // Composition tracks are created lazily on the first successful
+        // insert: an EMPTY audio track makes the export pipeline fail with
+        // "operation not supported for this media" (OSStatus -16976), which
+        // would break image-only or audio-less timelines.
         var audioMixParams: [AVMutableAudioMixInputParameters] = []
-        for track in draft.tracks where !track.isMuted {
-            switch track.kind {
-            case .audio:
-                guard let compositionTrack = composition.addMutableTrack(
-                    withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
-                var inserted = false
-                for clip in track.clips where !clip.isMuted {
-                    guard let url = clip.sourceURL, let info = assets[url], info.hasAudio || info.isVisualMovie else { continue }
-                    let asset = AVURLAsset(url: url)
-                    guard let sourceTrack = try? await asset.loadTracks(withMediaType: .audio).first else { continue }
-                    do {
-                        try compositionTrack.insertTimeRange(
-                            cmRange(clip.sourceRange), of: sourceTrack, at: cmTime(clip.timelineRange.start))
-                        inserted = true
-                    } catch { continue }
+        for track in draft.tracks where track.kind != .caption && !track.isMuted && track.volume > 0 {
+            var compositionTrack: AVMutableCompositionTrack?
+            var inputParameters: AVMutableAudioMixInputParameters?
+            for clip in track.clips where !clip.isMuted && clip.volume > 0 {
+                guard let url = clip.sourceURL, assets[url]?.hasAudio == true else { continue }
+                let asset = AVURLAsset(url: url)
+                guard let sourceTrack = try? await asset.loadTracks(withMediaType: .audio).first else { continue }
+                if compositionTrack == nil {
+                    compositionTrack = composition.addMutableTrack(
+                        withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
                 }
-                if inserted {
-                    let params = AVMutableAudioMixInputParameters(track: compositionTrack)
-                    params.setVolume(Float(track.volume), at: .zero)
-                    audioMixParams.append(params)
+                guard let compositionTrack else { break }
+                let start = cmTime(clip.timelineRange.start)
+                do {
+                    try compositionTrack.insertTimeRange(cmRange(clip.sourceRange), of: sourceTrack, at: start)
+                } catch {
+                    continue
                 }
-            case .visual:
-                guard let compositionTrack = composition.addMutableTrack(
-                    withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
-                var inserted = false
-                for clip in track.clips where !clip.isMuted {
-                    guard let url = clip.sourceURL, let info = assets[url], info.hasAudio else { continue }
-                    let asset = AVURLAsset(url: url)
-                    guard let sourceTrack = try? await asset.loadTracks(withMediaType: .audio).first else { continue }
-                    do {
-                        try compositionTrack.insertTimeRange(
-                            cmRange(clip.sourceRange), of: sourceTrack, at: cmTime(clip.timelineRange.start))
-                        inserted = true
-                    } catch { continue }
-                }
-                if inserted {
-                    let params = AVMutableAudioMixInputParameters(track: compositionTrack)
-                    params.setVolume(Float(track.volume), at: .zero)
-                    audioMixParams.append(params)
-                }
-            case .caption:
-                continue
+                let parameters = inputParameters ?? AVMutableAudioMixInputParameters(track: compositionTrack)
+                parameters.setVolume(Float(track.volume * clip.volume), at: start)
+                inputParameters = parameters
+            }
+            if let inputParameters {
+                audioMixParams.append(inputParameters)
+            } else if let compositionTrack {
+                composition.removeTrack(compositionTrack)
             }
         }
 
