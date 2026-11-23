@@ -11,6 +11,7 @@
 // rebound to the currently opened workspace root.
 
 #if canImport(SwiftUI) && canImport(UIKit)
+import Darwin
 import Foundation
 import SwiftUI
 import FloeCore
@@ -446,11 +447,18 @@ final class WorkspaceCenter: ObservableObject {
         )
         let managedRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
             .resolvingSymlinksInPath().appendingPathComponent("PrivateTasks", isDirectory: true).standardizedFileURL
-        guard managedRoot.resolvingSymlinksInPath() == managedRoot else {
+        // Foundation can spell the system data directory as /var or
+        // /private/var. Check each owned leaf without following links.
+        func isDirectoryOrMissing(_ url: URL) -> Bool {
+            var entry = stat()
+            if lstat(url.path, &entry) == 0 { return entry.st_mode & S_IFMT == S_IFDIR }
+            return errno == ENOENT
+        }
+        guard isDirectoryOrMissing(managedRoot) else {
             throw FloeError.validationFailed("Invalid private workspace root")
         }
         let target = managedRoot.appendingPathComponent(String(components[1]), isDirectory: true)
-        guard target.resolvingSymlinksInPath().deletingLastPathComponent() == managedRoot else {
+        guard isDirectoryOrMissing(target) else {
             throw FloeError.validationFailed("Invalid private workspace path")
         }
         return target

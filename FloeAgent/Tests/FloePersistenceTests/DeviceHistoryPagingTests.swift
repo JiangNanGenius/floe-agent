@@ -43,19 +43,22 @@ struct DeviceHistoryPagingTests {
         try await db.migrate()
         let store = SQLiteConversationStore(database: db)
         let owner = UUID(), message = UUID(), toolMessage = UUID(), attachment = UUID()
-        let time = Date(timeIntervalSince1970: 200)
+        let time = Date(timeIntervalSince1970: 200.1234567)
         let digest = String(repeating: "a", count: 64)
         let record = DeviceConversationHistory.Attachment(id: attachment, kind: "document",
             displayName: "report.txt", uti: "public.plain-text", byteCount: 14, sha256: digest, createdAt: time)
         let content = DeviceConversationHistory.Message(id: message, role: "user", content: "See report", createdAt: time,
-            parts: [.init(id: UUID(), index: 0, kind: .attachment, attachmentID: attachment, createdAt: time)])
+            parts: [
+                .init(id: UUID(), index: 0, kind: .text, text: "See report", createdAt: time),
+                .init(id: UUID(), index: 1, kind: .attachment, attachmentID: attachment, createdAt: time),
+            ])
         let answer = DeviceConversationHistory.Message(id: toolMessage, role: "assistant", content: "Read", createdAt: time,
             parts: [.init(id: UUID(), index: 0, kind: .tool, text: "Read the report", toolName: "workspace.readFile",
                           toolStatus: "ok", createdAt: time)])
         let archive = DeviceConversationHistory(id: owner, title: "Shared", createdAt: time, updatedAt: time,
             messages: [content, answer], attachments: [record], version: 2)
         _ = try await store.importDeviceHistory(try DeviceConversationHistory(data: archive.encoded()))
-        #expect(try await store.parts(messageID: message).isEmpty)
+        #expect(try await store.parts(messageID: message).map(\.kind) == [.text])
         #expect(try await store.parts(messageID: toolMessage).first?.metadata["deviceHistory.tool"] == "workspace.readFile")
         #expect(try await store.attachment(id: attachment)?.storage == AttachmentRef.Storage.none)
 
@@ -72,12 +75,12 @@ struct DeviceHistoryPagingTests {
 
         #expect(try await store.restoreDeviceHistoryAttachment(conversationID: owner, attachmentID: attachment,
             messageID: message, digest: digest, relativePath: "verified.txt"))
-        #expect(try await store.parts(messageID: message).map(\.attachmentID) == [attachment])
+        #expect(try await store.parts(messageID: message).compactMap(\.attachmentID) == [attachment])
         let legacy = try await store.deviceHistory(conversationID: owner)
-        #expect(legacy.version == 1 && legacy.messages.allSatisfy { $0.parts.isEmpty })
+        #expect(legacy.version == 1 && legacy.messages.flatMap(\.parts).map(\.kind) == [.text])
         #expect(try await store.importDeviceHistory(legacy).addedMessages == 0)
         #expect(try await store.importDeviceHistory(archive).addedMessages == 0)
-        #expect(try await store.parts(messageID: message).count == 1)
+        #expect(try await store.parts(messageID: message).count == 2)
     }
 
     @Test("A history above the old limit resumes after reopening and sends only new commits")

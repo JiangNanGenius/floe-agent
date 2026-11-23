@@ -890,17 +890,19 @@ public actor SQLiteConversationStore: ConversationStore {
                 _ = try SQLiteWorkspaceStore.ensureWorkspace(conversationID: history.id, title: history.title, db: db)
             }
             let attachments = Dictionary(uniqueKeysWithValues: history.attachments.map { ($0.id, $0) })
+            let timestamps = PersistenceCodec.fractionalDateFormatter()
             var added = 0
             for message in history.messages {
                 if let row = try Row.fetchOne(db, sql: "SELECT * FROM messages WHERE id = ?",
                                               arguments: [message.id.uuidString]) {
                     let storedParts = try Self.fetchParts(messageID: message.id, db: db)
-                    let current = try Self.portableDeviceV1Message(row, id: message.id, parts: storedParts)
+                    let current = try Self.portableDeviceV1Message(row, id: message.id, parts: storedParts,
+                                                                  timestamps: timestamps)
                     // Conflict detection stays on the portable text projection
                     // so a v1 import followed by a v2 re-send merges instead of
                     // conflicting; only real content edits abort the page.
                     guard (row["conversation_id"] as String) == conversationID,
-                          current == Self.deviceV1Projection(message) else {
+                          current == (try Self.deviceV1Projection(message, timestamps: timestamps)) else {
                         throw DeviceConversationHistoryError.messageConflict(message.id)
                     }
                     if history.version >= 2 {
@@ -913,7 +915,7 @@ public actor SQLiteConversationStore: ConversationStore {
                     INSERT INTO messages (id, conversation_id, role, content, created_at)
                     VALUES (?, ?, ?, ?, ?)
                     """, arguments: [message.id.uuidString, conversationID, message.role, message.content,
-                                      PersistenceCodec.encode(message.createdAt)])
+                                      timestamps.string(from: message.createdAt)])
                 try Self.recordImportedAttachments(for: message, records: attachments, conversationID: history.id, db: db)
                 for part in message.parts {
                     guard let devicePart = try Self.importedDevicePart(part, history: history,
@@ -925,7 +927,7 @@ public actor SQLiteConversationStore: ConversationStore {
                 added += 1
             }
             if added > 0 {
-                let updatedAt = PersistenceCodec.encode(history.updatedAt)
+                let updatedAt = timestamps.string(from: history.updatedAt)
                 try db.execute(sql: "UPDATE conversations SET updated_at = MAX(updated_at, ?) WHERE id = ?",
                                arguments: [updatedAt, conversationID])
             }
@@ -1128,7 +1130,7 @@ public actor SQLiteConversationStore: ConversationStore {
     /// archive versions so a v1 import and a later v2 re-send of the same
     /// message compare equal and merge.
     private static func portableDeviceV1Message(
-        _ row: Row, id: UUID, parts: [MessagePart]
+        _ row: Row, id: UUID, parts: [MessagePart], timestamps: ISO8601DateFormatter
     ) throws -> DeviceConversationHistory.Message {
         guard UUID(uuidString: row["conversation_id"]) != nil else {
             throw DeviceConversationHistoryError.invalidHistory
@@ -1139,16 +1141,23 @@ public actor SQLiteConversationStore: ConversationStore {
                          text: SecretRedactor.redact(text), createdAt: $0.createdAt)
         }
         return .init(id: id, role: row["role"], content: SecretRedactor.redact(row["content"]),
-                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: safeParts)
+                     createdAt: try PersistenceCodec.decodeDate(row["created_at"], fractional: timestamps), parts: safeParts)
     }
 
-    private static func deviceV1Projection(_ message: DeviceConversationHistory.Message) -> DeviceConversationHistory.Message {
-        let textParts = message.parts.filter { $0.kind == .text }.map {
-            DeviceConversationHistory.Part(id: $0.id, index: $0.index, kind: .text,
-                                           text: $0.text, createdAt: $0.createdAt)
+    private static func deviceV1Projection(
+        _ message: DeviceConversationHistory.Message, timestamps: ISO8601DateFormatter
+    ) throws -> DeviceConversationHistory.Message {
+        // The wire may carry sub-millisecond dates, but the database records
+        // milliseconds. Compare against exactly what a first import stores.
+        func storedDate(_ date: Date) throws -> Date {
+            try PersistenceCodec.decodeDate(timestamps.string(from: date), fractional: timestamps)
         }
-        return .init(id: message.id, role: message.role, content: message.content,
-                     createdAt: message.createdAt, parts: textParts)
+        let textParts = try message.parts.filter { $0.kind == .text }.map {
+            try DeviceConversationHistory.Part(id: $0.id, index: $0.index, kind: .text,
+                                               text: $0.text, createdAt: storedDate($0.createdAt))
+        }
+        return try .init(id: message.id, role: message.role, content: message.content,
+                         createdAt: storedDate(message.createdAt), parts: textParts)
     }
 
     /// Binds an imported part to the native message_parts row. Attachment

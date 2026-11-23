@@ -3398,14 +3398,15 @@ struct BrowserTaskSessionTests {
         center?.bind(to: ownerA)
         let sessionA = try #require(center?.session(for: ownerA))
         let registry = makeRegistry(center!)
+        let contextB = context(for: ownerB)
         let baseA = URL(string: "https://restore.fixture/task-a")!
         let a1 = try #require(sessionA.activeTabID)
         try await load(fixturePage("alpha"), at: baseA, tab: a1, in: sessionA, registry: registry, context: context(for: ownerA))
-        _ = try await run(registry, "browser.tabs", "{}", as: context(for: ownerB))
+        _ = try await run(registry, "browser.tabs", "{}", as: contextB)
         let sessionB = try #require(center?.session(for: ownerB))
         let baseB = URL(string: "https://restore.fixture/task-b")!
         let b1 = try #require(sessionB.activeTabID)
-        try await load(fixturePage("beta"), at: baseB, tab: b1, in: sessionB, registry: registry, context: context(for: ownerB))
+        try await load(fixturePage("beta"), at: baseB, tab: b1, in: sessionB, registry: registry, context: contextB)
         center?.flushBrowserSnapshots()
         let persisted = try JSONDecoder().decode(
             [BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL)
