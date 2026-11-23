@@ -82,6 +82,15 @@ public enum DeviceConversationHistoryError: Error, Equatable, Sendable {
     case invalidHistory
     case conversationUnavailable
     case messageConflict(UUID)
+    case cursorExpired
+}
+
+/// A bounded, independently importable text archive and its sender position.
+public struct DeviceConversationHistoryPage: Sendable {
+    public let archive: Data
+    public let nextCursor: String?
+    public let through: Int64
+    public let hasMore: Bool
 }
 
 public struct DeviceConversationImport: Sendable, Equatable {

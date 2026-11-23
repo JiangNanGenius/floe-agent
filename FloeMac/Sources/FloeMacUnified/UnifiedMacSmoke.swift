@@ -121,8 +121,13 @@ final class UnifiedMacSmoke {
             await exerciseTaskTerminals(model)
             return
         }
-        if CommandLine.arguments.contains("--device-history-only") {
-            await exerciseDeviceHistory(model)
+        let pagedHistoryPair = CommandLine.arguments.contains("--device-history-paged-pair-only")
+        if CommandLine.arguments.contains("--device-history-only") || pagedHistoryPair {
+            await exerciseDeviceHistory(model, usePagedPeer: pagedHistoryPair)
+            return
+        }
+        if CommandLine.arguments.contains("--device-history-resume-only") {
+            await exerciseDeviceHistoryResume(model)
             return
         }
         if CommandLine.arguments.contains("--memory-only") {
@@ -1165,13 +1170,90 @@ final class UnifiedMacSmoke {
         }
     }
 
-    private func exerciseDeviceHistory(_ model: BridgeAppModel) async {
+    private actor DeviceHistoryFixturePages {
+        let store: SQLiteConversationStore
+        var failAfterFirstPage: Bool
+        private(set) var startingCursors: [String?] = []
+
+        init(store: SQLiteConversationStore, failAfterFirstPage: Bool = false) {
+            self.store = store
+            self.failAfterFirstPage = failAfterFirstPage
+        }
+
+        func export(id: UUID, after: String?, through: Int64?) async throws -> DeviceHistoryPage {
+            if through == nil {
+                startingCursors.append(after)
+            } else if failAfterFirstPage {
+                failAfterFirstPage = false
+                throw DeviceHistorySyncError.disconnected
+            }
+            let page = try await store.deviceHistoryPage(conversationID: id, after: after, through: through)
+            return .init(archive: page.archive, nextCursor: page.nextCursor, through: page.through, hasMore: page.hasMore)
+        }
+    }
+
+    private func deviceHistoryFixturePeer(store: SQLiteConversationStore, pages: DeviceHistoryFixturePages? = nil) -> DeviceHistorySyncCenter {
+        func parse(_ id: UUID, _ data: Data) throws -> DeviceConversationHistory {
+            let history = try DeviceConversationHistory(data: data)
+            guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
+            return history
+        }
+
+        let exportPage: (@Sendable (UUID, String?, Int64?) async throws -> DeviceHistoryPage)?
+        let destination: DeviceHistoryPageDestination?
+        if let pages {
+            exportPage = { id, after, through in try await pages.export(id: id, after: after, through: through) }
+            destination = .init(cursor: { peerID, id in
+                try await store.deviceHistoryCursor(from: peerID, conversationID: id)
+            }, commit: { peerID, id, data, nextCursor in
+                try await store.importDeviceHistory(parse(id, data), sourcePeerID: peerID, nextCursor: nextCursor).addedMessages
+            })
+        } else {
+            exportPage = nil
+            destination = nil
+        }
+
+        let file = root.appendingPathComponent("remote-identity")
+        return DeviceHistorySyncCenter(
+            settingsURL: root.appendingPathComponent("remote-settings.json"),
+            identityStorage: .init(load: { try? Data(contentsOf: file) }, save: { try $0.write(to: file, options: .atomic) }),
+            source: .init(list: { shared in
+                try await store.conversations().filter { shared.contains($0.id) }
+                    .map { DeviceHistoryOffer(id: $0.id, title: $0.title) }
+            }, export: { try await store.deviceHistory(conversationID: $0).encoded() }, exportPage: exportPage),
+            localTasks: {
+                try await store.conversations().map { DeviceHistoryOffer(id: $0.id, title: $0.title) }
+            },
+            importHistory: { id, data in
+                try await store.importDeviceHistory(parse(id, data)).addedMessages
+            },
+            pagedHistory: destination)
+    }
+
+    private func pairDeviceHistoryFixtures(_ center: DeviceHistorySyncCenter, _ peer: DeviceHistorySyncCenter)
+        async throws -> (mac: DeviceHistoryPairingTicket, peer: DeviceHistoryPairingTicket) {
+        await center.activate()
+        await center.setEnabled(true)
+        await peer.activate()
+        await peer.setEnabled(true)
+        guard let localCode = center.pairingCode, let remoteCode = peer.pairingCode else {
+            throw DeviceHistorySyncError.unavailable
+        }
+        let local = try DeviceHistoryPairingTicket(code: localCode)
+        let remote = try DeviceHistoryPairingTicket(code: remoteCode)
+        await center.pair(remote, named: "Remote fixture")
+        await peer.pair(local, named: "Native Mac fixture")
+        return (local, remote)
+    }
+
+    private func exerciseDeviceHistory(_ model: BridgeAppModel, usePagedPeer: Bool) async {
         guard let agent = await readyFixtureWorkbench(model), let center = agent.deviceHistorySync else {
-            finish(["ready": false]); return
+            finish(["ready": false, "storage": model.macWorkspace?.agent?.storageErrorKind ?? ""]); return
         }
         let defaultsOff = !center.enabled
         let remoteID = UUID()
         let remoteMessage = UUID()
+        var remotePeer: DeviceHistorySyncCenter?
         do {
             let remoteDatabase = try DatabaseManager.inMemory()
             try await remoteDatabase.migrate()
@@ -1181,34 +1263,13 @@ final class UnifiedMacSmoke {
                 .init(id: remoteID, title: "Paired device fixture", createdAt: date, updatedAt: date))
             try await store.appendMessage(.init(id: remoteMessage, conversationID: remoteID, role: "user",
                                                content: "Arrived from the other device.", createdAt: date))
-            let file = root.appendingPathComponent("remote-identity")
-            let offer = DeviceHistoryOffer(id: remoteID, title: "Paired device fixture")
-            let remote = DeviceHistorySyncCenter(
-                settingsURL: root.appendingPathComponent("remote-settings.json"),
-                identityStorage: .init(load: { try? Data(contentsOf: file) }, save: { try $0.write(to: file, options: .atomic) }),
-                source: .init(list: { _ in [offer] }, export: { try await store.deviceHistory(conversationID: $0).encoded() }),
-                localTasks: { [offer] },
-                importHistory: { id, data in
-                    let history = try DeviceConversationHistory(data: data)
-                    guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
-                    return try await store.importDeviceHistory(history).addedMessages
-                }
-            )
+            let pages = usePagedPeer ? DeviceHistoryFixturePages(store: store) : nil
+            let remote = deviceHistoryFixturePeer(store: store, pages: pages)
+            remotePeer = remote
             guard await agent.verifyChatSmoke(), let localID = agent.selectedID else {
                 finish(["fixtureSaved": false]); return
             }
-            await center.activate()
-            await center.setEnabled(true)
-            await remote.activate()
-            await remote.setEnabled(true)
-            guard let localCode = center.pairingCode, let remoteCode = remote.pairingCode else {
-                await center.pause(); await remote.pause()
-                finish(["identities": false]); return
-            }
-            let localTicket = try DeviceHistoryPairingTicket(code: localCode)
-            let remoteTicket = try DeviceHistoryPairingTicket(code: remoteCode)
-            await center.pair(remoteTicket, named: "Remote fixture")
-            await remote.pair(localTicket, named: "Native Mac fixture")
+            let (localTicket, remoteTicket) = try await pairDeviceHistoryFixtures(center, remote)
             await center.share(localID, with: remoteTicket.id, enabled: true)
             await remote.share(remoteID, with: localTicket.id, enabled: true)
 
@@ -1219,6 +1280,29 @@ final class UnifiedMacSmoke {
             let duplicate = center.status == .received(0)
             await remote.receive(localID, from: localTicket.id)
             let otherReadBack = try await store.messages(conversationID: localID).contains { $0.content == "Synthetic persisted reply." }
+
+            await agent.select(localID)
+            let retainedWorkspace = agent.selectedConversationWorkspace?.id
+            let appendedOnMac = await agent.verifyChatSmoke(reply: "Mac follow-up reply.", followUp: "Mac follow-up.")
+            let peerAppend = UUID()
+            try await store.appendMessage(.init(id: peerAppend, conversationID: localID, role: "user",
+                                               content: "Peer appended to the same task.", createdAt: Date()))
+            await remote.share(localID, with: localTicket.id, enabled: true)
+            await center.receive(localID, from: remoteTicket.id)
+            let selectedTranscriptUpdated = center.status == .received(1)
+                && agent.selectedID == localID && agent.messages.contains { $0.id == peerAppend }
+            await remote.receive(localID, from: localTicket.id)
+            let peerImportedMacTurn = remote.status == .received(2)
+            await remote.receive(localID, from: localTicket.id)
+            await center.receive(localID, from: remoteTicket.id)
+            let appendReplayWasIdempotent = remote.status == .received(0) && center.status == .received(0)
+            let macCursor = try await agent.receivedDeviceHistoryCursor(from: remoteTicket.id, conversationID: localID)
+            let peerCursor = try await store.deviceHistoryCursor(from: localTicket.id, conversationID: localID)
+            let correctWireMode = usePagedPeer ? macCursor != nil && peerCursor != nil : macCursor == nil && peerCursor == nil
+            let peerMessages = try await store.messages(conversationID: localID)
+            let expectedMessages = Set(peerMessages.map(\.id))
+            let converged = appendedOnMac && peerImportedMacTurn && expectedMessages.count == 5
+                && Set(agent.messages.map(\.id)) == expectedMessages
 
             model.openSettings(.deviceSync)
             let deadline = ContinuousClock.now + .seconds(4)
@@ -1235,15 +1319,122 @@ final class UnifiedMacSmoke {
             await center.pause()
             await center.activate()
             let reconnected = await remote.remoteConversations(from: localTicket.id)?.contains { $0.id == localID } == true
+            await center.share(localID, with: remoteTicket.id, enabled: false)
+            let stillPaired = center.peers.contains { $0.id == remoteTicket.id }
+            let noOffer = await remote.remoteConversations(from: localTicket.id)?.contains { $0.id == localID } == false
+            await remote.receive(localID, from: localTicket.id)
+            let shareRevokedWhilePaired = stillPaired && noOffer && remote.status == .noLongerShared
+            await agent.select(nil)
+            await agent.select(localID)
+            let peerKeptHistory = try await store.messages(conversationID: localID)
+            let reopenedAfterRevoke = agent.selectedID == localID && retainedWorkspace != nil
+                && agent.selectedConversationWorkspace?.id == retainedWorkspace
+                && Set(agent.messages.map(\.id)) == expectedMessages
+                && Set(peerKeptHistory.map(\.id)) == expectedMessages
             await center.remove(remoteTicket.id)
             let revoked = await remote.remoteConversations(from: localTicket.id) == nil
             await center.pause()
             await remote.pause()
             finish(["defaultOff": defaultsOff, "nativeReadBack": nativeReadBack, "reverseReadBack": otherReadBack,
                     "repeatedImport": duplicate, "settingsShown": settingsShown, "revocation": revoked,
+                    "correctWireMode": correctWireMode,
+                    "sameConversationConverged": converged, "selectedTranscriptUpdated": selectedTranscriptUpdated,
+                    "appendReplayWasIdempotent": appendReplayWasIdempotent, "shareRevokedWhilePaired": shareRevokedWhilePaired,
+                    "reopenedAfterRevoke": reopenedAfterRevoke,
                     "reconnectedWithoutPairingAgain": reconnected])
         } catch {
             await center.pause()
+            await remotePeer?.pause()
+            finish(["finished": false, "error": String(describing: type(of: error))])
+        }
+    }
+
+    private func exerciseDeviceHistoryResume(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let center = agent.deviceHistorySync else {
+            finish(["ready": false, "storage": model.macWorkspace?.agent?.storageErrorKind ?? ""]); return
+        }
+        let id = UUID()
+        let before = Date(timeIntervalSince1970: 1_790_000_000)
+        let count = DeviceConversationHistory.maximumMessages + 1
+        var remotePeer: DeviceHistorySyncCenter?
+        do {
+            let database = try DatabaseManager.inMemory()
+            try await database.migrate()
+            let store = SQLiteConversationStore(database: database)
+            try await store.saveConversationWithCanonicalWorkspace(
+                .init(id: id, title: "Long paired history", createdAt: before, updatedAt: before))
+            var ids: [UUID] = []
+            for index in 0..<count {
+                let messageID = UUID()
+                try await store.appendMessage(.init(id: messageID, conversationID: id, role: "user",
+                    content: "Synthetic history message \(index)", createdAt: before.addingTimeInterval(Double(index))))
+                ids.append(messageID)
+            }
+            let pages = DeviceHistoryFixturePages(store: store, failAfterFirstPage: true)
+            let remote = deviceHistoryFixturePeer(store: store, pages: pages)
+            remotePeer = remote
+            let (local, peer) = try await pairDeviceHistoryFixtures(center, remote)
+            await remote.share(id, with: local.id, enabled: true)
+            await center.receive(id, from: peer.id)
+            let interrupted = center.status
+            guard case .interrupted(let firstCount) = interrupted, firstCount > 0, firstCount < count,
+                  let firstCursor = try await agent.receivedDeviceHistoryCursor(from: peer.id, conversationID: id) else {
+                await center.pause(); await remote.pause()
+                finish(["interruptedAfterCommit": false, "status": String(describing: interrupted)])
+                return
+            }
+            await agent.select(id)
+            let partialReadBack = agent.selectedID == id && !agent.messages.isEmpty
+            let workspaceID = agent.selectedConversationWorkspace?.id
+            guard try await model.switchToBridge(), let reopened = await readyFixtureWorkbench(model),
+                  let resumedCenter = reopened.deviceHistorySync, reopened !== agent else {
+                await remote.pause()
+                finish(["databaseReopened": false, "storage": model.macWorkspace?.agent?.storageErrorKind ?? ""])
+                return
+            }
+            let savedCursor = try await reopened.receivedDeviceHistoryCursor(from: peer.id, conversationID: id)
+            await reopened.select(id)
+            await resumedCenter.activate()
+            let ready = ContinuousClock.now + .seconds(6)
+            while resumedCenter.pairingCode == nil && ContinuousClock.now < ready {
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            await resumedCenter.receive(id, from: peer.id)
+            let resumeCountMatches = resumedCenter.status == .received(count - firstCount)
+            let starts = await pages.startingCursors
+            let resumedFromCursor = starts.count == 2 && starts[0] == nil && starts[1] == firstCursor
+            let lastCursor = try await reopened.receivedDeviceHistoryCursor(from: peer.id, conversationID: id)
+            let result = try await reopened.transcript(conversationID: id)
+            let fullReadBack = result.map(\.id) == ids && reopened.messages.last?.id == ids.last
+
+            let lateID = UUID()
+            try await store.appendMessage(.init(id: lateID, conversationID: id, role: "assistant",
+                content: "Appended after the cursor with an earlier timestamp.", createdAt: before.addingTimeInterval(-1)))
+            await resumedCenter.receive(id, from: peer.id)
+            let receivedOnlyAppend = resumedCenter.status == .received(1)
+            let afterAppend = try await reopened.transcript(conversationID: id)
+            await resumedCenter.receive(id, from: peer.id)
+            let repeatedAppend = resumedCenter.status == .received(0)
+
+            await remote.share(id, with: local.id, enabled: false)
+            await resumedCenter.receive(id, from: peer.id)
+            let revoked = resumedCenter.status == .noLongerShared
+            await reopened.select(nil)
+            await reopened.select(id)
+            let afterReopen = try await reopened.transcript(conversationID: id)
+            let keptAfterRevoke = workspaceID != nil && reopened.selectedConversationWorkspace?.id == workspaceID
+                && afterReopen.map(\.id) == afterAppend.map(\.id)
+            await resumedCenter.pause()
+            await remote.pause()
+            finish(["interruptedAfterCommit": true, "partialReadBack": partialReadBack, "resumedFromCursor": resumedFromCursor,
+                    "cursorSurvivedDatabaseReopen": savedCursor == firstCursor,
+                    "fullReadBack": fullReadBack, "resumedMessageCount": resumeCountMatches,
+                    "cursorAdvanced": lastCursor != nil && lastCursor != firstCursor, "receivedOnlyAppend": receivedOnlyAppend,
+                    "earlierTimestampReadBack": afterAppend.count == count + 1 && afterAppend.first?.id == lateID,
+                    "repeatedAppend": repeatedAppend, "revoked": revoked, "keptAfterRevoke": keptAfterRevoke])
+        } catch {
+            await model.macWorkspace?.agent?.deviceHistorySync?.pause()
+            await remotePeer?.pause()
             finish(["finished": false, "error": String(describing: type(of: error))])
         }
     }

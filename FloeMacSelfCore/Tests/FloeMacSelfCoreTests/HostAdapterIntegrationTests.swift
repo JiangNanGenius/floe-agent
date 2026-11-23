@@ -33,7 +33,7 @@ struct HostAdapterIntegrationTests {
                 provenance: try makeHostProvenance(databaseURL: databaseURL)
             )
             let receipt = try await runtime.bootstrap()
-            #expect(receipt.schemaVersion == 67)
+            #expect(receipt.schemaVersion == 68)
             let messages = try await runtime.conversationMessages(conversationID: conversationID)
             #expect(messages.map(\.id) == [messageID])
             #expect(messages.first?.content == "Saved before the update.")
@@ -103,7 +103,7 @@ struct HostAdapterIntegrationTests {
 
             let runtime = try FloeMacSelfRuntime(databaseURL: file, owner: .init(displayName: "ParityFixture"),
                                                   provenance: try makeHostProvenance(databaseURL: file))
-            #expect(try await runtime.bootstrap().schemaVersion == 67)
+            #expect(try await runtime.bootstrap().schemaVersion == 68)
             let messages = try await runtime.conversationMessages(conversationID: conversationID)
             #expect(messages.first?.id == messageID)
             #expect(messages.first?.content == "Saved before the update.")
@@ -241,7 +241,7 @@ struct HostAdapterIntegrationTests {
                 )
                 let error = await selfCoreError { _ = try await runtime.bootstrap() }
                 if futureVersion {
-                    #expect(error == .schemaMismatch(expected: 67, actual: 999))
+                    #expect(error == .schemaMismatch(expected: 68, actual: 999))
                 } else {
                     #expect(error == .authoritySchemaUnsupported("unknown_migration"))
                 }
@@ -253,7 +253,7 @@ struct HostAdapterIntegrationTests {
                     let admission = try db.tableExists("floe_mac_self_admission")
                     return (version, future, admission)
                 }
-                #expect(observed.0 == (futureVersion ? 999 : 67))
+                #expect(observed.0 == (futureVersion ? 999 : 68))
                 #expect(observed.1 == (futureVersion ? 0 : 1))
                 #expect(!observed.2)
                 try await reopened.close()

@@ -3215,10 +3215,24 @@ public actor FloeMacSelfRuntime {
         return try await requireStores().conversations.deviceHistory(conversationID: conversationID)
     }
 
-    public func importDeviceHistory(_ history: DeviceConversationHistory) async throws -> DeviceConversationImport {
+    public func deviceHistoryPage(conversationID: UUID, after: String?, through: Int64?) async throws -> DeviceConversationHistoryPage {
         try ensureOpen()
         try requireAuthority()
-        return try await requireStores().conversations.importDeviceHistory(history)
+        return try await requireStores().conversations.deviceHistoryPage(conversationID: conversationID, after: after, through: through)
+    }
+
+    public func deviceHistoryCursor(from peerID: String, conversationID: UUID) async throws -> String? {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().conversations.deviceHistoryCursor(from: peerID, conversationID: conversationID)
+    }
+
+    public func importDeviceHistory(
+        _ history: DeviceConversationHistory, sourcePeerID: String? = nil, nextCursor: String? = nil
+    ) async throws -> DeviceConversationImport {
+        try ensureOpen()
+        try requireAuthority()
+        return try await requireStores().conversations.importDeviceHistory(history, sourcePeerID: sourcePeerID, nextCursor: nextCursor)
     }
 
     public func isCompletedScheduleRun(_ id: UUID) async throws -> Bool {

@@ -739,6 +739,7 @@
 "mac.settings.skills" = "技能";
 "mac.settings.connectors" = "连接器";
 "mac.settings.deviceSync" = "设备同步";
+"mac.deviceSync.readBackFailed" = "会话已接收。请重开 Floe 刷新会话。";
 "mac.settings.memories" = "记忆与个性化";
 "mac.settings.diagnostics" = "诊断";
 "mac.settings.toolsUnavailable" = "工具暂不可用";

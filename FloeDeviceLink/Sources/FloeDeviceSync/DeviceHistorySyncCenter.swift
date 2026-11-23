@@ -14,6 +14,19 @@ public struct DeviceHistoryIdentityStorage: Sendable {
     }
 }
 
+/// Both endpoints are supplied together by a store that commits each page
+/// and its checkpoint in the same transaction.
+public struct DeviceHistoryPageDestination: Sendable {
+    let cursor: @MainActor @Sendable (String, UUID) async throws -> String?
+    let commit: @MainActor @Sendable (String, UUID, Data, String?) async throws -> Int
+
+    public init(cursor: @escaping @MainActor @Sendable (String, UUID) async throws -> String?,
+                commit: @escaping @MainActor @Sendable (String, UUID, Data, String?) async throws -> Int) {
+        self.cursor = cursor
+        self.commit = commit
+    }
+}
+
 public struct DeviceHistoryPeer: Codable, Identifiable, Sendable, Equatable {
     public var id: String { address.endpointID }
     public var name: String
@@ -69,7 +82,14 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     }
 
     public enum Status: Equatable {
-        case idle, ready, unableToStart, transferFailed, conflict, incompatibleVersion, received(Int)
+        case idle, ready, unableToStart, transferFailed, conflict, incompatibleVersion
+        case noLongerShared, tooLarge, interrupted(Int), cancelled(Int), received(Int)
+    }
+
+    public struct ReceiveProgress: Equatable {
+        public let peerID: String
+        public fileprivate(set) var committedPages = 0
+        public fileprivate(set) var addedMessages = 0
     }
 
     @Published private var settings = Settings()
@@ -77,6 +97,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     @Published public private(set) var busy = false
     @Published public private(set) var pairingCode: String?
     @Published public private(set) var fingerprint: String?
+    @Published public private(set) var receiveProgress: ReceiveProgress?
 
     public var enabled: Bool { settings.enabled }
     public var usesPublicRelay: Bool { settings.usesPublicRelay }
@@ -88,7 +109,10 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     private let source: DeviceHistorySource
     private let localTasks: @MainActor () async throws -> [DeviceHistoryOffer]
     private let importHistory: @MainActor (UUID, Data) async throws -> Int
+    private let pagedHistory: DeviceHistoryPageDestination?
+    private let didImport: @MainActor (UUID) async -> Void
     private var service: DeviceHistorySync?
+    private var receiveTask: Task<Void, Never>?
     private var loadFailed = false
     private var running = false
     private var activationPending = false
@@ -96,12 +120,16 @@ public final class DeviceHistorySyncCenter: ObservableObject {
 
     public init(settingsURL: URL, identityStorage: DeviceHistoryIdentityStorage, source: DeviceHistorySource,
                 localTasks: @escaping @MainActor () async throws -> [DeviceHistoryOffer],
-                importHistory: @escaping @MainActor (UUID, Data) async throws -> Int) {
+                importHistory: @escaping @MainActor (UUID, Data) async throws -> Int,
+                pagedHistory: DeviceHistoryPageDestination? = nil,
+                didImport: @escaping @MainActor (UUID) async -> Void = { _ in }) {
         self.settingsURL = settingsURL
         self.identityStorage = identityStorage
         self.source = source
         self.localTasks = localTasks
         self.importHistory = importHistory
+        self.pagedHistory = pagedHistory
+        self.didImport = didImport
         do {
             let data = try Data(contentsOf: settingsURL)
             settings = try JSONDecoder().decode(Settings.self, from: data)
@@ -130,6 +158,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         running = false
         activationPending = false
         revision += 1
+        receiveTask?.cancel()
         let previous = service
         service = nil
         pairingCode = nil
@@ -247,15 +276,73 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     public func receive(_ taskID: UUID, from peerID: String) async {
         guard !busy, let service, let peer = peers.first(where: { $0.id == peerID }) else { return }
         busy = true
-        defer { finishWork() }
+        receiveProgress = ReceiveProgress(peerID: peerID)
         let revision = revision
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.pullHistory(taskID, from: peer, service: service, revision: revision)
+        }
+        receiveTask = task
+        await task.value
+    }
+
+    public func cancelReceive() {
+        receiveTask?.cancel()
+    }
+
+    private func pullHistory(_ taskID: UUID, from peer: DeviceHistoryPeer,
+                             service: DeviceHistorySync, revision: Int) async {
+        defer {
+            receiveTask = nil
+            receiveProgress = nil
+            finishWork()
+        }
+        var outcome: Status
         do {
-            let data = try await service.history(taskID, from: peer.address)
-            guard revision == self.revision else { return }
-            let count = try await importHistory(taskID, data)
-            if revision == self.revision { status = .received(count) }
+            if let pagedHistory {
+                let cursor = try await pagedHistory.cursor(peer.id, taskID)
+                try await service.transferHistory(taskID, from: peer.address, after: cursor) { [weak self] delivery in
+                    guard let self else { throw CancellationError() }
+                    try await self.commit(delivery, conversationID: taskID, peerID: peer.id, revision: revision)
+                }
+            } else {
+                let data = try await service.history(taskID, from: peer.address)
+                try await commit(.archive(data), conversationID: taskID, peerID: peer.id, revision: revision)
+            }
+            outcome = .received(receiveProgress?.addedMessages ?? 0)
+        } catch is CancellationError {
+            outcome = .cancelled(receiveProgress?.addedMessages ?? 0)
         } catch {
-            if revision == self.revision { status = Self.failureStatus(error) }
+            outcome = Self.failureStatus(error)
+            if outcome == .transferFailed, let progress = receiveProgress, progress.committedPages > 0 {
+                outcome = .interrupted(progress.addedMessages)
+            }
+        }
+        if let progress = receiveProgress, progress.committedPages > 0 {
+            // Deliver the already committed rows even if the wire task was cancelled.
+            await Task { await didImport(taskID) }.value
+        }
+        if revision == self.revision { status = outcome }
+    }
+
+    private func commit(_ delivery: DeviceHistoryDelivery, conversationID: UUID,
+                        peerID: String, revision: Int) async throws {
+        try Task.checkCancellation()
+        guard self.revision == revision, enabled, peers.contains(where: { $0.id == peerID }) else {
+            throw CancellationError()
+        }
+        let added: Int
+        switch delivery {
+        case .archive(let data):
+            added = try await importHistory(conversationID, data)
+        case .page(let data, let nextCursor):
+            guard let pagedHistory else { throw DeviceHistorySyncError.unsupportedVersion }
+            added = try await pagedHistory.commit(peerID, conversationID, data, nextCursor)
+        }
+        if var progress = receiveProgress {
+            progress.addedMessages += added
+            progress.committedPages += 1
+            receiveProgress = progress
         }
     }
 
@@ -263,6 +350,8 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         switch error {
         case DeviceHistorySyncError.conflict: .conflict
         case DeviceHistorySyncError.unsupportedVersion: .incompatibleVersion
+        case DeviceHistorySyncError.notShared: .noLongerShared
+        case DeviceHistorySyncError.tooLarge: .tooLarge
         default: .transferFailed
         }
     }

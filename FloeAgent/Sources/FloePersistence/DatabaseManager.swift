@@ -133,7 +133,7 @@ public actor DatabaseManager {
     /// v56 adds durable task-bound user questions; v57 adds the trusted
     /// conversation origin used by scheduled-task presentation; v59 adds the
     /// generic per-skill configuration store.
-    public static let currentSchemaVersion = 66
+    public static let currentSchemaVersion = 68
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -221,6 +221,7 @@ public actor DatabaseManager {
         V65TaskWorkspaceCleanupScope.register(into: &migrator)
         V66FileApprovalGrants.register(into: &migrator)
         V67SessionSchemaAlignment.register(into: &migrator)
+        V68DeviceHistoryPaging.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

@@ -193,11 +193,24 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                     }, export: { [weak workspace] id in
                         guard let workspace else { throw CocoaError(.userCancelled) }
                         return try await workspace.exportDeviceHistory(id)
+                    }, exportPage: { [weak workspace] id, after, through in
+                        guard let workspace else { throw CocoaError(.userCancelled) }
+                        return try await workspace.exportDeviceHistoryPage(id, after: after, through: through)
                     }),
                     localTasks: { [weak workspace] in workspace?.deviceHistoryOffers() ?? [] },
                     importHistory: { [weak workspace] id, data in
                         guard let workspace else { throw CocoaError(.userCancelled) }
                         return try await workspace.receiveDeviceHistory(id, data)
+                    },
+                    pagedHistory: .init(cursor: { [weak workspace] peerID, id in
+                        guard let workspace else { throw CocoaError(.userCancelled) }
+                        return try await workspace.receivedDeviceHistoryCursor(from: peerID, conversationID: id)
+                    }, commit: { [weak workspace] peerID, id, data, nextCursor in
+                        guard let workspace else { throw CocoaError(.userCancelled) }
+                        return try await workspace.receiveDeviceHistory(id, data, from: peerID, nextCursor: nextCursor)
+                    }),
+                    didImport: { [weak workspace] id in
+                        await workspace?.refreshReceivedDeviceHistory(id)
                     }
                 )
                 workspace.deviceHistorySync = sync

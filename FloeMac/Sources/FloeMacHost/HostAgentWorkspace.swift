@@ -2464,10 +2464,34 @@ final class HostAgentWorkspace: ObservableObject {
     func exportDeviceHistory(_ id: UUID) async throws -> Data {
         guard isReady, !isTerminating, let runtime, let release = admit() else { throw CocoaError(.userCancelled) }
         defer { release() }
-        return try await runtime.deviceHistory(conversationID: id).encoded()
+        do {
+            return try await runtime.deviceHistory(conversationID: id).encoded()
+        } catch DeviceConversationHistoryError.sizeLimit {
+            throw DeviceHistorySyncError.tooLarge
+        }
     }
 
-    func receiveDeviceHistory(_ id: UUID, _ data: Data) async throws -> Int {
+    func exportDeviceHistoryPage(_ id: UUID, after: String?, through: Int64?) async throws -> DeviceHistoryPage {
+        guard isReady, !isTerminating, let runtime, let release = admit() else { throw CocoaError(.userCancelled) }
+        defer { release() }
+        do {
+            let page = try await runtime.deviceHistoryPage(conversationID: id, after: after, through: through)
+            return .init(archive: page.archive, nextCursor: page.nextCursor, through: page.through, hasMore: page.hasMore)
+        } catch DeviceConversationHistoryError.sizeLimit {
+            throw DeviceHistorySyncError.tooLarge
+        } catch DeviceConversationHistoryError.cursorExpired {
+            throw DeviceHistorySyncError.cursorExpired
+        }
+    }
+
+    func receivedDeviceHistoryCursor(from peerID: String, conversationID id: UUID) async throws -> String? {
+        guard isReady, !isTerminating, let runtime, liveRuns[id] == nil,
+              !changingTasks.contains(id), let release = admit() else { throw DeviceHistorySyncError.busy }
+        defer { release() }
+        return try await runtime.deviceHistoryCursor(from: peerID, conversationID: id)
+    }
+
+    func receiveDeviceHistory(_ id: UUID, _ data: Data, from peerID: String? = nil, nextCursor: String? = nil) async throws -> Int {
         guard isReady, !isTerminating, let runtime, liveRuns[id] == nil,
               !changingTasks.contains(id), let release = admit() else {
             throw DeviceHistorySyncError.busy
@@ -2480,15 +2504,31 @@ final class HostAgentWorkspace: ObservableObject {
         let history = try DeviceConversationHistory(data: data)
         guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
         do {
-            let result = try await runtime.importDeviceHistory(history)
-            try await reloadConversations(using: runtime)
-            if selectedID == id, result.addedMessages > 0 {
-                try await refreshTranscript(for: id, runtime: runtime)
-            }
+            try Task.checkCancellation()
+            let result = try await runtime.importDeviceHistory(history, sourcePeerID: peerID, nextCursor: nextCursor)
             return result.addedMessages
         } catch DeviceConversationHistoryError.messageConflict {
             throw DeviceHistorySyncError.conflict
         }
+    }
+
+    func refreshReceivedDeviceHistory(_ id: UUID) async {
+        // A cancelled transfer can still have committed pages to show.
+        await Task { @MainActor [weak self] in
+            guard let self, isReady, !isTerminating, let runtime, let release = admit() else { return }
+            defer { release() }
+            let selection = historySelection
+            do {
+                try await reloadConversations(using: runtime)
+                if selectedID == id, historySelection == selection, liveRuns[id] == nil {
+                    try await refreshTranscript(for: id, runtime: runtime)
+                }
+            } catch {
+                if !isTerminating, historySelection == selection {
+                    notice = String(localized: "mac.deviceSync.readBackFailed")
+                }
+            }
+        }.value
     }
 
     private static func skillTools(for service: MacWorkbenchSkillsService, allowsNetwork: Bool) -> [AnyAgentTool] {
@@ -4624,11 +4664,14 @@ final class HostAgentWorkspace: ObservableObject {
 
     // Used only by the packaged App smoke command with its temporary
     // database and Keychain disabled. The adapter never creates a request.
-    func verifyChatSmoke(reply: String = "Synthetic persisted reply.", admissionIsClosedToInstall: () -> Bool = { true }) async -> Bool {
-        guard vault == nil, isReady, let runtime, !isSending, selectedID == nil,
+    func verifyChatSmoke(reply: String = "Synthetic persisted reply.", followUp: String? = nil,
+                         admissionIsClosedToInstall: () -> Bool = { true }) async -> Bool {
+        let initialOwner = selectedID
+        guard vault == nil, isReady, let runtime, !isSending, (followUp == nil) == (initialOwner == nil),
               let config = try? HostAgentProvider(endpoint: "https://example.invalid/v1",
                   protocolKind: .openAIChatCompletions, modelID: "mac-smoke", apiKey: "") else { return false }
-        guard beginSend("Synthetic Mac chat", runtime: runtime,
+        let prompt = followUp ?? "Synthetic Mac chat"
+        guard beginSend(prompt, runtime: runtime,
                   provider: .init(provider: config.profile, model: config.model,
                                   adapter: SmokeChatAdapter(reply: reply), credentials: .init())) else { return false }
         let heldAdmission = admissionIsClosedToInstall()
@@ -4636,11 +4679,15 @@ final class HostAgentWorkspace: ObservableObject {
         while isSending && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        guard !isSending, notice == nil, let conversationID = selectedID,
-              messages.map(\.role) == ["user", "assistant"],
-              conversations.first(where: { $0.id == conversationID })?.title == "Synthetic Mac chat" else { return false }
+        guard !isSending, notice == nil, let conversationID = selectedID else { return false }
+        if let initialOwner {
+            guard conversationID == initialOwner, messages.suffix(2).map(\.role) == ["user", "assistant"] else { return false }
+        } else {
+            guard messages.map(\.role) == ["user", "assistant"],
+                  conversations.first(where: { $0.id == conversationID })?.title == prompt else { return false }
+        }
         await select(conversationID)
-        return heldAdmission && messages.map(\.content) == ["Synthetic Mac chat", reply]
+        return heldAdmission && messages.suffix(2).map(\.content) == [prompt, reply]
     }
 
     #if FLOE_UNIFIED_MAC
