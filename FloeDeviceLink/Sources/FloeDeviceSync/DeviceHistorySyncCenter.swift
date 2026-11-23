@@ -32,6 +32,11 @@ public struct DeviceHistoryPeer: Codable, Identifiable, Sendable, Equatable {
     public var name: String
     let address: FloeDeviceLinkAddress
     public var sharedConversations: Set<UUID>
+    var workspaceScopes: [UUID: String]? = nil
+
+    public func sharesWorkspace(for conversationID: UUID) -> Bool {
+        sharedConversations.contains(conversationID) && workspaceScopes?[conversationID] != nil
+    }
 }
 
 public struct DeviceHistoryPairingTicket: Codable, Sendable, Identifiable {
@@ -83,7 +88,14 @@ public final class DeviceHistorySyncCenter: ObservableObject {
 
     public enum Status: Equatable {
         case idle, ready, unableToStart, transferFailed, conflict, incompatibleVersion
-        case noLongerShared, tooLarge, interrupted(Int), cancelled(Int), received(Int)
+        case noLongerShared, tooLarge, workspaceBusy, workspaceUnavailable
+        case interrupted(Int), cancelled(Int), received(Int)
+    }
+
+    public enum WorkspaceResult: Equatable {
+        case received(DeviceWorkspaceReceiveProgress)
+        case interrupted(DeviceWorkspaceReceiveProgress?, Status)
+        case cancelled(DeviceWorkspaceReceiveProgress?)
     }
 
     public struct ReceiveProgress: Equatable {
@@ -98,11 +110,15 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     @Published public private(set) var pairingCode: String?
     @Published public private(set) var fingerprint: String?
     @Published public private(set) var receiveProgress: ReceiveProgress?
+    @Published public private(set) var workspaceProgress: DeviceWorkspaceReceiveProgress?
+    @Published public private(set) var workspaceResult: WorkspaceResult?
+    public private(set) var workspacePeerID: String?
 
     public var enabled: Bool { settings.enabled }
     public var usesPublicRelay: Bool { settings.usesPublicRelay }
     public var customRelayURL: URL? { settings.customRelayURL }
     public var peers: [DeviceHistoryPeer] { settings.peers }
+    public var supportsWorkspaceSync: Bool { workspaceHost != nil }
 
     private let settingsURL: URL
     private let identityStorage: DeviceHistoryIdentityStorage
@@ -110,6 +126,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     private let localTasks: @MainActor () async throws -> [DeviceHistoryOffer]
     private let importHistory: @MainActor (UUID, Data) async throws -> Int
     private let pagedHistory: DeviceHistoryPageDestination?
+    private let workspaceHost: DeviceWorkspaceSyncHost?
     private let didImport: @MainActor (UUID) async -> Void
     private var service: DeviceHistorySync?
     private var receiveTask: Task<Void, Never>?
@@ -117,11 +134,14 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     private var running = false
     private var activationPending = false
     private var revision = 0
+    private var lastWorkspaceUpdate: ContinuousClock.Instant?
+    private var currentWorkspaceProgress: DeviceWorkspaceReceiveProgress?
 
     public init(settingsURL: URL, identityStorage: DeviceHistoryIdentityStorage, source: DeviceHistorySource,
                 localTasks: @escaping @MainActor () async throws -> [DeviceHistoryOffer],
                 importHistory: @escaping @MainActor (UUID, Data) async throws -> Int,
                 pagedHistory: DeviceHistoryPageDestination? = nil,
+                workspaceHost: DeviceWorkspaceSyncHost? = nil,
                 didImport: @escaping @MainActor (UUID) async -> Void = { _ in }) {
         self.settingsURL = settingsURL
         self.identityStorage = identityStorage
@@ -129,6 +149,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         self.localTasks = localTasks
         self.importHistory = importHistory
         self.pagedHistory = pagedHistory
+        self.workspaceHost = workspaceHost
         self.didImport = didImport
         do {
             let data = try Data(contentsOf: settingsURL)
@@ -159,6 +180,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         activationPending = false
         revision += 1
         receiveTask?.cancel()
+        workspaceResult = nil
         let previous = service
         service = nil
         pairingCode = nil
@@ -218,10 +240,11 @@ public final class DeviceHistorySyncCenter: ObservableObject {
             return
         }
         var next = settings
-        let previouslyShared = next.peers.first { $0.id == ticket.id }?.sharedConversations ?? []
+        let previous = next.peers.first { $0.id == ticket.id }
         next.peers.removeAll { $0.id == ticket.id }
         next.peers.append(DeviceHistoryPeer(name: String(name.prefix(100)), address: ticket.address,
-                                               sharedConversations: previouslyShared))
+                                            sharedConversations: previous?.sharedConversations ?? [],
+                                            workspaceScopes: previous?.workspaceScopes))
         await update(next, rebind: false)
     }
 
@@ -244,17 +267,49 @@ public final class DeviceHistorySyncCenter: ObservableObject {
             next.peers[index].sharedConversations.insert(taskID)
         } else {
             next.peers[index].sharedConversations.remove(taskID)
+            next.peers[index].workspaceScopes?.removeValue(forKey: taskID)
         }
         do {
             try save(next)
-            try await service?.replaceShares(shares)
+            try await service?.replaceShares(shares, workspaces: workspaceShares)
         } catch {
             status = .transferFailed
         }
     }
 
+    public func shareWorkspace(_ taskID: UUID, with peerID: String, enabled: Bool) async {
+        guard !busy, let workspaceHost,
+              let index = settings.peers.firstIndex(where: { $0.id == peerID }),
+              settings.peers[index].sharedConversations.contains(taskID) else { return }
+        busy = true
+        defer { finishWork() }
+        let revision = revision
+        var next = settings
+        do {
+            var scopes = next.peers[index].workspaceScopes ?? [:]
+            if enabled { scopes[taskID] = try await workspaceHost.shareScope(for: taskID) }
+            else { scopes.removeValue(forKey: taskID) }
+            guard revision == self.revision else { return }
+            next.peers[index].workspaceScopes = scopes
+            try save(next)
+            try await service?.replaceShares(shares, workspaces: workspaceShares)
+            status = .ready
+        } catch {
+            status = Self.failureStatus(error)
+        }
+    }
+
     public func localConversations() async -> [DeviceHistoryOffer] {
         (try? await localTasks()) ?? []
+    }
+
+    public func staleWorkspaceShares(for peerID: String) async -> Set<UUID> {
+        guard let workspaceHost, let scopes = peers.first(where: { $0.id == peerID })?.workspaceScopes else { return [] }
+        var stale: Set<UUID> = []
+        for (id, expected) in scopes {
+            if (try? await workspaceHost.shareScope(for: id)) != expected { stale.insert(id) }
+        }
+        return stale
     }
 
     public func remoteConversations(from peerID: String) async -> [DeviceHistoryOffer]? {
@@ -273,14 +328,19 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         }
     }
 
-    public func receive(_ taskID: UUID, from peerID: String) async {
+    public func receive(_ taskID: UUID, from peerID: String, includeWorkspace: Bool = false) async {
         guard !busy, let service, let peer = peers.first(where: { $0.id == peerID }) else { return }
         busy = true
         receiveProgress = ReceiveProgress(peerID: peerID)
+        workspaceResult = nil
+        workspaceProgress = nil
+        currentWorkspaceProgress = nil
+        lastWorkspaceUpdate = nil
+        workspacePeerID = includeWorkspace ? peerID : nil
         let revision = revision
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.pullHistory(taskID, from: peer, service: service, revision: revision)
+            await self.pullHistory(taskID, from: peer, service: service, revision: revision, includeWorkspace: includeWorkspace)
         }
         receiveTask = task
         await task.value
@@ -291,7 +351,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
     }
 
     private func pullHistory(_ taskID: UUID, from peer: DeviceHistoryPeer,
-                             service: DeviceHistorySync, revision: Int) async {
+                             service: DeviceHistorySync, revision: Int, includeWorkspace: Bool) async {
         defer {
             receiveTask = nil
             receiveProgress = nil
@@ -322,7 +382,43 @@ public final class DeviceHistorySyncCenter: ObservableObject {
             // Deliver the already committed rows even if the wire task was cancelled.
             await Task { await didImport(taskID) }.value
         }
-        if revision == self.revision { status = outcome }
+        if revision == self.revision {
+            status = outcome
+            if case .received = outcome, includeWorkspace, let workspaceHost {
+                receiveProgress = nil
+                await pullWorkspace(taskID, from: peer, service: service, host: workspaceHost, revision: revision)
+            }
+        }
+    }
+
+    private func pullWorkspace(_ taskID: UUID, from peer: DeviceHistoryPeer,
+                               service: DeviceHistorySync, host: DeviceWorkspaceSyncHost, revision: Int) async {
+        let result: WorkspaceResult
+        do {
+            try await service.transferWorkspace(taskID, from: peer.address) { [weak self] value in
+                await self?.updateWorkspaceProgress(value, revision: revision)
+            }
+            guard let report = currentWorkspaceProgress else { throw DeviceHistorySyncError.invalidResponse }
+            result = .received(report)
+        } catch is CancellationError {
+            result = .cancelled(currentWorkspaceProgress)
+        } catch {
+            result = .interrupted(currentWorkspaceProgress, Self.failureStatus(error))
+        }
+        await Task { await host.didImport(taskID) }.value
+        if revision == self.revision { workspaceResult = result }
+        workspaceProgress = nil
+        currentWorkspaceProgress = nil
+    }
+
+    private func updateWorkspaceProgress(_ progress: DeviceWorkspaceReceiveProgress, revision: Int) {
+        guard self.revision == revision else { return }
+        currentWorkspaceProgress = progress
+        let now = ContinuousClock.now
+        if progress.processed == progress.total || lastWorkspaceUpdate.map({ $0.duration(to: now) >= .milliseconds(100) }) != false {
+            workspaceProgress = progress
+            lastWorkspaceUpdate = now
+        }
     }
 
     private func commit(_ delivery: DeviceHistoryDelivery, conversationID: UUID,
@@ -352,12 +448,21 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         case DeviceHistorySyncError.unsupportedVersion: .incompatibleVersion
         case DeviceHistorySyncError.notShared: .noLongerShared
         case DeviceHistorySyncError.tooLarge: .tooLarge
+        case DeviceHistorySyncError.busy: .workspaceBusy
+        case DeviceHistorySyncError.unavailable: .workspaceUnavailable
         default: .transferFailed
         }
     }
 
     private var shares: [String: Set<UUID>] {
         Dictionary(settings.peers.map { ($0.id, $0.sharedConversations) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private var workspaceShares: [String: [UUID: String]] {
+        Dictionary(settings.peers.compactMap { peer in
+            let scopes = peer.workspaceScopes?.filter { peer.sharedConversations.contains($0.key) } ?? [:]
+            return scopes.isEmpty ? nil : (peer.id, scopes)
+        }, uniquingKeysWith: { first, _ in first })
     }
 
     private func update(_ next: Settings, rebind: Bool = true) async {
@@ -367,7 +472,7 @@ public final class DeviceHistorySyncCenter: ObservableObject {
         do {
             try save(next)
             if !rebind, let service {
-                try await service.replaceShares(shares)
+                try await service.replaceShares(shares, workspaces: workspaceShares)
                 status = .ready
             } else {
                 try await restart()
@@ -432,7 +537,8 @@ public final class DeviceHistorySyncCenter: ObservableObject {
                 throw error
             }
         }
-        let service = DeviceHistorySync(link: link, shares: shares, source: source)
+        let service = DeviceHistorySync(link: link, shares: shares, source: source, workspaceHost: workspaceHost,
+                                        workspaceShares: workspaceShares)
         self.service = service
         await service.start()
         guard revision == self.revision else { return }
