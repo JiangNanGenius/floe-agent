@@ -96,6 +96,7 @@ interface NotesService {
     suspend fun undo(documentID: String, expectedRevision: Int, redo: Boolean = false): NoteDocument
 
     suspend fun setTrashed(documentID: String, expectedRevision: Int, trashed: Boolean): NoteDocument
+    suspend fun trashDocuments(targets: List<NotesTrashTarget>)
 
     suspend fun deletePermanently(documentID: String, expectedRevision: Int)
 
@@ -122,7 +123,7 @@ interface NotesService {
     /** Historical editor baseline, or null when the revision aged out. */
     suspend fun editingSnapshot(documentID: String, revision: Int): NoteDocument?
 
-    suspend fun search(query: String, limit: Int = 50): List<NoteDocumentSummary>
+    suspend fun search(query: String, limit: Int = 50, trashOnly: Boolean = false): List<NoteDocumentSummary>
 
     /** Native-owned visual index identity; default keeps old consumer fakes compiling. */
     suspend fun pageOCRState(documentID: String, pageID: String): NotesPageOCRState =

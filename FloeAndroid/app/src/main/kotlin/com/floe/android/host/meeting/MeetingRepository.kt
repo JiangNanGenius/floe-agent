@@ -154,7 +154,30 @@ internal data class StoredTranscription(
     /** Exact material that produced this transcript; null for legacy rows. */
     val materialId: String? = null,
     val segments: List<StoredTranscriptSegment> = emptyList(),
+    /** Trace of the latest unfinished attempt; never a transcript body. */
+    val lastAttempt: StoredTranscriptionAttempt? = null,
 )
+
+/**
+ * Durable, bounded checkpoint of one transcription attempt. The strings are
+ * the lane-authored vocabulary only — no provider body, URL or credential.
+ */
+internal data class StoredTranscriptionAttempt(
+    val materialId: String,
+    val expectedTranscriptionRevision: Long,
+    val phase: String,
+    val failureCode: String?,
+    val failureReason: String?,
+    val retryable: Boolean,
+    val updatedAtMillis: Long,
+) {
+    companion object {
+        const val PHASE_RUNNING = "running"
+        const val PHASE_FAILED = "failed"
+        const val PHASE_CANCELLED = "cancelled"
+        val ALL_PHASES = setOf(PHASE_RUNNING, PHASE_FAILED, PHASE_CANCELLED)
+    }
+}
 
 internal data class StoredTranscriptSegment(
     val id: String,
@@ -899,13 +922,8 @@ internal class MeetingRepository(
                 existing.materialId == materialKey &&
                 sameTranscriptSegments(existing.segments, cleanSegments)
             ) {
-                return@withLock MeetingTranscriptionReceipt(
-                    meetingId = id,
-                    materialId = materialKey,
-                    transcriptionRevision = existing.revision,
-                    segmentCount = existing.segments.size,
-                    updatedAtMillis = existing.updatedAtMillis ?: now,
-                    idempotent = true,
+                return@withLock clearStaleAttemptAndReturnIdempotentLocked(
+                    dir, stored, existing, now,
                 )
             }
             throw meetingError(
@@ -918,13 +936,8 @@ internal class MeetingRepository(
         if (existing.materialId == materialKey &&
             sameTranscriptSegments(existing.segments, cleanSegments)
         ) {
-            return@withLock MeetingTranscriptionReceipt(
-                meetingId = id,
-                materialId = materialKey,
-                transcriptionRevision = existing.revision,
-                segmentCount = existing.segments.size,
-                updatedAtMillis = existing.updatedAtMillis ?: now,
-                idempotent = true,
+            return@withLock clearStaleAttemptAndReturnIdempotentLocked(
+                dir, stored, existing, now,
             )
         }
         val committedAt = maxOf(now, existing.updatedAtMillis ?: now)
@@ -935,6 +948,9 @@ internal class MeetingRepository(
             updatedAtMillis = committedAt,
             materialId = materialKey,
             segments = cleanSegments,
+            // A real transcript now exists; the unfinished-attempt trace is
+            // no longer actionable and must not outlive its own recovery.
+            lastAttempt = null,
         )
         // Called exactly once, under the repository lock, immediately before
         // the only metadata write. A throw leaves every durable byte intact.
@@ -957,6 +973,106 @@ internal class MeetingRepository(
             idempotent = false,
         )
     }
+
+    /**
+     * Idempotent commit receipt. The transcript write is genuinely skipped;
+     * the only write that can still happen is clearing a stale unfinished
+     * attempt marker left by a failed retry after this transcript was
+     * already committed (otherwise the page would keep offering a retry for
+     * material that now has a transcript).
+     */
+    private fun clearStaleAttemptAndReturnIdempotentLocked(
+        dir: File,
+        stored: StoredMeeting,
+        existing: StoredTranscription,
+        now: Long,
+    ): MeetingTranscriptionReceipt {
+        if (stored.transcription.lastAttempt != null) {
+            writeMeetingLocked(
+                dir,
+                stored.copy(
+                    transcription = stored.transcription.copy(lastAttempt = null),
+                    updatedAtMillis = maxOf(now, stored.updatedAtMillis),
+                    revision = stored.revision + 1L,
+                ),
+            )
+            refreshLocked()
+        }
+        return MeetingTranscriptionReceipt(
+            meetingId = stored.id,
+            materialId = existing.materialId ?: stored.transcription.materialId ?: stored.id,
+            transcriptionRevision = existing.revision,
+            segmentCount = existing.segments.size,
+            updatedAtMillis = existing.updatedAtMillis ?: now,
+            idempotent = true,
+        )
+    }
+
+    /**
+     * Records (or clears) the durable trace of the most recent unfinished
+     * transcription attempt for this meeting.
+     *
+     * The record is advisory recovery metadata only: it never touches the
+     * transcript body, never bumps the transcription revision and never
+     * carries provider content. It exists so that an attempt that was
+     * interrupted by process death, failure or cancellation can be honestly
+     * retried from the exact material and revision checkpoint it started
+     * with, instead of silently vanishing. Supplying a null [attempt]
+     * clears the record.
+     */
+    suspend fun recordTranscriptionAttempt(
+        meetingId: String,
+        attempt: MeetingTranscriptionLastAttempt?,
+        now: Long = clock(),
+    ) = mutex.withLock {
+        val id = MeetingIds.require(meetingId)
+        val dir = existingMeetingDirLocked(id)
+        val stored = readMeetingLocked(dir, id)
+        val next = attempt?.let { toStoredAttempt(it, now) }
+        val cleared = stored.transcription.lastAttempt == null
+        if (cleared && next == null) return@withLock
+        if (!cleared && next != null && sameAttempt(stored.transcription.lastAttempt, next)) {
+            return@withLock
+        }
+        writeMeetingLocked(
+            dir,
+            stored.copy(
+                transcription = stored.transcription.copy(lastAttempt = next),
+                updatedAtMillis = maxOf(now, stored.updatedAtMillis),
+                revision = stored.revision + 1L,
+            ),
+        )
+        refreshLocked()
+    }
+
+    private fun toStoredAttempt(
+        attempt: MeetingTranscriptionLastAttempt,
+        now: Long,
+    ): StoredTranscriptionAttempt = StoredTranscriptionAttempt(
+        materialId = attempt.materialId,
+        expectedTranscriptionRevision = attempt.expectedTranscriptionRevision,
+        phase = when (attempt.phase) {
+            MeetingTranscriptionLastAttemptPhase.RUNNING -> StoredTranscriptionAttempt.PHASE_RUNNING
+            MeetingTranscriptionLastAttemptPhase.CANCELLED ->
+                StoredTranscriptionAttempt.PHASE_CANCELLED
+            MeetingTranscriptionLastAttemptPhase.FAILED -> StoredTranscriptionAttempt.PHASE_FAILED
+        },
+        failureCode = attempt.failureCode?.take(64),
+        failureReason = attempt.failureReason?.take(160),
+        retryable = attempt.retryable,
+        updatedAtMillis = maxOf(attempt.updatedAtMillis, now),
+    )
+
+    private fun sameAttempt(
+        left: StoredTranscriptionAttempt?,
+        right: StoredTranscriptionAttempt,
+    ): Boolean = left != null &&
+        left.materialId == right.materialId &&
+        left.expectedTranscriptionRevision == right.expectedTranscriptionRevision &&
+        left.phase == right.phase &&
+        left.failureCode == right.failureCode &&
+        left.failureReason == right.failureReason &&
+        left.retryable == right.retryable
 
     private fun normalizedTranscriptSegments(
         segments: List<StoredTranscriptSegment>,
@@ -1959,6 +2075,20 @@ internal class MeetingRepository(
             putNullable("language", stored.transcription.language)
             putNullable("updatedAtMillis", stored.transcription.updatedAtMillis)
             putNullable("materialId", stored.transcription.materialId)
+            val attempt = stored.transcription.lastAttempt
+            if (attempt != null) {
+                put("lastAttempt", buildJsonObject {
+                    put("materialId", attempt.materialId)
+                    put("expectedTranscriptionRevision", attempt.expectedTranscriptionRevision)
+                    put("phase", attempt.phase)
+                    putNullable("failureCode", attempt.failureCode)
+                    putNullable("failureReason", attempt.failureReason)
+                    put("retryable", attempt.retryable)
+                    put("updatedAtMillis", attempt.updatedAtMillis)
+                })
+            } else {
+                put("lastAttempt", JsonNull)
+            }
             put("segments", buildJsonArray {
                 stored.transcription.segments.forEach { segment ->
                     add(buildJsonObject {
@@ -2116,6 +2246,28 @@ internal class MeetingRepository(
             materialId = obj.stringOrNull("materialId")
                 ?.takeIf { MeetingIds.isValid(it) },
             segments = segments,
+            lastAttempt = decodeTranscriptionAttempt(obj["lastAttempt"] as? JsonObject),
+        )
+    }
+
+    /**
+     * Reads one attempt checkpoint. Unknown/absent shapes are ignored rather
+     * than failing the whole meeting read: the record is advisory recovery
+     * metadata, never transcript content.
+     */
+    private fun decodeTranscriptionAttempt(obj: JsonObject?): StoredTranscriptionAttempt? {
+        if (obj == null) return null
+        val materialId = obj.stringOrNull("materialId")?.takeIf { MeetingIds.isValid(it) } ?: return null
+        val phase = obj.stringOrNull("phase")?.takeIf { it in StoredTranscriptionAttempt.ALL_PHASES }
+            ?: return null
+        return StoredTranscriptionAttempt(
+            materialId = materialId,
+            expectedTranscriptionRevision = obj.longOrNull("expectedTranscriptionRevision")?.coerceAtLeast(0L) ?: 0L,
+            phase = phase,
+            failureCode = obj.stringOrNull("failureCode")?.take(64),
+            failureReason = obj.stringOrNull("failureReason")?.take(160),
+            retryable = obj.booleanOrNull("retryable") == true,
+            updatedAtMillis = obj.longOrNull("updatedAtMillis")?.coerceAtLeast(0L) ?: 0L,
         )
     }
 
@@ -2132,6 +2284,23 @@ internal class MeetingRepository(
                 endMillis = it.endMillis,
                 text = it.text,
                 speaker = it.speaker,
+            )
+        },
+        lastAttempt = lastAttempt?.let {
+            MeetingTranscriptionLastAttempt(
+                materialId = it.materialId,
+                expectedTranscriptionRevision = it.expectedTranscriptionRevision,
+                phase = when (it.phase) {
+                    StoredTranscriptionAttempt.PHASE_RUNNING ->
+                        MeetingTranscriptionLastAttemptPhase.RUNNING
+                    StoredTranscriptionAttempt.PHASE_CANCELLED ->
+                        MeetingTranscriptionLastAttemptPhase.CANCELLED
+                    else -> MeetingTranscriptionLastAttemptPhase.FAILED
+                },
+                failureCode = it.failureCode,
+                failureReason = it.failureReason,
+                retryable = it.retryable,
+                updatedAtMillis = it.updatedAtMillis,
             )
         },
     )
@@ -2344,4 +2513,10 @@ private fun JsonObject.intOrNull(key: String): Int? {
     val element = this[key] ?: return null
     if (element is JsonNull) return null
     return (element as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+}
+
+private fun JsonObject.booleanOrNull(key: String): Boolean? {
+    val element = this[key] ?: return null
+    if (element is JsonNull) return null
+    return (element as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull()
 }

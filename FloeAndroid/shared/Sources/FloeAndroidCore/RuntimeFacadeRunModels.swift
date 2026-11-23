@@ -517,6 +517,7 @@ public struct RunStartQuery: Sendable, Equatable {
     /// task-authorized ceiling/approvals still decide, except Plan's existing
     /// read-only projection and the separate temporary ceiling.
     public var explicitExecutionMode: String?
+    public var chatReasoning: ChatReasoningPreference?
     public var providerID: UUID
     public var modelID: UUID
     /// Opaque host-issued staging handles for already-owned staged
@@ -559,7 +560,8 @@ public struct RunStartQuery: Sendable, Equatable {
                 requestedJobID: String? = nil,
                 goalDefinition: StructuredGoalDefinition? = nil,
                 explicitInitialApprovalMode: TaskApprovalMode? = nil,
-                explicitExecutionMode: String? = nil) {
+                explicitExecutionMode: String? = nil,
+                chatReasoning: ChatReasoningPreference? = nil) {
         self.conversationID = conversationID
         self.goal = goal
         self.mode = mode
@@ -573,12 +575,13 @@ public struct RunStartQuery: Sendable, Equatable {
         self.goalDefinition = goalDefinition
         self.explicitInitialApprovalMode = explicitInitialApprovalMode
         self.explicitExecutionMode = explicitExecutionMode
+        self.chatReasoning = chatReasoning
     }
 
     public static let allowedKeys: Set<String> = [
         "goal", "mode", "providerID", "modelID", "stagedAttachments",
         "toolCeiling", "approvalMode", "recoveryPolicy", "notificationPolicy",
-        "environmentID", "jobID", "goalDefinition", "executionMode",
+        "environmentID", "jobID", "goalDefinition", "executionMode", "chatReasoning",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?,
@@ -635,6 +638,16 @@ public struct RunStartQuery: Sendable, Equatable {
         // vocabulary and agree with the immutable launch mode.
         let explicitExecutionMode = try Self.explicitExecutionMode(
             object, mode: mode)
+        let chatReasoning: ChatReasoningPreference?
+        if let raw = try object.optionalString("chatReasoning", maxBytes: 12) {
+            guard explicitExecutionMode == ExplicitExecutionMode.chat.rawValue,
+                  let requested = ChatReasoningPreference(rawValue: raw) else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            chatReasoning = requested
+        } else {
+            chatReasoning = nil
+        }
         return RunStartQuery(
             conversationID: conversationID,
             goal: goal,
@@ -649,7 +662,8 @@ public struct RunStartQuery: Sendable, Equatable {
             goalDefinition: goalDefinition,
             explicitInitialApprovalMode: try object.optionalString("approvalMode", maxBytes: 24) == nil
                 ? nil : policy.approvalMode,
-            explicitExecutionMode: explicitExecutionMode)
+            explicitExecutionMode: explicitExecutionMode,
+            chatReasoning: chatReasoning)
     }
 
     /// Presence-based explicit `agent|chat|plan|goal` provenance shared by

@@ -454,7 +454,12 @@ class SafWorkingCopyService internal constructor(
                 "document opened without a tree grant cannot create a sibling; re-pick a tree or grant create intent explicitly",
             )
         }
-        val siblingName = siblingDisplayName(preparedSave.displayName, preparedSave.receipt.receiptId)
+        // The caller's preferred name wins when it is a safe single segment;
+        // the provider may still adjust it, so the receipt carries the ref
+        // and callers read the final display name back from the provider.
+        val siblingName = policy.siblingName
+            ?.takeIf { !SafStagingNames.isUnsafeDisplayName(it) }
+            ?: siblingDisplayName(preparedSave.displayName, preparedSave.receipt.receiptId)
         val created = operations.createDocument(
             tree,
             preparedSave.target.parentDocumentId ?: backend.resolveTreeRoot(tree)?.documentId,

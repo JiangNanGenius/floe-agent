@@ -439,11 +439,8 @@ public enum AndroidBridge {
             return response(ExternalEditHostMailbox.shared.handle(request), stampVersion: BridgeV29.version)
         }
         if requestVersion == BridgeV30.version {
-            // Additive trusted-host channel for THIS task's finite background
-            // jobs: one bounded durable read (`jobs.list`) and one exact-owner
-            // cooperative cancel (`jobs.cancel`). No submit, no dependency
-            // resolution, no payload/output/path material. V1-V29 branches
-            // above remain byte-identical.
+            // Trusted host actions on this task's durable jobs and services.
+            // Every mutation or preview requires the exact owned job identity.
             let object = TaskJobsHostBridge.handle(requestData: data,
                                                    fallbackRequestID: requestID)
             let encoded = (try? JSONSerialization.data(withJSONObject: object,

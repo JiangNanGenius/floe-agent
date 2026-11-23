@@ -144,6 +144,77 @@ struct DeviceHistoryPagingStoreTests {
         #expect(try await receiver.messages(conversationID: id).map(\.content) == ["Original"])
     }
 
+    @Test("A typed re-import adds history and only exposes verified attachment bytes")
+    func typedHistoryExtendsLegacyImport() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteConversationStore(database: database)
+        let conversation = UUID()
+        let message = UUID()
+        let attachment = UUID()
+        let stranger = UUID()
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        let preciseTime = time.addingTimeInterval(0.1234567)
+        let text = DeviceConversationHistory.Part(id: UUID(), index: 0, text: "Hello", createdAt: preciseTime)
+        let file = DeviceConversationHistory.Part(id: UUID(), index: 1, kind: .attachment,
+                                                   attachmentID: attachment, createdAt: time)
+        let tool = DeviceConversationHistory.Part(id: UUID(), index: 2, kind: .tool, text: "Verified",
+                    toolName: "workspace.readFile", toolStatus: "ok", createdAt: time)
+        let original = DeviceConversationHistory(id: conversation, title: "Paired", createdAt: time, updatedAt: time,
+            messages: [.init(id: message, role: "user", content: "Hello", createdAt: preciseTime, parts: [text])])
+        let legacyData = try original.encoded()
+        let legacyJSON = String(decoding: legacyData, as: UTF8.self)
+        #expect(!legacyJSON.contains("\"kind\""))
+        #expect(!legacyJSON.contains("\"attachments\""))
+        #expect(try await store.importDeviceHistory(original).addedMessages == 1)
+
+        let typed = DeviceConversationHistory(id: conversation, title: "Paired", createdAt: time, updatedAt: time,
+            messages: [.init(id: message, role: "user", content: "Hello", createdAt: preciseTime, parts: [text, file, tool])],
+            attachments: [.init(id: attachment, kind: "document", displayName: "demo.txt", uti: "public.plain-text",
+                                byteCount: 0, sha256: digest, createdAt: time)], version: 2)
+        let decoded = try DeviceConversationHistory(data: typed.encoded())
+        #expect(try await store.importDeviceHistory(decoded, sourcePeerID: "peer:attachments-v2",
+            nextCursor: "typed-page", hasLiveRun: { _ in false }).addedMessages == 0)
+        #expect(try await store.deviceHistoryCursor(from: "peer", conversationID: conversation) == nil)
+        #expect(try await store.deviceHistoryCursor(from: "peer:attachments-v2", conversationID: conversation) == "typed-page")
+        let pending = try await store.deviceHistoryUserAttachments(conversationID: conversation, storage: .none)
+        #expect(pending.map(\.id) == [attachment])
+        #expect(try await store.deviceHistoryUserAttachment(conversationID: stranger, id: attachment) == nil)
+        let before = try await store.parts(messageID: message)
+        #expect(before.count == 2)
+        #expect(before.last?.metadata["deviceHistory.tool"] == "workspace.readFile")
+        #expect(before.allSatisfy { $0.attachmentID == nil })
+        let anchor = PersistedMessage(id: UUID(), conversationID: conversation, role: "assistant",
+            content: "Already shared", createdAt: time.addingTimeInterval(1))
+        try await store.appendMessage(anchor)
+        let pageBefore = try await store.deviceHistoryPage(conversationID: conversation, after: nil,
+            through: nil, version: 2)
+        let cursorBefore = try #require(pageBefore.nextCursor)
+        #expect(try DeviceConversationHistory(data: pageBefore.archive).attachments.isEmpty)
+        let path = attachment.uuidString + "/demo.txt"
+        #expect(try await store.restoreDeviceHistoryAttachment(conversationID: conversation, attachmentID: attachment,
+            messageID: message, digest: digest, relativePath: path, guardCurrent: { _ in false }) == false)
+        #expect(try await store.restoreDeviceHistoryAttachment(conversationID: conversation, attachmentID: attachment,
+            messageID: message, digest: digest, relativePath: path, guardCurrent: { _ in true }) == true)
+        let enriched = try await store.deviceHistoryPage(conversationID: conversation, after: cursorBefore,
+            through: nil, version: 2)
+        let enrichedArchive = try DeviceConversationHistory(data: enriched.archive)
+        #expect(enrichedArchive.messages.map(\.id) == [message])
+        #expect(enrichedArchive.attachments.map(\.id) == [attachment])
+        let enrichedCursor = try #require(enriched.nextCursor)
+        #expect(try await store.restoreDeviceHistoryAttachment(conversationID: conversation, attachmentID: attachment,
+            messageID: message, digest: digest, relativePath: path, guardCurrent: { _ in true }) == true)
+        let unchanged = try await store.deviceHistoryPage(conversationID: conversation, after: enrichedCursor,
+            through: nil, version: 2)
+        #expect(try DeviceConversationHistory(data: unchanged.archive).messages.isEmpty)
+        #expect(try await store.importDeviceHistory(decoded).addedMessages == 0)
+        let after = try await store.parts(messageID: message)
+        #expect(after.compactMap(\.attachmentID) == [attachment])
+        let legacyExport = try await store.deviceHistory(conversationID: conversation)
+        #expect(legacyExport.version == 1 && legacyExport.attachments.isEmpty)
+        #expect(legacyExport.messages.flatMap(\.parts).map(\.id) == [text.id])
+    }
+
     private func importPage(
         _ page: DeviceConversationHistoryPage, from peer: String, into receiver: SQLiteConversationStore
     ) async throws -> DeviceConversationImport {

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="message_attachment_title">附件</string>
+    <string name="message_attachment_unavailable">无法打开此附件。</string>
+    <string name="message_attachment_preview_truncated">显示文件开头 32 KiB。</string>
+    <string name="message_attachment_open_with">用其他应用打开</string>
+    <string name="message_attachment_external_unavailable">Android 无法打开此文件。</string>
+</resources>

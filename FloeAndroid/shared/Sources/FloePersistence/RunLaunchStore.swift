@@ -78,6 +78,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
     /// Trusted first-send selection; nil preserves the original row.
     /// Never applied once messages, runs or committed attachments exist.
     public var explicitInitialApprovalMode: TaskApprovalMode? = nil
+    public var chatReasoning: ChatReasoningDecision? = nil
 
     public init(
         conversationID: UUID? = nil,
@@ -250,6 +251,9 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
         }
         guard ["user", "goalContinuation"].contains(request.messageRole) else {
             throw FloeError.validationFailed("Unknown launch message role")
+        }
+        guard request.chatReasoning == nil || request.explicitExecutionMode == "chat" else {
+            throw FloeError.validationFailed("Chat reasoning requires an explicit Chat launch")
         }
         if let explicit = request.explicitExecutionMode {
             // Closed provenance vocabulary, consistent with the immutable
@@ -600,10 +604,15 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
                 db: db, conversationID: conversation.id) else {
                 throw FloeError.storageCorrupted("Launch activation owner disappeared")
             }
-            let status = try JSONSerialization.data(withJSONObject: [
+            var statusFields: [String: Any] = [
                 "state": "preparing",
                 "floeActivation": ["version": 1, "kind": request.messageRole, "proof": activationProof],
-            ], options: [.sortedKeys])
+            ]
+            if let chatReasoning = request.chatReasoning {
+                statusFields[ChatReasoningDecision.payloadKey] = try JSONSerialization.jsonObject(
+                    with: JSONEncoder().encode(chatReasoning))
+            }
+            let status = try JSONSerialization.data(withJSONObject: statusFields, options: [.sortedKeys])
             let statusJSON = String(decoding: status, as: UTF8.self)
             try db.execute(
                 sql: """

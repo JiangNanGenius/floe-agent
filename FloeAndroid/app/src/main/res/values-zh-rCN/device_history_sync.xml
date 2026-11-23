@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 冻结 v2 设备同步扩展文案（简体中文）。 -->
+    <string name="device_history_workspace_propagate">同步重命名和删除</string>
+    <string name="device_history_workspace_received_converged">工作区已同步，保存 %1$d 个文件，重命名 %2$d 个，移入恢复文件夹 %3$d 个，保留 %4$d 项不同内容。</string>
+    <string name="device_history_attachments_received">已恢复 %1$d 个附件。%2$d 个附件未恢复，可再次同步重试。</string>
+</resources>

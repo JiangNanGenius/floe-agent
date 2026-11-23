@@ -436,6 +436,9 @@
     <string name="network_capture_icmp">ICMP (ping) is not forwarded in the no-root capture.</string>
     <string name="network_capture_cancelled">Capture cancelled.</string>
     <string name="network_capture_raw_title">Saved raw captures</string>
+    <string name="network_capture_raw_remove_title">Delete raw capture?</string>
+    <string name="network_capture_raw_remove_message">The saved analysis will still be available.</string>
+    <string name="network_capture_raw_remove_failed">The raw capture could not be deleted.</string>
     <string name="network_capture_raw_intro">These app-private PCAP files stay on this device. Export saves a copy where you choose; nothing is uploaded.</string>
     <string name="network_capture_raw_item">%1$s · %2$s · %3$s</string>
     <string name="network_capture_raw_digest">SHA-256 %1$s…</string>

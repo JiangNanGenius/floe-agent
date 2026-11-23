@@ -94,6 +94,40 @@ object DeviceHistoryNative {
     external fun stats(reply: ByteArray): Int
 
     // ------------------------------------------------------------------
+    // Frozen v2 device-sync ABI (additive; coordinator-owned native side).
+    // A library predating these symbols answers LinkageError at the call
+    // site, which the App host maps to a disabled capability rather than a
+    // crash. Status space and page size match the v1 lane exactly.
+    // ------------------------------------------------------------------
+
+    /** Versioned whole-archive export (1 legacy text-only, 2 attachments+tools). */
+    external fun exportVersionOpen(epoch: Long, conversationID: String, version: Int): Long
+
+    /** Versioned paged export; [through] -1 means absent. Reuses exportPageInfo/exportRead/exportClose. */
+    external fun exportPageVersionOpen(
+        epoch: Long, conversationID: String, after: ByteArray?, through: Long, version: Int,
+    ): Long
+
+    /** One verified attachment's bytes; reuses exportRead/exportClose. */
+    external fun attachmentOpen(epoch: Long, conversationID: String, attachmentID: String): Long
+
+    /** Bounded pending-attachment JSON (floe.device-history.attachments.v1). */
+    external fun attachmentsPending(epoch: Long, conversationID: String, reply: ByteArray): Int
+
+    /** Ticket-based restore commit (floe.device-history.restore.v1). */
+    external fun attachmentRestoreCommit(
+        ticket: Long, attachmentID: String, messageID: String, digest: String, reply: ByteArray,
+    ): Int
+
+    /**
+     * Version-bound import commit: the decoded archive version MUST equal
+     * [expectedVersion]. Called with 2 only for the explicitly opted-in
+     * typed-history selection (peer advertised attachment transfer and the
+     * user chose files); legacy/text-only receives keep [importCommit].
+     */
+    external fun importVersionCommit(ticket: Long, expectedVersion: Int, reply: ByteArray): Int
+
+    // ------------------------------------------------------------------
     // Typed App-facing API (suspend, bounded, cooperative-cancel)
     // ------------------------------------------------------------------
 

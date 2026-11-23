@@ -33,12 +33,13 @@ class VpnPlanTest {
     )
 
     @Test
-    fun installsOnlyIpv4DefaultRouteAndNeverAnIpv6Route() {
-        val plan = VpnPlan.fromConfig(vpnConfig(), "com.floe.android")
+    fun installsIpv4DefaultRouteAndKeepsTheLocalForwarderInTheTunnel() {
+        val plan = VpnPlan.fromConfig(vpnConfig())
         assertEquals(listOf("0.0.0.0/0"), plan.routes)
         assertTrue(plan.routes.none { it.contains(':') })
         assertTrue(plan.dnsServers.isEmpty())
-        assertEquals(listOf("com.floe.android"), plan.disallowedPackages)
+        assertTrue(plan.disallowedPackages.isEmpty())
+        assertTrue(plan.allowedPackages.isEmpty())
         assertEquals(Ipv6Policy.BYPASS, plan.ipv6Policy)
     }
 

@@ -825,9 +825,13 @@ enum RunSnapshotWireBuilder {
     }
 
     private static func safeApprovalActionDetails(_ call: ToolCall) -> [String: SettingsDomainV1.JSONValue]? {
-        guard call.toolName == "device.act",
-              let values = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
-              let action = values["action"] as? String else { return nil }
+        guard let values = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any] else {
+            return nil
+        }
+        if call.toolName == C01LinuxEnvironmentToolNames.start, call.scope == .local, values.isEmpty {
+            return ["action": .string("startLocalLinux")]
+        }
+        guard call.toolName == "device.act", let action = values["action"] as? String else { return nil }
         switch action {
         case "back", "home":
             guard Set(values.keys).isSubset(of: ["action", "observationId"]),

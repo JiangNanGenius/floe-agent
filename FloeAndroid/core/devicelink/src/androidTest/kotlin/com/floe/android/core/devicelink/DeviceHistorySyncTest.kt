@@ -336,7 +336,7 @@ class DeviceHistorySyncTest {
         val source = object : DeviceHistorySource {
             override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> =
                 if (taskID in allowed) listOf(DeviceHistoryOffer(taskID, "旅行")) else emptyList()
-            override suspend fun export(taskId: UUID): ByteArray = archive.copyOf()
+            override suspend fun export(taskId: UUID, version: Int): ByteArray = archive.copyOf()
         }
         withSyncPair(source, sharedWithClient = setOf(taskID)) { serverSync, clientSync, serverLink, clientLink ->
             val offers = clientSync.offers(loopbackAddress(serverLink))
@@ -353,7 +353,7 @@ class DeviceHistorySyncTest {
         val source = object : DeviceHistorySource {
             override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> =
                 allowed.map { DeviceHistoryOffer(it, "标题 $it") }
-            override suspend fun export(taskId: UUID): ByteArray = byteArrayOf(1, 2, 3)
+            override suspend fun export(taskId: UUID, version: Int): ByteArray = byteArrayOf(1, 2, 3)
         }
         withSyncPair(source) { serverSync, clientSync, serverLink, clientLink ->
             val clientId = clientLink.address().endpointId
@@ -390,7 +390,7 @@ class DeviceHistorySyncTest {
         val source = object : DeviceHistorySource {
             override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> =
                 listOf(DeviceHistoryOffer(taskID, "big"))
-            override suspend fun export(taskId: UUID): ByteArray =
+            override suspend fun export(taskId: UUID, version: Int): ByteArray =
                 ByteArray(DeviceHistorySync.MAXIMUM_ARCHIVE_BYTES + 1)
         }
         withSyncPair(source) { serverSync, clientSync, serverLink, clientLink ->
@@ -408,7 +408,7 @@ class DeviceHistorySyncTest {
         val source = object : DeviceHistorySource {
             override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> =
                 listOf(DeviceHistoryOffer(taskID, "t"))
-            override suspend fun export(taskId: UUID): ByteArray = byteArrayOf(9)
+            override suspend fun export(taskId: UUID, version: Int): ByteArray = byteArrayOf(9)
         }
         val serverIdentity = FloeDeviceLinkIdentity.generate()
         val clientIdentity = FloeDeviceLinkIdentity.generate()
@@ -456,7 +456,7 @@ class DeviceHistorySyncTest {
         val legacy = object : DeviceHistorySource {
             override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> =
                 allowed.map { DeviceHistoryOffer(it, "标题 $it") }
-            override suspend fun export(taskId: UUID): ByteArray = byteArrayOf(1, 2, 3)
+            override suspend fun export(taskId: UUID, version: Int): ByteArray = byteArrayOf(1, 2, 3)
         }
         withSyncPair(legacy, sharedWithClient = setOf(taskID)) { _, clientSync, serverLink, _ ->
             val catalog = clientSync.catalog(loopbackAddress(serverLink))
@@ -605,7 +605,7 @@ class DeviceHistorySyncTest {
         val legacy = object : DeviceHistorySource {
             override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> =
                 allowed.map { DeviceHistoryOffer(it, "标题 $it") }
-            override suspend fun export(taskId: UUID): ByteArray = byteArrayOf(1, 2, 3)
+            override suspend fun export(taskId: UUID, version: Int): ByteArray = byteArrayOf(1, 2, 3)
         }
         withSyncPair(legacy, sharedWithClient = setOf(taskID)) { _, clientSync, serverLink, _ ->
             assertFalse(
@@ -621,7 +621,7 @@ class DeviceHistorySyncTest {
         val taskID = UUID.fromString("70a79f52-6fa4-4b52-9d0c-1c4a9b1d2e3f")
         val legacy = object : DeviceHistorySource {
             override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> = emptyList()
-            override suspend fun export(taskId: UUID): ByteArray = byteArrayOf(1)
+            override suspend fun export(taskId: UUID, version: Int): ByteArray = byteArrayOf(1)
         }
         withSyncPair(legacy, sharedWithClient = setOf(taskID)) { _, clientSync, serverLink, _ ->
             assertFalse(
@@ -936,9 +936,11 @@ class DeviceHistorySyncTest {
         override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> =
             if (includeOffer && taskID in allowed) listOf(DeviceHistoryOffer(taskID, "旅行")) else emptyList()
 
-        override suspend fun export(taskId: UUID): ByteArray = archive.copyOf()
+        override suspend fun export(taskId: UUID, version: Int): ByteArray = archive.copyOf()
 
-        override suspend fun historyPage(taskId: UUID, after: String?, through: Long?): DeviceHistoryPage {
+        override suspend fun historyPage(
+            taskId: UUID, after: String?, through: Long?, version: Int,
+        ): DeviceHistoryPage {
             val call = Call(after, through)
             synchronized(lock) { callLog += call }
             failure?.invoke(call)?.let { throw it }

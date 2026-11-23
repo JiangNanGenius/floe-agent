@@ -85,6 +85,8 @@
     <string name="tool_status_unknown">Unknown</string>
     <string name="tool_input">Input</string>
     <string name="tool_result">Recorded output</string>
+    <string name="shared_tool_results">Synced tool results</string>
+    <string name="shared_tool_results_shown">Showing %1$d of %2$d results</string>
     <string name="tool_approval">Approval</string>
     <string name="tool_decision">Decision</string>
     <string name="artifact_unverified">Unverified bytes</string>
@@ -144,6 +146,7 @@
     <string name="approval_terminal_handoff_refused">The terminal did not release the Linux engine, so nothing ran. Try again, or keep the terminal and run later.</string>
     <string name="approval_device_back">Return to the previous screen</string>
     <string name="approval_device_home">Go to the Home screen</string>
+    <string name="approval_start_local_linux">Start the local Linux environment for this task</string>
     <string name="approval_device_launch">Open an app</string>
     <string name="approval_device_package">App package</string>
     <string name="approval_requested_scope_note">This describes the requested action; it does not grant access to other files or apps.</string>
@@ -195,6 +198,13 @@
     <string name="composer_mode">Mode</string>
     <string name="composer_mode_agent">Agent</string>
     <string name="composer_mode_chat">Chat</string>
+    <string name="composer_chat_reasoning">Chat reasoning</string>
+    <string name="composer_chat_reasoning_fast">Fast</string>
+    <string name="composer_chat_reasoning_automatic">Automatic</string>
+    <string name="composer_chat_reasoning_low">Low</string>
+    <string name="composer_chat_reasoning_medium">Medium</string>
+    <string name="composer_chat_reasoning_high">High</string>
+    <string name="composer_chat_reasoning_maximum">Maximum</string>
     <string name="composer_mode_plan">Plan</string>
     <string name="composer_mode_goal">Goal</string>
     <string name="composer_project">Workspace</string>
@@ -400,6 +410,9 @@
     <string name="run_output_saved">Saved to your file</string>
     <string name="run_output_save_cancelled">Save cancelled</string>
     <string name="run_output_save_failed">Save failed</string>
+    <string name="run_output_edit_copy">Edit copy</string>
+    <string name="run_output_preparing_edit">Preparing editable copy…</string>
+    <string name="run_output_edit_failed">Couldn’t prepare an editable copy. Tap Edit copy to try again.</string>
     <string name="run_output_open_blocked">Close the open document first, then tap Open again</string>
     <string name="run_output_missing">File no longer available</string>
     <string name="run_output_changed">File contents changed</string>
@@ -458,7 +471,9 @@
     <string name="jobs_truncated">Showing the most recent jobs.</string>
     <string name="jobs_cancel">Cancel Job</string>
     <string name="jobs_cancelling">Cancelling…</string>
-    <string name="jobs_cancel_failed">Unable to cancel this job. Its state above is unchanged.</string>
+    <string name="jobs_cancel_failed">The job action didn’t finish. Refresh and try again.</string>
+    <string name="jobs_service_open_preview">Open service preview</string>
+    <string name="jobs_service_restart">Restart service</string>
     <string name="jobs_result_available">Result available</string>
     <string name="jobs_result_unavailable">No result</string>
     <string name="jobs_dependency_pending">The task is waiting for this job.</string>
@@ -509,6 +524,13 @@
     <string name="approval_workspace_move">Move a file or directory</string>
     <string name="approval_workspace_copy">Copy a file or directory</string>
     <string name="approval_workspace_delete">Delete a file or directory</string>
+    <string name="approval_workspace_publish">Save a copy as a task result</string>
+    <string name="approval_workspace_output_name">Result name %1$s</string>
+    <string name="approval_service_start">Start a local Linux service</string>
+    <string name="approval_service_details">%1$s · Folder %2$s · Local port %3$d</string>
+    <string name="approval_service_wait">Continue this task when the service is ready.</string>
+    <string name="approval_service_detach">The service can keep running after this task replies.</string>
+    <string name="approval_service_arguments">Arguments %1$s</string>
     <string name="approval_precondition_exists">The target must exist.</string>
     <string name="approval_precondition_exists_sha">The target must exist and match the supplied SHA-256.</string>
     <string name="approval_precondition_occurrences">The expected number of matches must be present.</string>

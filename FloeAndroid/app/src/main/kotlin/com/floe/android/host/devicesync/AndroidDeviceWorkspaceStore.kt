@@ -7,9 +7,11 @@ import com.floe.android.bridge.DeviceWorkspaceNative
 import com.floe.android.bridge.DeviceWorkspaceNativeException
 import com.floe.android.core.devicelink.DeviceHistorySyncError
 import com.floe.android.core.devicelink.DeviceHistorySyncException
+import com.floe.android.core.devicelink.DeviceWorkspaceBaseline
 import com.floe.android.core.devicelink.DeviceWorkspaceDownload
 import com.floe.android.core.devicelink.DeviceWorkspaceEntry
 import com.floe.android.core.devicelink.DeviceWorkspaceManifest
+import com.floe.android.core.devicelink.DeviceWorkspaceMove
 import com.floe.android.core.devicelink.DeviceWorkspacePath
 import com.floe.android.core.devicelink.DeviceWorkspaceReceiver
 import com.floe.android.core.devicelink.DeviceWorkspaceSnapshot
@@ -41,6 +43,20 @@ internal class AndroidDeviceWorkspaceStore(context: Context) {
                 } catch (_: DeviceHistorySyncException) {
                     false
                 }
+            }
+
+            override suspend fun shareScope(peer: String, task: UUID): String {
+                val expected = grant(peer, task) ?: refusal(DeviceHistorySyncError.NOT_SHARED)
+                val live = try {
+                    scope(epoch, task)
+                } catch (failure: DeviceHistorySyncException) {
+                    if (failure.error != DeviceHistorySyncError.NOT_SHARED) throw failure
+                    refusal(DeviceHistorySyncError.NOT_SHARED)
+                }
+                if (live != expected || grant(peer, task) != expected) {
+                    refusal(DeviceHistorySyncError.NOT_SHARED)
+                }
+                return live
             }
 
             override suspend fun prepare(peer: String, task: UUID): DeviceWorkspaceSnapshot =
@@ -99,14 +115,72 @@ internal class AndroidDeviceWorkspaceStore(context: Context) {
                 }
             }
 
-        override suspend fun confirm(indexes: List<Int>) = withContext(Dispatchers.IO) {
+        /**
+         * Records the confirmed baseline and applies the convergence receipt
+         * atomically. Receipts only shrink or relocate the confirmed baseline;
+         * they can never introduce new bytes beyond the prepared snapshot. A
+         * retried identical receipt stays a success: the baseline already
+         * carries the destination, which satisfies the recorded-digest check.
+         */
+        override suspend fun confirm(
+            indexes: List<Int>,
+            removals: List<String>,
+            renames: List<DeviceWorkspaceMove>,
+        ) = withContext(Dispatchers.IO) {
             verifyGrant()
+            if (indexes.isEmpty() && removals.isEmpty() && renames.isEmpty()) invalid()
+            if (indexes.size > DeviceWorkspaceManifest.MAX_CONFIRM ||
+                indexes.toSet().size != indexes.size ||
+                indexes.any { entries.getOrNull(it)?.kind != DeviceWorkspaceEntry.Kind.FILE }
+            ) invalid()
+            if (removals.size > MAX_CONVERGENCE_RECEIPT ||
+                removals.toSet().size != removals.size ||
+                removals.any { it.isEmpty() || it.encodeToByteArray().size > MAX_KEY_BYTES }
+            ) invalid()
+            if (renames.size > DeviceWorkspaceManifest.MAX_CONFIRM ||
+                renames.mapTo(HashSet()) { it.key }.size != renames.size ||
+                renames.mapTo(HashSet()) { DeviceWorkspacePath.collisionKey(it.path) }.size != renames.size ||
+                renames.any {
+                    it.key.isEmpty() || it.key.encodeToByteArray().size > MAX_KEY_BYTES ||
+                        DeviceWorkspacePath.collisionKey(it.path) == null ||
+                        !DeviceWorkspaceManifest.isDigest(it.digest)
+                }
+            ) invalid()
+            val present = entries.mapTo(HashSet()) { DeviceWorkspacePath.collisionKey(it.path) }
+            if (removals.any { it in present } || renames.any { it.key in present || it.key in removals }) {
+                invalid()
+            }
+            // Convergence receipts require the recorded baseline identity.
+            val relocated = ArrayList<DeviceWorkspaceEntry>(renames.size)
+            if (removals.isNotEmpty() || renames.isNotEmpty()) {
+                val baseline = bases.baseline(owner)
+                for (move in renames) {
+                    val destinationKey = DeviceWorkspacePath.collisionKey(move.path)
+                    val recorded = baseline[move.key] ?: baseline[destinationKey] ?: invalid()
+                    if (recorded.digest != move.digest) invalid()
+                    val index = entries.indexOfFirst {
+                        it.kind == DeviceWorkspaceEntry.Kind.FILE &&
+                            DeviceWorkspacePath.collisionKey(it.path) == destinationKey &&
+                            it.digest == move.digest
+                    }
+                    if (index < 0) invalid()
+                    // The destination must still be the scanned bytes; the
+                    // sender retires its old spelling only for a live match.
+                    native("sourceVerify") { DeviceWorkspaceNative.sourceVerify(ticket, index) }
+                    relocated.add(entries[index])
+                }
+            }
             for (index in indexes) {
                 currentCoroutineContext().ensureActive()
                 native("sourceVerify") { DeviceWorkspaceNative.sourceVerify(ticket, index) }
             }
             verifyGrant()
-            bases.remember(owner, indexes.map(entries::get))
+            val confirmed = indexes.map(entries::get) + relocated
+            bases.relocate(
+                owner,
+                insert = confirmed.filter { it.kind == DeviceWorkspaceEntry.Kind.FILE },
+                remove = removals + renames.map { it.key },
+            )
         }
 
         override fun close() = close(ticket)
@@ -165,6 +239,72 @@ internal class AndroidDeviceWorkspaceStore(context: Context) {
         override suspend fun confirmed(entries: List<DeviceWorkspaceEntry>) = withContext(Dispatchers.IO) {
             native("check") { DeviceWorkspaceNative.check(ticket) }
             bases.remember(owner, entries)
+        }
+
+        override suspend fun baseline(): Map<String, DeviceWorkspaceBaseline> =
+            withContext(Dispatchers.IO) { bases.baseline(owner) }
+
+        override suspend fun convergeMove(
+            key: String, digest: String, pathHint: String?, destination: String,
+        ): Boolean = withContext(Dispatchers.IO) {
+            val moved = convergenceOutcome(
+                "targetMove",
+                convergenceInput(key, digest, pathHint, to = destination),
+            )
+            if (moved) {
+                // The baseline retires the old key and records the confirmed
+                // destination (under its own key and spelling) atomically, so
+                // a later removal can converge on it.
+                bases.relocate(
+                    owner,
+                    insert = listOf(DeviceWorkspaceEntry(destination, DeviceWorkspaceEntry.Kind.FILE, null, digest)),
+                    remove = listOf(key),
+                )
+            }
+            moved
+        }
+
+        override suspend fun convergeTrash(key: String, digest: String, pathHint: String?): Boolean =
+            withContext(Dispatchers.IO) {
+                val removed = convergenceOutcome(
+                    "targetTrash",
+                    convergenceInput(key, digest, pathHint, to = null),
+                )
+                if (removed) bases.relocate(owner, insert = emptyList(), remove = listOf(key))
+                removed
+            }
+
+        private fun convergenceInput(key: String, digest: String, pathHint: String?, to: String?): ByteArray =
+            JSONObject()
+                .put("ticket", ticket)
+                .put("key", key)
+                .put("digest", digest)
+                .apply {
+                    if (pathHint != null) put("pathHint", pathHint)
+                    if (to != null) put("to", to)
+                }
+                .toString()
+                .encodeToByteArray()
+
+        /**
+         * One convergence command: the native reply is
+         * `{"outcome":"moved"|"removed"|"preserved"}`; only moved/removed
+         * report success, every other value keeps the local file.
+         */
+        private suspend fun convergenceOutcome(operation: String, input: ByteArray): Boolean {
+            val reply = ByteArray(REPLY_BYTES)
+            val copied = try {
+                DeviceWorkspaceNative.command(operation, input, reply)
+            } catch (failure: DeviceWorkspaceNativeException) {
+                refusal(errorFor(failure.status))
+            }
+            if (copied < 0) refusal(errorFor(copied))
+            val root = try {
+                JSONObject(reply.decodeToString(endIndex = copied, throwOnInvalidSequence = true))
+            } catch (_: Exception) {
+                invalid()
+            }
+            return root.optString("outcome") == "moved" || root.optString("outcome") == "removed"
         }
 
         private suspend fun info(path: String, conflictDigest: String? = null): LocalEntry {
@@ -266,6 +406,16 @@ internal class AndroidDeviceWorkspaceStore(context: Context) {
     internal data class Owner(val peer: String, val task: UUID, val scope: String)
     private data class LocalEntry(val kind: String, val digest: String? = null)
 
+    private companion object {
+        const val NATIVE_CHUNK = 65_536
+        /** One confirm receipt carries at most this many baseline removals. */
+        const val MAX_CONVERGENCE_RECEIPT = 1_024
+        /** Baseline comparison keys are bounded exactly like wire paths. */
+        const val MAX_KEY_BYTES = 1_024
+        const val REPLY_BYTES = 4_096
+    }
+
+    /** Durable confirmed-baseline ledger for one peer/task/scope. */
     private class WorkspaceBases(context: Context) {
         private val db by lazy {
             SQLiteDatabase.openOrCreateDatabase(File(context.noBackupFilesDir, "device-workspace-bases.sqlite"), null)
@@ -276,6 +426,15 @@ internal class AndroidDeviceWorkspaceStore(context: Context) {
                             path TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(peer, task, scope, path)
                         ) WITHOUT ROWID
                     """.trimIndent())
+                    // v2 convergence: the exact on-disk spelling recorded at
+                    // confirmation time (NULL for rows written by older
+                    // builds, which fall back to a comparison-key lookup).
+                    val columns = rawQuery("PRAGMA table_info(file_base)", null).use { cursor ->
+                        buildSet { while (cursor.moveToNext()) add(cursor.getString(1)) }
+                    }
+                    if ("spelling" !in columns) {
+                        execSQL("ALTER TABLE file_base ADD COLUMN spelling TEXT")
+                    }
                 }
         }
 
@@ -284,13 +443,42 @@ internal class AndroidDeviceWorkspaceStore(context: Context) {
             arrayOf(owner.peer, owner.task.toString(), owner.scope, key(path)),
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
-        fun remember(owner: Owner, entries: List<DeviceWorkspaceEntry>) {
+        /** The whole confirmed baseline for this peer/task/scope. */
+        fun baseline(owner: Owner): Map<String, DeviceWorkspaceBaseline> = db.rawQuery(
+            "SELECT path, digest, spelling FROM file_base WHERE peer=? AND task=? AND scope=?",
+            arrayOf(owner.peer, owner.task.toString(), owner.scope),
+        ).use { cursor ->
+            buildMap {
+                while (cursor.moveToNext()) {
+                    put(cursor.getString(0), DeviceWorkspaceBaseline(cursor.getString(1), cursor.getString(2)))
+                }
+            }
+        }
+
+        fun remember(owner: Owner, entries: List<DeviceWorkspaceEntry>) = relocate(owner, entries, emptyList())
+
+        /**
+         * Atomic baseline update: [remove] keys retire first, then [insert]
+         * entries are recorded under their comparison key with the exact
+         * spelling. A retried rename receipt therefore converges on the
+         * destination the first receipt recorded.
+         */
+        fun relocate(owner: Owner, insert: List<DeviceWorkspaceEntry>, remove: List<String>) {
             db.beginTransaction()
             try {
-                for (entry in entries) {
+                for (entry in remove) {
                     db.execSQL(
-                        "INSERT OR REPLACE INTO file_base(peer, task, scope, path, digest) VALUES(?,?,?,?,?)",
-                        arrayOf(owner.peer, owner.task.toString(), owner.scope, key(entry.path), checkNotNull(entry.digest)),
+                        "DELETE FROM file_base WHERE peer=? AND task=? AND scope=? AND path=?",
+                        arrayOf(owner.peer, owner.task.toString(), owner.scope, entry),
+                    )
+                }
+                for (entry in insert) {
+                    db.execSQL(
+                        "INSERT OR REPLACE INTO file_base(peer, task, scope, path, digest, spelling) VALUES(?,?,?,?,?,?)",
+                        arrayOf(
+                            owner.peer, owner.task.toString(), owner.scope, key(entry.path),
+                            checkNotNull(entry.digest), entry.path,
+                        ),
                     )
                 }
                 db.setTransactionSuccessful()
@@ -305,10 +493,6 @@ internal class AndroidDeviceWorkspaceStore(context: Context) {
         }
 
         private fun key(path: String) = checkNotNull(DeviceWorkspacePath.collisionKey(path))
-    }
-
-    private companion object {
-        const val NATIVE_CHUNK = 65_536
     }
 }
 

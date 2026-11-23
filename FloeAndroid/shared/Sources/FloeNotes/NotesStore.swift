@@ -415,13 +415,36 @@ public actor NotesStore {
     @discardableResult public func setTrashed(_ id: UUID, expectedRevision: Int, trashed: Bool) throws -> NoteDocument {
         defer { publishChange() }
         return try database.write { db in
-            var value = try read(id, db: db)
-            guard value.revision == expectedRevision else { throw NoteError.conflict }
-            value.deletedAt = trashed ? Date() : nil; value.updatedAt = Date(); value.revision += 1
-            let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [id.uuidString]) ?? 0
-            try persist(value, cursor: cursor, db: db)
-            return value
+            try setTrashed(id, expectedRevision: expectedRevision, trashed: trashed, db: db)
         }
+    }
+
+    /// One conflict leaves the whole selection in the library.
+    public func trashDocuments(_ targets: [(id: UUID, expectedRevision: Int)])
+        throws -> [(id: UUID, revision: Int)] {
+        guard !targets.isEmpty else { return [] }
+        let updated = try database.write { db in
+            try targets.map { target in
+                let document = try setTrashed(target.id, expectedRevision: target.expectedRevision,
+                                              trashed: true, db: db)
+                return (id: document.id, revision: document.revision)
+            }
+        }
+        publishChange()
+        return updated
+    }
+
+    private func setTrashed(_ id: UUID, expectedRevision: Int, trashed: Bool, db: Database)
+        throws -> NoteDocument {
+        var value = try read(id, db: db)
+        guard value.revision == expectedRevision else { throw NoteError.conflict }
+        let now = Date()
+        value.deletedAt = trashed ? now : nil
+        value.updatedAt = now
+        value.revision += 1
+        let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [id.uuidString]) ?? 0
+        try persist(value, cursor: cursor, db: db)
+        return value
     }
 
     /// Deterministic custom-cover mutation. Not a content edit: the content
@@ -830,16 +853,35 @@ public actor NotesStore {
     }
 
     /// Returns source documents, not synthesized answers. Literal substring matching also supports CJK.
-    public func search(_ query: String, limit: Int = 50) throws -> [NoteDocument] {
+    public func search(_ query: String, limit: Int = 50, trashOnly: Bool = false) throws -> [NoteDocument] {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return [] }
+        let count = min(200, max(1, limit))
+        if trashOnly {
+            // The normal index intentionally excludes trash, including notes
+            // deleted before this search surface existed.
+            return try database.read { db in
+                let cursor = try Data.fetchCursor(db, sql: """
+                    SELECT body FROM documents WHERE deleted IS NOT NULL ORDER BY updated DESC, id
+                    """)
+                var matches: [NoteDocument] = []
+                while matches.count < count, let bytes = try cursor.next() {
+                    let document = try decoder.decode(NoteDocument.self, from: bytes)
+                    if document.title.localizedStandardContains(value) ||
+                        document.searchableText.localizedStandardContains(value) {
+                        matches.append(document)
+                    }
+                }
+                return matches
+            }
+        }
         let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
         return try database.read { db in
             try Data.fetchAll(db, sql: """
                 SELECT d.body FROM documents d JOIN note_search s ON s.document_id=d.id
                 WHERE d.deleted IS NULL AND (s.title LIKE ? ESCAPE '\\' OR s.body LIKE ? ESCAPE '\\')
                 ORDER BY d.updated DESC LIMIT ?
-                """, arguments: ["%\(escaped)%", "%\(escaped)%", min(200, max(1, limit))])
+                """, arguments: ["%\(escaped)%", "%\(escaped)%", count])
                 .map { try decoder.decode(NoteDocument.self, from: $0) }
         }
     }

@@ -86,11 +86,9 @@ sealed class InkGestureIntent {
  * Pure pointer router for one ink canvas.
  *
  * Rules encoded (and unit-tested):
- *  - system-cancelled pointers (ACTION_CANCEL / FLAG_CANCELED, which is how the
- *    platform reports palm/accidental touches after the fact) cancel the
- *    in-progress stroke with NO commit;
- *  - a second pointer during inking cancels the in-progress stroke and starts
- *    pan/zoom (the official Ink guidance for dual-pointer pan/zoom);
+ *  - a contact cancelled by Android cannot commit ink;
+ *  - pen and eraser input take precedence when a hand is resting on the
+ *    screen. Two fingers still transform when no hardware pen is active;
  *  - finger writing is on by default; [InkInputConfig.penOnly] turns fingers
  *    into navigation only;
  *  - the eraser tool emits erase intents instead of strokes;
@@ -101,6 +99,7 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
 
     private var activeStroke: Int? = null
     private var activeErase: Int? = null
+    private var hardwarePenPointer: Int? = null
     private var transforming = false
     private var transformPointerCount = 0
     private var lastFocusX = 0f
@@ -111,6 +110,7 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
     fun reset() {
         activeStroke = null
         activeErase = null
+        hardwarePenPointer = null
         transforming = false
         transformPointerCount = 0
         lastSpan = 0f
@@ -123,15 +123,10 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
         return when (sample.action) {
             InkPointerAction.HOVER -> listOf(InkGestureIntent.Ignored)
             InkPointerAction.CANCEL -> {
-                // ACTION_CANCEL / FLAG_CANCELED is exactly how the platform
-                // reports palm/accidental gestures; roll the stroke back.
                 val intents = ArrayList<InkGestureIntent>(2)
                 if (activeStroke != null || activeErase != null) intents.add(InkGestureIntent.CancelInk)
-                activeStroke = null
-                activeErase = null
                 if (transforming) intents.add(InkGestureIntent.TransformEnd)
-                transforming = false
-                transformPointerCount = 0
+                reset()
                 if (intents.isEmpty()) intents.add(InkGestureIntent.Ignored)
                 intents
             }
@@ -145,23 +140,26 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
                     // cancel the old one instead of leaking it.
                     activeStroke = null
                     activeErase = null
+                    hardwarePenPointer = null
                     return listOf(InkGestureIntent.CancelInk)
                 }
-                when (val decision = classify(sample, cfg)) {
-                    Decision.PEN_STROKE -> {
-                        activeStroke = sample.pointerId
-                        listOf(InkGestureIntent.BeginStroke(sample.pointerId, sample.toolType))
-                    }
-                    Decision.ERASE -> {
-                        activeErase = sample.pointerId
-                        listOf(InkGestureIntent.BeginErase(sample.pointerId, sample.xPx, sample.yPx))
-                    }
-                    Decision.NAVIGATE -> listOf(InkGestureIntent.Ignored)
-                }
+                listOf(beginInput(sample, cfg))
             }
 
             InkPointerAction.POINTER_DOWN -> {
-                if (cfg.twoFingerTransform && sample.pointerCount >= 2) {
+                if (hardwarePenPointer != null || sample.canceledBySystem) {
+                    listOf(InkGestureIntent.Ignored)
+                } else if (sample.isHardwarePen) {
+                    val intents = ArrayList<InkGestureIntent>(3)
+                    if (activeStroke != null || activeErase != null) intents.add(InkGestureIntent.CancelInk)
+                    if (transforming) intents.add(InkGestureIntent.TransformEnd)
+                    activeStroke = null
+                    activeErase = null
+                    transforming = false
+                    transformPointerCount = 0
+                    intents.add(beginInput(sample, cfg))
+                    intents
+                } else if (cfg.twoFingerTransform && sample.pointerCount >= 2) {
                     val intents = ArrayList<InkGestureIntent>(2)
                     if (activeStroke != null || activeErase != null) {
                         intents.add(InkGestureIntent.CancelInk)
@@ -176,9 +174,10 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
                     lastSpan = span()
                     intents.add(InkGestureIntent.TransformStart(focus.first, focus.second))
                     intents
-                } else if (classify(sample, cfg) == Decision.PEN_STROKE && activeStroke == null) {
-                    activeStroke = sample.pointerId
-                    listOf(InkGestureIntent.BeginStroke(sample.pointerId, sample.toolType))
+                } else if (activeStroke == null && activeErase == null &&
+                    classify(sample, cfg) == Decision.PEN_STROKE
+                ) {
+                    listOf(beginInput(sample, cfg))
                 } else {
                     listOf(InkGestureIntent.Ignored)
                 }
@@ -201,16 +200,22 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
                     lastSpan = currentSpan
                     return listOf(intent)
                 }
-                if (activeStroke == sample.pointerId) {
-                    return listOf(InkGestureIntent.ExtendStroke(sample.pointerId, sample.xPx, sample.yPx))
+                val activePointer = activeStroke ?: activeErase
+                val position = if (activePointer == sample.pointerId) {
+                    InkPointerPosition(sample.pointerId, sample.xPx, sample.yPx)
+                } else {
+                    sample.pointers.firstOrNull { it.pointerId == activePointer }
                 }
-                if (activeErase == sample.pointerId) {
-                    return listOf(InkGestureIntent.ExtendErase(sample.xPx, sample.yPx))
+                if (position != null && activeStroke != null) {
+                    return listOf(InkGestureIntent.ExtendStroke(position.pointerId, position.xPx, position.yPx))
+                }
+                if (position != null && activeErase != null) {
+                    return listOf(InkGestureIntent.ExtendErase(position.xPx, position.yPx))
                 }
                 listOf(InkGestureIntent.Ignored)
             }
 
-            InkPointerAction.POINTER_UP -> {
+            InkPointerAction.POINTER_UP, InkPointerAction.UP -> {
                 val intents = ArrayList<InkGestureIntent>(2)
                 if (transforming) {
                     transformPointerCount = (sample.pointerCount - 1).coerceAtLeast(1)
@@ -219,37 +224,20 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
                         intents.add(InkGestureIntent.TransformEnd)
                     }
                 }
+                if (hardwarePenPointer == sample.pointerId) hardwarePenPointer = null
                 if (activeStroke == sample.pointerId) {
                     activeStroke = null
-                    intents.add(InkGestureIntent.EndStroke(sample.pointerId))
+                    intents.add(if (sample.canceledBySystem) InkGestureIntent.CancelInk
+                        else InkGestureIntent.EndStroke(sample.pointerId))
                 } else if (activeErase == sample.pointerId) {
                     activeErase = null
-                    intents.add(InkGestureIntent.EndErase)
+                    intents.add(if (sample.canceledBySystem) InkGestureIntent.CancelInk else InkGestureIntent.EndErase)
                 }
                 pointerPositions.remove(sample.pointerId)
                 if (intents.isEmpty()) intents.add(InkGestureIntent.Ignored)
                 intents
             }
 
-            InkPointerAction.UP -> {
-                val intents = ArrayList<InkGestureIntent>(2)
-                if (activeStroke == sample.pointerId) {
-                    activeStroke = null
-                    intents.add(InkGestureIntent.EndStroke(sample.pointerId))
-                }
-                if (activeErase == sample.pointerId) {
-                    activeErase = null
-                    intents.add(InkGestureIntent.EndErase)
-                }
-                if (transforming) {
-                    transforming = false
-                    transformPointerCount = 0
-                    intents.add(InkGestureIntent.TransformEnd)
-                }
-                pointerPositions.remove(sample.pointerId)
-                if (intents.isEmpty()) intents.add(InkGestureIntent.Ignored)
-                intents
-            }
         }
     }
 
@@ -259,7 +247,26 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
 
     private enum class Decision { PEN_STROKE, ERASE, NAVIGATE }
 
+    private val InkPointerSample.isHardwarePen: Boolean
+        get() = toolType == InkPointerKind.PEN || toolType == InkPointerKind.ERASER
+
+    private fun beginInput(sample: InkPointerSample, cfg: InkInputConfig): InkGestureIntent =
+        when (classify(sample, cfg)) {
+            Decision.PEN_STROKE -> {
+                activeStroke = sample.pointerId
+                if (sample.isHardwarePen) hardwarePenPointer = sample.pointerId
+                InkGestureIntent.BeginStroke(sample.pointerId, sample.toolType)
+            }
+            Decision.ERASE -> {
+                activeErase = sample.pointerId
+                if (sample.isHardwarePen) hardwarePenPointer = sample.pointerId
+                InkGestureIntent.BeginErase(sample.pointerId, sample.xPx, sample.yPx)
+            }
+            Decision.NAVIGATE -> InkGestureIntent.Ignored
+        }
+
     private fun classify(sample: InkPointerSample, cfg: InkInputConfig): Decision = when {
+        cfg.penOnly && !sample.isHardwarePen -> Decision.NAVIGATE
         cfg.eraserMode && sample.toolType != InkPointerKind.UNKNOWN -> Decision.ERASE
         else -> classifyByTool(sample, cfg)
     }
@@ -269,7 +276,6 @@ class InkPointerRouter(private val config: () -> InkInputConfig) {
         InkPointerKind.PEN -> Decision.PEN_STROKE
         InkPointerKind.MOUSE -> if (cfg.mouseDraws && sample.primaryButtonPressed) Decision.PEN_STROKE else Decision.NAVIGATE
         InkPointerKind.FINGER -> when {
-            cfg.penOnly -> Decision.NAVIGATE
             cfg.fingerWriting -> Decision.PEN_STROKE
             else -> Decision.NAVIGATE
         }

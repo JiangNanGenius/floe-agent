@@ -688,6 +688,162 @@ class MeetingTranscriptionRepositoryTest {
         assertTrue(repository.releaseTranscriptionSource(meeting.id, newer.snapshotId))
     }
 
+    @Test
+    fun `attempt checkpoint round-trips through durable storage`() = runBlocking {
+        setUpRepository()
+        val meeting = repository.createMeeting("Checkpoint")
+        val audio = importedAudio(meeting.id)
+        val checkpoint = MeetingTranscriptionLastAttempt(
+            materialId = audio.id,
+            expectedTranscriptionRevision = 0L,
+            phase = MeetingTranscriptionLastAttemptPhase.RUNNING,
+            failureCode = null,
+            failureReason = null,
+            retryable = false,
+            updatedAtMillis = now,
+        )
+        repository.recordTranscriptionAttempt(meeting.id, checkpoint)
+        assertEquals(checkpoint, repository.detail(meeting.id).transcription.lastAttempt)
+
+        // A fresh repository over the same bytes sees the same record, which
+        // is what makes a retry offer possible after a process restart.
+        val reopened = MeetingRepository(root, clock = { now })
+        assertEquals(checkpoint, reopened.detail(meeting.id).transcription.lastAttempt)
+
+        // Terminal update replaces it.
+        val failed = checkpoint.copy(
+            phase = MeetingTranscriptionLastAttemptPhase.FAILED,
+            failureCode = "NETWORK",
+            failureReason = "chunkTransportFailed",
+            retryable = true,
+        )
+        repository.recordTranscriptionAttempt(meeting.id, failed)
+        assertEquals(failed, reopened.detail(meeting.id).transcription.lastAttempt)
+
+        // Clearing works and is idempotent.
+        repository.recordTranscriptionAttempt(meeting.id, null)
+        assertEquals(null, repository.detail(meeting.id).transcription.lastAttempt)
+        repository.recordTranscriptionAttempt(meeting.id, null)
+    }
+
+    @Test
+    fun `commit clears the checkpoint and idempotent commit clears a stale one`() = runBlocking {
+        setUpRepository()
+        val meeting = repository.createMeeting("Commit clears")
+        val audio = importedAudio(meeting.id)
+        val source = repository.transcriptionSource(meeting.id, audio.id, readableProbe)
+        val segments = listOf(segment(0, 0L, 1_500L, "Hello"))
+        val checkpoint = MeetingTranscriptionLastAttempt(
+            materialId = audio.id,
+            expectedTranscriptionRevision = 0L,
+            phase = MeetingTranscriptionLastAttemptPhase.FAILED,
+            failureCode = "NETWORK",
+            failureReason = "chunkTransportFailed",
+            retryable = true,
+            updatedAtMillis = now,
+        )
+        repository.recordTranscriptionAttempt(meeting.id, checkpoint)
+        assertNotEquals(null, repository.detail(meeting.id).transcription.lastAttempt)
+
+        val receipt = repository.commitTranscription(
+            meetingId = meeting.id,
+            materialId = audio.id,
+            expectedSourceBytes = source.file.length(),
+            expectedSourceSha256 = sha256Of(source.file),
+            expectedTranscriptionRevision = 0L,
+            language = "en",
+            segments = segments,
+        )
+        assertFalse(receipt.idempotent)
+        assertEquals(null, repository.detail(meeting.id).transcription.lastAttempt)
+
+        // A failed retry after the commit leaves a stale marker; the exact
+        // idempotent re-commit must clear it instead of leaving a phantom
+        // retry prompt over an existing transcript.
+        repository.recordTranscriptionAttempt(meeting.id, checkpoint)
+        val idempotent = repository.commitTranscription(
+            meetingId = meeting.id,
+            materialId = audio.id,
+            expectedSourceBytes = source.file.length(),
+            expectedSourceSha256 = sha256Of(source.file),
+            expectedTranscriptionRevision = 0L,
+            language = "en",
+            segments = segments,
+        )
+        assertTrue(idempotent.idempotent)
+        assertEquals(null, repository.detail(meeting.id).transcription.lastAttempt)
+        assertEquals(1L, repository.detail(meeting.id).transcription.revision)
+    }
+
+    @Test
+    fun `malformed checkpoint shapes are ignored on read`() = runBlocking {
+        setUpRepository()
+        val meeting = repository.createMeeting("Corrupt checkpoint")
+        val audio = importedAudio(meeting.id)
+        val source = repository.transcriptionSource(meeting.id, audio.id, readableProbe)
+        repository.commitTranscription(
+            meetingId = meeting.id,
+            materialId = audio.id,
+            expectedSourceBytes = source.file.length(),
+            expectedSourceSha256 = sha256Of(source.file),
+            expectedTranscriptionRevision = 0L,
+            language = "en",
+            segments = listOf(segment(0, 0L, 1_500L, "Hello")),
+        )
+
+        // Hand-corrupt the checkpoint inside meeting.json: unknown phase,
+        // invalid material id and a non-object shape must never fail the
+        // whole meeting read nor touch the committed transcript.
+        val meta = File(root, "${meeting.id}/$MEETING_META_FILE")
+        val corrupted = listOf(
+            meta.readText().replace(
+                "\"lastAttempt\":null",
+                """"lastAttempt":{"materialId":"${audio.id}",""" +
+                    """"expectedTranscriptionRevision":0,"phase":"paused"}""",
+            ),
+            meta.readText().replace(
+                "\"lastAttempt\":null",
+                """"lastAttempt":{"materialId":"not-a-valid-id",""" +
+                    """"expectedTranscriptionRevision":0,"phase":"running"}""",
+            ),
+            meta.readText().replace(
+                "\"lastAttempt\":null",
+                """"lastAttempt":"running"""",
+            ),
+        )
+        for ((index, text) in corrupted.withIndex()) {
+            meta.writeText(text)
+            val reopened = MeetingRepository(root, clock = { now })
+            val detail = reopened.detail(meeting.id)
+            assertEquals("corrupt checkpoint $index must not break the read", 1L, detail.transcription.revision)
+            assertEquals(null, detail.transcription.lastAttempt)
+        }
+    }
+
+    @Test
+    fun `speaker labels survive the durable round trip`() = runBlocking {
+        setUpRepository()
+        val meeting = repository.createMeeting("Speakers")
+        val audio = importedAudio(meeting.id)
+        val source = repository.transcriptionSource(meeting.id, audio.id, readableProbe)
+        repository.commitTranscription(
+            meetingId = meeting.id,
+            materialId = audio.id,
+            expectedSourceBytes = source.file.length(),
+            expectedSourceSha256 = sha256Of(source.file),
+            expectedTranscriptionRevision = 0L,
+            language = "en",
+            segments = listOf(
+                StoredTranscriptSegment("s-0", 0L, 1_000L, "Hi", "Alice"),
+                StoredTranscriptSegment("s-1", 1_000L, 2_000L, "Hello", null),
+            ),
+        )
+        val reopened = MeetingRepository(root, clock = { now })
+        val segments = reopened.detail(meeting.id).transcription.segments
+        assertEquals("Alice", segments[0].speaker)
+        assertEquals(null, segments[1].speaker)
+    }
+
     private fun expectFailure(code: MeetingErrorCode, block: suspend () -> Unit) {
         val failure = assertThrows(MeetingException::class.java) {
             runBlocking { block() }

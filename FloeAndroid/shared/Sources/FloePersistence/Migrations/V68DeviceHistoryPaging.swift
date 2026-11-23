@@ -68,7 +68,11 @@ enum V68DeviceHistoryPaging {
         }
     }
 
-    /// Only invoked by the static trigger definitions above.
+    static func recordProjectionChange(messageID: String, db: Database) throws {
+        try db.execute(sql: bump(message: ":messageID"), arguments: ["messageID": messageID])
+    }
+
+    /// The triggers and explicit changes share the same sequence transaction.
     private static func bump(message: String) -> String {
         """
         INSERT INTO device_history_sequences (conversation_id, sequence)

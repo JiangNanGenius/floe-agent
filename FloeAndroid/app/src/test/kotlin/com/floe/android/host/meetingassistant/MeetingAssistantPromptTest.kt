@@ -185,6 +185,49 @@ class MeetingAssistantPromptTest {
         assertFalse(built.prompt.goal.contains(second.id))
     }
 
+    @Test
+    fun `minutes generated after a late transcript use the finished material and revision`() {
+        // Interim state: minutes were prepared while only an early transcript
+        // (or none) existed.
+        val interim = detail(
+            notes = "Draft notes",
+            segments = listOf(segment(1_000L, "Alex", "Opening remarks only.")),
+            notesRevision = 1L,
+            transcriptRevision = 1L,
+        )
+        val interimMinutes = MeetingAssistantPromptBuilder.build(
+            interim,
+            MeetingAssistantAction.MINUTES,
+            "",
+        ) as MeetingAssistantPromptResult.Built
+        assertEquals(1L, interimMinutes.prompt.transcriptRevision)
+        assertTrue(interimMinutes.prompt.goal.contains("Opening remarks only."))
+
+        // The transcription committed late for the SAME material: the next
+        // minutes must reflect the finished transcript, never be suppressed by
+        // the earlier interim summary.
+        val finished = interim.copy(
+            transcription = MeetingTranscription(
+                revision = 2L,
+                materialId = interim.transcription.materialId,
+                segments = listOf(
+                    segment(1_000L, "Alex", "Opening remarks only."),
+                    segment(60_000L, "Sam", "The budget is approved for Q3."),
+                ),
+            ),
+        )
+        val finalMinutes = MeetingAssistantPromptBuilder.build(
+            finished,
+            MeetingAssistantAction.MINUTES,
+            "",
+        ) as MeetingAssistantPromptResult.Built
+
+        assertEquals(2L, finalMinutes.prompt.transcriptRevision)
+        assertEquals(2, finalMinutes.prompt.transcriptSegmentCount)
+        assertTrue(finalMinutes.prompt.goal.contains("The budget is approved for Q3."))
+        assertTrue(finalMinutes.prompt.goal.contains("Transcript revision: 2"))
+    }
+
     private fun detail(
         notes: String,
         segments: List<MeetingTranscriptSegment> = emptyList(),

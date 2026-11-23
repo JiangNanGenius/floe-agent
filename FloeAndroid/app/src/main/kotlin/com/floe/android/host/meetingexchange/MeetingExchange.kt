@@ -68,6 +68,9 @@ class MeetingExchange(
         readMeeting = { meetingId -> manager.meeting(meetingId) },
         labels = labels,
         zoneId = zoneId,
+        renderDocument = { snapshot, format ->
+            MeetingDocumentExport.render(snapshot, format, labels, zoneId)
+        },
     )
     private val stager = MeetingExportStager(File(appContext.cacheDir, "meeting-exports"))
     private val writer = MeetingDocumentWriter(stager)

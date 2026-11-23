@@ -27,6 +27,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +51,7 @@ internal class DiagnosticReportService(private val context: Context) {
     private val uploadLanes = ReportUploadLanes()
     private val transfers = HashMap<String, Pair<Long, Long>>()
     private val activeUploads = HashMap<String, ReportUploadSession>()
+    private val uploadAdmissions = HashMap<String, UUID>()
     private val transport = ReportUploadTransport()
     private val mutable = MutableStateFlow(DiagnosticReportingState())
     val state = mutable.asStateFlow()
@@ -60,7 +62,7 @@ internal class DiagnosticReportService(private val context: Context) {
         attached = true
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            if (error !is CancellationException && preferences.getBoolean("automatic", false)) {
+            if (error !is CancellationException) {
                 runCatching { recordFault("process_crash", error, enqueue = false) }
             }
             previous?.uncaughtException(thread, error)
@@ -71,23 +73,34 @@ internal class DiagnosticReportService(private val context: Context) {
     }
 
     fun setAutomatic(allowed: Boolean) {
-        preferences.edit().putBoolean("automatic", allowed)
-            .putLong("consent_at", if (allowed) System.currentTimeMillis() else 0).commit()
-        if (!allowed) synchronized(gate) {
-            records().filter { it.optString("kind") != "manual" && it.optString("state") != "sent" }
-                .forEach(::removeRecord)
+        synchronized(gate) {
+            val changed = preferences.getBoolean("automatic", false) != allowed
+            if (changed) {
+                val saved = preferences.edit().putBoolean("automatic", allowed)
+                    .putLong("consent_at", if (allowed) System.currentTimeMillis() else 0)
+                    .putLong("consent_revision", preferences.getLong("consent_revision", 0) + 1)
+                    .commit()
+                if (allowed && !saved) preferences.edit().putBoolean("automatic", false).apply()
+            }
+            if (!allowed) {
+                records().filter { it.optString("kind") != "manual" && it.optString("state") != "sent" }
+                    .forEach(::removeRecord)
+            }
         }
         refresh()
     }
 
     /** Call only for App faults, never provider/tool/task failures or normal cancellation. */
     fun recordAppFault(code: String, error: Throwable) {
-        if (!code.matches(Regex("[a-z_]{1,48}")) || error is CancellationException ||
-            !preferences.getBoolean("automatic", false)) return
+        if (!code.matches(Regex("[a-z_]{1,48}")) || error is CancellationException) return
         recordFault(code, error, enqueue = true)
     }
 
+    private fun currentConsentRevision(): Long? =
+        preferences.getLong("consent_revision", 0).takeIf { preferences.getBoolean("automatic", false) }
+
     private fun recordFault(code: String, error: Throwable, enqueue: Boolean) {
+        val consent = synchronized(gate) { currentConsentRevision() } ?: return
         val frames = error.stackTrace.take(20).joinToString("\n") {
             "${it.className}.${it.methodName}:${it.lineNumber}"
         }
@@ -95,6 +108,7 @@ internal class DiagnosticReportService(private val context: Context) {
         val signature = "${error.javaClass.name}\n$frames"
         val fingerprint = sha256(signature.toByteArray())
         synchronized(gate) {
+            if (currentConsentRevision() != consent) return
             if (records().any { it.optString("fingerprint") == fingerprint &&
                     System.currentTimeMillis() - it.optLong("created") < 3_600_000 }) return
             val report = newRecord("app_fault", "$code\n$signature", emptyList(), false)
@@ -107,19 +121,25 @@ internal class DiagnosticReportService(private val context: Context) {
 
     private fun collectPreviousExit() {
         if (Build.VERSION.SDK_INT < 30) return
-        val consentAt = preferences.getLong("consent_at", Long.MAX_VALUE)
-        val lastSeen = preferences.getLong("exit_seen", 0)
+        val (consent, consentAt, lastSeen) = synchronized(gate) {
+            val revision = currentConsentRevision() ?: return
+            Triple(revision, preferences.getLong("consent_at", Long.MAX_VALUE), preferences.getLong("exit_seen", 0))
+        }
         val exits = context.getSystemService(ActivityManager::class.java)
             .getHistoricalProcessExitReasons(context.packageName, 0, 4)
-        for (exit in exits.sortedBy { it.timestamp }) {
-            if (exit.timestamp < consentAt || exit.timestamp <= lastSeen) continue
-            if (exit.reason !in setOf(ApplicationExitInfo.REASON_CRASH,
-                    ApplicationExitInfo.REASON_CRASH_NATIVE, ApplicationExitInfo.REASON_ANR)) continue
-            val row = newRecord("app_fault", "process_exit reason=${exit.reason} sdk=${Build.VERSION.SDK_INT}", emptyList(), false)
-            row.put("id", UUID.nameUUIDFromBytes("exit:${exit.pid}:${exit.timestamp}".toByteArray()).toString())
-            synchronized(gate) { if (!file(row.getString("id")).exists()) save(row) }
+        synchronized(gate) {
+            if (currentConsentRevision() != consent) return
+            for (exit in exits.sortedBy { it.timestamp }) {
+                if (exit.timestamp < consentAt || exit.timestamp <= lastSeen) continue
+                if (exit.reason !in setOf(ApplicationExitInfo.REASON_CRASH,
+                        ApplicationExitInfo.REASON_CRASH_NATIVE, ApplicationExitInfo.REASON_ANR)) continue
+                val row = newRecord("app_fault", "process_exit reason=${exit.reason} sdk=${Build.VERSION.SDK_INT}", emptyList(), false)
+                row.put("id", UUID.nameUUIDFromBytes("exit:${exit.pid}:${exit.timestamp}".toByteArray()).toString())
+                if (!file(row.getString("id")).exists()) save(row)
+            }
+            val newest = maxOf(lastSeen, exits.maxOfOrNull { it.timestamp } ?: lastSeen)
+            preferences.edit().putLong("exit_seen", newest).apply()
         }
-        preferences.edit().putLong("exit_seen", exits.maxOfOrNull { it.timestamp } ?: lastSeen).apply()
         refresh()
     }
 
@@ -138,8 +158,10 @@ internal class DiagnosticReportService(private val context: Context) {
                 val row = newRecord("manual", C07EntryRedactor.redact(description.take(8_000)), images,
                     allowAttachmentsOnAnyNetwork).put("id", id)
                 synchronized(gate) { save(row) }
-                refresh(); enqueue(); id
             } catch (error: Exception) { images.forEach { it.delete() }; throw error }
+            refresh()
+            enqueue()
+            id
         }
 
     private fun importScreenshot(uri: Uri, destination: File, budget: Int): File {
@@ -313,10 +335,11 @@ internal class DiagnosticReportService(private val context: Context) {
         synchronized(gate) {
             val row = read(id) ?: return@synchronized
             if (row.optString("state") != "queued") return@synchronized
+            uploadAdmissions.remove(id)
             activeUploads.remove(id)?.cancel()
             // Enqueue cancellation before publishing the retryable row. A
             // later explicit retry enqueues its replacement after this work.
-            WorkManager.getInstance(context).cancelUniqueWork("floe.diagnostics.upload.$id")
+            runCatching { WorkManager.getInstance(context).cancelUniqueWork(uploadWorkName(id)) }
             save(row.put("state", "failed").put("error", "upload_cancelled"))
             transfers.remove(id)
         }
@@ -329,10 +352,16 @@ internal class DiagnosticReportService(private val context: Context) {
 
     fun remove(id: String) { synchronized(gate) { read(id)?.let(::removeRecord) }; refresh() }
     private fun removeRecord(row: JSONObject) {
-        activeUploads.remove(row.getString("id"))?.cancel()
+        val id = row.getString("id")
+        uploadAdmissions.remove(id)
+        activeUploads.remove(id)?.cancel()
+        transfers.remove(id)
+        if (row.optString("state") == "queued") {
+            runCatching { WorkManager.getInstance(context).cancelUniqueWork(uploadWorkName(id)) }
+        }
         val images = row.optJSONArray("images") ?: JSONArray()
         for (i in 0 until images.length()) File(root, images.getString(i)).delete()
-        AtomicFile(file(row.getString("id"))).delete()
+        AtomicFile(file(id)).delete()
     }
     private fun file(id: String): File { UUID.fromString(id); return File(root, "$id.json") }
     private fun read(id: String): JSONObject? = runCatching {
@@ -379,17 +408,49 @@ internal class DiagnosticReportService(private val context: Context) {
     private fun enqueue(replaceID: String? = null) {
         // Each report owns its retry. A waiting Wi-Fi attachment or an older
         // retry backoff must not delay newly submitted text feedback.
-        val rows = synchronized(gate) { records().filter { it.optString("state") == "queued" } }
-        val work = WorkManager.getInstance(context)
-        for (row in rows) {
-            val id = row.getString("id")
-            work.enqueueUniqueWork("floe.diagnostics.upload.$id",
-                if (id == replaceID) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
-                OneTimeWorkRequestBuilder<DiagnosticReportWorker>().setInputData(workDataOf("report_id" to id))
+        synchronized(gate) {
+            val work = runCatching { WorkManager.getInstance(context) }.getOrNull()
+            val autoAllowed = currentConsentRevision() != null
+            for (row in records()) {
+                if (row.optString("state") != "queued" || (!autoAllowed && row.optString("kind") != "manual")) continue
+                val id = row.getString("id")
+                if (activeUploads.containsKey(id) ||
+                    (uploadAdmissions.containsKey(id) && id != replaceID)) continue
+                val request = OneTimeWorkRequestBuilder<DiagnosticReportWorker>()
+                    .setInputData(workDataOf("report_id" to id))
                     .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build())
+                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                    .build()
+                uploadAdmissions[id] = request.id
+                runCatching {
+                    val result = checkNotNull(work).enqueueUniqueWork(uploadWorkName(id),
+                        if (id == replaceID) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
+                        request).result
+                    result.addListener({
+                        val accepted = runCatching { result.get() }.isSuccess
+                        finishUploadAdmission(id, request.id, accepted)
+                    }, Executor { it.run() })
+                }.onFailure {
+                    finishUploadAdmission(id, request.id, accepted = false)
+                }
+            }
         }
     }
+
+    private fun finishUploadAdmission(id: String, requestID: UUID, accepted: Boolean) {
+        val changed = synchronized(gate) {
+            // A cancelled attempt or revoked consent cannot settle a newer record.
+            if (uploadAdmissions[id] != requestID) return
+            uploadAdmissions.remove(id)
+            if (accepted || activeUploads.containsKey(id)) return
+            val current = read(id)?.takeIf { it.optString("state") == "queued" } ?: return
+            runCatching { save(current.put("state", "failed").put("error", "upload_schedule_failed")) }
+                .isSuccess
+        }
+        if (changed) refresh()
+    }
+
+    private fun uploadWorkName(id: String): String = "floe.diagnostics.upload.$id"
     private class ReportTransportFailure(val code: String) : java.io.IOException()
     private class ReportReceiptRejected : Exception()
     private class ReportRejected(val code: String) : Exception()

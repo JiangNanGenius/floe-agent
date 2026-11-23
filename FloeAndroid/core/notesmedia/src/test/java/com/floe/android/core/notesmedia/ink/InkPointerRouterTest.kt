@@ -68,6 +68,41 @@ class InkPointerRouterTest {
     }
 
     @Test
+    fun palmContactAndPalmsCancelledLiftLeaveThePenStrokeActive() {
+        val router = InkPointerRouter { InkInputConfig() }
+        router.onSample(sample(InkPointerAction.DOWN, tool = InkPointerKind.PEN))
+        assertEquals(listOf(InkGestureIntent.Ignored), router.onSample(
+            sample(InkPointerAction.POINTER_DOWN, pointerId = 4, pointerCount = 2)))
+        assertEquals(listOf(InkGestureIntent.Ignored), router.onSample(
+            sample(InkPointerAction.POINTER_UP, pointerId = 4, pointerCount = 2, canceled = true)))
+        assertEquals(listOf(InkGestureIntent.EndStroke(0)), router.onSample(
+            sample(InkPointerAction.UP, tool = InkPointerKind.PEN)))
+        assertFalse(router.isTransforming)
+    }
+
+    @Test
+    fun penCanStartAndMoveWhileTheFirstPointerIsAHand() {
+        val router = InkPointerRouter { InkInputConfig() }
+        router.onSample(sample(InkPointerAction.DOWN, pointerId = 0))
+        val begin = router.onSample(sample(InkPointerAction.POINTER_DOWN, tool = InkPointerKind.PEN,
+            pointerId = 2, pointerCount = 2))
+        assertEquals(listOf(InkGestureIntent.CancelInk, InkGestureIntent.BeginStroke(2, InkPointerKind.PEN)), begin)
+        assertEquals(listOf(InkGestureIntent.ExtendStroke(2, 23f, 42f)), router.onSample(
+            sample(InkPointerAction.MOVE, pointerId = 0, pointerCount = 2,
+                pointers = listOf(InkPointerPosition(0, 20f, 30f), InkPointerPosition(2, 23f, 42f)))))
+        assertEquals(listOf(InkGestureIntent.CancelInk), router.onSample(
+            sample(InkPointerAction.POINTER_UP, pointerId = 2, pointerCount = 2, tool = InkPointerKind.PEN, canceled = true)))
+        assertFalse(router.hasActiveStroke)
+    }
+
+    @Test
+    fun penOnlyDoesNotEraseFromFingerContact() {
+        val router = InkPointerRouter { InkInputConfig(fingerWriting = false, penOnly = true, eraserMode = true) }
+        assertEquals(listOf(InkGestureIntent.Ignored), router.onSample(sample(InkPointerAction.DOWN)))
+        assertFalse(router.isErasing)
+    }
+
+    @Test
     fun pinchMoveReportsDeltaAndScale() {
         val router = InkPointerRouter { InkInputConfig() }
         router.onSample(

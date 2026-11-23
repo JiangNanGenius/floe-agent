@@ -42,7 +42,7 @@ data class RawCaptureListing(
 )
 
 /**
- * Read-only projection of App-private `capture-<uuid>*.pcap` files.
+ * Library of retained App-private `capture-<uuid>*.pcap` files.
  *
  * A record is visible only when its exact manifest, filename, size, digest
  * shape and canonical containment agree. A malformed/traversed manifest is
@@ -98,6 +98,14 @@ class RawCaptureLibrary(private val rootDirectory: File) {
             else -> return null
         }
         return runCatching { recordFor(file, canonicalRoot) }.getOrNull()
+    }
+
+    /** Remove the selected on-device raw file and its manifest. The analysis lives separately. */
+    fun remove(sessionId: String): Boolean {
+        val record = find(sessionId) ?: return false
+        Files.deleteIfExists(record.file.toPath())
+        Files.deleteIfExists(record.manifestFile.toPath())
+        return true
     }
 
     private fun recordFor(file: File, canonicalRoot: File): RawCaptureRecord {

@@ -5,28 +5,100 @@ import Foundation
 /// The portable portion of an ordinary conversation. Message and text-part
 /// identifiers match the native conversation store on both Apple platforms.
 ///
-/// Android mirror of the FIXED iOS donor
-/// `FloeAgent/Sources/FloePersistence/DeviceConversationHistory.swift`
-/// (0d2c31722). The wire shape is intentionally unchanged: version 1, the
-/// same field names, the same date coding (JSONEncoder/Decoder default
-/// reference-date numbers) and the same sorted-keys encoding, so history
-/// exported on iOS/Mac decodes here and vice versa. The portable v1 shape
-/// is text-only: native runtime state, secrets, attachments, tool calls,
-/// permissions and hidden/temporary/editor conversations never enter it.
+/// Version 1 carries text parts only and stays the fallback for unupgraded
+/// peers. Version 2 additionally carries restorable original user attachment
+/// metadata and a display-only projection of tool results (redacted name,
+/// status, and bounded summary). Approvals, credentials, run permissions,
+/// replayable events, and internal reasoning are never exported.
 public struct DeviceConversationHistory: Codable, Sendable {
     public static let maximumMessages = 12_000
     public static let maximumBytes = 32 * 1_024 * 1_024
+    public static let currentVersion = 2
+    public static let maximumRestorableAttachments = 512
+    public static let maximumRestorableAttachmentBytesPerItem = 32 * 1_024 * 1_024
+    public static let maximumRestorableAttachmentBytes: Int64 = 2 << 30
+    public static let maximumToolResultsPerMessage = 32
+    public static let maximumToolResultSummaryBytes = 4_096
 
-    public struct TextPart: Codable, Equatable, Sendable {
+    public struct Part: Codable, Equatable, Sendable {
+        public enum Kind: String, Codable, Sendable, Equatable {
+            case text
+            case attachment
+            case tool
+        }
+
         public let id: UUID
         public let index: Int
-        public let text: String
+        public let kind: Kind
+        /// Text body, or the bounded redacted tool-result summary.
+        public let text: String?
+        /// Present for `.attachment` parts; the attachment metadata lives in
+        /// the top-level `attachments` list.
+        public let attachmentID: UUID?
+        /// Tool display name for `.tool` parts.
+        public let toolName: String?
+        /// Tool status for `.tool` parts ("ok" / "error" / ...).
+        public let toolStatus: String?
         public let createdAt: Date
 
-        public init(id: UUID, index: Int, text: String, createdAt: Date) {
+        public init(id: UUID, index: Int, kind: Kind = .text, text: String? = nil,
+                    attachmentID: UUID? = nil, toolName: String? = nil, toolStatus: String? = nil,
+                    createdAt: Date) {
             self.id = id
             self.index = index
+            self.kind = kind
             self.text = text
+            self.attachmentID = attachmentID
+            self.toolName = toolName
+            self.toolStatus = toolStatus
+            self.createdAt = createdAt
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, index, kind, text, attachmentID, toolName, toolStatus, createdAt
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            index = try container.decode(Int.self, forKey: .index)
+            // Archives written before typed parts have no `kind` key; they
+            // are text parts by definition.
+            kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .text
+            text = try container.decodeIfPresent(String.self, forKey: .text)
+            attachmentID = try container.decodeIfPresent(UUID.self, forKey: .attachmentID)
+            toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+            toolStatus = try container.decodeIfPresent(String.self, forKey: .toolStatus)
+            createdAt = try container.decode(Date.self, forKey: .createdAt)
+        }
+    }
+
+    /// Source-compatibility alias: v1 archives used `TextPart` for the typed
+    /// text entries; the unified `Part` decodes both shapes.
+    public typealias TextPart = Part
+
+    /// Restorable original user attachment metadata. Bytes travel separately
+    /// through the authorized attachment transfer and are verified by this
+    /// digest before a usable link is presented.
+    public struct Attachment: Codable, Equatable, Sendable {
+        public let id: UUID
+        /// `AttachmentRef.Kind` raw value: image | document | audio | other.
+        public let kind: String
+        public let displayName: String
+        public let uti: String
+        public let byteCount: Int
+        /// Lowercase 64-hex SHA-256 of the original bytes.
+        public let sha256: String
+        public let createdAt: Date
+
+        public init(id: UUID, kind: String, displayName: String, uti: String,
+                    byteCount: Int, sha256: String, createdAt: Date) {
+            self.id = id
+            self.kind = kind
+            self.displayName = displayName
+            self.uti = uti
+            self.byteCount = byteCount
+            self.sha256 = sha256
             self.createdAt = createdAt
         }
     }
@@ -36,9 +108,9 @@ public struct DeviceConversationHistory: Codable, Sendable {
         public let role: String
         public let content: String
         public let createdAt: Date
-        public let parts: [TextPart]
+        public let parts: [Part]
 
-        public init(id: UUID, role: String, content: String, createdAt: Date, parts: [TextPart]) {
+        public init(id: UUID, role: String, content: String, createdAt: Date, parts: [Part]) {
             self.id = id
             self.role = role
             self.content = content
@@ -53,14 +125,79 @@ public struct DeviceConversationHistory: Codable, Sendable {
     public let createdAt: Date
     public let updatedAt: Date
     public let messages: [Message]
+    /// Restorable attachments referenced by the exported messages. Empty for
+    /// v1 archives. Attachment *parts* referencing entries missing here are
+    /// omitted: the receiver cannot present a usable link for them.
+    public let attachments: [Attachment]
 
-    public init(id: UUID, title: String, createdAt: Date, updatedAt: Date, messages: [Message]) {
-        version = 1
+    public init(id: UUID, title: String, createdAt: Date, updatedAt: Date, messages: [Message],
+         attachments: [Attachment] = [], version: Int = 1) {
+        self.version = version
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.messages = messages
+        self.attachments = attachments
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, id, title, createdAt, updatedAt, messages, attachments
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        messages = try container.decode([Message].self, forKey: .messages)
+        // Original v1 peers omit the attachment list.
+        attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+    }
+
+    // Match the published Android v1 bytes: it carries no kind or
+    // attachment members. The newer decoder also accepts Apple's
+    // additive projected-v1 fields.
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        if version == 1 {
+            try container.encode(messages.map(V1Message.init), forKey: .messages)
+        } else {
+            try container.encode(messages, forKey: .messages)
+            try container.encode(attachments, forKey: .attachments)
+        }
+    }
+
+    private struct V1Message: Encodable {
+        struct Part: Encodable {
+            let id: UUID
+            let index: Int
+            let createdAt: Date
+            let text: String
+        }
+
+        let id: UUID
+        let role: String
+        let content: String
+        let createdAt: Date
+        let parts: [Part]
+
+        init(_ message: Message) {
+            id = message.id
+            role = message.role
+            content = message.content
+            createdAt = message.createdAt
+            parts = message.parts.compactMap { part in
+                part.text.map { .init(id: part.id, index: part.index, createdAt: part.createdAt, text: $0) }
+            }
+        }
     }
 
     public func encoded() throws -> Data {
@@ -79,7 +216,7 @@ public struct DeviceConversationHistory: Codable, Sendable {
     }
 
     public func validate() throws {
-        guard version == 1 else { throw DeviceConversationHistoryError.unsupportedVersion }
+        guard version == 1 || version == 2 else { throw DeviceConversationHistoryError.unsupportedVersion }
         guard messages.count <= Self.maximumMessages else { throw DeviceConversationHistoryError.sizeLimit }
         guard !title.isEmpty, title.utf8.count <= 4_096,
               createdAt.timeIntervalSinceReferenceDate.isFinite,
@@ -97,6 +234,73 @@ public struct DeviceConversationHistory: Codable, Sendable {
                           && partIDs.insert($0.id).inserted
                   }) else { throw DeviceConversationHistoryError.invalidHistory }
         }
+        guard version == 2 else {
+            // v1 shape: text parts only, no attachment metadata.
+            guard attachments.isEmpty,
+                  messages.allSatisfy({ message in
+                      message.parts.allSatisfy { $0.kind == .text && $0.text != nil && $0.attachmentID == nil && $0.toolName == nil }
+                  }) else { throw DeviceConversationHistoryError.invalidHistory }
+            return
+        }
+        try validateAttachments()
+        try validateTypedParts()
+    }
+
+    private func validateAttachments() throws {
+        guard attachments.count <= Self.maximumRestorableAttachments else {
+            throw DeviceConversationHistoryError.sizeLimit
+        }
+        var total: Int64 = 0
+        var ids = Set<UUID>()
+        let allowedKinds: Set<String> = ["image", "document", "audio", "other"]
+        for attachment in attachments {
+            guard ids.insert(attachment.id).inserted,
+                  allowedKinds.contains(attachment.kind),
+                  !attachment.displayName.isEmpty, attachment.displayName.utf8.count <= 256,
+                  attachment.uti.utf8.count <= 128,
+                  attachment.createdAt.timeIntervalSinceReferenceDate.isFinite,
+                  (0...Self.maximumRestorableAttachmentBytesPerItem).contains(attachment.byteCount),
+                  Self.isValidDigest(attachment.sha256) else {
+                throw DeviceConversationHistoryError.invalidHistory
+            }
+            total += Int64(attachment.byteCount)
+            guard total <= Self.maximumRestorableAttachmentBytes else {
+                throw DeviceConversationHistoryError.sizeLimit
+            }
+        }
+    }
+
+    private func validateTypedParts() throws {
+        let attachmentIDs = Set(attachments.map(\.id))
+        var attached = Set<UUID>()
+        for message in messages {
+            var toolCount = 0
+            for part in message.parts {
+                switch part.kind {
+                case .text:
+                    break
+                case .attachment:
+                    guard message.role == "user", let attachmentID = part.attachmentID,
+                          attachmentIDs.contains(attachmentID), attached.insert(attachmentID).inserted else {
+                        throw DeviceConversationHistoryError.invalidHistory
+                    }
+                case .tool:
+                    toolCount += 1
+                    guard toolCount <= Self.maximumToolResultsPerMessage,
+                          let toolName = part.toolName, !toolName.isEmpty, toolName.utf8.count <= 256,
+                          (part.toolStatus?.utf8.count ?? 0) <= 32,
+                          let summary = part.text, !summary.isEmpty,
+                          summary.utf8.count <= Self.maximumToolResultSummaryBytes else {
+                        throw DeviceConversationHistoryError.invalidHistory
+                    }
+                }
+            }
+        }
+        guard attached == attachmentIDs else { throw DeviceConversationHistoryError.invalidHistory }
+    }
+
+    static func isValidDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
 
@@ -106,16 +310,11 @@ public enum DeviceConversationHistoryError: Error, Equatable, Sendable {
     case invalidHistory
     case conversationUnavailable
     case messageConflict(UUID)
-    case cursorExpired
-    /// The conversation has an active durable run (the existing
-    /// `FacadeRunDomain.activeRunStates` vocabulary), proven INSIDE the
-    /// import writer transaction. Android additive case: the fixed iOS
-    /// donor refuses this on the Mac host's in-memory `liveRuns` instead;
-    /// the wire shape is unaffected.
     case busy
+    case cursorExpired
 }
 
-/// One independently importable text archive and its sender position.
+/// A bounded, independently importable text archive and its sender position.
 public struct DeviceConversationHistoryPage: Sendable {
     public let archive: Data
     public let nextCursor: String?

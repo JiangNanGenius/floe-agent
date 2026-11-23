@@ -704,6 +704,59 @@ final class NotesAuthorityTests: XCTestCase {
         return (value["documents"] as? [[String: Any]])?.count ?? -1
     }
 
+    func testNoteBatchTrashRollsBackStaleSelectionAndSearchesExistingTrash() async throws {
+        let engine = try NotesEngine(root: makeRoot())
+        let (first, firstNote) = try await createNote(engine, title: "First")
+        let (second, secondNote) = try await createNote(engine, title: "第二份")
+        let (legacy, legacyNote) = try await createNote(engine, title: "旧手记")
+        let page = try XCTUnwrap(firstNote.pages.first?.id)
+        _ = try await request(engine, "document.apply", """
+        {"documentID":"\(first)","expectedRevision":\(firstNote.revision),
+         "title":"Edit","edits":[{"action":"upsertElement","pageID":"\(page)",
+         "element":{"id":"\(UUID())","kind":"text","frame":{"x":0,"y":0,"width":90,"height":90},
+         "text":"正文里的搜索词","color":"#202020","fontSize":18,"isAIGenerated":false}}]}
+        """)
+        let edited = try await readDocument(engine, first)
+        _ = try await request(engine, "document.setTrashed", """
+        {"documentID":"\(legacy)","expectedRevision":\(legacyNote.revision),"trashed":true}
+        """)
+        func batch(_ secondRevision: Int) -> String {
+            """
+            {"documents":[{"documentID":"\(first)","expectedRevision":\(edited.revision)},
+                          {"documentID":"\(second)","expectedRevision":\(secondRevision)}]}
+            """
+        }
+        do {
+            _ = try await request(engine, "document.trashBatch", batch(secondNote.revision + 1))
+            XCTFail("A stale member must fail the selection")
+        } catch {}
+        let firstAfterFailure = try await readDocument(engine, first)
+        let secondAfterFailure = try await readDocument(engine, second)
+        XCTAssertNil(firstAfterFailure.deletedAt)
+        XCTAssertNil(secondAfterFailure.deletedAt)
+        XCTAssertEqual(firstAfterFailure.revision, edited.revision)
+
+        let receipt = try await request(engine, "document.trashBatch", batch(secondNote.revision))
+        XCTAssertEqual(receipt["count"] as? Int, 2)
+        let activeCount = try await searchCount(engine, "搜索词")
+        XCTAssertEqual(activeCount, 0)
+        for query in ["搜索词", "第二份", "旧手记"] {
+            let found = try await request(engine, "search.query",
+                                          #"{"query":"\#(query)","trashOnly":true}"#)
+            XCTAssertEqual((found["documents"] as? [[String: Any]])?.count, 1)
+        }
+        let trashedFirst = try await readDocument(engine, first)
+        _ = try await request(engine, "document.setTrashed", """
+        {"documentID":"\(first)","expectedRevision":\(trashedFirst.revision),"trashed":false}
+        """)
+        let restored = try await request(engine, "search.query",
+                                         #"{"query":"搜索词","trashOnly":true}"#)
+        XCTAssertEqual((restored["documents"] as? [[String: Any]])?.count, 0)
+        let restoredActiveCount = try await searchCount(engine, "搜索词")
+        XCTAssertEqual(restoredActiveCount, 1)
+        await engine.retire()
+    }
+
     // MARK: - Conflict reviews
 
     func testConflictReviewsRetainBothVersionsAndResolveAtomically() async throws {

@@ -8,6 +8,7 @@ import com.floe.android.feature.conversation.GoalDefinitionUi
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.conversation.AgentExecutionModeUi
+import com.floe.android.feature.conversation.ChatReasoningUi
 import com.floe.android.feature.conversation.ApprovalCardUi
 import com.floe.android.feature.conversation.DeviceActionApprovalUi
 import com.floe.android.feature.conversation.DeviceApprovalStopPhaseUi
@@ -18,6 +19,7 @@ import com.floe.android.feature.conversation.ApprovalDispatchState
 import com.floe.android.feature.conversation.ApprovalUserDecisionUi
 import com.floe.android.feature.conversation.AttachmentImportUi
 import com.floe.android.feature.conversation.AttachmentOpenRequest
+import com.floe.android.feature.conversation.BackgroundServiceAction
 import com.floe.android.feature.conversation.BulkItemOutcomeUi
 import com.floe.android.feature.conversation.BulkItemResultUi
 import com.floe.android.feature.conversation.BulkReceiptUi
@@ -47,6 +49,7 @@ import com.floe.android.feature.conversation.RunningInputModeUi
 import com.floe.android.feature.conversation.RunningInputRequest
 import com.floe.android.feature.conversation.RunLaunchRequest
 import com.floe.android.feature.conversation.RunOutputCardUi
+import com.floe.android.feature.conversation.RunOutputEditPresentation
 import com.floe.android.feature.conversation.RunOutputViewerKind
 import com.floe.android.feature.conversation.RunOutputViewerSupport
 import com.floe.android.feature.conversation.StagedAttachmentUi
@@ -78,6 +81,7 @@ import com.floe.android.host.output.RunOutputHostService
 import com.floe.android.host.output.RunOutputListResult
 import com.floe.android.host.output.RunOutputOfficeSnapshotStager
 import com.floe.android.host.output.RunOutputSaveOutcome
+import com.floe.android.host.output.createRunOutputEditableCopy
 import com.floe.android.host.output.runOutputPdfOpenAgreement
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -1220,6 +1224,7 @@ class ConversationHostController internal constructor(
                 continuityPreferences()?.read(conversationId)?.let { pref ->
                     it.applyContinuityPreferences(
                         pref.modeRaw, pref.lastPresentedPlanRevision)
+                    it.chatReasoning = pref.chatReasoning
                 }
             }
         }
@@ -4347,6 +4352,20 @@ class ConversationHostController internal constructor(
         return backgroundJobsHost.cancel(entry, jobId, runId)
     }
 
+    override fun dispatchBackgroundServiceAction(
+        session: ConversationSessionToken,
+        jobId: String,
+        runId: String,
+        action: BackgroundServiceAction,
+    ): Boolean {
+        if (!conversationAdmitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.builder.isTemporary ||
+            !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
+        ) return false
+        return backgroundJobsHost.serviceAction(entry, jobId, runId, action)
+    }
+
     /** Notification ownership is independent of the currently visible holder. */
     internal fun cancelRunFromNotification(conversationID: String, runID: String): Boolean {
         val ownerEpoch = host.nativeRootEpoch() ?: return false
@@ -5359,7 +5378,7 @@ class ConversationHostController internal constructor(
                     "expectedDescriptorIdentity" to JsonPrimitive(descriptor),
                 )),
             ),
-            beforeSubmit = if (card.toolName in setOf("exec.shell", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
+            beforeSubmit = if (card.toolName in setOf("exec.shell", "jobs.submit", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
                 admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
                     entry.holder.isPrivateApprovalLeaseCurrent(session, card, lease) &&
                     entry.builder.approvalBinding(card.runId, card.approvalId) == card
@@ -5902,6 +5921,21 @@ class ConversationHostController internal constructor(
                             context.getString(com.floe.android.R.string.n113_mode_not_saved))
                     }
                 }
+            }
+        }
+        return persisted
+    }
+
+    override fun recordChatReasoning(session: ConversationSessionToken, preference: ChatReasoningUi): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.isTemporary || !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        val persisted = continuityPreferences()?.writeChatReasoning(session.conversationId, preference) == true
+        if (persisted) {
+            entry.builder.chatReasoning = preference
+            entry.holder.applyHostSnapshot(entry.builder.build())
+        } else {
+            host.appContextOrNull?.let {
+                entry.holder.noteHostActionError(it.getString(com.floe.android.R.string.chat_reasoning_not_saved))
             }
         }
         return persisted
@@ -6675,8 +6709,12 @@ class ConversationHostController internal constructor(
     ): Boolean {
         if (!conversationAdmitted() || !attachmentSessionIsCurrent(session) ||
             request.conversationId != session.conversationId) return false
-        host.attachments.open(request)
-        return true
+        val epoch = host.nativeRootEpoch() ?: return false
+        val generation = host.commandClient.generation()
+        return host.attachments.messagePreview.open(request) {
+            attachmentSessionIsCurrent(session) && host.nativeRootEpoch() == epoch &&
+                host.commandClient.generation() == generation
+        }
     }
 
     internal fun onAttachmentStaged(
@@ -8922,6 +8960,65 @@ class ConversationHostController internal constructor(
                 if (ownCurrentEntry(entry, conversationId, sessionEpoch)) {
                     entry.builder.setRunOutputActionState(runId, outputId, null)
                     entry.holder.applyHostSnapshot(entry.builder.build())
+                }
+            }
+        }
+        return true
+    }
+
+    override val supportsRunOutputEditableCopy: Boolean get() = true
+
+    override fun editRunOutputCopy(session: ConversationSessionToken, runId: String, outputId: String): Boolean {
+        val conversationId = session.conversationId
+        val entry = holders[conversationId] ?: return false
+        if (entry.holder.session != session || entry.builder.isTemporary || currentVisibleConversationId() != conversationId) {
+            return false
+        }
+        val card = entry.builder.cachedRunOutputCard(runId, outputId) ?: return false
+        val extension = RunOutputEditPresentation.editableExtension(card.mimeType, card.displayName, card.byteCount)
+            ?: return false
+        if (card.availabilityRaw != "available" || card.actionStateRaw == RunOutputEditPresentation.PREPARING_ACTION ||
+            card.actionStateRaw == "saving" || !isCanonicalUuid(conversationId) || !isCanonicalUuid(runId) || !isCanonicalOutputId(outputId)) return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        val generation = host.commandClient.generation()
+        val token = artifactOpenSequence.incrementAndGet()
+        val owner = RunOutputOfficeSnapshotStager.Owner(conversationId, runId, outputId, epoch, generation)
+        val ownerCurrent = {
+            ownCurrentEntry(entry, conversationId, session.sessionEpoch) &&
+                host.nativeRootEpoch() == epoch && host.commandClient.generation() == generation
+        }
+        val requestCurrent = {
+            ownerCurrent() && currentVisibleConversationId() == conversationId && token == artifactOpenSequence.get()
+        }
+        fun setAction(state: String?) {
+            entry.builder.setRunOutputActionState(runId, outputId, state)
+            entry.holder.applyHostSnapshot(entry.builder.build())
+        }
+        artifactOpenFailure.value = null
+        setAction(RunOutputEditPresentation.PREPARING_ACTION)
+        host.scope.launch(host.ioDispatcher) {
+            var failed = false
+            try {
+                val workspace = G04WorkspaceBridgeClient.bindExisting(host, conversationId, requestCurrent)
+                val path = createRunOutputEditableCopy(host, workspace, owner, extension, requestCurrent)
+                withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (!requestCurrent()) return@withContext
+                    val external = RunOutputEditPresentation.opensExternally(extension)
+                    artifactPreviewRequest.value = ConversationArtifactPreviewRequest(
+                        taskID = conversationId, workspaceID = workspace.workspaceID, relativePath = path,
+                        surface = if (external) com.floe.android.WorkspaceDocumentSurface.OFFICE
+                            else com.floe.android.WorkspaceDocumentSurface.CODE_EDITOR,
+                        token = token, nativeEpoch = epoch, hostGeneration = generation,
+                        sessionEpoch = session.sessionEpoch, editWithExternalApp = external,
+                    )
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                failed = true
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (ownerCurrent()) setAction(if (failed) RunOutputEditPresentation.FAILED_ACTION else null)
                 }
             }
         }

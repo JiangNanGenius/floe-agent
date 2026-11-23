@@ -7,6 +7,8 @@ import com.floe.android.host.meeting.MeetingMaterialKind
 import com.floe.android.host.meeting.MeetingMaterialStatus
 import com.floe.android.host.meeting.MeetingTranscriptSegment
 import com.floe.android.host.meeting.MeetingTranscription
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttempt
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttemptPhase
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionFailure
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionFailureCode
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionPhase
@@ -232,6 +234,104 @@ class MeetingDestinationTranscriptionTest {
 
         assertNotEquals(unconfirmed, plain)
     }
+
+    @Test
+    fun `an unfinished recorded attempt offers a retry for its exact material`() {
+        val detail = detail(
+            materials = listOf(material("a", playable = true), material("b", playable = true)),
+            transcription = MeetingTranscription(
+                lastAttempt = lastAttempt("b", MeetingTranscriptionLastAttemptPhase.RUNNING),
+            ),
+        )
+
+        val target = meetingTranscriptionRetryTarget(detail, MeetingTranscriptionState())
+        assertEquals("b", target?.materialId)
+        assertEquals(0L, target?.expectedTranscriptionRevision)
+        assertEquals(MeetingTranscriptionLastAttemptPhase.RUNNING, target?.phase)
+    }
+
+    @Test
+    fun `retry target is withheld while an attempt runs or the transcript exists`() {
+        val materials = listOf(material("a", playable = true))
+        val base = detail(
+            materials = materials,
+            transcription = MeetingTranscription(
+                lastAttempt = lastAttempt("a", MeetingTranscriptionLastAttemptPhase.FAILED),
+            ),
+        )
+        listOf(
+            MeetingTranscriptionPhase.PREPARING,
+            MeetingTranscriptionPhase.TRANSCRIBING,
+            MeetingTranscriptionPhase.FINALIZING,
+            MeetingTranscriptionPhase.CANCELLING,
+        ).forEach { phase ->
+            assertEquals(
+                null,
+                meetingTranscriptionRetryTarget(
+                    base,
+                    MeetingTranscriptionState(phase = phase),
+                ),
+            )
+        }
+
+        // A committed transcript for the same material is the successful
+        // recovery; no retry prompt remains.
+        val committed = base.copy(
+            transcription = base.transcription.copy(
+                revision = 1L,
+                materialId = "a",
+                segments = listOf(segment("done")),
+            ),
+        )
+        assertEquals(null, meetingTranscriptionRetryTarget(committed, MeetingTranscriptionState()))
+
+        // A transcript bound to another material stays protected: the page
+        // must not offer to replace it under the guise of a retry.
+        val boundElsewhere = base.copy(
+            transcription = base.transcription.copy(
+                revision = 1L,
+                materialId = "other",
+                segments = listOf(segment("done")),
+            ),
+        )
+        assertEquals(
+            null,
+            meetingTranscriptionRetryTarget(boundElsewhere, MeetingTranscriptionState()),
+        )
+    }
+
+    @Test
+    fun `retry target requires the recorded material to still be playable`() {
+        val base = detail(
+            materials = listOf(material("a", playable = true)),
+            transcription = MeetingTranscription(
+                lastAttempt = lastAttempt("a", MeetingTranscriptionLastAttemptPhase.CANCELLED),
+            ),
+        )
+        assertEquals("a", meetingTranscriptionRetryTarget(base, MeetingTranscriptionState())?.materialId)
+
+        val gone = base.copy(materials = emptyList())
+        assertEquals(null, meetingTranscriptionRetryTarget(gone, MeetingTranscriptionState()))
+
+        val unplayable = detail(
+            materials = listOf(material("a", playable = false)),
+            transcription = base.transcription,
+        )
+        assertEquals(null, meetingTranscriptionRetryTarget(unplayable, MeetingTranscriptionState()))
+    }
+
+    private fun lastAttempt(
+        materialId: String,
+        phase: MeetingTranscriptionLastAttemptPhase,
+    ): MeetingTranscriptionLastAttempt = MeetingTranscriptionLastAttempt(
+        materialId = materialId,
+        expectedTranscriptionRevision = 0L,
+        phase = phase,
+        failureCode = null,
+        failureReason = null,
+        retryable = true,
+        updatedAtMillis = 5_000L,
+    )
 
     private fun detail(
         materials: List<MeetingMaterial>,

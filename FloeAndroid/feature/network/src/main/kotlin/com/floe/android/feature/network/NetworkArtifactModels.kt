@@ -290,6 +290,7 @@ data class RawCaptureLibraryUiState(
     val exported: RawCaptureExportReceiptUi? = null,
     val failure: NetworkArtifactFailure? = null,
     val invalid: Int = 0,
+    val removeFailed: Boolean = false,
 )
 
 data class PcapArtifactState(

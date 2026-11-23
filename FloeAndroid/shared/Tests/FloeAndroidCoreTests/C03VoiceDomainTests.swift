@@ -114,6 +114,73 @@ final class C03VoiceDomainTests: XCTestCase {
         XCTAssertEqual(merged.map(\.text), ["same", "next"])
     }
 
+    func testASRResponseParsingPreservesOptionalSpeakerLabels() throws {
+        let json = """
+        {"text":"Hello world",
+         "segments":[{"start":0.0,"end":1.5,"text":" Hello ","speaker":"Alice"},
+                     {"start":1.5,"end":3.0,"text":"world"}]}
+        """.data(using: .utf8)!
+        let transcript = try C03CloudASRClient.parse(
+            json, durationSeconds: 3.0,
+            providerName: "Provider", modelDisplayName: "whisper-1")
+        XCTAssertEqual(transcript.segments.count, 2)
+        XCTAssertEqual(transcript.segments[0].speaker, "Alice")
+        XCTAssertEqual(transcript.segments[1].speaker, nil)
+    }
+
+    func testASRResponseWithMalformedSpeakerKeepsSegmentAndRequiredFields() throws {
+        // Providers that half-diarize can emit numeric or structured speaker
+        // labels. The optional label is dropped; the utterance and its
+        // strict timing/text must survive, and nothing is coerced to text.
+        let json = """
+        {"text":"One two three",
+         "segments":[{"start":0.0,"end":1.0,"text":"one","speaker":7},
+                     {"start":1.0,"end":2.0,"text":"two","speaker":{"id":1}},
+                     {"start":2.0,"end":3.0,"text":"three","speaker":"Ada"}]}
+        """.data(using: .utf8)!
+        let transcript = try C03CloudASRClient.parse(
+            json, durationSeconds: 3.0,
+            providerName: "Provider", modelDisplayName: "whisper-1")
+        XCTAssertEqual(transcript.segments.count, 3)
+        XCTAssertEqual(transcript.segments.map(\.text), ["one", "two", "three"])
+        XCTAssertEqual(transcript.segments[0].speaker, nil)
+        XCTAssertEqual(transcript.segments[1].speaker, nil)
+        XCTAssertEqual(transcript.segments[2].speaker, "Ada")
+    }
+
+    func testTimedSegmentSpeakerNormalizationTrimsAndBounds() {
+        let long = String(repeating: "s", count: 200)
+        let bounded = C03TimedSegment(
+            start: 0, end: 1, text: "x", speaker: " \(long) ").normalized()
+        XCTAssertEqual(bounded?.speaker?.count, 120)
+        XCTAssertNil(
+            C03TimedSegment(start: 0, end: 1, text: "x", speaker: "   ")
+                .normalized()?.speaker)
+        XCTAssertNil(C03TimedSegment(start: 0, end: 1, text: "x").normalized()?.speaker)
+    }
+
+    func testChunkShiftAndMergePreserveSpeakerAttribution() {
+        let shifted = C03ChunkTimeline.shift(
+            [C03TimedSegment(start: 0, end: 3, text: "first", speaker: "Alice")],
+            sourceStart: 10, sourceDuration: 30)
+        XCTAssertEqual(shifted.count, 1)
+        XCTAssertEqual(shifted[0].speaker, "Alice")
+
+        // Same time and text with a different attribution is ambiguous
+        // provider output, not a boundary duplicate: both rows survive.
+        let ambiguous = C03ChunkTimeline.merge(
+            [C03TimedSegment(start: 1, end: 2, text: "same", speaker: "Alice")],
+            [C03TimedSegment(start: 1, end: 2, text: "same", speaker: "Bob")],
+            maxSegments: 10)
+        XCTAssertEqual(ambiguous.count, 2)
+        // An exact boundary repeat with the same attribution deduplicates.
+        let repeated = C03ChunkTimeline.merge(
+            [C03TimedSegment(start: 1, end: 2, text: "same", speaker: "Alice")],
+            [C03TimedSegment(start: 1, end: 2, text: "same", speaker: "Alice")],
+            maxSegments: 10)
+        XCTAssertEqual(repeated.count, 1)
+    }
+
     func testChunkedSegmentsStillMapThroughTrimSpeedAndRepeatedClips() {
         let assetID = UUID()
         let shifted = C03ChunkTimeline.shift(

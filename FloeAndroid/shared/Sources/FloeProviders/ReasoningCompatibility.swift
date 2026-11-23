@@ -3,6 +3,54 @@
 import Foundation
 import FloeCore
 
+/// Resolve the conversation's preference against the selected provider's
+/// existing wire encoders. An unknown endpoint leaves the optional fields out.
+public enum ChatReasoningSupport {
+    public static func decision(
+        _ preference: ChatReasoningPreference,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> ChatReasoningDecision {
+        let result = resolve(preference, provider: provider, model: model)
+        return ChatReasoningDecision(
+            preference: preference, appliesDisabledPolicy: result.policy == .disabled,
+            level: result.level, abstractLevel: preference.modelEffortOverride,
+            targetProviderID: provider.id, targetModelID: model.id,
+            targetRemoteModelID: model.remoteModelID)
+    }
+
+    public static func resolve(
+        _ preference: ChatReasoningPreference,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> (policy: ProviderReasoningPolicy, level: ModelReasoningEffort?) {
+        if preference == .automatic { return (.modelDefault, .automatic) }
+        if preference == .fast, encodesDisabledPolicy(provider, model) {
+            return (.disabled, nil)
+        }
+        guard ReasoningCompatibility.supportsVariableReasoningEffort(provider: provider, model: model) else {
+            return (.modelDefault, nil)
+        }
+        let requested = preference.modelEffortOverride ?? .low
+        return (.modelDefault, ReasoningCompatibility.clampAutomaticReasoningEffort(
+            requested, provider: provider, model: model))
+    }
+
+    private static func encodesDisabledPolicy(_ provider: ProviderProfile, _ model: ModelProfile) -> Bool {
+        switch provider.wireProtocol {
+        case .openAIChatCompletions:
+            let disabled = ReasoningCompatibility.chatOptions(provider: provider, model: model, policy: .disabled)
+            return disabled.thinkingType == "disabled" || disabled.reasoningEffort == "none"
+                || disabled.enableThinking == false
+        case .openAIResponses:
+            return ReasoningCompatibility.responsesEffort(provider: provider, model: model, policy: .disabled) == "none"
+                || ReasoningCompatibility.responsesThinkingType(provider: provider, model: model, policy: .disabled) == "disabled"
+        case .anthropicMessages:
+            return false
+        }
+    }
+}
+
 /// Translates one stable UI setting into only the fields documented by the
 /// selected provider/model family. Unknown custom endpoints receive no extra
 /// fields, which preserves compatibility with strict OpenAI-shaped gateways.

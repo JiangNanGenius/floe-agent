@@ -39,7 +39,7 @@ data class VpnPlan(
     }
 
     companion object {
-        fun fromConfig(config: CaptureConfig, selfPackage: String?, excludeSelf: Boolean = true): VpnPlan =
+        fun fromConfig(config: CaptureConfig): VpnPlan =
             VpnPlan(
                 address = config.vpnAddress,
                 prefixLength = config.vpnAddressPrefix,
@@ -49,11 +49,9 @@ data class VpnPlan(
                 // DNS. IPv4 queries are captured/forwarded; IPv6 DNS bypasses
                 // because no IPv6 route is installed.
                 dnsServers = emptyList(),
-                disallowedPackages = if (excludeSelf && selfPackage != null) {
-                    listOf(selfPackage)
-                } else {
-                    emptyList()
-                },
+                // The local TCP proxy must send its replies back through the
+                // TUN. NetBare protects only the sockets that actually leave
+                // the tunnel, so excluding the whole app breaks the return path.
                 sessionName = config.sessionName,
                 ipv6Policy = Ipv6Policy.BYPASS,
             )

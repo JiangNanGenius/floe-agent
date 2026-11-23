@@ -22,7 +22,8 @@ import com.floe.android.host.externaledit.ExternalEditRecord
 
 @Composable
 internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID: String,
-    suggestedPath: String, visible: Boolean, onOpenLinux: (String) -> Unit, onDismiss: () -> Unit) {
+    suggestedPath: String, visible: Boolean, onOpenLinux: (String) -> Unit, onDismiss: () -> Unit,
+    requestIsCurrent: () -> Boolean = { true }) {
     if (!visible) return
     val service = host.externalEdits
     val state by service.state.collectAsState()
@@ -46,7 +47,8 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
                 it.phase in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED) }
             // suggestedPath now comes from the user's explicit file-tree selection.
             // Resume/rotation does not relaunch this service-owned handoff.
-            service.openAndroid(activity, owner, suggestedPath.trim(), existing?.id, forceChooser = false)
+            service.openAndroid(activity, owner, suggestedPath.trim(), existing?.id,
+                forceChooser = false, allowed = requestIsCurrent)
         }
     }
     FloeSettingsContentDensity(compact = !wide) {

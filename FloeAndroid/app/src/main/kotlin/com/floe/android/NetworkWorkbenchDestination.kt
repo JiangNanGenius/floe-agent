@@ -260,6 +260,7 @@ internal fun NetworkWorkbenchDestination(
                     onRefreshRawCaptures = captureController::refreshRawCaptures,
                     onExportRawCapture = ::exportRawCapture,
                     onCancelRawExport = captureController::cancelRawExport,
+                    onRemoveRawCapture = captureController::removeRawCapture,
                 ),
                 modifier = panelModifier,
             )

@@ -94,24 +94,57 @@ class DeviceAccessPresentationTest {
         )
     }
 
+    @Test
+    fun manualConnectPortRecoversAnAlreadyPairedTransportFailure() {
+        val paired = DeviceAccessPresentationState(
+            adb = DeviceAccessAdbUi.Paired(),
+            error = DeviceAccessUiError("unavailable", "no_connect_port", DeviceAccessErrorSectionUi.ADB),
+        )
+        assertTrue(DeviceAccessPresentation.adbCanSpecifyConnectPort(paired))
+        assertTrue(DeviceAccessPresentation.adbCanSpecifyConnectPort(
+            paired.copy(error = paired.error?.copy(code = "adb_connect_refused"))))
+        assertFalse(DeviceAccessPresentation.adbCanSpecifyConnectPort(
+            paired.copy(adb = DeviceAccessAdbUi.PairRequired())))
+        assertFalse(DeviceAccessPresentation.adbCanSpecifyConnectPort(
+            paired.copy(busy = DeviceAccessBusyUi.STARTING)))
+        assertFalse(DeviceAccessPresentation.adbCanSpecifyConnectPort(
+            paired.copy(error = paired.error?.copy(code = "service_identity"))))
+    }
+
+    @Test
+    fun rejectedPairingOpensANewCodeSessionAndKeepsTheSavedPairing() {
+        val rejected = DeviceAccessPresentationState(
+            adb = DeviceAccessAdbUi.Paired(),
+            error = DeviceAccessUiError("TLS failed", "adb_connect_tls", DeviceAccessErrorSectionUi.ADB),
+        )
+        assertTrue(DeviceAccessPresentation.adbCanRenewPairing(rejected))
+        assertFalse(DeviceAccessPresentation.adbCanSpecifyConnectPort(rejected))
+        val enteringCode = DeviceAccessAdbUi.Paired(pairingSessionOpen = true)
+        assertTrue(DeviceAccessPresentation.adbShowsCodeField(enteringCode))
+        assertFalse(DeviceAccessPresentation.adbCanRenewPairing(rejected.copy(adb = enteringCode)))
+        val actions = DeviceAccessPresentation.adbActions(enteringCode)
+        assertTrue(DeviceAccessAdbActionUi.SUBMIT_CODE in actions)
+        assertFalse(DeviceAccessAdbActionUi.FORGET in actions)
+        assertFalse(DeviceAccessAdbActionUi.START in actions)
+    }
+
     // ------------------------------------------------------------ pairing code
 
     // ---------------------------------------------------------- advanced gate
 
     @Test
-    fun advancedToolLabelsCoverOnlyTheShippedAppStateNames() {
+    fun advancedToolLabelsCoverCurrentSystemActions() {
         val labels = listOf(
             "system.packages.setEnabled",
             "system.packages.removeForUser",
             "system.packages.restore",
+            "system.permissions.manage",
+            "system.appOps.manage",
+            "system.settings.write",
         ).map { DeviceAccessPresentation.advancedToolLabelRes(it) }
-        assertEquals("each shipped name renders its own row label", 3, labels.toSet().size)
+        assertEquals("each shipped name renders its own row label", 6, labels.toSet().size)
         for (res in labels) assertTrue(res != 0)
-        // Reserved ABI names must never get placeholder labels.
-        for (reserved in listOf(
-            "system.permissions.manage", "system.appOps.manage", "system.settings.write")) {
-            assertEquals(0, DeviceAccessPresentation.advancedToolLabelRes(reserved))
-        }
+        assertEquals(0, DeviceAccessPresentation.advancedToolLabelRes("system.settings.unknown"))
     }
 
     @Test

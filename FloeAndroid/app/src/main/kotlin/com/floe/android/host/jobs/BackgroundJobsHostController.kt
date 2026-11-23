@@ -7,6 +7,7 @@
 package com.floe.android.host.jobs
 
 import com.floe.android.bridge.SwiftCore
+import com.floe.android.feature.conversation.BackgroundServiceAction
 import com.floe.android.host.ConversationFlowHolderEntry
 import com.floe.android.host.RuntimeHost
 import java.util.concurrent.ConcurrentHashMap
@@ -24,8 +25,8 @@ internal class BackgroundJobsHostController(
 ) {
     /** One in-flight bounded read per conversation. */
     private val refreshes = ConcurrentHashMap<String, Job>()
-    /** One in-flight cancel per exact job id. */
-    private val cancellations = ConcurrentHashMap<String, Job>()
+    /** One explicit action per exact job id. */
+    private val actions = ConcurrentHashMap<String, Job>()
 
     /**
      * Start ONE bounded durable read for this holder. Returns true when the
@@ -106,14 +107,25 @@ internal class BackgroundJobsHostController(
      * the row can stay nonterminal ("cancelling") exactly as the processor
      * reports.
      */
-    fun cancel(entry: ConversationFlowHolderEntry, jobId: String, runId: String): Boolean {
+    fun cancel(entry: ConversationFlowHolderEntry, jobId: String, runId: String): Boolean =
+        dispatch(entry, jobId, runId, BackgroundJobsWire.ACTION_CANCEL)
+
+    fun serviceAction(entry: ConversationFlowHolderEntry, jobId: String, runId: String,
+                      action: BackgroundServiceAction): Boolean =
+        dispatch(entry, jobId, runId, when (action) {
+            BackgroundServiceAction.RESTART -> BackgroundJobsWire.ACTION_RESTART_SERVICE
+            BackgroundServiceAction.OPEN_PREVIEW -> BackgroundJobsWire.ACTION_OPEN_SERVICE_PREVIEW
+        })
+
+    private fun dispatch(entry: ConversationFlowHolderEntry, jobId: String, runId: String,
+                         action: String): Boolean {
         val session = entry.holder.session
         val conversationId = session.conversationId
         val epoch = host.nativeRootEpoch() ?: return false
         if (entry.holder.retired || entry.isTemporary || epoch <= 0L) return false
         if (jobId.isBlank() || runId.isBlank()) return false
         val key = "$conversationId:$jobId"
-        if (cancellations.containsKey(key)) return false
+        if (actions.containsKey(key)) return false
         val generation = host.commandClient.generation()
         val job = host.scope.launch(
             host.ioDispatcher,
@@ -122,8 +134,9 @@ internal class BackgroundJobsHostController(
             var snapshot: BackgroundJobsWire.Snapshot? = null
             var actionError: String? = null
             try {
-                val request = BackgroundJobsWire.cancelRequest(
-                    requestID = host.commandClient.correlationID("jobcancel"),
+                val request = BackgroundJobsWire.actionRequest(
+                    action = action,
+                    requestID = host.commandClient.correlationID("job-action"),
                     epoch = epoch,
                     conversationID = conversationId,
                     runID = runId,
@@ -143,7 +156,7 @@ internal class BackgroundJobsHostController(
             } catch (_: Exception) {
                 actionError = "jobsUnavailable"
             } finally {
-                cancellations.remove(key, currentCoroutineContext()[Job])
+                actions.remove(key, currentCoroutineContext()[Job])
                 val result = snapshot
                 val failure = actionError
                 withContext(NonCancellable + Dispatchers.Main.immediate) {
@@ -151,6 +164,9 @@ internal class BackgroundJobsHostController(
                         if (result != null && result.error == null) {
                             entry.builder.applyBackgroundJobs(
                                 result.jobs, result.truncated, null)
+                            if (action == BackgroundJobsWire.ACTION_OPEN_SERVICE_PREVIEW) {
+                                entry.holder.dismissBackgroundJobs()
+                            }
                         } else if (result != null && result.error != null) {
                             entry.builder.applyBackgroundJobsFailure(result.error)
                         }
@@ -165,7 +181,10 @@ internal class BackgroundJobsHostController(
                 }
             }
         }
-        cancellations[key] = job
+        if (actions.putIfAbsent(key, job) != null) {
+            job.cancel()
+            return false
+        }
         job.start()
         return true
     }
@@ -174,8 +193,8 @@ internal class BackgroundJobsHostController(
     fun clearFor(conversationId: String) {
         refreshes.remove(conversationId)?.cancel()
         val prefix = "$conversationId:"
-        for (key in cancellations.keys.filter { it.startsWith(prefix) }) {
-            cancellations.remove(key)?.cancel()
+        for (key in actions.keys.filter { it.startsWith(prefix) }) {
+            actions.remove(key)?.cancel()
         }
     }
 

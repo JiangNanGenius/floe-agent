@@ -104,6 +104,19 @@ class RawCaptureExportTest {
     }
 
     @Test
+    fun removesOnlyTheSelectedRawArtifactAndItsManifest() {
+        val first = writeArtifact()!!
+        val other = writeArtifact(complete = false)!!
+        val library = RawCaptureLibrary(root)
+        assertFalse(library.remove("../not-a-capture"))
+        assertTrue(library.remove(first.sessionId))
+        assertFalse(first.file.exists())
+        assertFalse(first.manifestFile.exists())
+        assertEquals(listOf(other.sessionId), library.list().records.map { it.sessionId })
+        assertEquals(0, library.list().invalid)
+    }
+
+    @Test
     fun listsAndExportsExactBytesWithDigestReceipt() {
         val record = writeArtifact()!!
         val library = RawCaptureLibrary(root)

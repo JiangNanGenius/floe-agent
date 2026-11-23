@@ -17,10 +17,18 @@
 // - The ACTUAL workspace and the local/remote decision come from the trusted
 //   host resolver (FloeAndroidCore): the run's pinned C02 execution target
 //   MUST be localLinux and LinuxWorkspaceAuthority.trustedWorkspaceRoot must
-//   resolve the SAME root the run config exports. A remote (ssh) target is an
-//   honest `remoteResourceStagingUnavailable` refusal — Core bytes are NEVER
-//   silently staged for a remote task (the SSH adapter is exec-only; no
-//   run-bound upload transport exists).
+//   resolve the SAME root the run config exports. A remote (ssh) target is
+//   staged ONLY when the trusted host bound an explicit run-bound remote
+//   workspace write authority for this generation (a fresh C02 SSH
+//   authorization per publish plus one exclusive typed SFTP channel); without
+//   that authority the remote lane stays the honest
+//   `remoteResourceStagingUnavailable` refusal — Core bytes are NEVER
+//   silently staged for a remote task and never copied to a fallback local
+//   path. Remote publication is missing-only and byte-verified over the SAME
+//   SFTP channel, canonicalizes every path component (a symlinked or
+//   redirected component refuses instead of writing), never runs a remote
+//   command, and reports visibleInGuest only from the publisher's own
+//   verified read-back.
 // - Reuse is granted only by full byte-for-byte verification against the
 //   pinned snapshot (never by the `.markers` completion marker alone). A
 //   foreign, damaged, symlinked or oversized tree at the staged path fails
@@ -179,6 +187,18 @@ public enum SkillStageReason {
     public static func liveWorkspaceSyncRefused(_ code: String) -> String {
         "liveWorkspaceSyncRefused: the pinned bundle is committed in the task workspace but the LIVE task workspace refused to receive it (\(Self.boundedCode(code))); it is NOT visible in the running guest. Do not read or run files under the staged guest path in the current session. Run a new exec.shell (a fresh workspace import materializes it) or close the live shell session and read this skill again."
     }
+    /// The run-bound remote write authority or the remote filesystem refused
+    /// publication. Actionable failure: the staged remote path must not be
+    /// referenced in this session.
+    public static func remoteResourceSyncRefused(_ code: String) -> String {
+        "remoteResourceSyncRefused: the pinned bundle could not be staged into the remote task workspace (\(Self.boundedCode(code))); the bundled files are NOT available on the remote target. Do not reference the staged remote path in this session. Read this skill again after the remote target is reachable and approved."
+    }
+    /// Remote publication could not be confirmed (transport loss, bounded
+    /// expiry, cancellation or an unchecked engine failure). Same actionable
+    /// boundary as a refusal.
+    public static func remoteResourceSyncUnconfirmed(_ detail: String) -> String {
+        "remoteResourceSyncUnconfirmed: publishing the pinned bundle into the remote task workspace could not be confirmed (\(Self.boundedCode(detail))); the bundled files may be absent on the remote target. Do not reference the staged remote path in this session. Read this skill again to re-verify."
+    }
     /// The hot publish could not be confirmed (transport loss, bounded-wait
     /// expiry, or an applied transfer the probe still cannot see). Same
     /// actionable boundary as a refusal; the probe remains the authority.
@@ -210,10 +230,95 @@ public enum SkillWorkspaceStageResolution: Sendable, Equatable {
     /// engine mounts it in the guest ("/workspace", the PRoot bind in
     /// runtimeapp LinuxRuntimeOperations).
     case local(workspaceRoot: URL, guestWorkspaceRoot: String)
-    /// Honest refusal: remote target, unbound/retired runtime, rebound
-    /// workspace or missing workspace. `reason` is one of the
-    /// SkillStageReason constants.
+    /// The run is pinned to a remote SSH target AND the trusted host bound an
+    /// explicit run-bound remote workspace write authority for this
+    /// generation. Every fact was copied from the run's pinned C02 execution
+    /// target; the publisher re-proves them against the authoritative store
+    /// before any byte moves.
+    case remote(SkillRemoteStagingDestination)
+    /// Honest refusal: remote target without a bound write authority,
+    /// unbound/retired runtime, rebound workspace or missing workspace.
+    /// `reason` is one of the SkillStageReason constants.
     case unavailable(reason: String)
+}
+
+// MARK: - Remote staging destination
+
+/// Remote staging facts, all copied from the run's pinned C02 execution
+/// target by the trusted host resolver. Foundation-only on purpose (no SSH
+/// types cross into FloeSkills) and secret-free: the model-facing reasons
+/// never carry these values, and the publisher re-proves each one against the
+/// authoritative execution-target store immediately before publication.
+public struct SkillRemoteStagingDestination: Sendable, Equatable {
+    public var hostID: UUID
+    public var environmentID: String
+    public var taskID: UUID
+    public var targetRevision: Int64
+    public var rootEpoch: UInt64
+    public var runtimeGeneration: String
+    /// The verified absolute remote task root from the pinned target
+    /// (`C02RemoteEnvironmentFacts.remoteRootPath`).
+    public var remoteWorkspaceRoot: String
+
+    /// Failable: every fact must already be bounded and shape-valid, so a
+    /// malformed pinned target refuses instead of staging.
+    public init?(
+        hostID: UUID,
+        environmentID: String,
+        taskID: UUID,
+        targetRevision: Int64,
+        rootEpoch: UInt64,
+        runtimeGeneration: String,
+        remoteWorkspaceRoot: String
+    ) {
+        guard targetRevision > 0, rootEpoch > 0,
+              SkillWorkspaceResourceStager.isSafeRemoteRoot(remoteWorkspaceRoot),
+              (1...256).contains(runtimeGeneration.utf8.count),
+              !runtimeGeneration.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0)
+              }),
+              (1...64).contains(environmentID.utf8.count),
+              !environmentID.contains("\0") else { return nil }
+        self.hostID = hostID
+        self.environmentID = environmentID
+        self.taskID = taskID
+        self.targetRevision = targetRevision
+        self.rootEpoch = rootEpoch
+        self.runtimeGeneration = runtimeGeneration
+        self.remoteWorkspaceRoot = remoteWorkspaceRoot
+    }
+}
+
+// MARK: - Remote publish seam
+
+/// The trusted host's answer to one run-bound remote staging request over the
+/// typed SFTP operation. `applied` means every pinned file is present on the
+/// remote target and was verified byte-for-byte over the SAME channel (the
+/// read-back is the ONLY visibility authority for the remote lane);
+/// `refused` is a terminal authority/filesystem refusal with a bounded code;
+/// `unconfirmed` means the transfer may or may not have landed (transport
+/// loss, expiry, cancellation) and never invents visibility.
+public enum SkillRemotePublishOutcome: Sendable, Equatable {
+    case applied
+    case refused(reason: String)
+    case unconfirmed(detail: String?)
+}
+
+/// The run-bound remote staging transport. Implemented by the trusted host
+/// (FloeAndroidCore) over the existing C02 SSH authority: a fresh run-bound
+/// write authorization is minted per publish (the explicit approval check:
+/// policy, ownership, migration, host, pin), the SFTP channel rides ONE
+/// exclusive connection that this call owns end to end (host identity checked
+/// against the approved fingerprint, connection closed before return), no
+/// remote command ever runs, and no bytes pass through any model-facing path.
+public protocol SkillRemoteResourcePublishing: Sendable {
+    func publishStagedBundle(
+        _ bundle: SkillStagingBundle,
+        to destination: SkillRemoteStagingDestination,
+        runID: UUID,
+        conversationID: UUID?,
+        cancellation: CancellationToken
+    ) async -> SkillRemotePublishOutcome
 }
 
 /// Optional post-commit probe over the EXISTING read-only live guest files
@@ -326,15 +431,18 @@ public actor SkillWorkspaceResourceStager {
     private let resolve: @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution
     private let probeVisibility: (any SkillGuestVisibilityProbing)?
     private let publishVisibility: (any SkillGuestResourcePublishing)?
+    private let publishRemote: (any SkillRemoteResourcePublishing)?
 
     public init(
         resolve: @escaping @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution,
         probeVisibility: (any SkillGuestVisibilityProbing)? = nil,
-        publishVisibility: (any SkillGuestResourcePublishing)? = nil
+        publishVisibility: (any SkillGuestResourcePublishing)? = nil,
+        publishRemote: (any SkillRemoteResourcePublishing)? = nil
     ) {
         self.resolve = resolve
         self.probeVisibility = probeVisibility
         self.publishVisibility = publishVisibility
+        self.publishRemote = publishRemote
     }
 
     /// Prepare the pinned snapshot bundle in the task workspace. Never throws:
@@ -379,6 +487,13 @@ public actor SkillWorkspaceResourceStager {
         switch initialResolution {
         case .unavailable(let reason):
             return .unavailable(reason: reason)
+        case .remote(let destination):
+            // Remote lane: the reserved tree lives on the pinned remote task
+            // root, never on this device. All local-only checks below (exported
+            // root equality, on-disk directory proof) do not apply.
+            return await stageRemote(
+                bundle: bundle, destination: destination, runID: runID,
+                conversationID: conversationID, cancellation: cancellation)
         case .local(let root, let guestRoot):
             workspaceRoot = root
             guestWorkspaceRoot = guestRoot
@@ -489,6 +604,12 @@ public actor SkillWorkspaceResourceStager {
             switch finalResolution {
             case .unavailable(let reason):
                 throw SkillStageRefusal(reason: reason)
+            case .remote:
+                // The run's lane changed from local to remote (or the facts
+                // were rebound) between the initial resolution and this
+                // pre-publish fence: refuse without publication; the remote
+                // lane never receives locally staged bytes.
+                throw SkillStageRefusal(reason: SkillStageReason.taskWorkspaceUnavailable)
             case .local(let finalRoot, let finalGuestRoot):
                 guard Self.sameDirectory(finalRoot, workspaceRoot),
                       finalGuestRoot == guestWorkspaceRoot else {
@@ -534,6 +655,69 @@ public actor SkillWorkspaceResourceStager {
             stagedRelativePath: stagedRelativePath, guestRoot: guestRoot,
             bundle: bundle, runID: runID, conversationID: conversationID,
             cancellation: cancellation)
+    }
+
+    /// Remote-lane staging: publishes the pinned bundle into the reserved
+    /// `.floe/skills` tree under the run's pinned remote task root through the
+    /// trusted host's run-bound typed SFTP transport. Never writes on this
+    /// device. The SAME fences as the local lane apply: cancellation, the
+    /// pre-publish re-resolution of the run's ACTUAL binding (a rebound or
+    /// authority-lost target refuses instead of staging into a workspace
+    /// another run now owns), and the publisher's own authority re-proof.
+    /// Visibility is reported ONLY from the publisher's verified answer:
+    /// applied means every byte was read back over the SFTP channel; a
+    /// refusal or an unconfirmed transfer is an actionable failure with
+    /// staged=false / visibleInGuest=false, never a ready path.
+    private func stageRemote(
+        bundle: SkillStagingBundle,
+        destination: SkillRemoteStagingDestination,
+        runID: UUID,
+        conversationID: UUID?,
+        cancellation: CancellationToken
+    ) async -> SkillStageOutcome {
+        var root = destination.remoteWorkspaceRoot
+        while root.count > 1, root.hasSuffix("/") { root = String(root.dropLast()) }
+        guard Self.isSafeRemoteRoot(root) else {
+            return .unavailable(reason: SkillStageReason.taskWorkspaceUnavailable)
+        }
+        let leaf = "\(bundle.skillID)@\(bundle.digest)"
+        let stagedRelativePath = Self.reservedComponents.joined(separator: "/") + "/" + leaf
+        let guestRoot = root + "/" + stagedRelativePath
+        guard !cancellation.isCancelled, !Task.isCancelled else {
+            return .unavailable(reason: SkillStageReason.cancelled)
+        }
+        guard let publisher = publishRemote else {
+            // The trusted host resolved a remote lane for this generation but
+            // installed no remote publisher: the honest historical boundary,
+            // never a fabricated stage.
+            return .unavailable(reason: SkillStageReason.remoteResourceStagingUnavailable)
+        }
+        // Re-check the run's ACTUAL binding immediately before publication
+        // (the C08 final-root fence for the remote lane).
+        let recheck = await resolve(runID, conversationID)
+        guard case .remote(let liveDestination) = recheck, liveDestination == destination else {
+            return .unavailable(reason: SkillStageReason.taskWorkspaceUnavailable)
+        }
+        guard !cancellation.isCancelled, !Task.isCancelled else {
+            return .unavailable(reason: SkillStageReason.cancelled)
+        }
+        let outcome = await publisher.publishStagedBundle(
+            bundle, to: destination, runID: runID,
+            conversationID: conversationID, cancellation: cancellation)
+        guard !cancellation.isCancelled, !Task.isCancelled else {
+            return .unavailable(reason: SkillStageReason.cancelled)
+        }
+        switch outcome {
+        case .applied:
+            return .staged(SkillStagedBundle(
+                guestRoot: guestRoot, pinnedSHA256: bundle.digest,
+                fileCount: bundle.files.count, visibleInGuest: true))
+        case .refused(let code):
+            return .unavailable(reason: SkillStageReason.remoteResourceSyncRefused(code))
+        case .unconfirmed(let detail):
+            return .unavailable(reason: SkillStageReason.remoteResourceSyncUnconfirmed(
+                detail ?? "transport"))
+        }
     }
 
     /// Visibility resolution for an ALREADY Core-side-committed bundle. The
@@ -586,6 +770,10 @@ public actor SkillWorkspaceResourceStager {
         switch publishResolution {
         case .unavailable(let reason):
             return .unavailable(reason: reason)
+        case .remote:
+            // Lane/target changed between the local commit and the hot
+            // publish: refuse without publication into the remote target.
+            return .unavailable(reason: SkillStageReason.taskWorkspaceUnavailable)
         case .local(let publishRoot, let publishGuestRoot):
             guard Self.sameDirectory(publishRoot, workspaceRoot),
                   publishGuestRoot == guestWorkspaceRoot else {
@@ -695,6 +883,18 @@ public actor SkillWorkspaceResourceStager {
         return segments.allSatisfy { segment in
             !segment.isEmpty && segment != "." && segment != ".."
         }
+    }
+
+    /// Lexical grammar for a verified absolute remote task root (mirrors the
+    /// C02 target validation without importing it): absolute, bounded, no NUL,
+    /// no duplicate slashes, no dot segments. Trailing slashes are ignored.
+    public static func isSafeRemoteRoot(_ path: String) -> Bool {
+        var value = path
+        while value.count > 1, value.hasSuffix("/") { value = String(value.dropLast()) }
+        guard value.hasPrefix("/"), value.utf8.count <= 4096,
+              !value.contains("\0"), !value.contains("\\"), !value.contains("//") else { return false }
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        return !components.contains(where: { $0 == ".." || $0 == "." })
     }
 
     /// POSIX mode for a staged package file. The package model carries bytes

@@ -46,6 +46,9 @@ internal object SpaceFilesHost {
             scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
             ioDispatcher = Dispatchers.IO,
             cacheRoot = File(appContext.cacheDir, "space-files"),
+            // Edit working copies + recovery originals survive cache eviction
+            // and process death (the journal reconciles after a restart).
+            editsRoot = File(appContext.filesDir, "space-files-edits"),
         )
     }
 }

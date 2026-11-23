@@ -36,7 +36,8 @@ final class ExplicitExecutionModeTests: XCTestCase {
     // MARK: - Wire grammar
 
     private func startPayload(mode: String,
-                              executionMode: String? = nil) -> SettingsDomainV1.JSONValue {
+                              executionMode: String? = nil,
+                              chatReasoning: String? = nil) -> SettingsDomainV1.JSONValue {
         var members: [String: SettingsDomainV1.JSONValue] = [
             "goal": .string("explicit mode probe"),
             "mode": .string(mode),
@@ -45,6 +46,9 @@ final class ExplicitExecutionModeTests: XCTestCase {
         ]
         if let executionMode {
             members["executionMode"] = .string(executionMode)
+        }
+        if let chatReasoning {
+            members["chatReasoning"] = .string(chatReasoning)
         }
         return .object(members)
     }
@@ -105,6 +109,20 @@ final class ExplicitExecutionModeTests: XCTestCase {
         XCTAssertEqual(explicit.inner.explicitExecutionMode, "chat")
     }
 
+    func testChatReasoningOnlyAcceptsAnExplicitChatSelection() throws {
+        let automatic = try RunStartQuery.parse(
+            payload: startPayload(mode: "chat", executionMode: "chat", chatReasoning: "automatic"),
+            conversationID: UUID())
+        XCTAssertEqual(automatic.chatReasoning, ChatReasoningPreference.automatic)
+        XCTAssertEqual(ChatReasoningPreference.defaultValue, .fast)
+        XCTAssertThrowsError(try RunStartQuery.parse(
+            payload: startPayload(mode: "chat", executionMode: "agent", chatReasoning: "maximum"),
+            conversationID: UUID()))
+        XCTAssertThrowsError(try RunStartQuery.parse(
+            payload: startPayload(mode: "chat", executionMode: "chat", chatReasoning: "unsupported"),
+            conversationID: UUID()))
+    }
+
     // MARK: - Durable run provenance
 
     private func migratedDatabase() async throws -> DatabaseManager {
@@ -125,17 +143,26 @@ final class ExplicitExecutionModeTests: XCTestCase {
         let runs = SQLiteRunStore(database: manager)
 
         let chatConversation = UUID()
-        let chatRun = try await launches.prepare(RunLaunchRequest(
+        var chatLaunch = RunLaunchRequest(
             conversationID: nil,
             newConversationID: chatConversation,
             conversationTitle: "chat provenance",
             goal: "hello",
             conversationMode: "chat",
-            explicitExecutionMode: "chat"))
+            explicitExecutionMode: "chat")
+        let selection = ChatReasoningDecision(
+            preference: .automatic, appliesDisabledPolicy: false, level: .automatic, abstractLevel: .automatic,
+            targetProviderID: UUID(), targetModelID: UUID(), targetRemoteModelID: "test-model")
+        chatLaunch.chatReasoning = selection
+        let chatRun = try await launches.prepare(chatLaunch)
         let chatRecord = try await runs.run(id: chatRun.run.id)
         let storedChat = try XCTUnwrap(chatRecord)
         XCTAssertEqual(storedChat.conversationMode, "chat")
         XCTAssertEqual(storedChat.explicitExecutionMode, "chat")
+        let events = try await runs.events(runID: chatRun.run.id)
+        XCTAssertEqual(events.count, 1)
+        let preparing = try XCTUnwrap(events.first)
+        XCTAssertEqual(ChatReasoningDecision.decision(fromEventPayloadJSON: preparing.payloadJSON), selection)
 
         // An internal/older launch that never supplied the member records NULL.
         let internalConversation = UUID()

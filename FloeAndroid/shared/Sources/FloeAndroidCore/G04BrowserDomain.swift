@@ -716,7 +716,17 @@ public enum G04ManagedServicePreview {
             BrowserCommand(sessionID: session.sessionID,
                            action: .navigate(url: url.absoluteString)),
             in: browserOwner, cancellation: cancellation)
-        return result.status == .ok
+        guard result.status == .ok, G02NativeRootEpoch.readback() == epoch,
+              (try? services.policy.validate(url.absoluteString, conversationID: conversationID)) != nil else {
+            return false
+        }
+        do {
+            try await services.center.requestUserInteraction(reason: "Local service preview",
+                                                             tabID: nil, in: conversationID)
+            return true
+        } catch {
+            return false
+        }
     }
 }
 

@@ -736,17 +736,16 @@ public enum BridgeV30 {
     public static let maximumJobs = 50
     public static let listAction = "jobs.list"
     public static let cancelAction = "jobs.cancel"
+    public static let restartServiceAction = "jobs.restartService"
+    public static let openServicePreviewAction = "jobs.openServicePreview"
     public static var modelTools: Bool { false }
 }
 
 /// Trusted-host-only App bridge over the EXISTING `floe_bridge_exchange`
-/// C ABI. Two closed actions:
-///
-///   jobs.list   {conversationID, runID?}       -> bounded durable projections
-///   jobs.cancel {conversationID, runID, jobID} -> refreshed projections
-///
-/// It never submits work, never resolves a dependency, never terminalizes a
-/// job and never carries payload/command/output/path material.
+/// C ABI. Listing is bounded to the selected task. Cancel, service restart
+/// and preview require the exact durable run and job identities. A restart
+/// uses the saved service declaration and does not reopen the original run.
+/// Payloads, commands and paths are kept in the native owner.
 public enum TaskJobsHostBridge {
     private final class ResultBox: @unchecked Sendable {
         private let lock = NSLock()
@@ -822,10 +821,11 @@ public enum TaskJobsHostBridge {
         let jobID = boundedString(payload["jobID"], 64).flatMap(UUID.init(uuidString:))
         if payload["jobID"] != nil, jobID == nil { return failure("invalidRequest") }
         guard let action = boundedString(object["action"], 80),
-              action == BridgeV30.listAction || action == BridgeV30.cancelAction else {
+              [BridgeV30.listAction, BridgeV30.cancelAction, BridgeV30.restartServiceAction,
+               BridgeV30.openServicePreviewAction].contains(action) else {
             return failure("unsupportedAction")
         }
-        if action == BridgeV30.cancelAction {
+        if action != BridgeV30.listAction {
             guard runID != nil, jobID != nil else { return failure("invalidRequest") }
         }
         // Structural validation is independent of a live composition. A
@@ -863,28 +863,51 @@ public enum TaskJobsHostBridge {
             throw BridgeFailure.rejected("runtimeUnavailable")
         }
         let facade = RuntimeFacadeJobBindings.shared
-        if request.action == BridgeV30.cancelAction {
+        if request.action != BridgeV30.listAction {
             guard let runID = request.runID, let jobID = request.jobID else {
                 throw BridgeFailure.rejected("invalidRequest")
             }
-            do {
-                let job = try await facade.cancelOwnedJob(
-                    id: jobID, runID: runID,
-                    conversationID: request.conversationID)
-                _ = job // The refreshed list below is the only projection.
-            } catch {
-                throw BridgeFailure.rejected("jobNotOwned")
+            switch request.action {
+            case BridgeV30.cancelAction:
+                do {
+                    _ = try await facade.cancelOwnedJob(
+                        id: jobID, runID: runID, conversationID: request.conversationID)
+                } catch {
+                    throw BridgeFailure.rejected("jobNotOwned")
+                }
+            case BridgeV30.restartServiceAction:
+                do {
+                    try await facade.restartOwnedLocalService(
+                        id: jobID, runID: runID, conversationID: request.conversationID, epoch: epoch)
+                } catch {
+                    throw BridgeFailure.rejected("serviceRestartUnavailable")
+                }
+            case BridgeV30.openServicePreviewAction:
+                guard let job = try? await facade.ownedJob(id: jobID, runID: runID),
+                      job.runID == runID, job.conversationID == request.conversationID,
+                      !job.state.isTerminal, let snapshot = C01ManagedServiceDomain.shared.snapshot(jobID: jobID),
+                      snapshot.conversationID == request.conversationID, snapshot.epoch == epoch,
+                      snapshot.state == .ready, G02NativeRootEpoch.readback() == epoch,
+                      await C01ManagedServiceDomain.shared.openPreview(jobID: jobID) else {
+                    throw BridgeFailure.rejected("servicePreviewUnavailable")
+                }
+            default:
+                throw BridgeFailure.rejected("unsupportedAction")
             }
         }
+        let listRunID = request.action == BridgeV30.listAction ? request.runID : nil
         var jobs = await facade.taskJobs(conversationID: request.conversationID,
-                                         runID: request.runID,
+                                         runID: listRunID,
                                          limit: BridgeV30.maximumJobs + 1)
         let truncated = jobs.count > BridgeV30.maximumJobs
         if truncated { jobs = Array(jobs.prefix(BridgeV30.maximumJobs)) }
         var projections: [[String: Any]] = []
         for job in jobs {
             let edge = await facade.dependencyRecord(jobID: job.id)
-            projections.append(projection(job: job, edge: edge))
+            projections.append(projection(job: job, edge: edge, epoch: epoch))
+        }
+        guard G02NativeRootEpoch.readback() == epoch else {
+            throw BridgeFailure.rejected("staleEpoch")
         }
         var object: [String: Any] = [
             "ok": true,
@@ -897,8 +920,8 @@ public enum TaskJobsHostBridge {
         return object
     }
 
-    private static func projection(job: BackgroundJob,
-                                   edge: RunDependencyRecord?) -> [String: Any] {
+    private static func projection(job: BackgroundJob, edge: RunDependencyRecord?,
+                                   epoch: UInt64) -> [String: Any] {
         let document = NativeJobProgressDocument.decode(job.progressJSON)
         let progress = document?.progress
         let cancellationRequested = document?.cancellationRequested == true
@@ -920,6 +943,15 @@ public enum TaskJobsHostBridge {
             "createdAt": iso(job.createdAt),
             "updatedAt": iso(job.updatedAt),
         ]
+        if BackgroundJobService.canRestartLocalService(job) {
+            value["canRestartService"] = true
+        }
+        if !job.state.isTerminal, !cancellationRequested,
+           let current = C01ManagedServiceDomain.shared.snapshot(jobID: job.id),
+           current.epoch == epoch, current.conversationID == job.conversationID,
+           current.state == .ready, current.previewURL != nil {
+            value["canOpenServicePreview"] = true
+        }
         if let bytes = job.outputBytes, bytes >= 0 {
             value["outputBytes"] = bytes
         }

@@ -42,6 +42,7 @@ internal data class ConversationArtifactPreviewRequest(
     val nativeEpoch: Long,
     val hostGeneration: Long,
     val sessionEpoch: Long,
+    val editWithExternalApp: Boolean = false,
 ) {
     val fileName: String get() = relativePath.substringAfterLast('/')
 

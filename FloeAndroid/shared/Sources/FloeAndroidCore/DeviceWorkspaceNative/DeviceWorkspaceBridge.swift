@@ -637,6 +637,10 @@ final class DeviceWorkspaceBridgeFacade: @unchecked Sendable {
             return runTargetStage(input: input, respond: respond)
         case "targetCommit":
             return runTargetCommit(input: input, empty: empty)
+        case "targetMove":
+            return runTargetRelocation(input: input, trash: false, respond: respond)
+        case "targetTrash":
+            return runTargetRelocation(input: input, trash: true, respond: respond)
         case "close":
             return runClose(input: input, empty: empty)
         default:
@@ -1065,6 +1069,60 @@ final class DeviceWorkspaceBridgeFacade: @unchecked Sendable {
         }
         lock.lock(); counters.commands += 1; lock.unlock()
         return empty()
+    }
+
+    // MARK: targetMove / targetTrash
+
+    private func runTargetRelocation(
+        input: Data, trash: Bool, respond: ([String: Any]) -> (Int32, Data)
+    ) -> (Int32, Data) {
+        guard let object = Self.jsonObject(input),
+              let ticket = sessionTicket(object),
+              let key = Self.jsonString(object["key"], limit: 1_024),
+              let digest = Self.jsonDigest(object["digest"]) else {
+            return (DeviceWorkspaceBridgeStatus.invalid, Data())
+        }
+        let hint = Self.jsonString(object["pathHint"], limit: 1_024)
+        let destination = Self.jsonString(object["to"], limit: 1_024)
+        guard object["pathHint"] == nil || hint != nil,
+              trash ? object["to"] == nil : destination != nil else {
+            return (DeviceWorkspaceBridgeStatus.invalid, Data())
+        }
+        let changed = respond(["outcome": trash ? "removed" : "moved"])
+        let preserved = respond(["outcome": "preserved"])
+        guard preserved.0 >= 0 else { return preserved }
+        lock.lock()
+        guard let target = targets[ticket] else {
+            let status = missingSessionStatusLocked(ticket)
+            lock.unlock()
+            return (status, Data())
+        }
+        lock.unlock()
+        if let refused = admit(epoch: target.createdEpoch) { return (refused, Data()) }
+        func recheckScope() throws {
+            lock.lock()
+            let stillOwned = targets[ticket] === target
+            lock.unlock()
+            guard stillOwned,
+                  case .binding(let binding) = resolveTarget(epoch: target.createdEpoch, taskID: target.taskID),
+                  binding.workspaceID == target.workspaceID, pinnedScope(binding: binding)?.scope == target.scope
+            else { throw DeviceWorkspaceLaneError.conflict }
+        }
+        do {
+            try recheckScope()
+            let moved = try target.directory.relocateConfirmedFile(key: key, digest: digest,
+                pathHint: hint, destination: destination, guardCurrent: recheckScope)
+            lock.lock()
+            counters.commands += 1
+            lock.unlock()
+            return moved ? changed : preserved
+        } catch DeviceWorkspaceLaneError.conflict {
+            return preserved
+        } catch let error as DeviceWorkspaceLaneError {
+            return (Self.status(for: error), Data())
+        } catch {
+            return (DeviceWorkspaceBridgeStatus.ioFailure, Data())
+        }
     }
 
     // MARK: close {ticket} -> {} (idempotent for source/target/stage)

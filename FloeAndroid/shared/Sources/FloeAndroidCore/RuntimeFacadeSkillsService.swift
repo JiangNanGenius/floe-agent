@@ -3847,9 +3847,13 @@ extension SkillsDomain {
     /// workspace missing the just-committed bundle, the pinned bytes are
     /// published into the live runtime-UID workspace over the existing
     /// out-of-band verified transport and the probe re-answers (the probe
-    /// stays the only visibility authority). The stager itself is pure
-    /// FloeSkills (no FloeAndroidCore import): the Core-side target/workspace
-    /// facts arrive through the resolver closures.
+    /// stays the only visibility authority). The remote lane rides the SAME
+    /// integration too: a remote-pinned run with the generation-bound write
+    /// authority publishes the pinned bytes missing-only over one exclusive
+    /// run-bound typed SFTP channel; without that authority the remote lane
+    /// answers the honest remoteResourceStagingUnavailable refusal. The
+    /// stager itself is pure FloeSkills (no FloeAndroidCore import): the
+    /// Core-side target/workspace facts arrive through the resolver closures.
     static func resourceStager() -> SkillWorkspaceResourceStager {
         SkillWorkspaceResourceStager(
             resolve: { runID, conversationID in
@@ -3859,7 +3863,8 @@ extension SkillsDomain {
                 return await runtime.resolution(runID: runID, conversationID: conversationID)
             },
             probeVisibility: C02SkillResourceStagingIntegration.current?.visibilityProber(),
-            publishVisibility: C02SkillResourceStagingIntegration.current?.resourcePublisher())
+            publishVisibility: C02SkillResourceStagingIntegration.current?.resourcePublisher(),
+            publishRemote: C02SkillResourceStagingIntegration.current?.remoteResourcePublisher())
     }
 
     // MARK: Per-run pinned snapshot lifecycle (trusted owners only)

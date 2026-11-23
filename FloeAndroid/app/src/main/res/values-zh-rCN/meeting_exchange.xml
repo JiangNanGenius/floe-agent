@@ -3,6 +3,8 @@
     <!-- 会议导出/分享。仅新增此功能的文案；持久化默认值与录音通知文案保留在 meeting_strings.xml。 -->
     <string name="meeting_exchange_format_txt">纯文本（.txt）</string>
     <string name="meeting_exchange_format_markdown">Markdown（.md）</string>
+    <string name="meeting_exchange_format_docx">Word 文档（.docx）</string>
+    <string name="meeting_exchange_format_pdf">PDF 文档（.pdf）</string>
     <string name="meeting_exchange_share_chooser">分享会议</string>
     <string name="meeting_exchange_share_opened">分享面板已打开。选择应用后才会发送内容。</string>
     <string name="meeting_exchange_saved">会议已导出。</string>

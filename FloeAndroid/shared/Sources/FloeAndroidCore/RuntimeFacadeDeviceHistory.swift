@@ -22,6 +22,7 @@
 // This file is the ONLY FloeAndroidCore owner of those rules; the C ABI in
 // DeviceHistoryNative.swift only fences epochs/sessions and copies bytes.
 
+import Crypto
 import Foundation
 import GRDB
 import FloeCore
@@ -92,8 +93,16 @@ enum DeviceHistoryStoreLane {
 
     /// Portable bytes of one offered conversation, redacted + encoded by the
     /// store itself (the exact fixed iOS encoding contract).
-    static func exportHistory(store: any ConversationStore, conversationID: UUID) async throws -> Data {
+    static func exportHistory(store: any ConversationStore, conversationID: UUID,
+                              version: Int = 1, epoch: UInt64? = nil) async throws -> Data {
         do {
+            if version == 2 {
+                guard let durable = store as? SQLiteConversationStore, let epoch else {
+                    throw DeviceHistoryLaneError.storeUnavailable
+                }
+                try await indexAttachmentDigests(durable, conversationID: conversationID, epoch: epoch)
+                return try await durable.deviceHistory(conversationID: conversationID, version: version).encoded()
+            }
             return try await store.deviceHistory(conversationID: conversationID).encoded()
         } catch DeviceConversationHistoryError.conversationUnavailable {
             throw DeviceHistoryLaneError.conversationUnavailable
@@ -101,17 +110,25 @@ enum DeviceHistoryStoreLane {
             throw DeviceHistoryLaneError.tooLarge
         } catch DeviceConversationHistoryError.invalidHistory {
             throw DeviceHistoryLaneError.invalidArchive
+        } catch let error as DeviceHistoryLaneError {
+            throw error
         } catch {
             throw DeviceHistoryLaneError.storeUnavailable
         }
     }
 
     static func exportPage(
-        store: any ConversationStore, conversationID: UUID, after: String?, through: Int64?
+        store: any ConversationStore, conversationID: UUID, after: String?, through: Int64?,
+        version: Int = 1, epoch: UInt64? = nil
     ) async throws -> DeviceConversationHistoryPage {
         guard let durable = store as? SQLiteConversationStore else { throw DeviceHistoryLaneError.storeUnavailable }
         do {
-            return try await durable.deviceHistoryPage(conversationID: conversationID, after: after, through: through)
+            if version == 2, after == nil {
+                guard let epoch else { throw DeviceHistoryLaneError.storeUnavailable }
+                try await indexAttachmentDigests(durable, conversationID: conversationID, epoch: epoch)
+            }
+            return try await durable.deviceHistoryPage(conversationID: conversationID, after: after,
+                                                       through: through, version: version)
         } catch DeviceConversationHistoryError.cursorExpired {
             throw DeviceHistoryLaneError.cursorExpired
         } catch DeviceConversationHistoryError.conversationUnavailable {
@@ -120,6 +137,8 @@ enum DeviceHistoryStoreLane {
             throw DeviceHistoryLaneError.tooLarge
         } catch DeviceConversationHistoryError.invalidHistory {
             throw DeviceHistoryLaneError.invalidArchive
+        } catch let error as DeviceHistoryLaneError {
+            throw error
         } catch {
             throw DeviceHistoryLaneError.storeUnavailable
         }
@@ -140,7 +159,7 @@ enum DeviceHistoryStoreLane {
     /// writer: version/size/shape and the App-supplied identity guard. This
     /// is the cheap, revocation-free half of the import; the store half is
     /// `importHistory(store:history:hasLiveRun:)`.
-    static func decodeHistory(bytes: Data, expectedID: UUID) throws -> DeviceConversationHistory {
+    static func decodeHistory(bytes: Data, expectedID: UUID, expectedVersion: Int = 1) throws -> DeviceConversationHistory {
         guard bytes.count <= DeviceConversationHistory.maximumBytes else {
             throw DeviceHistoryLaneError.tooLarge
         }
@@ -153,6 +172,7 @@ enum DeviceHistoryStoreLane {
             throw DeviceHistoryLaneError.invalidArchive
         }
         guard history.id == expectedID else { throw DeviceHistoryLaneError.identityMismatch }
+        guard history.version == expectedVersion else { throw DeviceHistoryLaneError.invalidArchive }
         return history
     }
 
@@ -215,6 +235,144 @@ enum DeviceHistoryStoreLane {
         } catch {
             throw DeviceHistoryLaneError.storeUnavailable
         }
+    }
+}
+
+// MARK: - Original user attachments
+
+extension DeviceHistoryStoreLane {
+    private static func attachmentService(epoch: UInt64) throws -> AttachmentStagingService {
+        guard G02NativeRootEpoch.readback() == epoch,
+              let installed = AttachmentStagingFacade.currentInstalled,
+              installed.epoch == epoch else { throw DeviceHistoryLaneError.fenced }
+        return installed.service
+    }
+
+    private static func fileDigest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func readCommitted(_ item: AttachmentRef, using service: AttachmentStagingService) -> Data? {
+        guard item.storage == .applicationSupport, let relative = item.relativePath,
+              let target = service.resolveStagedPath(relativePath: relative),
+              (0...DeviceConversationHistory.maximumRestorableAttachmentBytesPerItem).contains(item.byteCount),
+              let data = service.readAllBounded(url: target), data.count == item.byteCount else { return nil }
+        return data
+    }
+
+    private static func indexAttachmentDigests(_ store: SQLiteConversationStore,
+                                               conversationID: UUID, epoch: UInt64) async throws {
+        let service = try attachmentService(epoch: epoch)
+        let attachments = try await store.deviceHistoryUserAttachments(conversationID: conversationID,
+                                                                        storage: .applicationSupport)
+        for attachment in attachments where attachment.sha256.isEmpty {
+            guard G02NativeRootEpoch.readback() == epoch else { throw DeviceHistoryLaneError.fenced }
+            if let bytes = readCommitted(attachment, using: service) {
+                try await store.noteDeviceAttachmentDigest(fileDigest(bytes), for: attachment)
+            }
+        }
+    }
+
+    static func exportAttachment(store: any ConversationStore, conversationID: UUID, attachmentID: UUID,
+                                 epoch: UInt64) async throws -> Data {
+        guard let store = store as? SQLiteConversationStore,
+              let conversation = try await store.conversation(id: conversationID),
+              conversation.isVisibleInOrdinaryList,
+              let row = try await store.deviceHistoryUserAttachment(conversationID: conversationID, id: attachmentID),
+              row.storage == .applicationSupport else { throw DeviceHistoryLaneError.conversationUnavailable }
+        let service = try attachmentService(epoch: epoch)
+        guard let bytes = readCommitted(row, using: service),
+              fileDigest(bytes) == row.sha256 else { throw DeviceHistoryLaneError.conflict }
+        return bytes
+    }
+
+    static func pendingAttachmentJSON(store: any ConversationStore, conversationID: UUID,
+                                      byteBudget: Int) async throws -> String {
+        guard let store = store as? SQLiteConversationStore,
+              let conversation = try await store.conversation(id: conversationID),
+              conversation.isVisibleInOrdinaryList else { throw DeviceHistoryLaneError.conversationUnavailable }
+        let records = try await store.deviceHistoryUserAttachments(conversationID: conversationID, storage: .none)
+        var bytesRemaining = DeviceConversationHistory.maximumRestorableAttachmentBytes
+        var items: [[String: Any]] = []
+        var truncated = false
+        var wireRemaining = byteBudget - 128
+        for row in records {
+            guard let message = row.messageID, row.sha256.utf8.count == 64 else { continue }
+            let item: [String: Any] = [
+                "attachmentID": row.id.uuidString, "messageID": message.uuidString,
+                "kind": row.kind == .image ? "image" : "file",
+                "displayName": row.displayName, "byteCount": row.byteCount, "digest": row.sha256,
+            ]
+            wireRemaining -= ConversationWireBudget.encodedObjectBytes(item) + 1
+            bytesRemaining -= Int64(row.byteCount)
+            if wireRemaining < 0 || bytesRemaining < 0 {
+                truncated = true
+                break
+            }
+            items.append(item)
+        }
+        let body: [String: Any] = ["ok": 1, "schema": "floe.device-history.attachments.v1",
+            "items": items, "truncated": truncated ? 1 : 0]
+        let encoded = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return String(decoding: encoded, as: UTF8.self)
+    }
+
+    static func restoreAttachment(
+        store: any ConversationStore, epoch: UInt64, conversationID: UUID,
+        attachmentID: UUID, messageID: UUID, digest: String, bytes: Data,
+        beginAdmission: @Sendable () -> Bool
+    ) async throws -> Bool {
+        guard let store = store as? SQLiteConversationStore,
+              let conversation = try await store.conversation(id: conversationID),
+              conversation.isVisibleInOrdinaryList,
+              let row = try await store.deviceHistoryUserAttachment(conversationID: conversationID, id: attachmentID),
+              row.messageID == messageID, row.sha256 == digest,
+              row.byteCount == bytes.count,
+              bytes.count <= DeviceConversationHistory.maximumRestorableAttachmentBytesPerItem,
+              fileDigest(bytes) == digest else { throw DeviceHistoryLaneError.conflict }
+        let service = try attachmentService(epoch: epoch)
+        if row.storage == .applicationSupport {
+            return readCommitted(row, using: service).map { fileDigest($0) == digest } == true
+        }
+        guard row.storage == .none, beginAdmission(), G02NativeRootEpoch.readback() == epoch else {
+            throw DeviceHistoryLaneError.fenced
+        }
+        let name = StagingNameSanitizer.sanitize(displayNameHint: row.displayName,
+                                                  fallbackStagingID: attachmentID)
+        let relative = attachmentID.uuidString + "/" + name
+        guard let target = service.resolveStagedPath(relativePath: relative) else {
+            throw DeviceHistoryLaneError.storeUnavailable
+        }
+        let filesystem = FileManagerStagingFileSystem.shared
+        let folder = target.deletingLastPathComponent()
+        try filesystem.createDirectory(at: folder)
+        guard service.resolveStagedPath(relativePath: relative) == target else {
+            throw DeviceHistoryLaneError.storeUnavailable
+        }
+        if !filesystem.isRegularFile(atPath: target.path) {
+            let transfer = folder.appendingPathComponent(".device-\(UUID().uuidString).tmp")
+            defer { try? filesystem.removeItem(at: transfer) }
+            try bytes.write(to: transfer, options: .withoutOverwriting)
+            try filesystem.sync(transfer)
+            guard G02NativeRootEpoch.readback() == epoch,
+                  service.resolveStagedPath(relativePath: relative) == target else {
+                throw DeviceHistoryLaneError.fenced
+            }
+            do { try filesystem.rename(from: transfer, to: target) }
+            catch {
+                guard filesystem.isRegularFile(atPath: target.path) else { throw error }
+            }
+        }
+        guard service.resolveStagedPath(relativePath: relative) == target,
+              let readBack = service.readAllBounded(url: target), readBack.count == row.byteCount,
+              fileDigest(readBack) == digest else { throw DeviceHistoryLaneError.conflict }
+        let hasLiveRun = hasLiveRunForImport(conversationID: conversationID)
+        return try await store.restoreDeviceHistoryAttachment(conversationID: conversationID,
+            attachmentID: attachmentID, messageID: messageID, digest: digest, relativePath: relative,
+            guardCurrent: { db in
+                guard G02NativeRootEpoch.readback() == epoch else { return false }
+                return try !hasLiveRun(db)
+            })
     }
 }
 

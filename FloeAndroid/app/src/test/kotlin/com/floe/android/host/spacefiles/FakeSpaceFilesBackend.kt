@@ -64,6 +64,9 @@ internal class FakeSpaceFilesBackend(
     var probeWriteGranted: Boolean = true
     var persistableOffered: Boolean = true
     var nativeMoveSupported: Boolean = true
+    /** Document URIs whose provider rejects truncate-write; a freshly created
+     * sibling stays writable so the save-as fallback can land verified bytes. */
+    val truncateUnsupportedUris = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     var faultOnChildScan: Throwable? = null
     var scanEntered: CountDownLatch? = null
     var cancelObserved: AtomicBoolean = AtomicBoolean(false)
@@ -169,6 +172,14 @@ internal class FakeSpaceFilesBackend(
     }
 
     fun document(documentId: String): SafDocument? = documentsByUri[uriFor(documentId)]
+
+    /** URI + decoded content of the (single) document with this display name. */
+    fun contentByDisplayName(name: String): Pair<String, String>? =
+        documentsByUri.values.firstOrNull { it.displayName == name }
+            ?.let { doc ->
+                val bytes = content[doc.ref.uri.uriString] ?: return null
+                doc.ref.uri.uriString to String(bytes, Charsets.UTF_8)
+            }
 
     private fun uriFor(documentId: String) = "$treeUri/document/$documentId"
 
@@ -323,8 +334,36 @@ internal class FakeSpaceFilesBackend(
         return ReadOpen.Opened(ByteArrayInputStream(bytes), bytes.size.toLong())
     }
 
-    override fun openWriteTruncate(ref: SafDocumentRef, cancel: SafCancelToken): WriteOpen =
-        WriteOpen.Opened(java.io.ByteArrayOutputStream())
+    override fun openWriteTruncate(ref: SafDocumentRef, cancel: SafCancelToken): WriteOpen {
+        if (ref.uri.uriString in truncateUnsupportedUris) return WriteOpen.UnsupportedMode
+        // The real DocumentsProvider contract: the bytes that flush through
+        // the returned stream ARE the document's new content on close.
+        return WriteOpen.Opened(object : java.io.OutputStream() {
+            private val sink = java.io.ByteArrayOutputStream()
+
+            override fun write(b: Int) {
+                sink.write(b)
+            }
+
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                sink.write(b, off, len)
+            }
+
+            override fun close() {
+                super.close()
+                val bytes = sink.toByteArray()
+                content[ref.uri.uriString] = bytes
+                val existing = documentsByUri[ref.uri.uriString] ?: return
+                val updated = existing.copy(size = SafSize.Known(bytes.size.toLong()))
+                documentsByUri[ref.uri.uriString] = updated
+                val parent = existing.ref.parentDocumentId ?: rootDocumentId
+                children[parent]?.let { siblings ->
+                    val index = siblings.indexOfFirst { it.ref.uri == ref.uri }
+                    if (index >= 0) siblings[index] = updated
+                }
+            }
+        })
+    }
 
     override fun streamTypes(ref: SafDocumentRef): List<String> = emptyList()
 

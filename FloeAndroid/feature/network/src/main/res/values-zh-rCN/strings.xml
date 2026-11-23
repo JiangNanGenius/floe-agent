@@ -434,6 +434,9 @@
     <string name="network_capture_icmp">免 Root 抓包不转发 ICMP（ping）。</string>
     <string name="network_capture_cancelled">抓包已取消。</string>
     <string name="network_capture_raw_title">已保存的原始抓包</string>
+    <string name="network_capture_raw_remove_title">删除原始抓包？</string>
+    <string name="network_capture_raw_remove_message">已保存的分析仍可查看。</string>
+    <string name="network_capture_raw_remove_failed">无法删除原始抓包。</string>
     <string name="network_capture_raw_intro">这些 PCAP 文件保存在应用私有目录。只有你选择导出时才会复制到你指定的位置，不会自动上传。</string>
     <string name="network_capture_raw_item">%1$s · %2$s · %3$s</string>
     <string name="network_capture_raw_digest">SHA-256 %1$s…</string>

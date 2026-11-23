@@ -657,6 +657,7 @@ let package = Package(
                 swiftSettings: [.define("SQLITE_ENABLE_FTS5")]),
         .target(name: "FloePersistence", dependencies: [
             "FloeCore", "FloeModels", "FloeSecurity", "GRDB",
+            .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         // CURRENT runtime authority (40 files: ConversationRunService,
         // AgentRuntime, HarnessEvent/Channel, DelegateTool registry,

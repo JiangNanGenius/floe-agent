@@ -188,11 +188,13 @@ fun ConversationApprovalRow(
     } else if (shellAction != null) {
         presentedCard.toolName == "exec.shell"
     } else if (fileAction != null) {
+        val expectedTool = if (fileAction.operation == "startService") "jobs.submit" else "workspace.${fileAction.operation}"
         presentedCard.workspaceVerified && presentedCard.workspaceId == fileAction.workspaceId &&
-            presentedCard.toolName == "workspace.${fileAction.operation}"
+            presentedCard.toolName == expectedTool
     } else when (presentedCard.actionKind) {
         "back", "home" -> true
         "launch" -> !presentedCard.actionPackage.isNullOrBlank()
+        "startLocalLinux" -> presentedCard.toolName == "environment.startLinux"
         else -> false
     }
     val shellDetailsReady = shellAction?.shellPrivateBytes == null ||
@@ -314,11 +316,14 @@ fun ConversationApprovalRow(
                     "moveFile" -> stringResource(R.string.approval_workspace_move)
                     "copyFile" -> stringResource(R.string.approval_workspace_copy)
                     "deleteFile" -> stringResource(R.string.approval_workspace_delete)
+                    "publishOutput" -> stringResource(R.string.approval_workspace_publish)
+                    "startService" -> stringResource(R.string.approval_service_start)
                     else -> ""
                 } else when (presentedCard.actionKind) {
                     "back" -> stringResource(R.string.approval_device_back)
                     "home" -> stringResource(R.string.approval_device_home)
                     "launch" -> stringResource(R.string.approval_device_launch)
+                    "startLocalLinux" -> stringResource(R.string.approval_start_local_linux)
                     else -> ""
                 }, style = Floe.typography.bodyEmphasized, color = colors.label)
                 if (browserVisual != null) {
@@ -432,6 +437,27 @@ fun ConversationApprovalRow(
                     SelectionContainer {
                         FloeText(fileAction.targetPath, modifier = Modifier.fillMaxWidth(),
                             style = Floe.typography.evidence, color = colors.label)
+                    }
+                    fileAction.outputDisplayName?.let {
+                        FloeText(stringResource(R.string.approval_workspace_output_name, it),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    }
+                    fileAction.managedService?.let { service ->
+                        FloeText(stringResource(R.string.approval_service_details,
+                            service.runtime, service.cwd, service.port),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        FloeText(stringResource(if (service.waitForReadiness) R.string.approval_service_wait
+                            else R.string.approval_service_detach),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        if (service.arguments.isNotEmpty()) {
+                            val args = service.arguments.joinToString(" ") { argument ->
+                                "\"" + argument.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+                            }
+                            SelectionContainer {
+                                FloeText(stringResource(R.string.approval_service_arguments, args),
+                                    style = Floe.typography.evidence, color = colors.label)
+                            }
+                        }
                     }
                     if (fileAction.operation in setOf("createFile", "writeFile", "moveFile", "copyFile", "createDirectory")) {
                         FloeText(stringResource(when (fileAction.overwrite) {

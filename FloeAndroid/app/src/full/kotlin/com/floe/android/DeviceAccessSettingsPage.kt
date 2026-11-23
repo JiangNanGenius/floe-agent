@@ -259,7 +259,10 @@ sealed interface DeviceAccessAdbUi {
     data object Pairing : DeviceAccessAdbUi
 
     /** The pairing relationship exists but no Floe service is running. */
-    data class Paired(val effectiveUid: Int? = null) : DeviceAccessAdbUi
+    data class Paired(
+        val effectiveUid: Int? = null,
+        val pairingSessionOpen: Boolean = false,
+    ) : DeviceAccessAdbUi
 
     /** A live Floe-owned shell service. [effectiveUid] is reported, not assumed. */
     data class ServiceAlive(val effectiveUid: Int? = null) : DeviceAccessAdbUi
@@ -405,6 +408,7 @@ class DeviceAccessCallbacks(
     val onExportUsbBootstrap: () -> Unit = {},
     val onCancelPairing: () -> Unit = {},
     val onStartAdbService: () -> Unit = {},
+    val onStartAdbServiceAtPort: (Int) -> Unit = {},
     val onStopAdbService: () -> Unit = {},
     val onForgetAdbPairing: () -> Unit = {},
     val onOpenDeveloperOptions: () -> Unit = {},
@@ -484,18 +488,16 @@ object DeviceAccessPresentation {
         state: DeviceAccessAdbUi,
         busy: DeviceAccessBusyUi = DeviceAccessBusyUi.NONE,
     ): Set<DeviceAccessAdbActionUi> {
-        val base = when (state) {
+        val base = if (adbShowsCodeField(state)) {
+            setOf(
+                DeviceAccessAdbActionUi.SUBMIT_CODE,
+                DeviceAccessAdbActionUi.CANCEL_PAIRING,
+                DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS,
+            )
+        } else when (state) {
             DeviceAccessAdbUi.Off -> setOf(DeviceAccessAdbActionUi.ENABLE)
             is DeviceAccessAdbUi.PairRequired ->
-                if (state.pairingSessionOpen) {
-                    setOf(
-                        DeviceAccessAdbActionUi.SUBMIT_CODE,
-                        DeviceAccessAdbActionUi.CANCEL_PAIRING,
-                        DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS,
-                    )
-                } else {
-                    setOf(DeviceAccessAdbActionUi.PAIR, DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
-                }
+                setOf(DeviceAccessAdbActionUi.PAIR, DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
             DeviceAccessAdbUi.Pairing -> setOf(DeviceAccessAdbActionUi.CANCEL_PAIRING)
             is DeviceAccessAdbUi.Paired ->
                 setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.FORGET,
@@ -528,7 +530,11 @@ object DeviceAccessPresentation {
     }
 
     fun adbShowsCodeField(state: DeviceAccessAdbUi): Boolean =
-        state is DeviceAccessAdbUi.PairRequired && state.pairingSessionOpen
+        when (state) {
+            is DeviceAccessAdbUi.PairRequired -> state.pairingSessionOpen
+            is DeviceAccessAdbUi.Paired -> state.pairingSessionOpen
+            else -> false
+        }
 
     fun adbSubmitEnabled(
         code: String,
@@ -661,6 +667,21 @@ object DeviceAccessPresentation {
     fun pairingPortValid(raw: String): Boolean =
         com.floe.android.host.deviceaccess.AdbPairingPortDiscovery.parsePort(raw) != null
 
+    fun adbCanSpecifyConnectPort(state: DeviceAccessPresentationState): Boolean {
+        val error = state.error ?: return false
+        val code = error.code ?: return false
+        return state.pairingSupported &&
+            error.section == DeviceAccessErrorSectionUi.ADB &&
+            code != "adb_connect_tls" &&
+            (code == "no_connect_port" || code == "adb_connect" || code.startsWith("adb_connect_")) &&
+            DeviceAccessAdbActionUi.START in adbActions(state.adb, state.busy)
+    }
+
+    fun adbCanRenewPairing(state: DeviceAccessPresentationState): Boolean =
+        state.pairingSupported && state.error?.section == DeviceAccessErrorSectionUi.ADB &&
+            state.error.code == "adb_connect_tls" &&
+            DeviceAccessAdbActionUi.START in adbActions(state.adb, state.busy)
+
     fun taskPhaseRes(phase: DeviceAccessTaskPhaseUi): Int = when (phase) {
         DeviceAccessTaskPhaseUi.RUNNING -> R.string.device_access_active_running
         DeviceAccessTaskPhaseUi.WAITING_FOR_USER -> R.string.device_access_active_waiting
@@ -681,7 +702,8 @@ object DeviceAccessPresentation {
         "no_connect_port" -> R.string.device_access_adb_no_connection
         "pair_required", "identity_unpaired" -> R.string.device_access_adb_pair_first
         "usb_bootstrap_required" -> R.string.device_access_pairing_unsupported
-        "adb_connect", "adb_connect_tls", "adb_connect_refused", "adb_connect_host",
+        "adb_connect_tls" -> R.string.device_access_adb_pairing_verification_failed
+        "adb_connect", "adb_connect_refused", "adb_connect_host",
         "adb_connect_io", "adb_connect_timeout", "adb_connect_protocol", "adb_connect_output" ->
             R.string.device_access_adb_connection_failed
         else -> R.string.device_access_adb_start_failed
@@ -1002,25 +1024,23 @@ fun DeviceAccessSettingsPage(
                     // the pairing session is open the notification text explains
                     // the inline path; the manual/split fallback keeps the real
                     // system action wording.
-                    when (val adb = state.adb) {
-                        is DeviceAccessAdbUi.PairRequired -> if (adb.pairingSessionOpen) {
-                            when (notificationAvailability) {
-                                PairingNotificationPolicy.Availability.AVAILABLE -> CaptionText(
-                                    stringResource(R.string.device_access_adb_pair_open_hint),
-                                    Modifier.padding(top = 2.dp),
-                                )
-                                PairingNotificationPolicy.Availability.UNSUPPORTED -> Unit
-                                else -> CaptionText(
-                                    stringResource(R.string.device_access_pairing_notification_off),
-                                    Modifier.padding(top = 2.dp),
-                                )
-                            }
+                    when {
+                        DeviceAccessPresentation.adbShowsCodeField(state.adb) -> when (notificationAvailability) {
+                            PairingNotificationPolicy.Availability.AVAILABLE -> CaptionText(
+                                stringResource(R.string.device_access_adb_pair_open_hint),
+                                Modifier.padding(top = 2.dp),
+                            )
+                            PairingNotificationPolicy.Availability.UNSUPPORTED -> Unit
+                            else -> CaptionText(
+                                stringResource(R.string.device_access_pairing_notification_off),
+                                Modifier.padding(top = 2.dp),
+                            )
                         }
-                        DeviceAccessAdbUi.RestartRequired -> CaptionText(
+                        state.adb == DeviceAccessAdbUi.RestartRequired -> CaptionText(
                             stringResource(R.string.device_access_adb_restart_hint),
                             Modifier.padding(top = 2.dp),
                         )
-                        DeviceAccessAdbUi.Revoked -> CaptionText(
+                        state.adb == DeviceAccessAdbUi.Revoked -> CaptionText(
                             stringResource(R.string.device_access_adb_revoked_hint),
                             Modifier.padding(top = 2.dp),
                         )
@@ -1067,6 +1087,34 @@ fun DeviceAccessSettingsPage(
                 DeviceAccessErrorRows(error, showErrorDetails,
                     onToggleDetails = { showErrorDetails = !showErrorDetails },
                     onRefresh = callbacks.onRefresh)
+            }
+            if (DeviceAccessPresentation.adbCanRenewPairing(state)) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_adb_pair_again),
+                    onClick = pairWithNotification,
+                )
+            }
+            if (DeviceAccessPresentation.adbCanSpecifyConnectPort(state)) {
+                var portDraft by remember { mutableStateOf("") }
+                val port = portDraft.toIntOrNull()?.takeIf { it in 1..65535 }
+                FloeSectionRow(title = {
+                    Column {
+                        FloePlainFormField(
+                            label = stringResource(R.string.device_access_adb_connect_port_label),
+                            value = portDraft,
+                            onValueChange = { portDraft = it.filter { digit -> digit in '0'..'9' }.take(5) },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                            ),
+                        )
+                        CaptionText(stringResource(R.string.device_access_adb_connect_port_hint))
+                    }
+                })
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_adb_connect_port_submit),
+                    onClick = { port?.let(callbacks.onStartAdbServiceAtPort) },
+                    enabled = port != null,
+                )
             }
             if (!state.pairingSupported) {
                 FloeActionRow(
@@ -1161,15 +1209,12 @@ fun DeviceAccessSettingsPage(
                     })
                 }
             }
-            when (val adb = state.adb) {
-                is DeviceAccessAdbUi.PairRequired -> if (adb.pairingSessionOpen) {
-                    PairingNotificationAction(
-                        availability = notificationAvailability,
-                        permissionDenied = notificationDeniedHere,
-                        onAllow = allowPairingNotifications,
-                    )
-                }
-                else -> Unit
+            if (DeviceAccessPresentation.adbShowsCodeField(state.adb)) {
+                PairingNotificationAction(
+                    availability = notificationAvailability,
+                    permissionDenied = notificationDeniedHere,
+                    onAllow = allowPairingNotifications,
+                )
             }
             // Remaining actions the current state genuinely offers share one
             // wrapping capsule row (cancel / developer options / forget).

@@ -67,6 +67,7 @@ class NetworkArtifactCallbacks(
     val onRefreshRawCaptures: () -> Unit,
     val onExportRawCapture: (String) -> Unit,
     val onCancelRawExport: () -> Unit,
+    val onRemoveRawCapture: (String) -> Unit,
 )
 
 private enum class ArtifactTab { CAPTURES, COVERAGE }
@@ -467,6 +468,7 @@ private fun RawCaptureSection(
     state: RawCaptureLibraryUiState,
     callbacks: NetworkArtifactCallbacks,
 ) {
+    var removing by remember { mutableStateOf<String?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             FloeText(
@@ -548,6 +550,7 @@ private fun RawCaptureSection(
                                 else R.string.network_capture_raw_export,
                             ),
                             onClick = { callbacks.onExportRawCapture(item.sessionId) },
+                            modifier = Modifier.weight(1f),
                             enabled = !state.exporting,
                             prominent = busy,
                         )
@@ -555,6 +558,14 @@ private fun RawCaptureSection(
                             FloeCapsuleButton(
                                 stringResource(R.string.network_capture_raw_cancel),
                                 onClick = callbacks.onCancelRawExport,
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            FloeCapsuleButton(
+                                stringResource(R.string.network_artifact_delete),
+                                onClick = { removing = item.sessionId },
+                                modifier = Modifier.weight(1f),
+                                enabled = !state.exporting,
                             )
                         }
                     }
@@ -579,6 +590,20 @@ private fun RawCaptureSection(
             )
         }
         state.failure?.let { ArtifactFailureLine(it) }
+        if (state.removeFailed) {
+            FloeStatusLine(FloeIcons.WarningTriangle, stringResource(R.string.network_capture_raw_remove_failed),
+                Floe.colors.destructive)
+        }
+    }
+    removing?.let { sessionId ->
+        FloeConfirmDialog(
+            title = stringResource(R.string.network_capture_raw_remove_title),
+            message = stringResource(R.string.network_capture_raw_remove_message),
+            confirmLabel = stringResource(R.string.network_artifact_delete),
+            dismissLabel = stringResource(R.string.network_artifact_cancel),
+            onConfirm = { removing = null; callbacks.onRemoveRawCapture(sessionId) },
+            onDismiss = { removing = null },
+        )
     }
 }
 

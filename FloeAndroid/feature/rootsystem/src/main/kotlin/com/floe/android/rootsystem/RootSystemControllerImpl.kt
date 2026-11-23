@@ -235,6 +235,7 @@ internal class RootSystemControllerImpl(
                 pairingCode.fill('\u0000')
                 return@withLock PairingResult.Failed("service_alive")
             }
+            val standby = mutableAdb.value as? AdbStatus.Paired ?: AdbStatus.PairRequired
             setAdb(AdbStatus.Pairing)
             val result = try {
                 pairing.pair(pairingPort, pairingCode)
@@ -248,12 +249,12 @@ internal class RootSystemControllerImpl(
                     connectPort = config.connectPort ?: connectPort
                     setAdb(AdbStatus.Paired(connectPort))
                 }
-                is PairingResult.InvalidCode -> setAdb(AdbStatus.PairRequired)
+                is PairingResult.InvalidCode -> setAdb(standby)
                 is PairingResult.Unsupported -> setAdb(
                     AdbStatus.Error("wireless pairing is not supported on this device", result.code),
                 )
-                is PairingResult.Timeout -> setAdb(AdbStatus.PairRequired)
-                is PairingResult.Failed -> setAdb(AdbStatus.PairRequired)
+                is PairingResult.Timeout -> setAdb(standby)
+                is PairingResult.Failed -> setAdb(standby)
             }
             result
         }

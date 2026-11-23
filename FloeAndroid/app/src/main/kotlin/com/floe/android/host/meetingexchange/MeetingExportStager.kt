@@ -12,7 +12,6 @@ import java.io.FileOutputStream
 import java.io.FilterOutputStream
 import java.io.IOException
 import java.io.OutputStream
-import java.io.OutputStreamWriter
 import java.nio.file.Files
 
 internal class StagedMeetingExport(
@@ -42,11 +41,11 @@ internal class MeetingExportStager(
         val file = File.createTempFile("meeting-export-", ".${document.format.extension}", rootDir)
         var committed = false
         try {
+            val payload = document.payloadBytes()
+            if (payload.size.toLong() != document.byteCount) throw MeetingExportSizeException()
             val counter = CountingOutputStream(BufferedOutputStream(FileOutputStream(file)))
             counter.use { output ->
-                OutputStreamWriter(output, Charsets.UTF_8).use { writer ->
-                    writer.write(document.text)
-                }
+                output.write(payload)
             }
             val bytes = counter.count
             if (bytes <= 0L ||

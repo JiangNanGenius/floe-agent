@@ -409,6 +409,7 @@ private fun ConversationDestination(
             )
         }
     }
+    MessageAttachmentPreviewSheet(runtimeHost.attachments.messagePreview, conversationId, compact)
     ExecutionTargetSheet(
         visible = targetSheetVisible && temporary == null,
         state = targetState,

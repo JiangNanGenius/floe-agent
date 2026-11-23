@@ -68,6 +68,36 @@ struct RunReasoningClassifier: AutomaticReasoningEffortClassifying {
 }
 
 extension FacadeRunDomain {
+    func resolvedChatReasoningModel(
+        runID: UUID,
+        launch: RunModelAssembly.ResolvedPair,
+        goal: String,
+        attachments: [AttachmentRef],
+        bundle: RunPersistenceBundle,
+        ingress: AutomaticReasoningEffortIngress,
+        usesTools: Bool,
+        preferred: ChatReasoningPreference?
+    ) async throws -> (ModelProfile, ProviderReasoningPolicy) {
+        let preference: ChatReasoningPreference
+        if ingress == .freshRound {
+            preference = preferred ?? .defaultValue
+        } else {
+            let events = try await bundle.runs.events(runID: runID, afterSequence: 0, limit: 32)
+            preference = events.lazy.filter { $0.kind == .status }.compactMap {
+                ChatReasoningDecision.decision(fromEventPayloadJSON: $0.payloadJSON)?.preference
+            }.first ?? .defaultValue
+        }
+        let decision = ChatReasoningSupport.decision(preference, provider: launch.provider, model: launch.model)
+        var selected = launch
+        selected.model = decision.applied(to: launch.model)
+        if decision.level == .automatic {
+            selected.model = try await resolvedRunReasoningModel(
+                runID: runID, launch: selected, goal: goal, attachments: attachments,
+                bundle: bundle, reasoningIngress: ingress, usesTools: usesTools)
+        }
+        return (selected.model, decision.appliesDisabledPolicy ? .disabled : .modelDefault)
+    }
+
     func resolvedRunReasoningModel(
         runID: UUID,
         launch: RunModelAssembly.ResolvedPair,

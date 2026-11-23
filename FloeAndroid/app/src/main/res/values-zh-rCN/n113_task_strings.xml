@@ -2,6 +2,7 @@
 <resources>
     <!-- N10 任务连续性：只保留简洁、可操作的文案。 -->
     <string name="n113_mode_not_saved">未能保存输入模式。</string>
+    <string name="chat_reasoning_not_saved">未能保存对话思考强度。</string>
     <string name="n113_plan_handoff_busy">计划正在准备执行，请稍后重试。</string>
     <string name="n113_plan_finish_current">请先完成或停止当前操作，再执行计划。</string>
 

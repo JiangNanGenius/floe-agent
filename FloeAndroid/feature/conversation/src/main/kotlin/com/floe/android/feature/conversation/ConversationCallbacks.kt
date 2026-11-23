@@ -94,6 +94,7 @@ data class RunLaunchRequest(
      * text.
      */
     val goalDefinition: GoalDefinitionUi? = null,
+    val chatReasoning: ChatReasoningUi? = null,
 ) {
     /** The immutable correlation the host must echo back verbatim with this
      * launch's prepared/failed outcome. */
@@ -411,6 +412,13 @@ interface ConversationUiCallbacks {
         runId: String,
     ): Boolean = false
 
+    fun dispatchBackgroundServiceAction(
+        session: ConversationSessionToken,
+        jobId: String,
+        runId: String,
+        action: BackgroundServiceAction,
+    ): Boolean = false
+
     /** Read-only queue/message reconciliation. Never resumes a business run.
      * The token fences late success against a newer projection failure. */
     fun refreshQueuedInputProjection(
@@ -602,6 +610,8 @@ interface ConversationUiCallbacks {
         lastPresentedPlanRevision: String?,
     ): Boolean = true
 
+    fun recordChatReasoning(session: ConversationSessionToken, preference: ChatReasoningUi): Boolean = false
+
     /** ⇄ createGoal(...): the host starts the goal-mode run with the
      * structured `goalDefinition` (the native C1 owns the durable goal row). */
     fun createGoal(request: GoalCreateRequest): Boolean
@@ -788,6 +798,13 @@ interface ConversationUiCallbacks {
      * without a proven route are never offered (Save Copy stays). True =
      * the host admitted the open. No external-intent fallback. */
     fun openRunOutputFile(
+        session: ConversationSessionToken, runId: String, outputId: String,
+    ): Boolean = false
+
+    val supportsRunOutputEditableCopy: Boolean get() = false
+
+    /** Create and open an editable workspace copy from the exact sealed output. */
+    fun editRunOutputCopy(
         session: ConversationSessionToken, runId: String, outputId: String,
     ): Boolean = false
 

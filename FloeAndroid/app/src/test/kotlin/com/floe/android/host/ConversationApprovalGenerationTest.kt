@@ -505,6 +505,7 @@ class ConversationApprovalGenerationTest {
             "moveFile" to "\"source\":\"workspaceFile\",\"overwrite\":\"forbidden\",\"precondition\":\"sourceExists\",\"sourcePath\":\"源/原件\",\"sourcePrecondition\":\"exists\"",
             "copyFile" to "\"source\":\"workspaceFile\",\"overwrite\":\"forbidden\",\"precondition\":\"sourceExists\",\"sourcePath\":\"源/原件\",\"sourcePrecondition\":\"exists\"",
             "deleteFile" to "\"source\":\"none\",\"overwrite\":\"conditional\",\"precondition\":\"exists\",\"recursive\":true",
+            "publishOutput" to "\"source\":\"none\",\"overwrite\":\"forbidden\",\"precondition\":\"fileExists\",\"displayName\":\"成果.txt\"",
         )
         for ((operation, fields) in operations) {
             val raw = "{$common,\"operation\":\"$operation\",$fields}"
@@ -512,11 +513,30 @@ class ConversationApprovalGenerationTest {
             assertEquals(operation, details.operation)
             if (operation == "replaceText") assertEquals(2L, details.expectedOccurrences)
             if (operation == "deleteFile") assertEquals(true, details.recursive)
+            if (operation == "publishOutput") {
+                assertEquals("成果.txt", details.outputDisplayName)
+                val invalid = raw.replace("成果.txt", "../其他.txt")
+                assertNull(workspaceApprovalDetails("workspace.publishOutput", Json.parseToJsonElement(invalid).jsonObject))
+            }
             if (operation in setOf("moveFile", "copyFile")) assertEquals("源/原件", details.sourcePath)
             assertNull(workspaceApprovalDetails("workspace.$operation", Json.parseToJsonElement(raw.dropLast(1) + ",\"extra\":true}").jsonObject))
         }
         val invalidDelete = """{"kind":"workspaceFile","workspaceID":"$conversation","operation":"deleteFile","target":"x","source":"none","overwrite":"conditional","precondition":"exists","recursive":"true"}"""
         assertNull(workspaceApprovalDetails("workspace.deleteFile", Json.parseToJsonElement(invalidDelete).jsonObject))
+    }
+
+    @Test fun managedServiceReviewBindsTheExactWorkspaceScriptAndPort() {
+        val raw = """{"kind":"workspaceFile","workspaceID":"$conversation","operation":"startService","target":"notes/server.sh","source":"none","overwrite":"forbidden","precondition":"fileExists","service":{"runtime":"shell","cwd":".","port":18765,"arguments":["","a b"],"wait":false}}"""
+        fun decode(tool: String, json: String = raw) =
+            workspaceApprovalDetails(tool, Json.parseToJsonElement(json).jsonObject)
+        val details = requireNotNull(decode("jobs.submit"))
+        assertEquals("notes/server.sh", details.targetPath)
+        val service = requireNotNull(details.managedService)
+        assertEquals(18765, service.port)
+        assertEquals(listOf("", "a b"), service.arguments)
+        assertEquals(false, service.waitForReadiness)
+        assertNull(decode("workspace.startService"))
+        assertNull(decode("jobs.submit", raw.replace("18765", "443")))
     }
 
 }
