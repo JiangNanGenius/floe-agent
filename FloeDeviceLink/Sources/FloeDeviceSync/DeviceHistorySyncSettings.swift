@@ -36,7 +36,7 @@ public struct DeviceHistorySyncSettings: View {
         Form {
             if showsEnableControl {
                 Section {
-                    Toggle(label("跨设备会话同步", "Sync Conversations Across Devices"), isOn: Binding(
+                    Toggle(label("跨设备同步", "Sync Across Devices"), isOn: Binding(
                         get: { center.enabled }, set: { value in Task { await center.setEnabled(value) } }))
                         .disabled(center.busy)
                         .accessibilityIdentifier("deviceHistorySync.enabled")
@@ -108,7 +108,7 @@ public struct DeviceHistorySyncSettings: View {
                     Text(label("连接选项", "Connection Options"))
                 }
             } else if !showsEnableControl {
-                ContentUnavailableView(label("会话同步已关闭", "Conversation Sync Is Off"),
+                ContentUnavailableView(label("设备同步已关闭", "Device Sync Is Off"),
                                        systemImage: "laptopcomputer")
             }
         }
@@ -195,6 +195,7 @@ private struct DeviceHistoryPeerSettings: View {
     @State private var local: [DeviceHistoryOffer] = []
     @State private var remote: [DeviceHistoryOffer]?
     @State private var confirmsRemoval = false
+    @State private var staleShares: Set<UUID> = []
 
     var body: some View {
         #if os(macOS)
@@ -223,9 +224,7 @@ private struct DeviceHistoryPeerSettings: View {
                 if let remote {
                     ForEach(remote) { task in
                         LabeledContent(task.title) {
-                            Button(label("同步", "Sync")) {
-                                Task { await center.receive(task.id, from: peerID) }
-                            }.disabled(center.busy)
+                            receiveControl(for: task)
                         }
                     }
                     if remote.isEmpty { Text(label("对方暂无共享会话。", "The other device hasn’t shared any conversations.")).foregroundStyle(.secondary) }
@@ -236,13 +235,26 @@ private struct DeviceHistoryPeerSettings: View {
                         .accessibilityIdentifier("deviceHistorySync.receiveProgress")
                     Button(label("取消同步", "Cancel Sync"), action: center.cancelReceive)
                         .accessibilityIdentifier("deviceHistorySync.cancelReceive")
+                } else if center.busy, center.workspacePeerID == peerID {
+                    if let progress = center.workspaceProgress {
+                        ProgressView(value: Double(progress.processed), total: Double(max(1, progress.total))) {
+                            Text(label("正在同步文件 · \(progress.processed)/\(progress.total) 项",
+                                       "Syncing files · \(progress.processed)/\(progress.total) items"))
+                        }
+                    } else {
+                        ProgressView(label("正在准备工作区文件…", "Preparing workspace files…"))
+                    }
+                    Button(label("取消同步", "Cancel Sync"), action: center.cancelReceive)
                 } else if center.busy {
                     ProgressView()
                 } else if let text = deviceHistoryStatusText(center.status) {
                     Text(text).foregroundStyle(.secondary)
                 }
+                if center.workspacePeerID == peerID, let result = center.workspaceResult {
+                    Text(workspaceStatusText(result)).foregroundStyle(.secondary)
+                }
             }
-            Section(label("共享给这台设备", "Share With This Device")) {
+            Section {
                 ForEach(local) { task in
                     Toggle(task.title, isOn: Binding(get: {
                         center.peers.first(where: { $0.id == peerID })?.sharedConversations.contains(task.id) == true
@@ -250,8 +262,36 @@ private struct DeviceHistoryPeerSettings: View {
                         Task { await center.share(task.id, with: peerID, enabled: enabled) }
                     }))
                     .disabled(center.busy)
+                    if center.supportsWorkspaceSync,
+                       center.peers.first(where: { $0.id == peerID })?.sharedConversations.contains(task.id) == true {
+                        Toggle(label("同时共享工作区文件", "Also Share Workspace Files"), isOn: Binding(get: {
+                            !staleShares.contains(task.id)
+                                && center.peers.first(where: { $0.id == peerID })?.sharesWorkspace(for: task.id) == true
+                        }, set: { enabled in
+                            Task {
+                                await center.shareWorkspace(task.id, with: peerID, enabled: enabled)
+                                staleShares = await center.staleWorkspaceShares(for: peerID)
+                            }
+                        }))
+                        .disabled(center.busy)
+                        .accessibilityLabel(label("共享 \(task.title) 的工作区文件", "Share workspace files for \(task.title)"))
+                        .accessibilityIdentifier("deviceHistorySync.shareWorkspace.\(task.id.uuidString)")
+                        if staleShares.contains(task.id) {
+                            Text(label("工作区已变更。重新开启文件共享后可继续同步。",
+                                       "The workspace changed. Turn on file sharing again to sync the new workspace."))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 if local.isEmpty { Text(label("当前没有可共享的会话。", "No conversations to share.")).foregroundStyle(.secondary) }
+            } header: {
+                Text(label("共享给这台设备", "Share With This Device"))
+            } footer: {
+                if center.supportsWorkspaceSync {
+                    Text(label("授权后，这台设备可以拉取会话所属工作区的文件。",
+                               "A device with file access can pull files from the conversation’s workspace."))
+                }
             }
             Section {
                 Button(label("解除配对", "Unpair"), role: .destructive) { confirmsRemoval = true }
@@ -260,12 +300,68 @@ private struct DeviceHistoryPeerSettings: View {
         }
         .formStyle(.grouped)
         .navigationTitle(title)
-        .task { local = await center.localConversations() }
+        .task {
+            local = await center.localConversations()
+            staleShares = await center.staleWorkspaceShares(for: peerID)
+        }
         .confirmationDialog(label("解除与此设备的配对？", "Unpair This Device?"), isPresented: $confirmsRemoval) {
             Button(label("解除配对", "Unpair"), role: .destructive) {
                 Task { await center.remove(peerID); dismiss() }
             }
         }
+    }
+
+    @ViewBuilder
+    private func receiveControl(for task: DeviceHistoryOffer) -> some View {
+        if task.workspaceFiles == true, center.supportsWorkspaceSync {
+            Menu(label("同步", "Sync")) {
+                Button(label("会话和工作区", "Conversation and Workspace"), systemImage: "folder") {
+                    Task { await center.receive(task.id, from: peerID, includeWorkspace: true) }
+                }
+                Button(label("仅会话", "Conversation Only"), systemImage: "text.bubble") {
+                    Task { await center.receive(task.id, from: peerID) }
+                }
+            }
+            .disabled(center.busy)
+        } else {
+            Button(label("同步", "Sync")) {
+                Task { await center.receive(task.id, from: peerID) }
+            }
+            .disabled(center.busy)
+        }
+    }
+}
+
+private func workspaceStatusText(_ result: DeviceHistorySyncCenter.WorkspaceResult) -> String {
+    switch result {
+    case .received(let progress):
+        if progress.conflicts > 0 {
+            return label("已保存 \(progress.savedFiles) 个文件，\(progress.conflicts) 项冲突留在工作区的 Floe Sync Conflicts 文件夹。",
+                         "Saved \(progress.savedFiles) files. Find \(progress.conflicts) conflicts in the workspace’s Floe Sync Conflicts folder.")
+        }
+        return label("工作区已同步，保存 \(progress.savedFiles) 个文件。",
+                     "Workspace synced. Saved \(progress.savedFiles) files.")
+    case .interrupted(let progress, let reason):
+        let saved = progress?.savedFiles ?? 0
+        switch reason {
+        case .noLongerShared:
+            return label("对方已停止共享工作区。已保存 \(saved) 个文件。",
+                         "The other device stopped sharing its workspace. Saved \(saved) files.")
+        case .tooLarge:
+            return label("工作区超出同步上限。", "This workspace exceeds the sync limit.")
+        case .workspaceBusy:
+            return label("工作区正在使用。结束相关任务后可重试，已保存 \(saved) 个文件。",
+                         "This workspace is in use. Finish its active tasks and try again. Saved \(saved) files.")
+        case .workspaceUnavailable:
+            return label("暂时无法访问工作区。请检查会话的工作区位置。", "The workspace is unavailable. Check the conversation’s workspace location.")
+        default:
+            return label("工作区同步未完成。已保存 \(saved) 个文件，可以重试。",
+                         "Workspace sync was interrupted. Saved \(saved) files. You can try again.")
+        }
+    case .cancelled(let progress):
+        let saved = progress?.savedFiles ?? 0
+        return label("工作区同步已取消，已保存 \(saved) 个文件。",
+                     "Workspace sync cancelled. Saved \(saved) files.")
     }
 }
 
@@ -281,6 +377,9 @@ private func deviceHistoryStatusText(_ status: DeviceHistorySyncCenter.Status) -
     case .noLongerShared: label("对方当前没有共享此会话。", "The other device isn’t sharing this conversation.")
     case .tooLarge: label("此次数据超出同步上限。请检查两台设备的版本和会话内容。",
                           "This transfer exceeds its size limit. Check both app versions and the conversation.")
+    case .workspaceBusy: label("工作区正在使用。结束相关任务后可重试。", "This workspace is in use. Finish its active tasks and try again.")
+    case .workspaceUnavailable: label("暂时无法访问工作区。请检查会话的工作区位置。",
+                                      "The workspace is unavailable. Check the conversation’s workspace location.")
     case .interrupted(let count): label("连接中断，已保存 \(count) 条新消息。再次同步可继续。",
                                         "Connection lost. Saved \(count) new messages. Sync again to continue.")
     case .cancelled(let count): label("同步已取消，已保存 \(count) 条新消息。",
