@@ -147,8 +147,13 @@ struct MacVideoWorkbenchView: View {
                                         .disabled(videos.isWorking(on: item.id))
                                         .accessibilityIdentifier("mac.videos.edit")
                                 }
-                                Button(MacVideoStrings.saveAs) { export(item) }
-                                    .disabled(videos.videoURL(for: item) == nil)
+                                Menu {
+                                    Button(MacVideoStrings.saveAs) { export(item) }
+                                    Button("mac.external.openCopy") { export(item, openExternally: true) }
+                                } label: {
+                                    Label(MacVideoStrings.saveAs, systemImage: "square.and.arrow.up").labelStyle(.iconOnly)
+                                }
+                                .disabled(videos.videoURL(for: item) == nil)
                             }
                         }
                     }
@@ -280,13 +285,17 @@ struct MacVideoWorkbenchView: View {
         }
     }
 
-    private func export(_ item: MacVideoGeneration.JobItem) {
+    private func export(_ item: MacVideoGeneration.JobItem, openExternally: Bool = false) {
         guard let source = videos.videoURL(for: item) else { exportFailed = true; return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.movie]
         panel.nameFieldStringValue = exportName(for: item, pathExtension: source.pathExtension)
         panel.begin { response in
             guard response == .OK, let target = panel.url else { return }
+            guard !openExternally || target.resolvingSymlinksInPath() != source.resolvingSymlinksInPath() else {
+                exportFailed = true
+                return
+            }
             do {
                 let temporary = target.deletingLastPathComponent().appendingPathComponent("." + UUID().uuidString)
                 let manager = FileManager.default
@@ -294,6 +303,7 @@ struct MacVideoWorkbenchView: View {
                 try manager.copyItem(at: source, to: temporary)
                 if manager.fileExists(atPath: target.path) { _ = try manager.replaceItemAt(target, withItemAt: temporary) }
                 else { try manager.moveItem(at: temporary, to: target) }
+                if openExternally { MacExternalFileOpening.chooseApplication(for: target) }
             } catch {
                 exportFailed = true
             }

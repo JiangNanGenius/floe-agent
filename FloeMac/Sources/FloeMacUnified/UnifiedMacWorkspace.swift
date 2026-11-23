@@ -2,8 +2,10 @@
 
 import AppKit
 import Combine
+import FloeCore
 import FloeDeviceSync
 import FloeLocalModelCatalog
+import FloeLocalModels
 import FloeMacSelfCore
 import FloeMacToolbox
 import FloeModels
@@ -273,21 +275,31 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                     let settings = MacLocalModelsSettingsModel(service: models, admitWork: admitWork)
                     localModelsContent = { workspace in
                         AnyView(MacOnDeviceModelSettingsPane(model: settings, selectedModelID: workspace.selectedPrimaryModelID,
-                            useAsDefault: { [weak workspace] id in workspace?.selectDefaultModel(id) == true }))
+                            useAsDefault: { [weak workspace] id in workspace?.selectDefaultModel(id) == true },
+                            appleAvailability: workspace.appleSystemModelAvailability,
+                            appleEnabled: Binding(get: { workspace.appleSystemModelEnabled },
+                                                  set: { workspace.setAppleSystemModelEnabled($0) }),
+                            refreshingModels: { await models.refreshInstalledModels() }))
                     }
                     stopLocalModels = {
                         models.setHostHooks(nil)
                         await models.unloadForTeardown()
                     }
-                    if settings.runtimeSupport.isSupported {
-                        let adapter = models.makeAdapter()
-                        let provider = MacLocalModelService.providerProfile
-                        models.setHostHooks(.init { [weak workspace] result in
-                            guard case .success(let profiles) = result else { return }
-                            Task { @MainActor in workspace?.publishInstalledLocalModels(profiles, provider: provider, adapter: adapter) }
-                        })
-                        Task { await models.refreshInstalledModels() }
-                    }
+                    let adapter = models.makeAdapter()
+                    let provider = MacLocalModelService.providerProfile
+                    let supportsDownloads = settings.runtimeSupport.isSupported
+                    models.setHostHooks(.init { [weak workspace] result in
+                        guard case .success(let profiles) = result else { return }
+                        Task { @MainActor in
+                            let availability = await AppleFoundationModelRuntime.shared.availability()
+                            let usableProfiles = supportsDownloads ? profiles : profiles.filter {
+                                $0.id == AppleFoundationModelIdentity.profileID
+                            }
+                            workspace?.publishInstalledLocalModels(usableProfiles, provider: provider, adapter: adapter,
+                                                                   appleAvailability: availability)
+                        }
+                    })
+                    Task { await models.refreshInstalledModels() }
                 }
             }
             let drafts = MacWorkspaceDraftStore(directory: directory?.appendingPathComponent("Drafts", isDirectory: true))

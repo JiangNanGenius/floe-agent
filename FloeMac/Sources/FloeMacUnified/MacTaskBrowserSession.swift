@@ -2,6 +2,7 @@
 
 import AppKit
 import Combine
+import FloeCore
 import FloeMacToolbox
 import FloeTools
 import Foundation
@@ -86,6 +87,8 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
     /// document they belong to; used only for the local status strip, cleared
     /// on document replacement, invalidation and any control change.
     private var documentNodeLabels: [String: [String: String]] = [:]
+    private var visualEvidence: [UUID: VisualEvidence] = [:]
+    private var workspacePreviews: [UUID: WorkspacePreview] = [:]
 
     private struct DispatchWaiter {
         let id: UUID
@@ -216,6 +219,8 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
               let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         tabObservations.removeValue(forKey: id)?.forEach { $0.invalidate() }
         let removed = tabs.remove(at: index)
+        visualEvidence[id] = nil
+        stopWorkspacePreview(tabID: id)
         removed.webView.stopLoading()
         removed.webView.navigationDelegate = nil
         removed.webView.uiDelegate = nil
@@ -227,7 +232,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         }
         if activeTabID == id {
             activeTabID = tabs[min(index, tabs.count - 1)].id
-            onPageCommit?(activeWebView?.url)
+            publishRestorableLocation()
         }
         syncChromeState()
     }
@@ -250,6 +255,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         guard !isReleased, !takeoverPending,
               let url = MacBrowserAddress.url(from: rawAddress) else { return }
         if tabs.isEmpty { createTab() }
+        leaveWorkspacePreviewIfNeeded(tabID: activeTabID, destination: url)
         prepareStore(for: url, tabID: activeTabID)
         if let index = tabs.firstIndex(where: { $0.id == activeTabID }) {
             replaceDocument(at: index)
@@ -487,6 +493,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         controlEpochCounter += 1
         modelControl = nil
         lastModelActivity = nil
+        visualEvidence.removeAll()
         // In-flight page work of this holding period is fenced with it.
         fenceDispatchQueue()
         invalidatePendingProbes()
@@ -622,6 +629,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
     }
 
     private func replaceDocument(at index: Int) {
+        visualEvidence[tabs[index].id] = nil
         tabs[index].documentID = UUID().uuidString
         tabs[index].revision = 0
     }
@@ -635,6 +643,8 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         modelControl = nil
         lastModelActivity = nil
         documentNodeLabels.removeAll()
+        visualEvidence.removeAll()
+        for id in Array(workspacePreviews.keys) { stopWorkspacePreview(tabID: id) }
         fenceDispatchQueue()
         invalidatePendingProbes()
         downloads.cancelAll()
@@ -658,11 +668,32 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
 
     /// Captures the WebKit viewport owned by this exact task and run.
     /// The user can take over at any time, including during the native read.
-    func captureVisionViewport(tabID: UUID?, control: MacBrowserControlLease) async throws -> Data {
+    struct VisionCapture {
+        let bytes: Data
+        let tabID: UUID
+        let documentID: String
+        fileprivate let geometry: VisionGeometry
+        fileprivate let capturedAt: ContinuousClock.Instant
+    }
+
+    private struct VisualEvidence {
+        let documentID: String
+        let sha256: String
+        let geometry: VisionGeometry
+        let capturedAt: ContinuousClock.Instant
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let regions: [VisualTextRegion]
+    }
+
+    private func withBrowserDispatch<Value>(
+        control: MacBrowserControlLease,
+        operation: () async throws -> Value
+    ) async throws -> Value {
         try assertModelControlCurrent(control)
         guard await enterDispatch(epoch: control.epoch) else {
             try Task.checkCancellation()
-            throw MacTaskBrowserError.validation("Browser control changed before the screenshot")
+            throw MacTaskBrowserError.validation("Browser control changed")
         }
         activeExecutionCount += 1
         defer {
@@ -672,9 +703,112 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         }
         try assertModelControlCurrent(control)
         try Task.checkCancellation()
-        guard let targetID = tabID ?? activeTabID, let tab = tabs.first(where: { $0.id == targetID }),
-              let url = tab.webView.url, !tab.webView.isLoading else {
-            throw MacTaskBrowserError.validation("Open a browser page and wait for it to load before taking a screenshot")
+        return try await operation()
+    }
+
+    private func loadedTab(_ id: UUID?) throws -> Tab {
+        guard let target = id ?? activeTabID, let tab = tabs.first(where: { $0.id == target }),
+              tab.webView.url != nil, !tab.webView.isLoading else {
+            throw MacTaskBrowserError.validation("Open a browser page and wait for it to load")
+        }
+        return tab
+    }
+
+    func captureVisionViewport(tabID: UUID?, control: MacBrowserControlLease) async throws -> VisionCapture {
+        try await withBrowserDispatch(control: control) {
+            let capture = try await captureFrame(in: loadedTab(tabID), control: control)
+            recordModelActivity(for: .observe(cursor: nil))
+            return capture
+        }
+    }
+
+    func rememberVisualEvidence(
+        _ capture: VisionCapture, sha256: String, width: Int, height: Int,
+        regions: [VisualTextRegion], control: MacBrowserControlLease
+    ) throws {
+        try assertModelControlCurrent(control)
+        guard try loadedTab(capture.tabID).documentID == capture.documentID,
+              visualEvidence[capture.tabID].map({ $0.capturedAt <= capture.capturedAt }) ?? true else {
+            throw MacTaskBrowserError.validation("The page or screenshot changed. Take a new screenshot.")
+        }
+        visualEvidence[capture.tabID] = VisualEvidence(
+            documentID: capture.documentID, sha256: sha256, geometry: capture.geometry,
+            capturedAt: capture.capturedAt, pixelWidth: width, pixelHeight: height, regions: regions
+        )
+    }
+
+    enum VisualTarget {
+        case text(String)
+        case point(x: Double, y: Double)
+    }
+
+    func clickVisual(
+        tabID: UUID?, documentID: String, target: VisualTarget, sha256: String, control: MacBrowserControlLease,
+        cancellation: CancellationToken
+    ) async throws -> Bool {
+        try await withBrowserDispatch(control: control) {
+            let tab = try loadedTab(tabID)
+            guard documentID == tab.documentID, let evidence = visualEvidence[tab.id], evidence.documentID == documentID,
+                  evidence.sha256 == sha256, evidence.capturedAt.duration(to: .now) <= .seconds(120) else {
+                throw MacTaskBrowserError.validation("Use a fresh screenshot from this tab and its SHA-256")
+            }
+            let point: (x: Double, y: Double)
+            switch target {
+            case .text(let ref):
+                guard let region = evidence.regions.first(where: { $0.reference == ref }) else {
+                    throw MacTaskBrowserError.validation("This text reference is missing from the latest screenshot")
+                }
+                point = (Double(region.x) + Double(region.width) / 2, Double(region.y) + Double(region.height) / 2)
+            case .point(let x, let y):
+                point = (x, y)
+            }
+            guard point.x >= 0, point.y >= 0, point.x < Double(evidence.pixelWidth),
+                  point.y < Double(evidence.pixelHeight) else {
+                throw MacTaskBrowserError.validation("The point is outside the screenshot")
+            }
+            let before = try await captureFrame(in: tab, control: control)
+            let digest = await Task.detached { FloeDigest.sha256Hex(before.bytes) }.value
+            try assertModelControlCurrent(control)
+            guard before.geometry == evidence.geometry, digest == evidence.sha256,
+                  visualEvidence[tab.id]?.capturedAt == evidence.capturedAt else {
+                throw MacTaskBrowserError.validation("The viewport changed. Take a new screenshot before clicking.")
+            }
+            try cancellation.throwIfCancelled()
+            let geometry = try JSONSerialization.jsonObject(with: JSONEncoder().encode(evidence.geometry))
+            // An attempted click consumes this evidence, even if WebKit
+            // cannot report whether the page handled the event.
+            visualEvidence[tab.id] = nil
+            let value = try await probeValue(
+                "return globalThis.__floeProtocol?.clickVisual(x, y, expected) ?? 'stale';",
+                arguments: [
+                    "x": point.x * evidence.geometry.width / Double(evidence.pixelWidth),
+                    "y": point.y * evidence.geometry.height / Double(evidence.pixelHeight),
+                    "expected": geometry
+                ], in: tab.webView, deadline: .now + .seconds(4)
+            )
+            try assertModelControlCurrent(control)
+            switch value as? String {
+            case "clicked": break
+            case "needsUser": throw MacBrowserControlError.needsUser("Use browser.takeover for this interaction")
+            case "structured": throw MacTaskBrowserError.validation("Use browser.observe and browser.click for this control")
+            default: throw MacTaskBrowserError.validation("The visual target is no longer available on this canvas or SVG")
+            }
+            lastModelActivity = MacBrowserModelActivity(kind: .clicking, detail: nil, at: Date())
+            try await Task.sleep(for: .milliseconds(130))
+            try assertModelControlCurrent(control)
+            guard let current = tabs.first(where: { $0.id == tab.id }) else { return false }
+            if current.documentID != tab.documentID { return true }
+            guard let after = try? await captureFrame(in: current, control: control) else {
+                try assertModelControlCurrent(control)
+                return false
+            }
+            return after.geometry != before.geometry || after.bytes != before.bytes
+        }
+    }
+
+    private func captureFrame(in tab: Tab, control: MacBrowserControlLease) async throws -> VisionCapture {
+        guard let url = tab.webView.url else {
+            throw MacTaskBrowserError.validation("The browser tab has no committed page")
         }
         let webView = tab.webView
         let size = webView.bounds.size
@@ -706,17 +840,167 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         let after = try await visionGeometry(for: webView, deadline: deadline)
         try assertModelControlCurrent(control)
         try Task.checkCancellation()
-        guard before == after, webView.bounds.size == size, webView.url == url, !webView.isLoading,
-              tabs.contains(where: { $0.id == targetID && $0.documentID == tab.documentID && $0.webView === webView }) else {
+        guard before.sameViewport(as: after), webView.bounds.size == size, webView.url == url, !webView.isLoading,
+              tabs.contains(where: { $0.id == tab.id && $0.documentID == tab.documentID && $0.webView === webView }) else {
             throw MacTaskBrowserError.validation("The page or viewport changed during capture. Take a new screenshot.")
         }
         lastActivityAt = Date()
-        recordModelActivity(for: .observe(cursor: nil))
-        return bytes
+        return VisionCapture(bytes: bytes, tabID: tab.id, documentID: tab.documentID, geometry: after, capturedAt: .now)
     }
 
-    private struct VisionGeometry: Decodable, Equatable {
+    fileprivate struct VisionGeometry: Codable, Equatable {
         let width, height, scrollX, scrollY, scale: Double
+        let revision: Int
+        let location: String
+
+        func sameViewport(as other: Self) -> Bool {
+            width == other.width && height == other.height && scrollX == other.scrollX
+                && scrollY == other.scrollY && scale == other.scale && location == other.location
+        }
+    }
+
+    private struct WorkspacePreview {
+        let server: LocalPreviewServer
+        let url: URL
+        let workspacePath: String
+
+        func owns(_ candidate: URL) -> Bool {
+            candidate.scheme == "http" && candidate.host == url.host && candidate.port == url.port
+                && candidate.user == nil && candidate.password == nil
+                && candidate.pathComponents.dropFirst().first == url.pathComponents.dropFirst().first
+        }
+    }
+
+    private func stopWorkspacePreview(tabID: UUID) {
+        guard let preview = workspacePreviews.removeValue(forKey: tabID) else { return }
+        BrowserURLPolicy.revokeService(owner: tabID)
+        preview.server.stop()
+    }
+
+    private func publishRestorableLocation() {
+        guard let tab = activeTab, workspacePreviews[tab.id] == nil else {
+            onPageCommit?(nil)
+            return
+        }
+        onPageCommit?(tab.webView.url)
+    }
+
+    private func leaveWorkspacePreviewIfNeeded(tabID: UUID?, destination: URL) {
+        guard let tabID, let preview = workspacePreviews[tabID], !preview.owns(destination),
+              let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        stopWorkspacePreview(tabID: tabID)
+        replaceWebView(at: index, dataStore: dataStore(for: destination))
+    }
+
+    func openWorkspacePreview(
+        root: String, path: String, context: ToolContext, control: MacBrowserControlLease
+    ) async throws -> UUID {
+        try await withBrowserDispatch(control: control) {
+            let workspace = URL(fileURLWithPath: root, isDirectory: true)
+            let page = workspace.appendingPathComponent(path)
+            let site = try MacWorkspaceHTMLSite(page: page, workspace: workspace)
+            let folder = path.split(separator: "/").dropLast().joined(separator: "/")
+            let localRoot = page.deletingLastPathComponent()
+            let (server, preview) = try await LocalPreviewServer.start(root: localRoot, entry: site.name) { resource in
+                let relativePath = folder.isEmpty ? resource : folder + "/" + resource
+                try context.authorizeWorkspacePath(relativePath)
+                return try site.resource(site.entryURL.deletingLastPathComponent().appendingPathComponent(resource))
+            }
+            var activated = false
+            defer { if !activated { server.stop() } }
+            try assertModelControlCurrent(control)
+            try context.cancellation.throwIfCancelled()
+            let config = WKWebViewConfiguration()
+            config.defaultWebpagePreferences.isLockdownModeEnabled = true
+            config.preferences.javaScriptCanOpenWindowsAutomatically = false
+            guard let id = createTab(configuration: config), let view = activeWebView else {
+                throw MacTaskBrowserError.validation("Close a tab before opening another preview")
+            }
+            workspacePreviews[id] = WorkspacePreview(server: server, url: preview.url, workspacePath: root)
+            BrowserURLPolicy.authorizeService(preview.url, owner: id, conversationID: conversationID)
+            activated = true
+            view.load(URLRequest(url: preview.url))
+            return id
+        }
+    }
+
+    func exportWorkspacePNG(
+        tabID: UUID?, root: MacAgentWorkspaceRoot, physicalRoot: String, path: String,
+        expectedWidth: Int?, expectedHeight: Int?, context: ToolContext, control: MacBrowserControlLease
+    ) async throws -> StagedExportReceipt {
+        try await withBrowserDispatch(control: control) {
+            let tab = try loadedTab(tabID)
+            guard let preview = workspacePreviews[tab.id], preview.workspacePath == physicalRoot,
+                  let url = tab.webView.url, preview.owns(url) else {
+                throw MacTaskBrowserError.validation("Open this task's HTML with browser.previewWorkspace before exporting")
+            }
+            let deadline = ContinuousClock.now + .milliseconds(StagedExportContract.overallTimeoutMilliseconds)
+            @MainActor func assertBinding() throws {
+                try assertModelControlCurrent(control)
+                try context.cancellation.throwIfCancelled()
+                try Task.checkCancellation()
+                guard workspacePreviews[tab.id]?.server === preview.server, tab.webView.url == url,
+                      !tab.webView.isLoading,
+                      tabs.contains(where: { $0.id == tab.id && $0.documentID == tab.documentID && $0.webView === tab.webView }) else {
+                    throw MacTaskBrowserError.validation("The preview changed during export")
+                }
+            }
+            @MainActor func read(_ arguments: [String: Any]) async throws -> [String: Any] {
+                try assertBinding()
+                let value = try await probeValue(StagedExportScript.source, arguments: arguments, in: tab.webView,
+                    deadline: min(deadline, .now + .milliseconds(StagedExportContract.perCallTimeoutMilliseconds)),
+                    world: .page)
+                try assertBinding()
+                guard let object = value as? [String: Any] else {
+                    throw MacTaskBrowserError.validation("The preview did not return a staged image")
+                }
+                return object
+            }
+            let descriptorNonce = UUID().uuidString
+            let reply = try await read(StagedExportScript.descriptorArguments(nonce: descriptorNonce))
+            let (found, issues) = StagedExportValidation.decodeDescriptor(
+                reply, expectedNonce: descriptorNonce, expectedLocation: url.absoluteString,
+                expectedWidth: expectedWidth, expectedHeight: expectedHeight
+            )
+            guard let descriptor = found, issues.isEmpty else {
+                throw MacTaskBrowserError.validation("Stage the PNG in the preview first. " + issues.joined(separator: " "))
+            }
+            let (count, totalChars, planIssues) = StagedExportValidation.chunkPlan(for: descriptor)
+            guard planIssues.isEmpty else { throw MacTaskBrowserError.validation(planIssues.joined(separator: " ")) }
+            var raster = Data()
+            raster.reserveCapacity(descriptor.bytes)
+            for index in 0..<count {
+                let nonce = UUID().uuidString
+                let chunk = try await read(StagedExportScript.chunkArguments(source: descriptor.source, index: index, nonce: nonce))
+                let (bytes, problems) = StagedExportValidation.decodeChunk(
+                    chunk, expectedNonce: nonce, expectedLocation: url.absoluteString, expectedIndex: index,
+                    expectedTotalChars: totalChars, remainingBytes: descriptor.bytes - raster.count
+                )
+                guard let bytes, problems.isEmpty else {
+                    throw MacTaskBrowserError.validation("The staged PNG changed or is incomplete")
+                }
+                raster.append(bytes)
+            }
+            let png = raster
+            let verified = await Task.detached(priority: .utility) {
+                png.count == descriptor.bytes
+                    && StagedExportPNGStructure.rejections(head: Data(png.prefix(64)), tail: Data(png.suffix(16)),
+                        totalBytes: png.count, declaredWidth: descriptor.width, declaredHeight: descriptor.height,
+                        expectedWidth: expectedWidth, expectedHeight: expectedHeight).isEmpty
+                    && FloeDigest.sha256Hex(png) == descriptor.sha256
+            }.value
+            guard verified else { throw MacTaskBrowserError.validation("The staged PNG failed size, image or checksum verification") }
+            // Commit synchronously under the current browser lease. Exclusive
+            // publication uses the same pinned workspace writer as other tools.
+            try assertBinding()
+            let written = try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physicalRoot, relative: path, root: root) { pin in
+                try MacAgentWorkspaceTextMutation.publishNewFile(pin: pin, data: png, displayPath: path, cancellation: context.cancellation)
+            }
+            return StagedExportReceipt(state: "delivered", exportID: UUID().uuidString, path: path,
+                stagedName: descriptor.name, source: descriptor.source.rawValue, bytes: written.byteCount,
+                sha256: written.sha256, declaredSHA256Matched: true, width: descriptor.width, height: descriptor.height,
+                documentGeneration: tab.revision, endpoint: "http://127.0.0.1")
+        }
     }
 
     private func visionGeometry(for webView: WKWebView, deadline: ContinuousClock.Instant) async throws -> VisionGeometry {
@@ -944,13 +1228,15 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         do {
             switch command.action {
             case .navigate(let value):
-                guard let url = MacBrowserAddress.url(from: value) else {
+                guard let url = MacBrowserAddress.url(from: value),
+                      (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil else {
                     throw MacTaskBrowserError.policy("The address is not an allowed http(s) URL")
                 }
                 if let denied = pageAccessFailure(command, control: control) { return denied }
                 // A remembered-site jar change rebuilds the tab's web view and
                 // rotates the document; the freshly loaded page is then
                 // observed under the new document identity.
+                leaveWorkspacePreviewIfNeeded(tabID: tabID, destination: url)
                 prepareStore(for: url, tabID: tabID)
                 guard let freshIndex = tabs.firstIndex(where: { $0.id == tabID }) else {
                     return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
@@ -1125,11 +1411,12 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         _ script: String,
         arguments: [String: Any],
         in webView: WKWebView,
-        deadline: ContinuousClock.Instant
+        deadline: ContinuousClock.Instant,
+        world: WKContentWorld? = nil
     ) async throws -> Any? {
         let data: Data = try await runProbe(deadline: deadline) { complete in
             webView.callAsyncJavaScript(
-                script, arguments: arguments, in: nil, in: self.contentWorld
+                script, arguments: arguments, in: nil, in: world ?? self.contentWorld
             ) { result in
                 complete(result.flatMap { value in
                     Result { try JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed) }
@@ -1624,9 +1911,27 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
       const visionGeometry = () => ({
         width: window.innerWidth, height: window.innerHeight,
         scrollX: window.scrollX, scrollY: window.scrollY,
-        scale: window.visualViewport?.scale ?? 1
+        scale: window.visualViewport?.scale ?? 1,
+        revision, location: String(location.href)
       });
-      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, visionGeometry};
+      const clickVisual = (x, y, expected) => {
+        const current = visionGeometry();
+        if (Object.keys(current).some(key => current[key] !== expected[key])) return 'stale';
+        const el = document.elementFromPoint(x, y);
+        if (!el || !el.isConnected) return 'stale';
+        if (requiresHumanAction(el, 'click', false)) return 'needsUser';
+        if (el.closest('a,button,input,textarea,select,label,summary,[role="button"],[role="link"],[contenteditable="true"]'))
+          return 'structured';
+        if (!el.closest('canvas,svg')) return 'blocked';
+        const init = {bubbles:true, cancelable:true, composed:true, clientX:x, clientY:y, button:0};
+        el.dispatchEvent(new PointerEvent('pointerdown', {...init, buttons:1, pointerType:'mouse', isPrimary:true}));
+        el.dispatchEvent(new MouseEvent('mousedown', {...init, buttons:1}));
+        el.dispatchEvent(new PointerEvent('pointerup', {...init, buttons:0, pointerType:'mouse', isPrimary:true}));
+        el.dispatchEvent(new MouseEvent('mouseup', init));
+        el.dispatchEvent(new MouseEvent('click', init));
+        return 'clicked';
+      };
+      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, visionGeometry, clickVisual};
       push('Runtime.executionContextCreated');
     })();
     """#
@@ -1673,7 +1978,12 @@ extension MacTaskBrowserSession: WKNavigationDelegate, WKUIDelegate {
         }
         // WebKit uses its own blank document while `loadHTMLString` commits.
         if url.absoluteString == "about:blank" { return .allow }
-        guard MacBrowserAddress.allows(url) else { return .cancel }
+        if let tab = tabs.first(where: { $0.webView === webView }), let preview = workspacePreviews[tab.id] {
+            return navigationAction.targetFrame?.isMainFrame == true && preview.owns(url) ? .allow : .cancel
+        }
+        guard MacBrowserAddress.allows(url),
+              (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil
+        else { return .cancel }
         // Jar enforcement for every main-frame navigation — user clicks,
         // redirects, form submissions and a popup tab's first real load: a
         // remembered jar must never follow the page into a different site,
@@ -1710,7 +2020,7 @@ extension MacTaskBrowserSession: WKNavigationDelegate, WKUIDelegate {
         )
         if tabs[index].id == activeTabID {
             syncChromeState()
-            onPageCommit?(webView.url)
+            publishRestorableLocation()
         }
     }
 
@@ -1719,7 +2029,7 @@ extension MacTaskBrowserSession: WKNavigationDelegate, WKUIDelegate {
         appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
         if tabs[index].id == activeTabID {
             syncChromeState()
-            onPageCommit?(webView.url)
+            publishRestorableLocation()
         }
         surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
         // Title/back-forward availability are WebKit getters, not @Published
@@ -1756,7 +2066,7 @@ extension MacTaskBrowserSession: WKNavigationDelegate, WKUIDelegate {
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         guard !isReleased, !takeoverPending,
-              tabs.contains(where: { $0.webView === webView }),
+              tabs.contains(where: { $0.webView === webView && workspacePreviews[$0.id] == nil }),
               let url = navigationAction.request.url,
               url.absoluteString == "about:blank" || MacBrowserAddress.allows(url) else { return nil }
         // A target=_blank / window.open request opens a real task tab. The

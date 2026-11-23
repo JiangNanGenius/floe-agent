@@ -212,6 +212,12 @@ final class MacTaskBrowserTools: ObservableObject {
             AnyAgentTool(MacBrowserEventsTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserWaitTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserClickTool(environment: self, conversationID: conversationID)),
+            AnyAgentTool(MacBrowserClickVisualTextTool(environment: self, conversationID: conversationID)),
+            AnyAgentTool(MacBrowserClickPointTool(environment: self, conversationID: conversationID)),
+            AnyAgentTool(MacBrowserWorkspacePreviewTool(environment: self, conversationID: conversationID,
+                                                        workspaceRoot: workspaceRoot.map(MacAgentWorkspaceRoot.init))),
+            AnyAgentTool(MacBrowserExportFileTool(environment: self, conversationID: conversationID,
+                                                  workspaceRoot: workspaceRoot.map(MacAgentWorkspaceRoot.init))),
             AnyAgentTool(MacBrowserTypeTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserScrollTool(environment: self, conversationID: conversationID)),
             AnyAgentTool(MacBrowserDownloadTool(environment: self, conversationID: conversationID,
@@ -301,6 +307,24 @@ final class MacTaskBrowserTools: ObservableObject {
             requiresUserAction: true,
             maximumSummaryCharacters: 16_384
         )
+    }
+
+    func clickVisual(
+        context: ToolContext, binding: UUID, tabID: UUID?, documentID: String,
+        target: MacTaskBrowserSession.VisualTarget, screenshotSHA256: String
+    ) async throws -> ToolExecutionOutput {
+        do {
+            let (_, control) = try control(for: context, binding: binding)
+            let changed = try await control.session.clickVisual(
+                tabID: tabID, documentID: documentID, target: target, sha256: screenshotSHA256.lowercased(),
+                control: control.lease, cancellation: context.cancellation
+            )
+            let summary = changed ? "Visual click verified by a page change."
+                : "The visual input was sent. A page change could not be verified. Inspect the page before another action."
+            return ToolExecutionOutput(summary: summary, fullOutputSHA256: FloeDigest.sha256Hex(Data(summary.utf8)))
+        } catch MacBrowserControlError.needsUser(let message) {
+            return needsUserOutput(message)
+        }
     }
 
     /// Shared execution path for the ordinary page commands.
@@ -501,7 +525,7 @@ private struct MacBrowserScreenshotTool: AgentTool {
         // One exact viewport capture; the PNG bytes below feed both the
         // verifier and the bounded OCR — no second capture, no re-decode of
         // a different revision.
-        let bytes = try await control.session.captureVisionViewport(tabID: args.tabID, control: control.lease)
+        let viewport = try await control.session.captureVisionViewport(tabID: args.tabID, control: control.lease)
         try context.cancellation.throwIfCancelled()
         // Bounded on-device OCR of the exact captured bytes: a text fallback
         // when DOM refs cannot describe the canvas/pixel state. Runs off the
@@ -509,6 +533,7 @@ private struct MacBrowserScreenshotTool: AgentTool {
         // still attached when recognition is unavailable, busy or timed out.
         // The fast level keeps cold multilingual model loading out of the
         // screenshot path. Detailed recognition remains available in image.ocr.
+        let bytes = viewport.bytes
         let capture = try await Task.detached(priority: .utility) {
             try MacWorkspaceImageEvidence.verifiedCapture(bytes, declaredMime: "image/png")
         }.value
@@ -534,6 +559,8 @@ private struct MacBrowserScreenshotTool: AgentTool {
         let artifact = try MacWorkspaceImageEvidence.publish(
             root: root, context: context, capture: capture,
             basename: "Browser-" + UUID().uuidString)
+        try control.session.rememberVisualEvidence(viewport, sha256: artifact.sha256,
+            width: capture.width, height: capture.height, regions: recognition.elements, control: control.lease)
         var payload: [String: Any] = [
             "status": "ok",
             "path": artifact.relativePath,
@@ -542,6 +569,8 @@ private struct MacBrowserScreenshotTool: AgentTool {
             "sha256": artifact.sha256,
             "width": capture.width,
             "height": capture.height,
+            "tabID": viewport.tabID.uuidString,
+            "documentID": viewport.documentID,
             "visualEvidence": "attached",
             "ocrMode": "fast"
         ]
@@ -549,7 +578,7 @@ private struct MacBrowserScreenshotTool: AgentTool {
         case .available where !recognition.elements.isEmpty:
             let encoded = try JSONEncoder().encode(recognition.elements)
             payload["visualTextRegions"] = try JSONSerialization.jsonObject(with: encoded)
-            payload["visualText"] = "OCR-detected text regions only (not accessibility elements): use text-N references with these exact screenshot-pixel bounds; capture a new screenshot after any page change."
+            payload["visualText"] = "When browser.observe cannot identify a canvas or SVG control, use browser.clickVisualText with a text-N reference and this screenshot's SHA-256. Capture again after any page change."
         case .available:
             payload["visualTextRegions"] = []
             payload["visualText"] = "No readable text found in the capture."
@@ -763,6 +792,159 @@ private struct MacBrowserScrollTool: AgentTool {
             action: .scroll(deltaX: args.deltaX ?? 0, deltaY: args.deltaY ?? 0),
             tabID: args.tabID
         )
+    }
+}
+
+private struct MacBrowserClickVisualTextTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let tabID: UUID?
+        let documentID: String
+        let reference: String
+        let screenshotSHA256: String
+    }
+
+    static let name = "browser.clickVisualText"
+    static let toolDescription = "Click an OCR text reference on a canvas or SVG when browser.observe cannot identify that control. Use the latest browser.screenshot from the same document."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"reference":{"type":"string","pattern":"^text-[1-9][0-9]*$","maxLength":12},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"}},"required":["documentID","reference","screenshotSHA256"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    let environment: MacTaskBrowserTools
+    let conversationID: UUID
+
+    func validate(_ args: Arguments) throws {
+        guard UUID(uuidString: args.documentID) != nil, args.reference.utf8.count <= 12,
+              args.reference.range(of: #"^text-[1-9][0-9]*$"#, options: .regularExpression) != nil,
+              StagedExportValidation.isSHA256Hex(args.screenshotSHA256.lowercased()) else {
+            throw FloeError.validationFailed("Use the document ID, text reference and SHA-256 from browser.screenshot")
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await environment.clickVisual(context: context, binding: conversationID,
+            tabID: args.tabID, documentID: args.documentID, target: .text(args.reference),
+            screenshotSHA256: args.screenshotSHA256)
+    }
+}
+
+private struct MacBrowserClickPointTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let tabID: UUID?
+        let documentID: String
+        let x, y: Double
+        let screenshotSHA256: String
+        let fallbackReason: String
+    }
+
+    static let name = "browser.clickPoint"
+    static let toolDescription = "Click a screenshot pixel on a canvas or SVG only when browser.observe and text references are insufficient. Ordinary controls use browser.click. Each attempt consumes the screenshot."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"x":{"type":"number","minimum":0,"maximum":4095},"y":{"type":"number","minimum":0,"maximum":4095},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"fallbackReason":{"type":"string","enum":["noStructuredTarget","insufficientStructuredInformation"]}},"required":["documentID","x","y","screenshotSHA256","fallbackReason"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    let environment: MacTaskBrowserTools
+    let conversationID: UUID
+
+    func validate(_ args: Arguments) throws {
+        guard UUID(uuidString: args.documentID) != nil, (0..<4096).contains(args.x), (0..<4096).contains(args.y),
+              StagedExportValidation.isSHA256Hex(args.screenshotSHA256.lowercased()),
+              ["noStructuredTarget", "insufficientStructuredInformation"].contains(args.fallbackReason) else {
+            throw FloeError.validationFailed("Use a bounded point, document ID, SHA-256 and fallback reason from the current screenshot")
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await environment.clickVisual(context: context, binding: conversationID, tabID: args.tabID,
+            documentID: args.documentID, target: .point(x: args.x, y: args.y), screenshotSHA256: args.screenshotSHA256)
+    }
+}
+
+private struct MacBrowserWorkspacePreviewTool: AgentTool {
+    struct Arguments: Decodable, Sendable { let path: String }
+
+    static let name = "browser.previewWorkspace"
+    static let toolDescription = "Open an HTML file from the current workspace in a task-owned browser tab. This local preview can use files beside the HTML and supports browser.exportFile for a staged PNG. Wait for the tab to load before observing or acting."
+    static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","maxLength":1024,"description":"Workspace-relative .html or .htm file"}},"required":["path"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    let environment: MacTaskBrowserTools
+    let conversationID: UUID
+    let workspaceRoot: MacAgentWorkspaceRoot?
+
+    func validate(_ args: Arguments) throws {
+        guard args.path.utf8.count <= 1024, !args.path.hasPrefix("/"), !args.path.hasPrefix("~"),
+              ["html", "htm"].contains((args.path as NSString).pathExtension.lowercased()) else {
+            throw FloeError.validationFailed("A workspace-relative HTML file is required")
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard let root = workspaceRoot else { throw FloeError.validationFailed("This task has no workspace") }
+        let (physicalRoot, path) = try macWorkspacePinSetup(root: root, path: args.path)
+        try context.authorizeWorkspacePath(path)
+        do {
+            let (_, control) = try environment.control(for: context, binding: conversationID)
+            let tab = try await control.session.openWorkspacePreview(root: physicalRoot, path: path, context: context,
+                                                                     control: control.lease)
+            let summary = "Opened the workspace HTML in tab \(tab.uuidString). Use browser.wait for this tab."
+            return ToolExecutionOutput(summary: summary, fullOutputSHA256: FloeDigest.sha256Hex(Data(summary.utf8)))
+        } catch MacBrowserControlError.needsUser(let message) {
+            return environment.needsUserOutput(message)
+        }
+    }
+}
+
+private struct MacBrowserExportFileTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let tabID: UUID?
+        let path: String
+        let expectedWidth, expectedHeight: Int?
+    }
+
+    static let name = "browser.exportFile"
+    static let toolDescription = "Save the original staged PNG from browser.previewWorkspace into a new workspace file. Stage the image using the page's export control first. The saved file is verified by size, dimensions and SHA-256."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"path":{"type":"string","maxLength":1024},"expectedWidth":{"type":"integer","minimum":1,"maximum":16384},"expectedHeight":{"type":"integer","minimum":1,"maximum":16384}},"required":["path"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    let environment: MacTaskBrowserTools
+    let conversationID: UUID
+    let workspaceRoot: MacAgentWorkspaceRoot?
+
+    func validate(_ args: Arguments) throws {
+        let issues = StagedExportValidation.destinationRejections(args.path)
+        guard issues.isEmpty else { throw FloeError.validationFailed(issues.joined(separator: ". ")) }
+        for dimension in [args.expectedWidth, args.expectedHeight].compactMap({ $0 }) {
+            guard (1...StagedExportContract.maxDimension).contains(dimension) else {
+                throw FloeError.validationFailed("Expected image dimensions are out of range")
+            }
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard let root = workspaceRoot else { throw FloeError.validationFailed("This task has no workspace") }
+        let (physicalRoot, path) = try macWorkspacePinSetup(root: root, path: args.path)
+        try context.authorizeWorkspacePath(path)
+        do {
+            let (_, control) = try environment.control(for: context, binding: conversationID)
+            let receipt = try await control.session.exportWorkspacePNG(tabID: args.tabID, root: root,
+                physicalRoot: physicalRoot, path: path, expectedWidth: args.expectedWidth,
+                expectedHeight: args.expectedHeight, context: context, control: control.lease)
+            let source = URL(fileURLWithPath: physicalRoot, isDirectory: true).appendingPathComponent(path)
+            let output = try? RunOutputSnapshotStore.publish(.init(producerTool: Self.name, slot: "image",
+                commit: .init(sourceURL: source, sha256: receipt.sha256, byteCount: receipt.bytes,
+                              displayName: source.lastPathComponent, mimeType: "image/png")), using: context)
+            let data = try receipt.encodedJSON()
+            return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self),
+                fullOutputSHA256: FloeDigest.sha256Hex(data), outputFiles: output.map { [$0] } ?? [])
+        } catch MacBrowserControlError.needsUser(let message) {
+            return environment.needsUserOutput(message)
+        }
     }
 }
 

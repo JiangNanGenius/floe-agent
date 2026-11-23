@@ -17,6 +17,7 @@ struct MacProviderSettingsView: View {
     static var smokeManageModelsFrame: CGRect?
     static var smokeModelChoices: [String] = []
     static var smokeModelListMounted = false
+    static var smokeCapabilityReviewFrame: CGRect?
     #endif
     @Binding private var pendingAddRole: ProviderCatalogServiceRole?
     @Binding private var editingID: UUID?
@@ -45,6 +46,13 @@ struct MacProviderSettingsView: View {
     @State private var showsCatalog = false
     @State private var showsModelPicker = false
     @State private var catalogError: String?
+    private struct CapabilityReview: Identifiable {
+        let id = UUID()
+        let proposals: [ProviderCatalogCapabilityProposal]
+    }
+
+    @State private var capabilityReview: CapabilityReview?
+    @State private var capabilityReviewError: String?
     /// Effective verified catalog (active signed install, else bundled),
     /// owned by the workspace and refreshed through the shared official
     /// catalogs service. Catalog data is public provider metadata only.
@@ -99,6 +107,7 @@ struct MacProviderSettingsView: View {
     }
 
     var body: some View {
+        let currentReviewError = capabilityReviewError
         VStack(spacing: 0) {
             if showsEditor {
                 HStack {
@@ -184,6 +193,20 @@ struct MacProviderSettingsView: View {
                 if let record = workspace.providers.first(where: { $0.model.id == id }) { beginEditing(record) }
             }
         }
+        .sheet(item: $capabilityReview) { review in
+            ProviderCapabilityMigrationView(
+                proposals: review.proposals,
+                isApplying: false,
+                errorMessage: currentReviewError,
+                onApply: {
+                    if workspace.applyModelCapabilityUpdates(review.proposals) {
+                        capabilityReview = nil
+                    } else {
+                        capabilityReviewError = String(localized: "mac.provider.reviewRetry")
+                    }
+                }
+            )
+        }
         .sheet(isPresented: Binding(
             get: { optionsRecord != nil },
             set: { if !$0 { optionsRecord = nil } }
@@ -265,6 +288,23 @@ struct MacProviderSettingsView: View {
             .padding(20)
             Divider()
             List {
+                let updates = workspace.modelCapabilityUpdates
+                if !updates.isEmpty {
+                    Section {
+                        Button {
+                            capabilityReviewError = nil
+                            capabilityReview = CapabilityReview(proposals: updates)
+                        } label: {
+                            Label(FloeL10n.l("providers.capability_migration.review", updates.count),
+                                  systemImage: "sparkles")
+                        }
+                        .disabled(!workspace.isReady || workspace.isSending || workspace.isTerminating)
+                        .accessibilityIdentifier("settings.providers.reviewCapabilities")
+                        #if FLOE_MAC_HOST_SMOKE
+                        .background(MacWorkbenchButtonFrameReader { Self.smokeCapabilityReviewFrame = $0 })
+                        #endif
+                    }
+                }
                 ForEach(ProviderCatalogServiceRole.allCases, id: \.self) { role in
                     providerSection(role)
                 }

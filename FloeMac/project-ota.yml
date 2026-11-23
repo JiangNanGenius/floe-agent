@@ -45,8 +45,12 @@ targets:
       - path: ../FloeAgent/FloeApp/Settings/UsageStatisticsView.swift
       - path: ../FloeAgent/FloeApp/Providers/ProviderCatalogAddView.swift
       - path: ../FloeAgent/FloeApp/Providers/ModelPickerView.swift
+      - path: ../FloeAgent/FloeApp/Providers/ProviderCapabilityMigrationView.swift
       - path: ../FloeAgent/FloeApp/Browser/BrowserDownloadService.swift
       - path: ../FloeAgent/FloeApp/Browser/BrowserTaskControlContract.swift
+      - path: ../FloeAgent/FloeApp/Browser/BrowserStagedExportContract.swift
+      - path: ../FloeAgent/FloeApp/Browser/BrowserURLPolicy.swift
+      - path: ../FloeAgent/FloeApp/Browser/LocalStaticFileServer.swift
       - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
       - path: ../FloeAgent/FloeApp/Design/ComposerResponsiveRow.swift
       - path: ../FloeAgent/FloeApp/Design/FloeWorkbenchProjectRow.swift

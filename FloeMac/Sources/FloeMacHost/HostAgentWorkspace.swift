@@ -191,8 +191,8 @@ struct HostAgentApproval: Equatable {
         case _ where extensionAction != nil: riskLabels = extensionAction?.riskLabels ?? []
         case MacNativeShellTool.name: riskLabels = ["executesLocalCode", "writesFiles"]
         case MacDesktopControl.name: riskLabels = ["controlsGUI"]
-        case "browser.download": riskLabels = ["networkAccess", "writesFiles"]
-        case _ where MacTaskBrowserApproval.applies(to: toolCall): riskLabels = ["controlsGUI"]
+        case _ where MacTaskBrowserApproval.applies(to: toolCall):
+            riskLabels = MacTaskBrowserApproval.riskLabels(for: toolCall)
         case DelegateTool.name: riskLabels = Set(DelegateTool.riskLabels.map(\.rawValue))
         case _ where conversationAction != nil: riskLabels = conversationAction?.riskLabels ?? []
         default: riskLabels = writesFiles ? ["writesFiles"] : []
@@ -210,8 +210,18 @@ struct HostAgentApproval: Equatable {
 enum MacTaskBrowserApproval {
     static func applies(to call: ToolCall) -> Bool {
         guard case .local = call.scope else { return false }
-        return ["browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.download",
-                "browser.takeover"].contains(call.toolName)
+        return !riskLabels(for: call).isEmpty
+    }
+
+    static func riskLabels(for call: ToolCall) -> Set<String> {
+        switch call.toolName {
+        case "browser.download": ["networkAccess", "writesFiles"]
+        case "browser.previewWorkspace": ["readsFiles", "controlsGUI"]
+        case "browser.exportFile": ["writesFiles"]
+        case "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.takeover",
+             "browser.clickVisualText", "browser.clickPoint": ["controlsGUI"]
+        default: []
+        }
     }
 
     static func preview(_ call: ToolCall) -> (path: String?, text: String?)? {
@@ -220,6 +230,11 @@ enum MacTaskBrowserApproval {
         if call.toolName == "browser.download",
            let download = try? JSONDecoder().decode(Download.self, from: call.argumentsJSON) {
             return (download.path, download.url.host())
+        }
+        struct WorkspacePath: Decodable { let path: String }
+        if ["browser.previewWorkspace", "browser.exportFile"].contains(call.toolName),
+           let args = try? JSONDecoder().decode(WorkspacePath.self, from: call.argumentsJSON) {
+            return (String(args.path.prefix(1_024)), nil)
         }
         return (nil, call.toolName)
     }
@@ -612,6 +627,49 @@ final class HostAgentWorkspace: ObservableObject {
         }
     }
 
+    #if FLOE_UNIFIED_MAC
+    var modelCapabilityUpdates: [ProviderCatalogCapabilityProposal] {
+        capabilityUpdates(in: accounts)
+    }
+
+    private func capabilityUpdates(in accounts: [HostProviderAccount]) -> [ProviderCatalogCapabilityProposal] {
+        let profiles = accounts.map { account in
+            var profile = account.profile
+            profile.presetID = profile.presetID ?? account.presetID
+            return profile
+        }
+        return ProviderCatalogCapabilityMigration.proposals(
+            providers: profiles,
+            modelsByProvider: Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0.models) }),
+            catalog: modelProviderCatalog
+        )
+    }
+
+    func applyModelCapabilityUpdates(_ reviewed: [ProviderCatalogCapabilityProposal]) -> Bool {
+        guard !reviewed.isEmpty else { return false }
+        return updateProviderStore { store in
+            // Compare against the current stored rows and catalog within
+            // the same serialized write. Commit the reviewed batch together.
+            let current = Dictionary(uniqueKeysWithValues: capabilityUpdates(in: store.accounts).map { ($0.id, $0) })
+            for proposal in reviewed {
+                let (account, model) = try store.indices(for: proposal.modelID)
+                let saved = store.accounts[account].models[model]
+                guard current[proposal.id] == proposal,
+                      ProviderCatalogCapabilityMigration.matches(proposal, current: saved) else {
+                    throw FloeError.validationFailed("Model capability review expired")
+                }
+                store.accounts[account].models[model] = ProviderCatalogCapabilityMigration.applying(proposal, to: saved)
+            }
+        }
+    }
+
+    #if FLOE_MAC_HOST_SMOKE
+    func smokeStoredModel(id: UUID) -> ModelProfile? {
+        (try? loadProviderStore())?.providers.first(where: { $0.model.id == id })?.model
+    }
+    #endif
+    #endif
+
     @Published private var draftMode: HostAgentMode?
     @Published var goalBuilderRequest: UUID?
     @Published private var taskModes: [String: String] = [:]
@@ -802,7 +860,10 @@ final class HostAgentWorkspace: ObservableObject {
 
     @Published private(set) var installedLocalModels: [HostAgentProvider] = []
     @Published private(set) var selectedLocalModelID: UUID?
+    @Published private(set) var appleSystemModelEnabled = false
+    @Published private(set) var appleSystemModelAvailability: AppleFoundationModelAvailability = .unsupportedOS
     private static let selectedLocalModelKey = "floe.mac.models.defaultLocalModelID"
+    private static let appleSystemModelKey = "floe.mac.models.appleSystemModelEnabled"
     private static let onDeviceModelIDs = Set(CuratedLocalModelCatalog.knownEntries.map(\.profileID))
         .union([AppleFoundationModelIdentity.profileID])
 
@@ -816,14 +877,29 @@ final class HostAgentWorkspace: ObservableObject {
 
     var selectedPrimaryModelID: UUID? { selectedLocalModelID ?? selectedModelID }
 
-    func publishInstalledLocalModels(_ models: [ModelProfile], provider: ProviderProfile, adapter: any ProviderAdapter) {
+    func publishInstalledLocalModels(_ models: [ModelProfile], provider: ProviderProfile, adapter: any ProviderAdapter,
+                                     appleAvailability: AppleFoundationModelAvailability = .unsupportedOS) {
         guard !isTerminating, provider.kind == .local, provider.id == ProviderProfile.onDeviceProviderID else { return }
+        appleSystemModelAvailability = appleAvailability
         var seen = Set<UUID>()
         installedLocalModels = models.compactMap { model in
             guard Self.onDeviceModelIDs.contains(model.id), model.providerID == provider.id,
                   seen.insert(model.id).inserted else { return nil }
+            var model = model
+            if model.id == AppleFoundationModelIdentity.profileID {
+                model.isEnabled = appleSystemModelEnabled && appleAvailability.isAvailable
+            }
             return HostAgentProvider(profile: provider, model: model, apiKey: "", presetID: nil, runtimeAdapter: adapter)
         }
+    }
+
+    func setAppleSystemModelEnabled(_ enabled: Bool) {
+        guard !isTerminating, !isSending, !enabled || appleSystemModelAvailability.isAvailable,
+              let index = installedLocalModels.firstIndex(where: { $0.model.id == AppleFoundationModelIdentity.profileID })
+        else { return }
+        preferences.set(enabled, forKey: Self.appleSystemModelKey)
+        appleSystemModelEnabled = enabled
+        installedLocalModels[index].model.isEnabled = enabled
     }
 
     private func localModel(withID id: UUID) -> HostAgentProvider? {
@@ -1053,6 +1129,7 @@ final class HostAgentWorkspace: ObservableObject {
         self.computerUseBackend = preferences.string(forKey: Self.computerUseBackendKey)
             .flatMap(MacComputerUseBackend.init(rawValue:)) ?? .kimi
         self.selectedLocalModelID = preferences.string(forKey: Self.selectedLocalModelKey).flatMap(UUID.init(uuidString:))
+        self.appleSystemModelEnabled = preferences.bool(forKey: Self.appleSystemModelKey)
         self.auxiliaryPreferences = preferences.data(forKey: Self.auxiliaryPreferencesKey)
             .flatMap { try? JSONDecoder().decode(ModelSelectionPreferences.self, from: $0) } ?? .init()
         self.auxiliaryVisionReasoning = preferences.bool(forKey: Self.visionReasoningKey)

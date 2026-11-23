@@ -1,6 +1,46 @@
 // SPDX-License-Identifier: MPL-2.0
+import AppKit
 import Darwin
 import Foundation
+import UniformTypeIdentifiers
+
+@MainActor
+enum MacExternalFileOpening {
+    static var codeApplication: URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode")
+            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCodeInsiders")
+    }
+
+    static func chooseApplication(for item: URL, isCurrent: @escaping () -> Bool = { true }) {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "mac.external.openWith")
+        panel.directoryURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = false
+        panel.begin { result in
+            guard result == .OK, let application = panel.url, isCurrent() else { return }
+            open(item, in: application)
+        }
+    }
+
+    static func open(_ item: URL, in application: URL) {
+        Task {
+            do {
+                _ = try await NSWorkspace.shared.open([item], withApplicationAt: application,
+                                                       configuration: NSWorkspace.OpenConfiguration())
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = String(localized: "mac.external.openFailed")
+                alert.alertStyle = .warning
+                if let window = NSApp.keyWindow {
+                    alert.beginSheetModal(for: window, completionHandler: nil)
+                } else {
+                    _ = alert.runModal()
+                }
+            }
+        }
+    }
+}
 
 /// Names and identities are captured when the user opens the action, then
 /// checked again through the pinned directory when they confirm it.

@@ -226,6 +226,15 @@ final class UnifiedMacSmoke {
             await exerciseAutomaticReasoning(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--browser-workspace-upgrade-only"), let endpoint = projectTaskFixtureEndpoint,
+           endpoint.host == "127.0.0.1" {
+            await exerciseBrowserWorkspaceUpgrade(model, endpoint: endpoint)
+            return
+        }
+        if CommandLine.arguments.contains("--capability-review-only") {
+            await exerciseModelCapabilityReview(model)
+            return
+        }
         if CommandLine.arguments.contains("--transcript-parity-only") {
             await exerciseTranscriptParity(model)
             return
@@ -3244,6 +3253,140 @@ final class UnifiedMacSmoke {
                 "diagnostics": agent.smokeRunDiagnostics + settingsDiagnostics])
     }
 
+    private func exerciseBrowserWorkspaceUpgrade(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model),
+              agent.addProvider(name: "Browser Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "browser-export-fixture", key: "",
+                                supportsImages: true, supportsTools: true, allowsPlainHTTP: true) else {
+            finish(["configured": false]); return
+        }
+        let folder = root.appendingPathComponent("Browser Upgrade", isDirectory: true)
+        let html = #"""
+        <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+        <style>body{margin:0;background:white;color:black} canvas{display:block}</style>
+        <canvas id="surface" width="650" height="400"></canvas>
+        <script>
+        const surface = document.querySelector('canvas');
+        const drawing = surface.getContext('2d');
+        function paint(color, label) {
+          drawing.fillStyle=color; drawing.fillRect(0,0,650,400);
+          drawing.fillStyle='#000000'; drawing.font='bold 48px sans-serif';
+          drawing.fillText(label,54,128);
+        }
+        paint('#eeeeee','EXPORT PNG');
+        let clicks = 0;
+        surface.addEventListener('click', async () => {
+          clicks++;
+          paint(clicks === 1 ? '#8adb84' : '#87b4e8', clicks === 1 ? 'EXPORT READY' : 'SECOND ACTION');
+          const canvas = document.createElement('canvas');
+          canvas.width=1460; canvas.height=930;
+          const context=canvas.getContext('2d');
+          context.fillStyle='#234f83'; context.fillRect(0,0,1460,930);
+          const dataURL=canvas.toDataURL('image/png');
+          const raw=Uint8Array.from(atob(dataURL.split(',')[1]), symbol => symbol.charCodeAt(0));
+          const digest=await crypto.subtle.digest('SHA-256', raw);
+          const sha256=Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2,'0')).join('');
+          window.__posterExport={state:'staged',name:'original.png',width:1460,height:930,bytes:raw.length,sha256,dataURL};
+        });
+        </script>
+        """#
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            try Data(html.utf8).write(to: folder.appendingPathComponent("preview.html"), options: .atomic)
+        } catch { finish(["prepared": false]); return }
+        agent.verifyAgentAnswers = false
+        guard let project = await agent.addWorkspace(name: "Browser Upgrade", rootURL: folder),
+              agent.send("Open the workspace preview and save the staged original PNG.", workspaceID: project.id, mode: .agent)
+        else { finish(["sent": false]); return }
+        var approved = Set<String>()
+        let reviewable: Set<String> = ["browser.previewWorkspace", "browser.clickVisualText",
+                                       "browser.clickPoint", "browser.exportFile"]
+        let deadline = ContinuousClock.now + .seconds(48)
+        while agent.isSending && ContinuousClock.now < deadline {
+            if let card = agent.pendingApproval, card.canAllow,
+               reviewable.contains(card.toolName), !approved.contains(card.callID),
+               clickApproval(in: agent, allow: true, screenshot: "browser-upgrade-approval.png") {
+                approved.insert(card.callID)
+            }
+            try? await Task.sleep(for: .milliseconds(55))
+        }
+        let pending = agent.pendingApproval.map { "\($0.toolName), canAllow=\($0.canAllow)" } ?? ""
+        if agent.isSending {
+            agent.stop()
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        let saved = try? Data(contentsOf: folder.appendingPathComponent("full.png"))
+        let image = saved.flatMap { try? MacWorkspaceImageEvidence.verifiedCapture($0, declaredMime: "image/png") }
+        finish(["answered": agent.messages.contains { $0.content == "Browser upgrade verified." },
+                "completed": agent.smokeRunDiagnostics.first?.contains("FloeMacSelfTerminalOutcome.completed") == true,
+                "width": image?.width ?? 0, "height": image?.height ?? 0,
+                "digest": saved.map(FloeDigest.sha256Hex) ?? "", "approvals": approved.sorted(),
+                "pendingApproval": pending, "notice": agent.notice ?? "", "diagnostics": agent.smokeRunDiagnostics])
+    }
+
+    private func exerciseModelCapabilityReview(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model),
+              let catalog = agent.modelProviderCatalog else {
+            finish(["configured": false]); return
+        }
+        let candidates = catalog.search(query: "", filter: .available, configuredPresetIDs: [])
+        guard let provider = candidates.first(where: { entry in
+            entry.baseURL != nil && (entry.modelMetadata?.keys.contains(where: { name in
+                let metadata = entry.modelMetadata?[name]
+                return !ProviderCatalogCapabilityResolver.isGenerationModel(metadata)
+                    && ProviderCatalogCapabilityResolver.capabilities(for: metadata, base: [.text]).contains(.vision)
+            }) ?? false)
+        }), let endpoint = provider.baseURL,
+            let modelName = provider.modelMetadata?.keys.sorted().first(where: { name in
+                let metadata = provider.modelMetadata?[name]
+                return !ProviderCatalogCapabilityResolver.isGenerationModel(metadata)
+                    && ProviderCatalogCapabilityResolver.capabilities(for: metadata, base: [.text]).contains(.vision)
+            }),
+            agent.addProvider(name: "Legacy catalog model", endpoint: endpoint.absoluteString,
+                              protocolKind: provider.defaultProtocol, modelID: modelName, key: "", presetID: provider.presetID),
+            let item = agent.providers.first(where: { $0.model.remoteModelID == modelName }),
+            let proposal = agent.modelCapabilityUpdates.first(where: { $0.modelID == item.model.id }),
+            !item.model.capabilities.contains(.vision) else {
+            finish(["configured": false]); return
+        }
+        MacProviderSettingsView.smokeCapabilityReviewFrame = nil
+        ProviderCapabilityMigrationView.smokeApplyFrame = nil
+        let settings = await exerciseSettingsPage(.models, model: model)
+        var requestedReview = false
+        let openDeadline = ContinuousClock.now + .seconds(3)
+        while !requestedReview && ContinuousClock.now < openDeadline {
+            requestedReview = clickFixtureButton(in: model.smokeAgentSettingsSheet,
+                ids: ["settings.providers.reviewCapabilities"], frame: MacProviderSettingsView.smokeCapabilityReviewFrame)
+            if !requestedReview { try? await Task.sleep(for: .milliseconds(60)) }
+        }
+        let mountDeadline = ContinuousClock.now + .seconds(3)
+        while requestedReview && ProviderCapabilityMigrationView.smokeApplyFrame == nil
+                && ContinuousClock.now < mountDeadline {
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+        let opened = requestedReview && ProviderCapabilityMigrationView.smokeApplyFrame != nil
+        let unchangedBeforeApply = agent.providers.first(where: { $0.model.id == item.model.id })?.model == item.model
+        if opened {
+            let deadline = ContinuousClock.now + .seconds(3)
+            var requestedApply = false
+            while ContinuousClock.now < deadline && !requestedApply {
+                let settingsWindow = model.smokeAgentSettingsSheet
+                let surface = settingsWindow?.attachedSheet ?? NSApp.keyWindow ?? settingsWindow
+                requestedApply = clickFixtureButton(in: surface,
+                    ids: ["providers.capability_migration.apply"], frame: ProviderCapabilityMigrationView.smokeApplyFrame,
+                    screenshot: "capability-review.png")
+                try? await Task.sleep(for: .milliseconds(60))
+            }
+        }
+        let appliedInSheet = agent.providers.first(where: { $0.model.id == item.model.id })?.model.capabilities.contains(.vision) == true
+        let persisted = agent.smokeStoredModel(id: item.model.id)
+        let staleRejected = appliedInSheet && !agent.applyModelCapabilityUpdates([proposal])
+        finish(["configured": true, "settings": settings, "opened": opened, "unchangedBeforeApply": unchangedBeforeApply,
+                "applied": appliedInSheet, "persisted": persisted?.capabilities.contains(.vision) == true,
+                "explicit": persisted?.explicitCapabilities?.contains(.vision) == true,
+                "identityPreserved": persisted?.remoteModelID == item.model.remoteModelID, "staleRejected": staleRejected])
+    }
+
     private func exerciseOfficialCatalog(_ model: BridgeAppModel) async {
         model.openAgentWorkspace()
         guard let agent = model.macWorkspace?.agent, let catalogs = agent.officialCatalogs else {
@@ -5140,7 +5283,12 @@ final class UnifiedMacSmoke {
     }
 
     private func clickWorkbenchButton(ids: [String], frame: @autoclosure () -> CGRect?, screenshot: String?) -> Bool {
-        guard let window = visibleWorkbench, let content = window.contentView else { return false }
+        clickFixtureButton(in: visibleWorkbench, ids: ids, frame: frame(), screenshot: screenshot)
+    }
+
+    private func clickFixtureButton(in window: NSWindow?, ids: [String], frame: @autoclosure () -> CGRect?,
+                                    screenshot: String? = nil) -> Bool {
+        guard let window, let content = window.contentView else { return false }
         content.layoutSubtreeIfNeeded()
         refreshButtonFrames(in: content)
         if let screenshot { capture(content, extension: screenshot) }

@@ -1091,7 +1091,7 @@ public actor FloeMacSelfRuntime {
                 },
                 workspaceArtifactTools: availableToolNames.intersection([
                     "image.generate", "image.inspect", "video.generate", "video.status", "video.cancel",
-                    "browser.download", "browser.screenshot", "mac.desktop.control", "exec.shell"
+                    "browser.download", "browser.screenshot", "browser.exportFile", "mac.desktop.control", "exec.shell"
                 ]),
                 conversationHistory: conversationHistory,
                 currentUserImages: needsVision ? [] : currentUserImages,

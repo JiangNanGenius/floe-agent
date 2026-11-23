@@ -189,7 +189,13 @@ struct MacImageWorkbenchView: View {
                                 }
                                 Button(MacMediaEditStrings.editImage) { openEditor(for: item) }.disabled(preview == nil)
                                     .accessibilityIdentifier("mac.images.edit")
-                                Button("mac.images.saveAs") { export(item) }.disabled(preview == nil)
+                                Menu {
+                                    Button("mac.images.saveAs") { export(item) }
+                                    Button("mac.external.openCopy") { export(item, openExternally: true) }
+                                } label: {
+                                    Label("mac.images.saveAs", systemImage: "square.and.arrow.up").labelStyle(.iconOnly)
+                                }
+                                .disabled(preview == nil)
                             }
                         }
                     }
@@ -309,7 +315,7 @@ struct MacImageWorkbenchView: View {
         referenceError = nil
     }
 
-    private func export(_ item: MacImageGeneration.ResultItem) {
+    private func export(_ item: MacImageGeneration.ResultItem, openExternally: Bool = false) {
         let source = images.imageURL(for: item)
         let panel = NSSavePanel()
         if let type = UTType(filenameExtension: source.pathExtension) { panel.allowedContentTypes = [type] }
@@ -317,7 +323,14 @@ struct MacImageWorkbenchView: View {
         panel.begin { response in
             guard response == .OK, let target = panel.url else { return }
             guard let data = images.imageData(for: item) else { exportFailed = true; return }
-            do { try data.write(to: target, options: .atomic) }
+            guard !openExternally || target.resolvingSymlinksInPath() != source.resolvingSymlinksInPath() else {
+                exportFailed = true
+                return
+            }
+            do {
+                try data.write(to: target, options: .atomic)
+                if openExternally { MacExternalFileOpening.chooseApplication(for: target) }
+            }
             catch { exportFailed = true }
         }
     }

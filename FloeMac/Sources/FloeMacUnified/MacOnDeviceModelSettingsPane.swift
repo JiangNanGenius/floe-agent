@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import FloeCore
 import FloeLocalModelCatalog
+import FloeLocalModels
 import SwiftUI
 
 @available(macOS 15.4, *)
@@ -8,6 +10,9 @@ struct MacOnDeviceModelSettingsPane: View {
     @ObservedObject var model: MacLocalModelsSettingsModel
     let selectedModelID: UUID?
     let useAsDefault: (UUID) -> Bool
+    let appleAvailability: AppleFoundationModelAvailability
+    let appleEnabled: Binding<Bool>
+    let refreshingModels: () async -> Void
     @State private var removeTarget: MacLocalModelsSettingsModel.EntryItem?
     @State private var benchmark: Benchmark?
 
@@ -18,6 +23,26 @@ struct MacOnDeviceModelSettingsPane: View {
 
     var body: some View {
         Form {
+            Section("mac.localModels.apple.title") {
+                Toggle("mac.localModels.apple.enable", isOn: appleEnabled)
+                    .disabled(!appleAvailability.isAvailable && !appleEnabled.wrappedValue)
+                    .accessibilityIdentifier("mac.localModels.apple.enable")
+                if appleAvailability.isAvailable {
+                    Text("mac.localModels.apple.systemStorage").foregroundStyle(.secondary)
+                    if appleEnabled.wrappedValue {
+                        if selectedModelID == AppleFoundationModelIdentity.profileID {
+                            Label("mac.localModels.default", systemImage: "checkmark").foregroundStyle(.secondary)
+                        } else {
+                            Button("mac.localModels.makeDefault") { _ = useAsDefault(AppleFoundationModelIdentity.profileID) }
+                        }
+                    }
+                } else {
+                    Text(appleAvailability == .unsupportedOS
+                         ? String(localized: "mac.localModels.apple.requiresNewerOS")
+                         : AppleFoundationModelRuntime.unavailableMessage(for: appleAvailability))
+                        .foregroundStyle(.secondary)
+                }
+            }
             if let reason = model.runtimeSupport.unavailableReason {
                 Section { Text(reason).foregroundStyle(.secondary) }
             }
@@ -52,7 +77,10 @@ struct MacOnDeviceModelSettingsPane: View {
                 }
             }
         }
-        .task { await model.refresh() }
+        .task {
+            await model.refresh()
+            await refreshingModels()
+        }
         .formStyle(.grouped)
         .confirmationDialog("mac.localModels.confirmRemoval", isPresented: Binding(
             get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }

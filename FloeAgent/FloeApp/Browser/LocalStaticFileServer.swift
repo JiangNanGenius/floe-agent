@@ -5,6 +5,7 @@ import Network
 import FloeCore
 
 final class LocalPreviewServer: @unchecked Sendable {
+    typealias ScopedResource = @Sendable (String) throws -> (data: Data, type: String)
     struct Session: Sendable {
         let root: URL
         let entry: String
@@ -27,6 +28,7 @@ final class LocalPreviewServer: @unchecked Sendable {
     private let listener: NWListener
     private let root: URL
     private let token: String
+    private let scopedResource: ScopedResource?
     private let queue = DispatchQueue(label: "org.floeagent.preview")
     private let lock = NSLock()
     private var connections: [NWConnection] = []
@@ -35,13 +37,14 @@ final class LocalPreviewServer: @unchecked Sendable {
     /// become a no-op instead of cancelling a slow response mid-send.
     private var receiving: Set<ObjectIdentifier> = []
 
-    private init(listener: NWListener, root: URL, token: String) {
+    private init(listener: NWListener, root: URL, token: String, scopedResource: ScopedResource?) {
         self.listener = listener
         self.root = root
         self.token = token
+        self.scopedResource = scopedResource
     }
 
-    static func start(root: URL, entry: String?) async throws -> (LocalPreviewServer, Session) {
+    static func start(root: URL, entry: String?, scopedResource: ScopedResource? = nil) async throws -> (LocalPreviewServer, Session) {
         let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: canonicalRoot.path, isDirectory: &isDirectory),
@@ -52,11 +55,17 @@ final class LocalPreviewServer: @unchecked Sendable {
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
         let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        let server = LocalPreviewServer(listener: listener, root: canonicalRoot, token: token)
+        let server = LocalPreviewServer(listener: listener, root: canonicalRoot, token: token, scopedResource: scopedResource)
         listener.newConnectionHandler = { [weak server] connection in server?.accept(connection) }
         // Resolve the entry before starting the listener: a missing entry must
         // not leak a running listener/port.
-        let selectedEntry = try server.resolveEntry(entry)
+        let selectedEntry: String
+        if let scopedResource, let entry {
+            _ = try scopedResource(entry)
+            selectedEntry = entry
+        } else {
+            selectedEntry = try server.resolveEntry(entry)
+        }
         do {
             try await server.begin()
         } catch {
@@ -67,7 +76,7 @@ final class LocalPreviewServer: @unchecked Sendable {
             server.stop()
             throw FloeError.internalError("Preview listener did not receive a port")
         }
-        let url = URL(string: "http://127.0.0.1:\(port)/\(token)/\(selectedEntry)")!
+        let url = URL(string: "http://127.0.0.1:\(port)/\(token)/")!.appendingPathComponent(selectedEntry)
         BrowserURLPolicy.authorizePreview(url)
         return (server, Session(root: canonicalRoot, entry: selectedEntry, url: url))
     }
@@ -210,6 +219,13 @@ final class LocalPreviewServer: @unchecked Sendable {
               !relative.contains("\\") else {
             return http(status: "404 Not Found", body: Data())
         }
+        if let scopedResource {
+            guard let resource = try? scopedResource(relative) else {
+                return http(status: "404 Not Found", body: Data())
+            }
+            return http(status: "200 OK", mime: resource.type, body: parts[0] == "HEAD" ? Data() : resource.data,
+                        declaredLength: resource.data.count)
+        }
         let candidate = root.appendingPathComponent(relative).standardizedFileURL.resolvingSymlinksInPath()
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         guard candidate.path.hasPrefix(rootPrefix),
@@ -233,7 +249,9 @@ final class LocalPreviewServer: @unchecked Sendable {
         body: Data,
         declaredLength: Int? = nil
     ) -> Data {
-        var response = Data("HTTP/1.1 \(status)\r\nContent-Type: \(mime)\r\nContent-Length: \(declaredLength ?? body.count)\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n".utf8)
+        let policy = scopedResource == nil ? "" :
+            "Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; frame-src 'none'; form-action 'none'; base-uri 'none'; worker-src 'none'\r\nReferrer-Policy: no-referrer\r\n"
+        var response = Data("HTTP/1.1 \(status)\r\nContent-Type: \(mime)\r\nContent-Length: \(declaredLength ?? body.count)\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\(policy)Connection: close\r\n\r\n".utf8)
         response.append(body)
         return response
     }

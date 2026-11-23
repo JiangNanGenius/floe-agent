@@ -1031,3 +1031,60 @@
 "providers.catalog.official_footer" = "Source: %@ · %d providers";
 "thread.empty" = "No activity yet";
 "thread.empty.hint" = "Send a task to start the thread.";
+
+// Saved model capability review
+"providers.capability_migration.after" = "After: %@";
+"providers.capability_migration.apply" = "Apply updates";
+"providers.capability_migration.applying" = "Applying…";
+"providers.capability_migration.before" = "Before: %@";
+"providers.capability_migration.changed" = "%@ changed since this review; reload and review the current state.";
+"providers.capability_migration.failed" = "Some updates could not be applied: %@";
+"providers.capability_migration.footer" = "Review changes to saved models, including capabilities and context length. Nothing changes until you apply.";
+"providers.capability_migration.not_now" = "Not now";
+"providers.capability_migration.review" = "Review %d model updates";
+"providers.capability_migration.title" = "Model information updates";
+"model.capability.text" = "Text";
+"model.capability.vision" = "Vision input";
+"model.capability.tools" = "Tool calling";
+"auxiliary.generation" = "Image Generation";
+"auxiliary.editing" = "Image Editing";
+"core.canvas_operations.video_generation" = "Video generation";
+"mac.provider.reviewRetry" = "Close this review and reopen it to check the latest model settings.";
+
+// Desktop file handoff
+"mac.external.openWith" = "Open With…";
+"mac.external.openCopy" = "Save a Copy and Open With…";
+"mac.external.openFailed" = "Couldn’t open this item in the selected app.";
+"mac.external.openInCode" = "Open in VS Code";
+"mac.external.projectInCode" = "Open Project in VS Code";
+
+// System model
+"mac.localModels.apple.title" = "Apple Intelligence";
+"mac.localModels.apple.enable" = "Enable System Model";
+"mac.localModels.apple.systemStorage" = "Uses the model provided by macOS.";
+"mac.localModels.apple.requiresNewerOS" = "Update macOS to use the system model.";
+"localmodels.apple_foundation_model_runtime.could_not_read_image_choose_another" = "Could not read image %@; choose another file and try again";
+"localmodels.apple_foundation_model_runtime.image_exceeds_24_mb_compress_it" = "Image %@ exceeds 24 MB; compress it and try again";
+"localmodels.apple_foundation_model_runtime.image_has_not_been_safely_imported" = "Image %@ has not been safely imported into Floe; choose the file again";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_can_process" = "The Apple Intelligence model can process at most four images at a time";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_cannot_handle" = "The Apple Intelligence model cannot handle this request";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_could_not" = "The Apple Intelligence model could not complete the request: %@";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not" = "The Apple Intelligence model does not yet support the current language or region (%@)";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not_2" = "The Apple Intelligence model does not yet support the current language or region";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not_3" = "The Apple Intelligence model does not yet support some content in this request";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_is_busy" = "The Apple Intelligence model is busy; please try again later";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_is_receiving" = "The Apple Intelligence model is receiving too many requests. %@";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_returned_no" = "The Apple Intelligence model returned no content; please try again";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_selected_multiple" = "The Apple Intelligence model selected multiple tools at once; please try again";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_timed_out" = "The Apple Intelligence model timed out; please try again";
+"localmodels.apple_foundation_model_runtime.the_current_system_supports_apple_intelligence" = "The current system supports Apple Intelligence text chat only; upgrade the system to handle images directly";
+"localmodels.apple_foundation_model_runtime.the_dimensions_of_image_are_not" = "The dimensions of image %@ are not supported; adjust them and try again";
+"localmodels.apple_foundation_model_runtime.the_selected_tools_cannot_currently_be" = "The selected tools cannot currently be handed to the Apple Intelligence model; reduce the number of tools and try again";
+"localmodels.apple_foundation_model_runtime.the_system_model_does_not_yet" = "The system model does not yet support the current language or region (%@)";
+"localmodels.apple_foundation_model_runtime.the_system_model_is_still_downloading" = "The system model is still downloading or preparing; try again later";
+"localmodels.apple_foundation_model_runtime.this_conversation_exceeds_the_apple_intelligence" = "This conversation exceeds the Apple Intelligence model's capacity; compact the conversation and try again";
+"localmodels.apple_foundation_model_runtime.this_device_does_not_support_apple" = "This device does not support Apple Intelligence";
+"localmodels.apple_foundation_model_runtime.this_installation_cannot_use_apple_intelligence" = "This installation cannot use Apple Intelligence models; update Floe and try again";
+"localmodels.apple_foundation_model_runtime.turn_on_apple_intelligence_in_system" = "Turn on Apple Intelligence in system settings first";
+"localmodels.apple_foundation_model_runtime.update_ipados_to_a_version_that" = "Update iPadOS to a version that supports Apple Intelligence models";
+"localmodels.apple_foundation_model_runtime.you_can_try_again_after" = "You can try again after %@.";

@@ -1028,3 +1028,60 @@
 "providers.catalog.official_footer" = "来源：%@ · %d 个提供方";
 "thread.empty" = "暂无活动";
 "thread.empty.hint" = "发送一个任务即可开始线程。";
+
+// Saved model capability review
+"providers.capability_migration.after" = "应用后：%@";
+"providers.capability_migration.apply" = "应用更新";
+"providers.capability_migration.applying" = "正在应用…";
+"providers.capability_migration.before" = "当前：%@";
+"providers.capability_migration.changed" = "%@ 在本次查看后已更改；请重新加载并查看当前状态。";
+"providers.capability_migration.failed" = "部分更新未能应用：%@";
+"providers.capability_migration.footer" = "查看已保存模型的能力和上下文长度变化，确认后再应用。";
+"providers.capability_migration.not_now" = "稍后";
+"providers.capability_migration.review" = "查看 %d 项模型更新";
+"providers.capability_migration.title" = "模型信息更新";
+"model.capability.text" = "文本对话";
+"model.capability.vision" = "视觉输入";
+"model.capability.tools" = "工具调用";
+"auxiliary.generation" = "图片生成";
+"auxiliary.editing" = "图片编辑";
+"core.canvas_operations.video_generation" = "视频生成";
+"mac.provider.reviewRetry" = "请关闭此窗口，再打开审阅以查看最新模型设置。";
+
+// Desktop file handoff
+"mac.external.openWith" = "用其他应用打开…";
+"mac.external.openCopy" = "另存副本并用其他应用打开…";
+"mac.external.openFailed" = "无法在所选应用中打开此项目。";
+"mac.external.openInCode" = "在 VS Code 中打开";
+"mac.external.projectInCode" = "在 VS Code 中打开项目";
+
+// System model
+"mac.localModels.apple.title" = "Apple 智能";
+"mac.localModels.apple.enable" = "启用系统模型";
+"mac.localModels.apple.systemStorage" = "使用 macOS 提供的模型。";
+"mac.localModels.apple.requiresNewerOS" = "更新 macOS 后可使用系统模型。";
+"localmodels.apple_foundation_model_runtime.could_not_read_image_choose_another" = "无法读取第 %@ 张图片，请更换文件后重试";
+"localmodels.apple_foundation_model_runtime.image_exceeds_24_mb_compress_it" = "第 %@ 张图片超过 24 MB，请压缩后重试";
+"localmodels.apple_foundation_model_runtime.image_has_not_been_safely_imported" = "第 %@ 张图片尚未安全导入 Floe，请重新选择文件";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_can_process" = "Apple Intelligence 模型每次最多处理四张图片";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_cannot_handle" = "Apple Intelligence 模型无法处理这项请求";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_could_not" = "Apple Intelligence 模型未能完成请求：%@";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not" = "Apple Intelligence 模型暂不支持当前语言或地区（%@）";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not_2" = "Apple Intelligence 模型暂不支持当前语言或地区";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not_3" = "Apple Intelligence 模型暂不支持请求中的部分内容";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_is_busy" = "Apple Intelligence 模型正忙，请稍后重试";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_is_receiving" = "Apple Intelligence 模型暂时请求过多。%@";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_returned_no" = "Apple Intelligence 模型没有返回内容，请重试";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_selected_multiple" = "Apple Intelligence 模型一次选择了多个工具，请重试";
+"localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_timed_out" = "Apple Intelligence 模型响应超时，请重试";
+"localmodels.apple_foundation_model_runtime.the_current_system_supports_apple_intelligence" = "当前系统仅支持 Apple Intelligence 文字对话；升级系统后才能直接处理图片";
+"localmodels.apple_foundation_model_runtime.the_dimensions_of_image_are_not" = "第 %@ 张图片的尺寸暂不支持，请调整尺寸后重试";
+"localmodels.apple_foundation_model_runtime.the_selected_tools_cannot_currently_be" = "所选工具暂时无法交给 Apple Intelligence 模型使用，请减少工具后重试";
+"localmodels.apple_foundation_model_runtime.the_system_model_does_not_yet" = "系统模型暂不支持当前语言或地区（%@）";
+"localmodels.apple_foundation_model_runtime.the_system_model_is_still_downloading" = "系统模型仍在下载或准备中，请稍后再试";
+"localmodels.apple_foundation_model_runtime.this_conversation_exceeds_the_apple_intelligence" = "当前对话超出 Apple Intelligence 模型的容量，请先整理对话后重试";
+"localmodels.apple_foundation_model_runtime.this_device_does_not_support_apple" = "这台设备不支持 Apple Intelligence";
+"localmodels.apple_foundation_model_runtime.this_installation_cannot_use_apple_intelligence" = "当前安装无法使用 Apple Intelligence 模型，请更新 Floe 后重试";
+"localmodels.apple_foundation_model_runtime.turn_on_apple_intelligence_in_system" = "请先在系统设置中打开 Apple Intelligence";
+"localmodels.apple_foundation_model_runtime.update_ipados_to_a_version_that" = "请将 iPadOS 更新到支持 Apple Intelligence 模型的版本";
+"localmodels.apple_foundation_model_runtime.you_can_try_again_after" = " 可在 %@ 后重试。";

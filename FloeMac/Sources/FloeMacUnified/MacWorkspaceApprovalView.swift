@@ -72,7 +72,13 @@ struct MacWorkspaceApprovalView: View {
         if approval.toolName == DelegateTool.name { return String(localized: "mac.child.approve") }
         if approval.toolName == WorkspaceOutputPublication.name { return String(localized: "mac.agent.publishOutputApproval") }
         if MacTaskBrowserApproval.applies(to: approval.toolCall) {
-            return MacPermissionsText.t("操作任务内浏览器", "Use the task browser")
+            switch approval.toolName {
+            case "browser.previewWorkspace": return MacPermissionsText.t("预览工作区网页", "Preview a workspace webpage")
+            case "browser.exportFile": return MacPermissionsText.t("保存网页原图", "Save the original webpage image")
+            case "browser.clickVisualText", "browser.clickPoint":
+                return MacPermissionsText.t("点击网页画布或图形", "Click a canvas or graphic in the webpage")
+            default: return MacPermissionsText.t("操作任务内浏览器", "Use the task browser")
+            }
         }
         if let action = MacTaskActionPreview(approval.toolCall) { return action.title }
         switch approval.toolName {

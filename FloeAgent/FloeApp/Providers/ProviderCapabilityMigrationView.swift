@@ -8,7 +8,7 @@
 // "Apply updates" writes anything. Confirmed bits are recorded as explicit
 // user decisions, so later refreshes and sync keep them stable.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || FLOE_UNIFIED_MAC)
 import SwiftUI
 import FloeCore
 import FloeProviders
@@ -20,6 +20,10 @@ struct ProviderCapabilityMigrationView: View {
     let onApply: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+
+    #if FLOE_MAC_HOST_SMOKE
+    static var smokeApplyFrame: CGRect?
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -35,39 +39,69 @@ struct ProviderCapabilityMigrationView: View {
                             .accessibilityIdentifier("providers.capability_migration.error")
                     }
                 } header: {
+                    #if !os(macOS)
                     Text("providers.capability_migration.title")
+                    #endif
                 } footer: {
                     Text("providers.capability_migration.footer")
                 }
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("providers.capability_migration.title")
+            #if os(macOS)
+            .listStyle(.inset)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    HStack(spacing: 8) {
+                        Spacer()
+                        cancelButton.keyboardShortcut(.cancelAction)
+                        applyButton.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                }
+                .background(.background)
+            }
+            #else
+            .listStyle(.insetGrouped)
             .navigationBarTitleDisplayMode(.inline)
-            .interactiveDismissDisabled(isApplying)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("providers.capability_migration.not_now") { dismiss() }
-                        .disabled(isApplying)
-                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                        .accessibilityIdentifier("providers.capability_migration.not_now")
+                    cancelButton
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        onApply()
-                    } label: {
-                        if isApplying {
-                            ProgressView()
-                                .accessibilityLabel(Text("providers.capability_migration.applying"))
-                        } else {
-                            Text("providers.capability_migration.apply")
-                        }
-                    }
-                    .disabled(isApplying || proposals.isEmpty)
-                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                    .accessibilityIdentifier("providers.capability_migration.apply")
+                    applyButton
                 }
             }
+            #endif
+            .interactiveDismissDisabled(isApplying)
         }
+        #if os(macOS)
+        .frame(minWidth: 520, minHeight: 370)
+        #endif
+    }
+
+    private var cancelButton: some View {
+        Button("providers.capability_migration.not_now") { dismiss() }
+            .disabled(isApplying)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("providers.capability_migration.not_now")
+    }
+
+    private var applyButton: some View {
+        Button(action: onApply) {
+            if isApplying {
+                ProgressView().accessibilityLabel(Text("providers.capability_migration.applying"))
+            } else {
+                Text("providers.capability_migration.apply")
+            }
+        }
+        .disabled(isApplying || proposals.isEmpty)
+        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+        .accessibilityIdentifier("providers.capability_migration.apply")
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { Self.smokeApplyFrame = $0 })
+        #endif
     }
 
     private func proposalRow(_ proposal: ProviderCatalogCapabilityProposal) -> some View {
@@ -82,7 +116,8 @@ struct ProviderCapabilityMigrationView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             if let before = proposal.currentContextTokens, let after = proposal.proposedContextTokens {
-                Text(IDELanguageRunText.t("上下文：\(before.formatted()) → \(after.formatted())", "Context: \(before.formatted()) → \(after.formatted())"))
+                Text(FloeL10n.isChinese ? "上下文 \(before.formatted()) → \(after.formatted())"
+                                       : "Context \(before.formatted()) → \(after.formatted())")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.primary)
             }

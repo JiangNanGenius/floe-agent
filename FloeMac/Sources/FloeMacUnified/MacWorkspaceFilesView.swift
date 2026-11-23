@@ -437,6 +437,16 @@ struct MacWorkspaceFilesView: View {
                     .help(t("在 Finder 中显示根文件夹", "Reveal Root in Finder"))
                     .accessibilityLabel(t("在 Finder 中显示根文件夹", "Reveal Root in Finder"))
                     .accessibilityIdentifier("workspace.files.revealRoot")
+                    if let application = MacExternalFileOpening.codeApplication {
+                        Button {
+                            guard let root, let operations = try? MacWorkspaceFileOperations(root: root, directory: root,
+                                managedConversationsRoot: managedConversationsRoot ?? fixedRootURL) else { return }
+                            MacExternalFileOpening.open(operations.directory, in: application)
+                        } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
+                        .help("mac.external.projectInCode")
+                        .accessibilityLabel("mac.external.projectInCode")
+                        .accessibilityIdentifier("workspace.files.openProjectInCode")
+                    }
                     if !rootIsFixed {
                         Button(action: chooseFolder) {
                             Label(t("更换文件夹…", "Change Folder…"), systemImage: "folder.badge.gearshape")
@@ -971,6 +981,11 @@ struct MacWorkspaceFilesView: View {
             if acceptsText {
                 Button(t("编辑", "Edit")) { edit(entry) }
             }
+            Button("mac.external.openWith") {
+                guard canAccess(entry) else { return }
+                MacExternalFileOpening.chooseApplication(for: entry.url, isCurrent: { canAccess(entry) })
+            }
+            .accessibilityIdentifier("workspace.files.openWith")
             if acceptsText {
                 Button(t("引用到任务输入框", "Quote in Task")) { quoteText(entry) }
                     .disabled(!canInsertInDraft || importingText)
@@ -986,6 +1001,12 @@ struct MacWorkspaceFilesView: View {
                     }
                 }
             }
+        }
+        if (entry.folder || isEditableText(entry)), let application = MacExternalFileOpening.codeApplication {
+            Button("mac.external.openInCode") {
+                if canAccess(entry) { MacExternalFileOpening.open(entry.url, in: application) }
+            }
+            .accessibilityIdentifier("workspace.files.openInCode")
         }
         mutationItems(entry)
         Button(t("在 Finder 中显示", "Show in Finder")) {
