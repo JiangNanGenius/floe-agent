@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="device_history_settings">设备同步</string>
+    <string name="device_history_enable">同步会话</string>
+    <string name="device_history_summary">在两台设备上分别确认配对，再选择要共享的会话文字记录。</string>
+    <string name="device_history_public_relay">使用公共测试中继</string>
+    <string name="device_history_custom_relay">自定义中继</string>
+    <string name="device_history_allow_lan">允许访问局域网</string>
+    <string name="device_history_relay_hint">填写 HTTPS 中继地址。清空后使用直连。</string>
+    <string name="device_history_save_relay">保存中继</string>
+    <string name="device_history_this_device">本机</string>
+    <string name="device_history_pairing_info">Floe 设备配对信息</string>
+    <string name="device_history_copy_pairing">复制配对信息</string>
+    <string name="device_history_refresh_address">刷新配对地址</string>
+    <string name="device_history_peers">已配对设备</string>
+    <string name="device_history_add_peer">添加设备</string>
+    <string name="device_history_shared_count">已共享 %1$d 个会话</string>
+    <string name="device_history_peer_name">设备名称</string>
+    <string name="device_history_paste_pairing">粘贴对方的配对信息</string>
+    <string name="device_history_verify_peer">核对设备</string>
+    <string name="device_history_verify_fingerprint">核对设备指纹</string>
+    <string name="device_history_fingerprint_hint">请与对方设备显示的指纹核对。</string>
+    <string name="device_history_confirm_pair">确认配对</string>
+    <string name="device_history_bad_pairing">无法识别配对信息，请从对方设备重新复制。</string>
+    <string name="device_history_share_section">共享本机会话</string>
+    <string name="device_history_load_local">加载本机会话</string>
+    <string name="device_history_receive_section">接收对方会话</string>
+    <string name="device_history_list_remote">查找已共享的会话</string>
+    <string name="device_history_no_remote">对方尚未向你共享会话。</string>
+    <string name="device_history_receive">接收</string>
+    <string name="device_history_remove">移除设备</string>
+    <string name="device_history_remove_hint">移除 %1$s 并撤销它访问已共享会话的权限？</string>
+    <string name="device_history_wait_store">正在等待本机会话可用。</string>
+    <string name="device_history_start_failed">暂时无法启动设备同步，请检查中继设置或重试。</string>
+    <string name="device_history_settings_failed">无法读取或保存设备同步设置。</string>
+    <string name="device_history_transfer_failed">同步失败，请确认对方设备在线且仍在共享此会话。</string>
+    <string name="device_history_conflict">发现不同版本的消息，两台设备各自的内容均已保留。</string>
+    <string name="device_history_task_busy">此会话正在执行，请在任务结束后重试。</string>
+    <string name="device_history_incompatible">两台设备的同步版本不兼容。</string>
+    <string name="device_history_import_unconfirmed">暂时无法确认导入结果。请先到任务中查看原会话，再决定是否重试。</string>
+    <string name="device_history_bad_relay">请输入有效的 HTTPS 中继地址。</string>
+    <string name="device_history_relay_pending">中继正在连接。跨网络配对前，请先刷新配对地址。</string>
+    <string name="device_history_received">已接收 %1$d 条新消息，可在任务列表中打开会话。</string>
+</resources>

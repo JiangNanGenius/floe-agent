@@ -550,6 +550,7 @@ dependencies {
     implementation(project(":core:networkcapture"))
     // C05 real device engine (TCP/Telnet/BLE GATT/USB serial) and screens.
     implementation(project(":core:devicecommunication"))
+    implementation(project(":core:devicelink"))
     implementation(libs.androidx.work.runtime)
     // Preserve the already-locked concurrent-futures KTX 1.2.0 line:
     // androidx.test:core 1.7.0 (androidTest) references SuspendToFutureAdapter,

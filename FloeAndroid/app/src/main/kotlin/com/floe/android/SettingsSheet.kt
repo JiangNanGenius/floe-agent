@@ -747,6 +747,7 @@ private fun SettingsSectionContent(
         }
         FloeSettingsSection.EXECUTION -> com.floe.android.host.linux.LocalRuntimeSettingsCard()
         FloeSettingsSection.REMOTE -> RemoteOperationalSettingsPage(runtimeHost)
+        FloeSettingsSection.DEVICE_SYNC -> DeviceHistorySettingsPage(runtimeHost?.integrations?.localNetwork)
         FloeSettingsSection.SYSTEM_CAPABILITIES -> SystemOperationalSettingsPage(runtimeHost)
         FloeSettingsSection.SKILLS -> SkillsSettingsPage(runtimeHost)
         FloeSettingsSection.MEMORY -> {
@@ -984,6 +985,7 @@ private fun settingsIcon(section: FloeSettingsSection) = when (section) {
     FloeSettingsSection.AUXILIARY -> FloeIcons.Photo
     FloeSettingsSection.EXECUTION -> FloeIcons.Terminal
     FloeSettingsSection.REMOTE -> FloeIcons.DeviceLocal
+    FloeSettingsSection.DEVICE_SYNC -> FloeIcons.DeviceLocal
     FloeSettingsSection.SYSTEM_CAPABILITIES -> FloeIcons.Gearshape
 }
 
@@ -1001,5 +1003,6 @@ private fun settingsTitle(section: FloeSettingsSection): String = when (section)
     FloeSettingsSection.AUXILIARY -> stringResource(R.string.settings_auxiliary_capabilities)
     FloeSettingsSection.EXECUTION -> stringResource(R.string.settings_execution_environment)
     FloeSettingsSection.REMOTE -> stringResource(R.string.settings_remote_connections)
+    FloeSettingsSection.DEVICE_SYNC -> stringResource(R.string.device_history_settings)
     FloeSettingsSection.SYSTEM_CAPABILITIES -> stringResource(R.string.settings_system_capabilities)
 }
