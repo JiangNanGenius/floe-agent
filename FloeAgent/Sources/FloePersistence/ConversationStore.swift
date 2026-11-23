@@ -751,11 +751,113 @@ public actor SQLiteConversationStore: ConversationStore {
         }
     }
 
+    /// Reads one page ordered by committed changes in this conversation.
+    /// The first read pins an upper bound so new activity cannot extend a
+    /// transfer indefinitely. Nothing in this cursor depends on wall time.
+    public func deviceHistoryPage(
+        conversationID: UUID, after: String?, through: Int64?
+    ) async throws -> DeviceConversationHistoryPage {
+        try await database.reader { db in
+            let id = conversationID.uuidString
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM conversations WHERE id = ?", arguments: [id]) else {
+                throw DeviceConversationHistoryError.conversationUnavailable
+            }
+            let conversation = try Self.conversation(from: row)
+            guard conversation.isVisibleInOrdinaryList else {
+                throw DeviceConversationHistoryError.conversationUnavailable
+            }
+            let sequence = try Row.fetchOne(db, sql: """
+                SELECT generation, sequence FROM device_history_sequences WHERE conversation_id = ?
+                """, arguments: [id])
+            let generation: String = sequence?["generation"] ?? ""
+            let current: Int64 = sequence?["sequence"] ?? 0
+            let upperBound = through ?? current
+            var lowerBound: Int64 = 0
+            if let after {
+                let fields = after.split(separator: ":", omittingEmptySubsequences: false)
+                guard fields.count == 3, fields[0] == generation,
+                      let position = Int64(fields[1]), position > 0,
+                      let anchor = UUID(uuidString: String(fields[2])),
+                      try String.fetchOne(db, sql: """
+                          SELECT message_id FROM device_history_order WHERE conversation_id = ? AND sequence = ?
+                          """, arguments: [id, position]) == anchor.uuidString else {
+                    throw DeviceConversationHistoryError.cursorExpired
+                }
+                lowerBound = position
+            }
+            guard upperBound >= lowerBound, upperBound <= current else {
+                throw DeviceConversationHistoryError.cursorExpired
+            }
+
+            let pageLimit = 128
+            let candidates = try Row.fetchAll(db, sql: """
+                SELECT h.sequence, m.id, length(CAST(m.content AS BLOB)) + COALESCE((
+                    SELECT sum(length(CAST(p.text AS BLOB)) + 128)
+                    FROM message_parts AS p WHERE p.message_id = m.id AND p.kind = 'text'
+                ), 0) AS bytes
+                FROM device_history_order AS h JOIN messages AS m ON m.id = h.message_id
+                WHERE h.conversation_id = ? AND h.sequence > ? AND h.sequence <= ?
+                ORDER BY h.sequence LIMIT ?
+                """, arguments: [id, lowerBound, upperBound, pageLimit + 1])
+            // Account for JSON escaping before materializing bodies. A single
+            // large message may use the full archive bound of the prior wire.
+            let textBudget = Int64(2 * 1_024 * 1_024 / 6)
+            var budget = textBudget
+            var count = 0
+            for candidate in candidates.prefix(pageLimit) {
+                let bytes: Int64 = candidate["bytes"]
+                if count > 0, budget < bytes + 256 { break }
+                guard bytes <= DeviceConversationHistory.maximumBytes else {
+                    throw DeviceConversationHistoryError.sizeLimit
+                }
+                budget -= bytes + 256
+                count += 1
+            }
+            let chosen = candidates.prefix(count)
+            let ids = try chosen.map(Self.messageID(from:))
+            let parts = try Self.fetchParts(messageIDs: ids, db: db)
+            let lastPosition: Int64 = chosen.last?["sequence"] ?? lowerBound
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.* FROM device_history_order AS h JOIN messages AS m ON m.id = h.message_id
+                WHERE h.conversation_id = ? AND h.sequence > ? AND h.sequence <= ? ORDER BY h.sequence
+                """, arguments: [id, lowerBound, lastPosition])
+            let messages = try zip(rows, ids).map { row, id in
+                try Self.portableDeviceMessage(row, id: id, parts: parts[id, default: []])
+            }
+            let history = DeviceConversationHistory(
+                id: conversationID, title: SecretRedactor.redact(conversation.title), createdAt: conversation.createdAt,
+                updatedAt: conversation.updatedAt, messages: messages
+            )
+            let nextCursor = chosen.last.map { row in
+                let position: Int64 = row["sequence"]
+                let anchor: String = row["id"]
+                return "\(generation):\(position):\(anchor)"
+            } ?? after
+            return try DeviceConversationHistoryPage(archive: history.encoded(), nextCursor: nextCursor,
+                                                      through: upperBound, hasMore: count < candidates.count)
+        }
+    }
+
+    public func deviceHistoryCursor(from peerID: String, conversationID: UUID) async throws -> String? {
+        guard !peerID.isEmpty, peerID.utf8.count <= 128 else { throw DeviceConversationHistoryError.invalidHistory }
+        return try await database.reader { db in
+            try String.fetchOne(db, sql: """
+                SELECT cursor FROM device_history_receive_cursors WHERE peer_id = ? AND conversation_id = ?
+                """, arguments: [peerID, conversationID.uuidString])
+        }
+    }
+
     /// Inserts only new history, using the usual native workspace ownership.
-    /// A differing existing message aborts the whole import. It cannot be
+    /// A differing existing message aborts the page and its cursor commit. It cannot be
     /// interpreted as an edit, delete, approval, or request to run the task.
-    public func importDeviceHistory(_ history: DeviceConversationHistory) async throws -> DeviceConversationImport {
+    public func importDeviceHistory(
+        _ history: DeviceConversationHistory, sourcePeerID: String? = nil, nextCursor: String? = nil
+    ) async throws -> DeviceConversationImport {
         try history.validate()
+        guard sourcePeerID.map({ !$0.isEmpty && $0.utf8.count <= 128 }) ?? true,
+              nextCursor.map({ sourcePeerID != nil && !$0.isEmpty && $0.utf8.count <= 160 }) ?? true else {
+            throw DeviceConversationHistoryError.invalidHistory
+        }
         return try await database.writer { db in
             let conversationID = history.id.uuidString
             let existing = try Row.fetchOne(db, sql: "SELECT * FROM conversations WHERE id = ?", arguments: [conversationID])
@@ -797,6 +899,18 @@ public actor SQLiteConversationStore: ConversationStore {
                 let updatedAt = PersistenceCodec.encode(history.updatedAt)
                 try db.execute(sql: "UPDATE conversations SET updated_at = MAX(updated_at, ?) WHERE id = ?",
                                arguments: [updatedAt, conversationID])
+            }
+            if let sourcePeerID {
+                if let nextCursor {
+                    try db.execute(sql: """
+                        INSERT INTO device_history_receive_cursors (peer_id, conversation_id, cursor)
+                        VALUES (?, ?, ?) ON CONFLICT(peer_id, conversation_id) DO UPDATE SET cursor = excluded.cursor
+                        """, arguments: [sourcePeerID, conversationID, nextCursor])
+                } else {
+                    try db.execute(sql: """
+                        DELETE FROM device_history_receive_cursors WHERE peer_id = ? AND conversation_id = ?
+                        """, arguments: [sourcePeerID, conversationID])
+                }
             }
             return DeviceConversationImport(conversationID: history.id, addedMessages: added,
                                             createdConversation: existing == nil)

@@ -139,15 +139,7 @@ public struct DeviceHistorySyncSettings: View {
     }
 
     private var statusText: String? {
-        if center.busy { return label("处理中…", "Working…") }
-        switch center.status {
-        case .idle, .ready: return nil
-        case .unableToStart: return label("暂时无法启动设备同步。", "Device sync couldn’t start.")
-        case .transferFailed: return label("同步失败，请确认对端已开启同步且仍在共享此会话。", "Sync failed. Check that the other device is available and still sharing this conversation.")
-        case .conflict: return label("发现不同版本的消息，两台设备都保留了自己的内容。", "A message differs across devices. Both copies were preserved.")
-        case .incompatibleVersion: return label("两台设备的同步版本不兼容。", "These devices use incompatible sync versions.")
-        case .received(let count): return label("已同步 \(count) 条新消息。", "Synced \(count) new messages.")
-        }
+        center.busy ? label("处理中…", "Working…") : deviceHistoryStatusText(center.status)
     }
 
     private var pairing: some View {
@@ -238,15 +230,16 @@ private struct DeviceHistoryPeerSettings: View {
                     }
                     if remote.isEmpty { Text(label("对方暂无共享会话。", "The other device hasn’t shared any conversations.")).foregroundStyle(.secondary) }
                 }
-                if center.busy { ProgressView() }
-                if case .received(let count) = center.status {
-                    Text(label("已同步 \(count) 条新消息。", "Synced \(count) new messages.")).foregroundStyle(.secondary)
-                } else if center.status == .transferFailed {
-                    Text(label("同步失败，请检查对端状态。", "Sync failed. Check the other device.")).foregroundStyle(.secondary)
-                } else if center.status == .conflict {
-                    Text(label("发现消息冲突，双方记录已保留。", "A message conflict was found. Both copies were preserved.")).foregroundStyle(.secondary)
-                } else if center.status == .incompatibleVersion {
-                    Text(label("两台设备的同步版本不兼容。", "These devices use incompatible sync versions.")).foregroundStyle(.secondary)
+                if let progress = center.receiveProgress, progress.peerID == peerID {
+                    ProgressView(label("正在同步，已保存 \(progress.addedMessages) 条新消息",
+                                       "Syncing · \(progress.addedMessages) new messages saved"))
+                        .accessibilityIdentifier("deviceHistorySync.receiveProgress")
+                    Button(label("取消同步", "Cancel Sync"), action: center.cancelReceive)
+                        .accessibilityIdentifier("deviceHistorySync.cancelReceive")
+                } else if center.busy {
+                    ProgressView()
+                } else if let text = deviceHistoryStatusText(center.status) {
+                    Text(text).foregroundStyle(.secondary)
                 }
             }
             Section(label("共享给这台设备", "Share With This Device")) {
@@ -273,6 +266,26 @@ private struct DeviceHistoryPeerSettings: View {
                 Task { await center.remove(peerID); dismiss() }
             }
         }
+    }
+}
+
+private func deviceHistoryStatusText(_ status: DeviceHistorySyncCenter.Status) -> String? {
+    switch status {
+    case .idle, .ready: nil
+    case .unableToStart: label("暂时无法启动设备同步。", "Device sync couldn’t start.")
+    case .transferFailed: label("同步未完成。请检查网络和设备的同步设置后重试。",
+                                "Sync couldn’t finish. Check the network and both devices’ sync settings, then try again.")
+    case .conflict: label("发现不同版本的消息。两台设备都保留了自己的内容。",
+                          "A message differs across devices. Both copies were preserved.")
+    case .incompatibleVersion: label("两台设备的同步版本不兼容。", "These devices use incompatible sync versions.")
+    case .noLongerShared: label("对方当前没有共享此会话。", "The other device isn’t sharing this conversation.")
+    case .tooLarge: label("此次数据超出同步上限。请检查两台设备的版本和会话内容。",
+                          "This transfer exceeds its size limit. Check both app versions and the conversation.")
+    case .interrupted(let count): label("连接中断，已保存 \(count) 条新消息。再次同步可继续。",
+                                        "Connection lost. Saved \(count) new messages. Sync again to continue.")
+    case .cancelled(let count): label("同步已取消，已保存 \(count) 条新消息。",
+                                      "Sync cancelled. Saved \(count) new messages.")
+    case .received(let count): label("已同步 \(count) 条新消息。", "Synced \(count) new messages.")
     }
 }
 
