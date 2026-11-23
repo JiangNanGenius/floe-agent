@@ -1088,6 +1088,15 @@ The provider adapters support explicit configured endpoints; this record
 does not claim all plan presets or real-provider behavior are qualified.
 No provider call, credential migration or paid test was performed.
 
+## Provider catalog refresh (2026-11-24)
+
+The Android packaged catalog now uses the unmodified iOS resource
+`FloeAgent/FloeApp/Resources/ProviderCatalog.json` at `d38a0dd26`.
+Its SHA-256 is
+`ef68de9f4c5b6b1ec23e58cfa0b6945845961c96af5695de95906805ead8e7a8`.
+The 23 entries include Google Gemini Chat, Volcengine Agent Plan and Alibaba
+Token Plan. The existing schema validator and hidden-preset list apply.
+
 ## G09-R2 portable media tool source (2026-11-01)
 
 Four additional `FloeAndroidWorkbench` files are byte-identical exports from

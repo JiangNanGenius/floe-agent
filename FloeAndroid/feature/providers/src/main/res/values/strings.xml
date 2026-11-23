@@ -63,7 +63,7 @@
     <string name="providers_test_failed">Connection failed</string>
     <string name="providers_cancel_test">Stop test</string>
     <string name="providers_models_section">Models</string>
-    <string name="providers_no_models">No models yet. Test the connection to discover models, or add one manually.</string>
+    <string name="providers_no_models">No models yet.</string>
     <string name="providers_manage_models">Manage Models</string>
     <string name="providers_refresh_models">Refresh Model List</string>
     <string name="providers_manual_fallback_hint">This endpoint does not support model discovery. Add models manually.</string>
@@ -157,4 +157,9 @@
     <string name="model_media_custom_note">This is an advanced custom media model. Size, ratio, duration and quality are filled from the endpoint\'s actual capabilities at generation time.</string>
     <string name="model_media_footer">Media models are configured by official API capabilities and do not use conversation context or output token settings.</string>
 
+    <string name="catalog_load_failed">Couldn\'t load the provider catalog. Try refreshing.</string>
+    <string name="providers_discovery_empty">The provider returned no models. You can add one manually.</string>
+    <string name="providers_discovery_count">Found %1$d models</string>
+    <string name="providers_discovery_catalog">Found %1$d models in the subscription catalog</string>
+    <string name="providers_cancel_discovery">Cancel model refresh</string>
 </resources>

@@ -59,7 +59,7 @@
     <string name="providers_test_failed">连接失败</string>
     <string name="providers_cancel_test">停止测试</string>
     <string name="providers_models_section">模型</string>
-    <string name="providers_no_models">暂无模型。测试连接以发现模型，或手动添加。</string>
+    <string name="providers_no_models">暂无模型。</string>
     <string name="providers_manage_models">管理模型</string>
     <string name="providers_refresh_models">刷新模型列表</string>
     <string name="providers_manual_fallback_hint">此端点不支持模型发现，请手动添加模型。</string>
@@ -154,4 +154,9 @@
     <string name="model_media_footer">媒体模型按官方接口能力配置，不使用对话上下文或输出 Token 设置。</string>
 
     <!-- debug-only synthetic preview (never live data) -->
+    <string name="catalog_load_failed">无法加载供应商目录，请刷新重试。</string>
+    <string name="providers_discovery_empty">供应商未返回模型，也可以手动添加。</string>
+    <string name="providers_discovery_count">找到 %1$d 个模型</string>
+    <string name="providers_discovery_catalog">订阅目录中有 %1$d 个模型</string>
+    <string name="providers_cancel_discovery">取消拉取模型</string>
 </resources>

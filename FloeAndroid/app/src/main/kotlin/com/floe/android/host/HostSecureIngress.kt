@@ -101,9 +101,19 @@ internal object NativeHostRouteAuthority : HostRouteAuthority {
  * scripted double. This is NOT a V3 command: no command name, no payload
  * vocabulary, no model/tool reachability.
  */
+internal enum class HostProviderProbeMode(val wire: String) {
+    TEST("test"),
+    DISCOVERY("discovery"),
+    SAVED_DISCOVERY("savedDiscovery"),
+}
+
 internal interface HostDraftProbe {
     /** Returns the opaque `dp:v1:` handle, or null when refused pre-dispatch. */
     fun submit(candidateJSON: String, secret: String?, routeToken: String): String?
+
+    fun submit(
+        candidateJSON: String, secret: String?, routeToken: String, mode: HostProviderProbeMode,
+    ): String? = submit(candidateJSON, secret, routeToken)
 
     /** "P" pending | "S" + settled JSON | "R" + typed refusal status. */
     fun poll(handle: String, routeToken: String): String
@@ -113,6 +123,14 @@ internal interface HostDraftProbe {
 }
 
 internal object NativeHostDraftProbe : HostDraftProbe {
+    override fun submit(
+        candidateJSON: String, secret: String?, routeToken: String, mode: HostProviderProbeMode,
+    ): String? = submit(
+        """{"probeMode":"${mode.wire}","candidate":$candidateJSON}""",
+        secret,
+        routeToken,
+    )
+
     override fun submit(candidateJSON: String, secret: String?, routeToken: String): String? {
         val candidateBytes = candidateJSON.encodeToByteArray()
         val secretBytes = secret?.encodeToByteArray()

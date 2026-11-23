@@ -94,6 +94,7 @@ class ProviderConfigurationCompletionTest {
 
     private class Exchange : HostBridgeExchange {
         var providerRow: String = PROVIDER_ROW
+        var probeValue: String = """{"status":"connected","discoveredModels":[]}"""
         var modelRow: String = MODEL_ROW
         val commands = java.util.concurrent.CopyOnWriteArrayList<String>()
         val saveEnvelopes = java.util.concurrent.CopyOnWriteArrayList<String>()
@@ -135,7 +136,7 @@ class ProviderConfigurationCompletionTest {
                 }
                 "probe" -> {
                     probeEnvelopes.add(request)
-                    """{"status":"connected","modelCount":1,"discoveredModels":[{"id":"33333333-3333-3333-3333-333333333333","providerID":"$PROVIDER_ID","remoteModelID":"saved-model","displayName":"Saved Model","limits":{"contextTokens":4096,"maxOutputTokens":1024},"capabilities":5}],"failureReason":null}"""
+                    probeValue
                 }
                 else -> "{}"
             }
@@ -183,7 +184,15 @@ class ProviderConfigurationCompletionTest {
         @Volatile var lastCandidate: String? = null
         @Volatile var lastSecret: String? = null
         @Volatile var lastRoute: String? = null
+        @Volatile var lastMode: HostProviderProbeMode? = null
         private val handles = ConcurrentHashMap<String, Boolean>()
+
+        override fun submit(
+            candidateJSON: String, secret: String?, routeToken: String, mode: HostProviderProbeMode,
+        ): String? {
+            lastMode = mode
+            return submit(candidateJSON, secret, routeToken)
+        }
 
         override fun submit(candidateJSON: String, secret: String?, routeToken: String): String? {
             submitCalls.incrementAndGet()
@@ -393,16 +402,60 @@ class ProviderConfigurationCompletionTest {
         val unchanged = ConnectionProbeUi(
             endpointAbsoluteString = "https://api.example.invalid/v1",
             wireProtocol = WireProtocolUi.OPENAI_CHAT_COMPLETIONS,
-            nonSecretHeaders = emptyMap(),
+            nonSecretHeaders = mapOf("X-Org" to "persisted", "X-Route" to "direct"),
             credentialDraft = null,
             allowsPlainHttp = false,
             toolNameCompatibility = true,
+            supplierPresetId = "deepseek",
         )
         assertTrue(host.providers.testConnection(identity, unchanged))
         waitUntil { exchange.probeEnvelopes.isNotEmpty() }
         assertEquals(0, seam.submitCalls.get())
         val payload = payloadOf(exchange.probeEnvelopes.single())
         assertEquals(PROVIDER_ID, payload["providerID"]?.jsonPrimitive?.contentOrNull)
+    }
+
+    @Test
+    fun savedDiscoveryKeepsDuplicateRowsOutAndUsesItsOwnPresentation() = runBlocking {
+        val exchange = Exchange()
+        val host = host(exchange)
+        val seam = FakeDraftProbe(payload = """
+            {"status":"connected","discoveredModels":[
+                {"remoteModelID":"kept-model","displayName":"Unwanted replacement"},
+                {"remoteModelID":"new-model"},{"remoteModelID":"new-model"}]}
+        """.trimIndent())
+        host.providers.draftProbe = seam
+        load(host)
+        val holder = host.providers.flowHolder
+        holder.openExisting(ProviderServiceRoleUi.CONVERSATION, PROVIDER_ID)
+        val identity = checkNotNull(holder.currentEditorIdentity())
+        val probe = checkNotNull(holder.probeFor(identity))
+        assertTrue(host.providers.discoverModels(identity, probe))
+        waitUntil { host.providers.destination.value.editor?.discoveryState is ConnectionTestUi.Succeeded }
+        val editor = checkNotNull(host.providers.destination.value.editor)
+        assertEquals(ConnectionTestUi.Idle, editor.testState)
+        assertEquals(ConnectionTestUi.Succeeded(2), editor.discoveryState)
+        assertEquals(HostProviderProbeMode.SAVED_DISCOVERY, seam.lastMode)
+        assertEquals(null, seam.lastSecret)
+        assertTrue(exchange.probeEnvelopes.isEmpty())
+        val models = checkNotNull(holder.drafts.slot(identity.editorId)).snapshot.value.models
+        assertEquals(listOf("kept-model", "new-model"), models.map { it.remoteModelID })
+        assertEquals("Kept Model", models.first().displayName)
+    }
+
+    @Test
+    fun savedProbeCompletedWithFailureIsNotReportedAsConnected() = runBlocking {
+        val exchange = Exchange().apply {
+            probeValue = """{"status":"failed","failureReason":"credentialUnavailable:secretMissing"}"""
+        }
+        val host = host(exchange)
+        load(host)
+        val holder = host.providers.flowHolder
+        holder.openExisting(ProviderServiceRoleUi.CONVERSATION, PROVIDER_ID)
+        val identity = checkNotNull(holder.currentEditorIdentity())
+        assertTrue(host.providers.testConnection(identity, checkNotNull(holder.probeFor(identity))))
+        waitUntil { host.providers.destination.value.editor?.testState is ConnectionTestUi.Failed }
+        assertEquals("test", payloadOf(exchange.probeEnvelopes.single())["mode"]?.jsonPrimitive?.content)
     }
 
     // ------------------------------------------------------------------ 4

@@ -300,15 +300,15 @@ class ProviderFlowHolder(
     fun mergeHostCandidateModels(identity: ProviderEditorIdentity, discovered: List<ModelDraftRowUi>): ProviderFlowResult {
         val slot = drafts.slot(identity.editorId) ?: return rejected(RejectedReason.NO_SESSION)
         if (!drafts.accepts(identity)) return ProviderFlowResult.Stale
-        val existingByWire = slot.snapshot.value.models.associateBy { it.remoteModelID }
-        val merged = slot.snapshot.value.models.toMutableList()
-        discovered.forEach { candidate ->
-            val existing = existingByWire[candidate.remoteModelID]
-            if (existing == null) {
-                merged += candidate.copy(draftModelId = nextDraftId())
+        slot.update { draft ->
+            val existingIDs = draft.models.mapTo(HashSet()) { it.remoteModelID }
+            val additions = discovered.mapNotNull { candidate ->
+                if (existingIDs.add(candidate.remoteModelID)) {
+                    candidate.copy(draftModelId = nextDraftId())
+                } else null
             }
+            if (additions.isEmpty()) draft else draft.copy(models = draft.models + additions)
         }
-        slot.update { it.copy(models = merged) }
         return ProviderFlowResult.Accepted
     }
 
@@ -554,6 +554,9 @@ class ProviderFlowHolder(
         host.editorClosed(identity, discarded = false)
     }
 
+    fun probeFor(identity: ProviderEditorIdentity): ConnectionProbeUi? =
+        if (drafts.accepts(identity)) drafts.slot(identity.editorId)?.let(::probeFor) else null
+
     private fun probeFor(slot: ProviderDraftSlot): ConnectionProbeUi {
         val snapshot = slot.snapshot.value
         return ConnectionProbeUi(
@@ -563,6 +566,7 @@ class ProviderFlowHolder(
             credentialDraft = slot.secureInput.value,
             allowsPlainHttp = snapshot.allowsPlainHttp,
             toolNameCompatibility = snapshot.toolNameCompatibility,
+            supplierPresetId = snapshot.supplier?.presetId,
         )
     }
 

@@ -33,6 +33,17 @@ struct OpenAIModelListResponse: Decodable {
             case maxCompletionTokens = "max_completion_tokens"
         }
 
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            id = try values.decode(String.self, forKey: .id)
+            ownedBy = try? values.decode(String.self, forKey: .ownedBy)
+            contextLength = try? values.decode(Int.self, forKey: .contextLength)
+            maxContextLength = try? values.decode(Int.self, forKey: .maxContextLength)
+            maxInputTokens = try? values.decode(Int.self, forKey: .maxInputTokens)
+            maxOutputTokens = try? values.decode(Int.self, forKey: .maxOutputTokens)
+            maxCompletionTokens = try? values.decode(Int.self, forKey: .maxCompletionTokens)
+        }
+
         /// First trusted context-window field that is actually positive. A
         /// zero or negative earlier field (some gateways report 0 for
         /// "unknown") must not mask a later valid value.
@@ -71,6 +82,17 @@ struct AnthropicModelListResponse: Decodable {
             case maxInputTokens = "max_input_tokens"
             case maxOutputTokens = "max_output_tokens"
             case maxCompletionTokens = "max_completion_tokens"
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            id = try values.decode(String.self, forKey: .id)
+            displayName = try? values.decode(String.self, forKey: .displayName)
+            contextLength = try? values.decode(Int.self, forKey: .contextLength)
+            maxContextLength = try? values.decode(Int.self, forKey: .maxContextLength)
+            maxInputTokens = try? values.decode(Int.self, forKey: .maxInputTokens)
+            maxOutputTokens = try? values.decode(Int.self, forKey: .maxOutputTokens)
+            maxCompletionTokens = try? values.decode(Int.self, forKey: .maxCompletionTokens)
         }
 
         var metadataContextTokens: Int? {
@@ -124,12 +146,17 @@ enum ModelDiscovery {
         }
     }
 
+    static func anthropicEndpoint(baseURL: URL, resource: String) -> URL {
+        let root = baseURL.lastPathComponent == "v1" ? baseURL : baseURL.appendingPathComponent("v1")
+        return root.appendingPathComponent(resource)
+    }
+
     /// Fetches the Anthropic `/v1/models` listing using the `x-api-key` header.
     static func fetchAnthropicModels(
         provider: ProviderProfile,
         credentials: ProviderCredentials
     ) async throws -> [ModelProfile] {
-        let url = provider.baseURL.appendingPathComponent("v1/models")
+        let url = anthropicEndpoint(baseURL: provider.baseURL, resource: "models")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")

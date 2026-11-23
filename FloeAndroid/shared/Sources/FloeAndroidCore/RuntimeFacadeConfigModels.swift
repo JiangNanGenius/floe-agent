@@ -907,6 +907,18 @@ public enum ConfigPageBudget {
     /// BridgeProtocol.MAX_REQUEST_BYTES). Budget is measured on serialized
     /// bytes, NEVER `.count`.
     public static let maximumPageItemsBytes = 49_152
+
+    // The App receives the rows inside an effect item and its poll frame.
+    // Leave room inside the pump's 48 KiB budget for both wrappers,
+    // including the page cursor, completion metadata and effect item.
+    static let maximumEffectPageItemsBytes = min(
+        FacadeEffectPump.Limits.maximumItemEncodedBytes,
+        FacadeFrameBudget.effectBodyBudgetBytes(
+            correlationID: String(repeating: "c", count: 256),
+            receipt: RuntimeOperationReceipt.prefix + String(repeating: "0", count: 32),
+            sequenceDigits: 19
+        )
+    ) - 512
     /// Command payload bound: strictly below the frame bound (the envelope
     /// itself, the receipt and the effect wrapper must also fit).
     public static let maximumCommandPayloadBytes = 61_440
@@ -934,15 +946,25 @@ enum ConfigPageComposer {
     static func compose(_ objects: [[String: Any]],
                         cursor: Int?,
                         itemBudget: Int) throws -> Composed {
+        try compose(count: objects.count, cursor: cursor, itemBudget: itemBudget) {
+            objects[$0]
+        }
+    }
+
+    static func compose(count: Int,
+                        cursor: Int?,
+                        itemBudget: Int,
+                        maximumItems: Int = ConfigPageBudget.maximumItemsPerPage,
+                        item: (Int) throws -> [String: Any]) throws -> Composed {
         let start = cursor ?? 0
-        guard start >= 0, start <= objects.count else {
+        guard start >= 0, start <= count else {
             throw ConfigDomainError(code: .invalidEnvelope, reason: "cursorOutOfRange")
         }
         var itemBytes: [Data] = []
         var bytes = 0
         var index = start
-        while index < objects.count, itemBytes.count < ConfigPageBudget.maximumItemsPerPage {
-            guard let candidate = ConfigJSON.canonicalData(objects[index]) else {
+        while index < count, itemBytes.count < maximumItems {
+            guard let candidate = ConfigJSON.canonicalData(try item(index)) else {
                 throw ConfigDomainError(code: .persistenceUnavailable, reason: "pageEncode")
             }
             // enclosing "[...]" costs 2 bytes for the first item, 1 more comma
@@ -969,8 +991,8 @@ enum ConfigPageComposer {
         }
         body.append(0x5D) // "]"
         precondition(body.count <= itemBudget, "composed page exceeded its budget")
-        let nextCursor = index < objects.count ? String(index) : nil
-        return Composed(data: body, nextCursor: nextCursor, hasMore: index < objects.count)
+        let nextCursor = index < count ? String(index) : nil
+        return Composed(data: body, nextCursor: nextCursor, hasMore: index < count)
     }
 }
 
@@ -1184,9 +1206,16 @@ extension ConfigCredentialAvailability {
 /// Typed probe result. `discoveredModels` carries the ORIGINAL ModelProfile
 /// JSON the adapter returned; NOTHING is auto-installed into the store
 /// (no preset/model auto-install; the editor owns selection).
+enum ConfigProviderProbeMode: String, Sendable {
+    case combined
+    case test
+    case discovery
+}
+
 public struct ConfigProbeOutcome: Sendable {
     public enum Status: String, Sendable, Equatable {
         case connected
+        case catalog
         case failed
         case cancelled
         case outcomeUnknown

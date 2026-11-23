@@ -462,15 +462,15 @@ final class G02ProviderConfigurationCompletionTests: XCTestCase {
 
     func testTrustedCatalogFreezeValidatesSchemaAndPinAndIsOneShot() throws {
         let bytes = try bundledCatalogBytes()
-        // Byte pin of the reviewed resource (schemaVersion 1, 20 providers).
+        // Byte pin of the reviewed resource (schemaVersion 1, 23 providers).
         let digest = sha256Hex(bytes)
         XCTAssertEqual(digest,
-                       "b72cb804f702a6c85be95b3c2c4443e35e809f49ea4c4e7c0bd2d8a36b72af81",
+                       "ef68de9f4c5b6b1ec23e58cfa0b6945845961c96af5695de95906805ead8e7a8",
                        "the reviewed official catalog pin changed")
         let document = try XCTUnwrap(
             JSONSerialization.jsonObject(with: bytes) as? [String: Any])
         XCTAssertEqual(document["schemaVersion"] as? Int, 1)
-        XCTAssertEqual((document["providers"] as? [Any])?.count, 20)
+        XCTAssertEqual((document["providers"] as? [Any])?.count, 23)
 
         XCTAssertEqual(G02HostCatalog.freeze(bytes), G02HostCatalogStatus.ok)
         XCTAssertEqual(G02HostCatalog.freeze(bytes), G02HostCatalogStatus.idempotentOk)
@@ -513,15 +513,16 @@ final class G02ProviderConfigurationCompletionTests: XCTestCase {
         // this test context; the injected REAL document is proven below by
         // the actual decoded entries + filters.
 
-        let all = try await facade.catalogSearch(query: "", filter: .all)
+        let all = try await facade.catalogSearch(query: "", filter: .all, pickerProjection: true)
         let allRows = try rows(of: all)
-        // The REAL document, not a fixture: the ORIGINAL byte-budget page
-        // carries 12 complete entries of the 16 the search offers (4 of the
-        // 20 are hiddenPresetIDs, never offered for adding).
-        XCTAssertEqual(allRows.count, 12, "real entries on an actual-budgeted page")
-        let hidden: Set<String> = ["github-copilot", "azure", "amazon-bedrock", "google-vertex"]
+        XCTAssertEqual(allRows.count, 19, "all selectable suppliers fit in one picker page")
+        let hidden = ProviderCatalogIndex.hiddenPresetIDs
         let allIDs = Set(allRows.compactMap { $0["presetID"] as? String })
         XCTAssertTrue(allIDs.isDisjoint(with: hidden), "hidden presets are never offered")
+        XCTAssertTrue(allIDs.isSuperset(of: ["google-gemini-chat", "volcengine-agent-plan", "alibaba-token-plan"]))
+        XCTAssertTrue(allRows.allSatisfy { $0["isConfigured"] as? Bool == false && $0["modelMetadata"] == nil })
+        let firstFullPage = try await facade.catalogSearch(query: "", filter: .all)
+        XCTAssertLessThan(all.count, firstFullPage.count)
         let deepseek = try XCTUnwrap(allRows.first { ($0["presetID"] as? String) == "deepseek" })
         XCTAssertEqual(deepseek["availability"] as? String, "available")
         XCTAssertNotNil(deepseek["baseURL"] as? String)
@@ -530,6 +531,9 @@ final class G02ProviderConfigurationCompletionTests: XCTestCase {
         // Configured filter: the REAL sidecar join, after a persisted save
         // that records the preset id.
         try await savePersistedProvider()
+        let pickerWithMarks = try await facade.catalogSearch(query: "", filter: .all, pickerProjection: true)
+        let markedIDs = try rows(of: pickerWithMarks).filter { $0["isConfigured"] as? Bool == true }
+        XCTAssertEqual(markedIDs.compactMap { $0["presetID"] as? String }, ["deepseek"])
         let configured = try await facade.catalogSearch(query: "", filter: .configured)
         let configuredRows = try rows(of: configured)
         XCTAssertEqual(configuredRows.compactMap { $0["presetID"] as? String },

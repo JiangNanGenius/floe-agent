@@ -852,6 +852,31 @@ final class RuntimeFacadeConfigIngressTests: XCTestCase {
         XCTAssertTrue(models.isEmpty, "probe NEVER installs discovered models")
     }
 
+    func testProbeModesCallOnlyTheRequestedAdapterMethod() async throws {
+        let store = ModelConfigurationStore(database: database)
+        try await store.saveProvider(ProviderProfile(
+            id: providerID, kind: .local, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            displayName: "Discovery modes", allowsPlainHTTP: true))
+        let adapters = CountingAdapterFactory()
+        let facade = makeFacade(gateway: IngressTestGateway(), adapters: adapters,
+                                admission: AdmissionOpen())
+
+        let connection = try await facade.probe(providerID: providerID, mode: .test)
+        XCTAssertEqual(connection.status, .connected)
+        XCTAssertTrue(connection.discoveredModels.isEmpty)
+        XCTAssertNotNil(adapters.lastCredentialsUsed)
+        XCTAssertEqual(adapters.listModelsCalls, 0)
+
+        let discoveryAdapters = CountingAdapterFactory()
+        let discoveryFacade = makeFacade(gateway: IngressTestGateway(),
+                                         adapters: discoveryAdapters, admission: AdmissionOpen())
+        let discovery = try await discoveryFacade.probe(providerID: providerID, mode: .discovery)
+        XCTAssertEqual(discovery.modelCount, 2)
+        XCTAssertEqual(discoveryAdapters.listModelsCalls, 1)
+        XCTAssertNil(discoveryAdapters.lastCredentialsUsed)
+    }
+
     func testProbeDuplicateInFlightRefused() async throws {
         let store = ModelConfigurationStore(database: database)
         try await store.saveProvider(ProviderProfile(
@@ -1049,6 +1074,7 @@ final class RejectingOwnedWorkPort: OwnedWorkRegistryPort, @unchecked Sendable {
 final class CountingAdapterFactory: ProviderAdapterProviding, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var adapterConstructionCalls = 0
+    private(set) var listModelsCalls = 0
     private(set) var lastCredentialsUsed: ProviderCredentials?
     /// When non-nil, listModels sleeps this many millis so a concurrent
     /// duplicate-probe assertion has a real in-flight window (no blocking
@@ -1061,6 +1087,9 @@ final class CountingAdapterFactory: ProviderAdapterProviding, @unchecked Sendabl
     }
     func markCredentials(_ credentials: ProviderCredentials) {
         lock.lock(); lastCredentialsUsed = credentials; lock.unlock()
+    }
+    func markModelList() {
+        lock.withLock { listModelsCalls += 1 }
     }
 }
 
@@ -1079,6 +1108,7 @@ struct CountingAdapter: ProviderAdapter {
     }
     func listModels(provider: ProviderProfile,
                     credentials: ProviderCredentials) async throws -> [ModelProfile] {
+        factory.markModelList()
         if let hold = factory.holdProbeMillis {
             try? await Task.sleep(nanoseconds: hold &* 1_000_000)
         }

@@ -152,10 +152,17 @@ final class G02HostDraftProbeRegistry: @unchecked Sendable {
         guard let facade = facade(forEpoch: binding.rootEpoch) else {
             throw G02HostDraftProbeError.routeUnavailable
         }
-        // Provider identity is a parse-only projection; the facade re-parses
-        // the same closed candidate (it never trusts this value for storage).
-        guard let providerID = Self.candidateProviderID(candidateJSON) else {
-            throw G02HostDraftProbeError.invalidCandidate
+        let request = try Self.parseRequest(candidateJSON)
+        let providerID = request.providerID
+        // A saved discovery can resolve credentials only for the provider
+        // this exact native editor route was opened on.
+        if request.usesSavedProfile {
+            guard secret?.isEmpty != false,
+                  binding.editorID.count > 36,
+                  binding.editorID.dropFirst(36).first == "-",
+                  UUID(uuidString: String(binding.editorID.prefix(36))) == providerID else {
+                throw G02HostDraftProbeError.routeAssertionMismatch
+            }
         }
         let handle = Self.makeHandle()
         let secretInput = secret
@@ -211,8 +218,14 @@ final class G02HostDraftProbeRegistry: @unchecked Sendable {
             }
             let payload: Data
             do {
-                let outcome = try await facade.probeDraftCandidate(candidateJSON,
-                                                                   secret: ownedSecret)
+                let outcome: ConfigProbeOutcome
+                if request.usesSavedProfile {
+                    outcome = try await facade.probe(providerID: providerID, mode: .discovery)
+                } else {
+                    outcome = try await facade.probeDraftCandidate(request.candidate,
+                                                                    secret: ownedSecret,
+                                                                    mode: request.mode)
+                }
                 payload = Self.settlePayload(outcome)
             } catch is CancellationError {
                 payload = Self.cancelledPayload()
@@ -375,11 +388,48 @@ final class G02HostDraftProbeRegistry: @unchecked Sendable {
 
     // MARK: Identity / payload shaping
 
-    private static func candidateProviderID(_ candidateJSON: Data) -> UUID? {
-        guard let object = (try? JSONSerialization.jsonObject(with: candidateJSON))
-                as? [String: Any],
-              let raw = object["id"] as? String else { return nil }
-        return UUID(uuidString: raw)
+    private struct ProbeRequest: Sendable {
+        let candidate: Data
+        let providerID: UUID
+        let mode: ConfigProviderProbeMode
+        let usesSavedProfile: Bool
+    }
+
+    private static func parseRequest(_ data: Data) throws -> ProbeRequest {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw G02HostDraftProbeError.invalidCandidate
+        }
+        let candidate: [String: Any]
+        let candidateData: Data
+        let mode: ConfigProviderProbeMode
+        let usesSavedProfile: Bool
+        if let requestedMode = object["probeMode"] {
+            guard object.count == 2,
+                  let name = requestedMode as? String,
+                  let nested = object["candidate"] as? [String: Any],
+                  let encoded = ConfigJSON.canonicalData(nested) else {
+                throw G02HostDraftProbeError.invalidCandidate
+            }
+            switch name {
+            case "test": mode = .test
+            case "discovery", "savedDiscovery": mode = .discovery
+            default: throw G02HostDraftProbeError.invalidCandidate
+            }
+            candidate = nested
+            candidateData = encoded
+            usesSavedProfile = name == "savedDiscovery"
+        } else {
+            candidate = object
+            candidateData = data
+            mode = .combined
+            usesSavedProfile = false
+        }
+        guard let raw = candidate["id"] as? String,
+              let id = UUID(uuidString: raw) else {
+            throw G02HostDraftProbeError.invalidCandidate
+        }
+        return ProbeRequest(candidate: candidateData, providerID: id,
+                            mode: mode, usesSavedProfile: usesSavedProfile)
     }
 
     private static func makeHandle() -> String {

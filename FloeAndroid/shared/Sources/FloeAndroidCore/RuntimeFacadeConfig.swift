@@ -345,7 +345,8 @@ public actor ModelConfigurationFacade {
     /// config.providers.list); paged with ACTUAL serialized-byte budgeting.
     /// Secret bodies are NEVER read here: the projection carries presence +
     /// the deterministic opaque reference + persisted sync status only.
-    public func listProviders(cursor: Int? = nil) async throws -> Data {
+    public func listProviders(cursor: Int? = nil,
+                              itemBudget: Int = ConfigPageBudget.maximumPageItemsBytes) async throws -> Data {
         let providers: [ProviderProfile]
         // The COMPLETE persisted model rows for the page, read ONCE (the
         // same `models(providerID: nil)` binding the config.models.list
@@ -383,7 +384,7 @@ public actor ModelConfigurationFacade {
         }
         return try Self.projectPage(ConfigPageComposer.compose(objects,
                                                                cursor: cursor,
-                                                               itemBudget: ConfigPageBudget.maximumPageItemsBytes))
+                                                               itemBudget: itemBudget))
     }
 
     // MARK: - config.models.list
@@ -410,55 +411,54 @@ public actor ModelConfigurationFacade {
     /// CAS revision survive byte-exactly inside the carrier.
     public func listModels(providerID: UUID? = nil,
                            cursor: Int? = nil,
-                           modelRead: ConfigModelReadRequest? = nil) async throws -> Data {
+                           modelRead: ConfigModelReadRequest? = nil,
+                           itemBudget: Int = ConfigPageBudget.maximumPageItemsBytes) async throws -> Data {
         let models: [ModelProfile]
         do {
             models = try await store.models(providerID: providerID)
         } catch {
             throw ConfigDomainError(code: .persistenceUnavailable, reason: "modelsQuery")
         }
-        var objects: [[String: Any]] = []
-        objects.reserveCapacity(models.count)
-        for model in models {
+        func object(at index: Int) throws -> [String: Any] {
+            let model = models[index]
             var object = try ConfigModelSnapshot.jsonObject(model)
             object["revision"] = ["resourceID": "model.\(model.id.uuidString)",
                                   "version": try ConfigModelSnapshot.digest(model)]
-            objects.append(object)
+            return object
         }
+
+        let start = cursor ?? 0
+        var first: [String: Any]?
         switch modelRead {
         case .continuation(let modelID, let digest, let offset):
-            // Continuation rides the SAME provider filter and the SAME
-            // row-index payload cursor (existing semantics; the GLOBAL
-            // envelope cursor is not reinterpreted).
-            guard let index = cursor else {
-                throw ConfigDomainError(code: .invalidEnvelope,
-                                        reason: "modelReadCursorRequired")
+            guard let cursor else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "modelReadCursorRequired")
             }
-            return try Self.modelReadDetailPage(objects: objects,
-                                                index: index,
-                                                providerID: providerID,
-                                                offset: offset,
+            guard models.indices.contains(cursor) else {
+                throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowMissing")
+            }
+            return try Self.modelReadDetailPage(object: object(at: cursor),
+                                                index: cursor, count: models.count,
+                                                providerID: providerID, offset: offset,
                                                 identity: (modelID, digest))
         case .begin:
-            // The chunk path fires ONLY under the exact legacy throw
-            // condition: the first unreturned row ALONE exceeds the page
-            // item budget. Everything else composes the unchanged page.
-            let start = cursor ?? 0
-            if start >= 0, start < objects.count,
-               let canonical = ConfigJSON.canonicalData(objects[start]),
-               canonical.count + 2 > ConfigPageBudget.maximumPageItemsBytes {
-                return try Self.modelReadDetailPage(objects: objects,
-                                                    index: start,
-                                                    providerID: providerID,
-                                                    offset: 0,
-                                                    identity: nil)
+            if models.indices.contains(start) {
+                let row = try object(at: start)
+                if let bytes = ConfigJSON.canonicalData(row), bytes.count + 2 > itemBudget {
+                    return try Self.modelReadDetailPage(object: row, index: start, count: models.count,
+                                                        providerID: providerID, offset: 0, identity: nil)
+                }
+                first = row
             }
         case nil:
             break
         }
-        return try Self.projectPage(ConfigPageComposer.compose(objects,
-                                                               cursor: cursor,
-                                                               itemBudget: ConfigPageBudget.maximumPageItemsBytes))
+        let page = try ConfigPageComposer.compose(count: models.count, cursor: cursor,
+                                                  itemBudget: itemBudget) { index in
+            if index == start, let first { return first }
+            return try object(at: index)
+        }
+        return try Self.projectPage(page)
     }
 
     // MARK: config.models.list full-row detail chunk page
@@ -470,16 +470,12 @@ public actor ModelConfigurationFacade {
     /// upgraded reader) must match BEFORE any chunk text is produced.
     /// A changed/deleted/reordered row is a typed `staleRevision` refusal
     /// — never a mixed snapshot, never a silent effect.
-    private static func modelReadDetailPage(objects: [[String: Any]],
-                                            index: Int,
+    private static func modelReadDetailPage(object: [String: Any],
+                                            index: Int, count: Int,
                                             providerID: UUID?,
                                             offset: Int,
                                             identity: (modelID: UUID,
                                                         digest: String)?) throws -> Data {
-        guard index >= 0, index < objects.count else {
-            throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowMissing")
-        }
-        let object = objects[index]
         guard let rowID = object["id"] as? String,
               UUID(uuidString: rowID) != nil else {
             throw ConfigDomainError(code: .persistenceUnavailable, reason: "modelReadRowShape")
@@ -531,8 +527,8 @@ public actor ModelConfigurationFacade {
             hasMore = true
         } else {
             let advance = index + 1
-            nextCursor = advance < objects.count ? String(advance) : nil
-            hasMore = advance < objects.count
+            nextCursor = advance < count ? String(advance) : nil
+            hasMore = advance < count
         }
         return try Self.projectPage(ConfigPageComposer.Composed(data: body,
                                                                 nextCursor: nextCursor,
@@ -862,6 +858,10 @@ public actor ModelConfigurationFacade {
     /// 6. runs under the facade's service lifetime with real cancellation
     ///    (not a ViewModel Task); the outcome is the typed terminal effect.
     public func probe(providerID: UUID) async throws -> ConfigProbeOutcome {
+        try await probe(providerID: providerID, mode: .combined)
+    }
+
+    func probe(providerID: UUID, mode: ConfigProviderProbeMode) async throws -> ConfigProbeOutcome {
         guard !probesInFlight.contains(providerID) else {
             throw ConfigDomainError(code: .duplicateInFlight, reason: "probeInFlight")
         }
@@ -876,6 +876,9 @@ public actor ModelConfigurationFacade {
         guard let profile else {
             throw ConfigDomainError(code: .notFound, reason: "providerRowMissing")
         }
+        if let catalogOutcome = try subscriptionProbeOutcome(profile: profile, mode: mode) {
+            return catalogOutcome
+        }
         // 2) Typed credential resolution FIRST.
         let resolution = await secretStore.resolve(provider: profile)
         switch resolution {
@@ -885,19 +888,45 @@ public actor ModelConfigurationFacade {
                                     reason: availability.rawValue)
         case .apiKey(let key):
             return try await dispatchProbe(profile: profile,
-                                           credentials: ProviderCredentials(apiKey: key))
+                                           credentials: ProviderCredentials(apiKey: key),
+                                           mode: mode)
         case .anonymousAuthorized:
             // 4) explicit no-auth style ONLY authorizes the anonymous pass
             //    (authStyle "none": ProviderConnectionIdentity.authStyle
             //    (for:) == "none" / ProviderPreset.AuthStyle.none at
             //    ProviderAdapterFactory.swift:175).
             return try await dispatchProbe(profile: profile,
-                                           credentials: ProviderCredentials(apiKey: nil))
+                                           credentials: ProviderCredentials(apiKey: nil),
+                                           mode: mode)
         }
     }
 
+    private func subscriptionProbeOutcome(profile: ProviderProfile,
+                                          mode: ConfigProviderProbeMode) throws -> ConfigProbeOutcome? {
+        guard let subscription = ProviderBillingEndpoint.resolve(profile.baseURL) else { return nil }
+        guard mode == .discovery else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "subscriptionCatalogOnly")
+        }
+        guard case .ready(let index, _) = catalog,
+              let entry = index.entry(presetID: subscription.rawValue) else {
+            throw ConfigDomainError(code: .needsConfiguration, reason: "subscriptionCatalogUnavailable")
+        }
+        let models = entry.models.map { id in
+            let metadata = entry.modelMetadata?[id]
+            var capabilities: ModelCapabilities = [.text]
+            if metadata?.toolCall != false { capabilities.insert(.tools) }
+            if metadata?.input?.contains("image") == true { capabilities.insert(.vision) }
+            return ModelProfile(providerID: profile.id, remoteModelID: id, displayName: id,
+                                limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 0),
+                                capabilities: capabilities)
+        }
+        return ConfigProbeOutcome(providerID: profile.id, status: .catalog,
+                                  modelCount: models.count, discoveredModels: models, failureReason: nil)
+    }
+
     private func dispatchProbe(profile: ProviderProfile,
-                               credentials: ProviderCredentials) async throws
+                               credentials: ProviderCredentials,
+                               mode: ConfigProviderProbeMode) async throws
         -> ConfigProbeOutcome
     {
         // 5) Trusted admission gate. Until Main's actual transport/TLS/
@@ -907,14 +936,20 @@ public actor ModelConfigurationFacade {
                                     reason: "transportGateClosed")
         }
         let adapter = adapters.adapter(for: profile)
-        do {
-            try await adapter.testConnection(provider: profile, credentials: credentials)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            let redacted = SecretRedactor.redact(error.localizedDescription)
-            let compact = redacted.utf8.count <= 128 ? redacted : "connectionFailed"
-            throw ConfigDomainError(code: .runtimeUnavailable, reason: "probeFailed(\(compact))")
+        if mode != .discovery {
+            do {
+                try await adapter.testConnection(provider: profile, credentials: credentials)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let redacted = SecretRedactor.redact(error.localizedDescription, secret: credentials.apiKey)
+                let compact = redacted.utf8.count <= 128 ? redacted : "connectionFailed"
+                throw ConfigDomainError(code: .runtimeUnavailable, reason: "probeFailed(\(compact))")
+            }
+            if mode == .test {
+                return ConfigProbeOutcome(providerID: profile.id, status: .connected,
+                                          modelCount: 0, discoveredModels: [], failureReason: nil)
+            }
         }
         let models: [ModelProfile]
         do {
@@ -922,7 +957,7 @@ public actor ModelConfigurationFacade {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            let redacted = SecretRedactor.redact(error.localizedDescription)
+            let redacted = SecretRedactor.redact(error.localizedDescription, secret: credentials.apiKey)
             let compact = redacted.utf8.count <= 128 ? redacted : "discoveryFailed"
             throw ConfigDomainError(code: .runtimeUnavailable, reason: "probeDiscoveryFailed(\(compact))")
         }
@@ -940,8 +975,12 @@ public actor ModelConfigurationFacade {
     /// typed outcome (the model stream/HTTP work is separately bounded;
     /// probe results are never auto-installed).
     public func probeForEffect(providerID: UUID) async -> ConfigProbeOutcome {
+        await probeForEffect(providerID: providerID, mode: .combined)
+    }
+
+    func probeForEffect(providerID: UUID, mode: ConfigProviderProbeMode) async -> ConfigProbeOutcome {
         do {
-            return try await probe(providerID: providerID)
+            return try await probe(providerID: providerID, mode: mode)
         } catch is CancellationError {
             return ConfigProbeOutcome(providerID: providerID, status: .cancelled,
                                       modelCount: 0, discoveredModels: [],
@@ -983,6 +1022,12 @@ public actor ModelConfigurationFacade {
     /// success.
     public func probeDraftCandidate(_ candidateJSON: Data,
                                     secret: Data?) async throws -> ConfigProbeOutcome {
+        try await probeDraftCandidate(candidateJSON, secret: secret, mode: .combined)
+    }
+
+    func probeDraftCandidate(_ candidateJSON: Data,
+                             secret: Data?,
+                             mode: ConfigProviderProbeMode) async throws -> ConfigProbeOutcome {
         guard !candidateJSON.isEmpty else {
             throw ConfigDomainError(code: .invalidEnvelope, reason: "emptyCandidate")
         }
@@ -1051,6 +1096,9 @@ public actor ModelConfigurationFacade {
                                     reason: "draftValidation.\(issue)")
         }
         let profile = request.profile
+        if let catalogOutcome = try subscriptionProbeOutcome(profile: profile, mode: mode) {
+            return catalogOutcome
+        }
         let credentials: ProviderCredentials
         if profile.secretRef != nil {
             credentials = ProviderCredentials(apiKey: entered)
@@ -1063,7 +1111,7 @@ public actor ModelConfigurationFacade {
             throw ConfigDomainError(code: .credentialUnavailable,
                                     reason: "secretMissing")
         }
-        return try await dispatchProbe(profile: profile, credentials: credentials)
+        return try await dispatchProbe(profile: profile, credentials: credentials, mode: mode)
     }
 
     // MARK: - config.catalog.search
@@ -1073,7 +1121,9 @@ public actor ModelConfigurationFacade {
     /// against live provider rows). NO preset auto-install.
     public func catalogSearch(query: String,
                               filter: ProviderCatalogFilter,
-                              cursor: Int? = nil) async throws -> Data {
+                              cursor: Int? = nil,
+                              pickerProjection: Bool = false,
+                              itemBudget: Int = ConfigPageBudget.maximumPageItemsBytes) async throws -> Data {
         guard case .ready(let index, _) = catalog else {
             if case .unavailable(let reason) = catalog {
                 throw ConfigDomainError(code: .needsConfiguration, reason: reason)
@@ -1090,18 +1140,20 @@ public actor ModelConfigurationFacade {
                                   configuredPresetIDs: configured)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        var objects: [[String: Any]] = []
-        objects.reserveCapacity(min(results.count, ConfigPageBudget.maximumCatalogResultsPerPage + 1))
-        for entry in results.prefix(ConfigPageBudget.maximumCatalogResultsPerPage * 2) {
-            guard let data = try? encoder.encode(entry),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                continue
+        let composed = try ConfigPageComposer.compose(
+            count: results.count, cursor: cursor,
+            itemBudget: itemBudget,
+            maximumItems: ConfigPageBudget.maximumCatalogResultsPerPage
+        ) { offset in
+            var entry = results[offset]
+            if pickerProjection { entry.modelMetadata = nil }
+            let data = try encoder.encode(entry)
+            guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw ConfigDomainError(code: .persistenceUnavailable, reason: "catalogRowEncode")
             }
-            objects.append(object)
+            object["isConfigured"] = configured.contains(entry.presetID)
+            return object
         }
-        let composed = try ConfigPageComposer.compose(objects,
-                                                      cursor: cursor,
-                                                      itemBudget: ConfigPageBudget.maximumPageItemsBytes)
         return try Self.projectPage(composed)
     }
 

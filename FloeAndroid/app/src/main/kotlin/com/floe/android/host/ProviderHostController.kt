@@ -35,6 +35,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -86,8 +87,6 @@ class ProviderHostController internal constructor(
     /** Stable identity for a draft probe of a not-yet-saved editor. */
     private val draftProbeIDs = ConcurrentHashMap<String, String>()
     private val draftProbeSequencer = AtomicLong(0)
-    private val permissionActionSequencer = AtomicLong(0)
-    private val permissionActions = ConcurrentHashMap<String, Long>()
 
     /** Caller-retained across configuration changes; RAM only. */
     val flowHolder = ProviderFlowHolder(this)
@@ -111,9 +110,6 @@ class ProviderHostController internal constructor(
 
     /** Per identity+epoch save-failure sequence (finalized contract). */
     private val saveFailureSequencer = SaveFailureSequencer()
-
-    private val inFlightTests = ConcurrentHashMap<String, String>()
-    private val inFlightDiscoveries = ConcurrentHashMap<String, String>()
 
     /** New-provider editor → the ONE provider UUID minted for its save. */
     private val newProviderIDs = ConcurrentHashMap<String, String>()
@@ -172,13 +168,11 @@ class ProviderHostController internal constructor(
     }
 
     internal fun stop() {
-        inFlightTests.clear()
-        inFlightDiscoveries.clear()
         // The native route/epoch fence retires any owned draft-probe work on
         // Root retirement; the App-side handles/attempts are cleared here so
         // a later start never resurrects stale polls.
         draftProbeAttempts.clear()
-        permissionActions.clear()
+        catalogPageGeneration.incrementAndGet()
         draftProbeHandles.clear()
         draftProbeIDs.clear()
         editorBaselines.clear()
@@ -561,57 +555,44 @@ class ProviderHostController internal constructor(
         if (!admitted()) return
         val generation = catalogPageGeneration.incrementAndGet()
         updateDestination {
-            it.copy(catalog = catalogWithCustom(it.catalog).copy(refreshInFlight = true))
+            it.copy(catalog = catalogWithCustom(it.catalog).copy(
+                refreshInFlight = true,
+                loadFailed = false,
+            ))
         }
-        // REAL contract (RuntimeFacadeConfig.catalogSearch + RB2 router):
-        // the payload is CLOSED to {"query","filter"(,"cursor")} and the
-        // completed page is the ConfigPageComposer document delivered as the
-        // {"rows":[…],nextCursor,hasMore} OBJECT by the domain-to-carrier
-        // binder. Both `all` and `configured` follow the ACTUAL returned
-        // continuation with the same bounded, progress-checked, generation-
-        // fenced loop; a mid-chain refusal never publishes a partial mix.
         fetchCatalogPages(generation, filter = "all", cursor = null, pages = 0,
                           accumulated = ArrayList()) { rows ->
-            if (rows == null) {
-                if (catalogPageGeneration.get() != generation) return@fetchCatalogPages
-                // Typed refusal (e.g. needsConfiguration/catalogNotInjected):
-                // keep the honest empty catalog + custom preset; never fake
-                // entries and never leave the UI in an endless refresh state.
-                updateDestination {
-                    it.copy(
-                        catalog = catalogWithCustom(it.catalog).copy(
-                            refreshInFlight = false,
-                            refreshAvailable = true,
-                            networkActionsAvailable = networkAvailable(),
-                        ),
-                    )
-                }
-                return@fetchCatalogPages
-            }
-            // Marks come from the SERVER-SIDE configured filter page — the
-            // App never guesses which saved rows map to presets.
-            fetchCatalogPages(generation, filter = "configured", cursor = null,
-                              pages = 0, accumulated = ArrayList()) { configuredRows ->
-                if (catalogPageGeneration.get() != generation) return@fetchCatalogPages
-                val configured = configuredRows
-                    ?.mapNotNull { ProviderWire.catalogEntryOf(it)?.catalogEntryId }
-                    ?.toSet() ?: emptySet()
-                val entries = rows.mapNotNull { ProviderWire.catalogEntryOf(it) }
-                val merged = entries.map {
-                    if (it.catalogEntryId in configured) it.copy(isConfigured = true) else it
-                }
-                updateDestination { state ->
-                    state.copy(
-                        catalog = catalogWithCustom(state.catalog).copy(
-                            officialProviders = merged,
-                            configuredPresetIds = configured,
-                            refreshInFlight = false,
-                            refreshAvailable = true,
-                            networkActionsAvailable = networkAvailable(),
-                        ),
-                    )
+            val entries = rows?.mapNotNull(ProviderWire::catalogEntryOf)
+            if (rows == null || entries == null || entries.size != rows.size) {
+                publishCatalog(generation, null)
+            } else if (rows.all(ProviderWire::hasCatalogConfigurationFlag)) {
+                publishCatalog(generation, entries)
+            } else {
+                // Compatibility with bridges that predate the per-row flag.
+                fetchCatalogPages(generation, filter = "configured", cursor = null,
+                                  pages = 0, accumulated = ArrayList()) { configuredRows ->
+                    val configured = configuredRows
+                        ?.mapNotNull(ProviderWire::catalogEntryOf)?.map { it.catalogEntryId }?.toSet()
+                    publishCatalog(generation, configured?.let { ids ->
+                        entries.map { it.copy(isConfigured = it.catalogEntryId in ids) }
+                    })
                 }
             }
+        }
+    }
+
+    private fun publishCatalog(generation: Long, entries: List<OfficialSupplierUi>?) {
+        val configured = entries?.filter { it.isConfigured }?.map { it.catalogEntryId }?.toSet()
+        updateDestination { state ->
+            if (catalogPageGeneration.get() != generation) return@updateDestination state
+            state.copy(catalog = catalogWithCustom(state.catalog).copy(
+                officialProviders = entries ?: state.catalog.officialProviders,
+                configuredPresetIds = configured ?: state.catalog.configuredPresetIds,
+                refreshInFlight = false,
+                refreshAvailable = true,
+                networkActionsAvailable = networkAvailable(),
+                loadFailed = entries == null,
+            ))
         }
     }
 
@@ -630,7 +611,7 @@ class ProviderHostController internal constructor(
                 scope = HostScope.ApplicationConfiguration("catalog"),
                 stateful = false,
                 correlationID = client().correlationID("cat"),
-                payload = ProviderWire.catalogRequestPayload(filter, cursor),
+                payload = ProviderWire.catalogRequestPayload(filter, cursor, picker = true),
             ),
         ) { outcome ->
             if (catalogPageGeneration.get() != generation) return@trackOperation
@@ -687,7 +668,7 @@ class ProviderHostController internal constructor(
         )
 
     private fun updateDestination(transform: (ProviderDestinationState) -> ProviderDestinationState) {
-        destinationState.value = transform(destinationState.value)
+        destinationState.update(transform)
     }
 
     // ------------------------------------------------------ ProviderUiCallbacks
@@ -782,7 +763,10 @@ class ProviderHostController internal constructor(
                 correlationID = client().correlationID("pdel"),
                 revision = revision,
             ),
-        ) { refreshProviders() }
+        ) { outcome ->
+            refreshProviders()
+            if (outcome is HostOperationOutcome.Completed) refreshCatalog()
+        }
         return true
     }
 
@@ -998,13 +982,7 @@ class ProviderHostController internal constructor(
         // rule: only the UN-CONSUMED record is cancelled (exact owner); an
         // accepted save already owns its typed values natively until its
         // real terminal, and the native route/epoch fence sweeps regardless.
-        inFlightTests.remove(identity.editorId)
-        inFlightDiscoveries.remove(identity.editorId)
-        draftProbeAttempts.remove(identity.editorId)
-        permissionActions.remove(identity.editorId)
-        draftProbeHandles.remove(identity.editorId)?.let { handle ->
-            editorRoute(identity)?.let { route -> draftProbe.cancel(handle, route) }
-        }
+        retireProbe(identity)
         draftProbeIDs.remove(identity.editorId)
         // Frozen baseline lives only as long as this editor incarnation.
         editorBaselines.remove(identity.editorId)
@@ -1188,6 +1166,7 @@ class ProviderHostController internal constructor(
                         ?: existingRevision?.resourceID?.removePrefix("provider.")
                     onSaveSucceeded(identity)
                     refreshProviders()
+                    refreshCatalog()
                     // The committed provider/model rows are the new truth:
                     // re-read the REAL models page so the list counts, the
                     // composer picker and a reopened editor see the saved
@@ -1295,238 +1274,247 @@ class ProviderHostController internal constructor(
         )
     } catch (_: RuntimeException) { "Local network access is needed. Allow it in Settings and try again." }
 
-    private fun withProbeNetworkPermission(
+    private fun startProbe(
         identity: ProviderEditorIdentity,
         probe: ConnectionProbeUi,
         discovery: Boolean,
     ): Boolean {
-        val broker = host.integrations.localNetwork
-        if (!broker.isLocalLikely(probe.endpointAbsoluteString)) {
-            return dispatchProviderProbe(identity, probe, discovery)
-        }
-        val action = permissionActionSequencer.incrementAndGet()
-        permissionActions[identity.editorId] = action
+        if (!admitted() || currentEditor(identity) == null) return false
+        val editorID = identity.editorId
+        val attempt = draftProbeSequencer.incrementAndGet()
+        if (draftProbeAttempts.putIfAbsent(editorID, attempt) != null) return false
+        publishProbeState(identity, discovery, ConnectionTestUi.Testing)
+
+        val target = probeTargetProviderID(identity, probe)
         val route = editorRoute(identity)
+        val fromDraft = flowHolder.isCurrent(identity)
         val generation = client().generation()
         val rootEpoch = host.nativeRootEpoch()
-        return broker.runExplicitAction(
-            ownerID = identity.editorId,
+        fun canDispatch(): Boolean = draftProbeAttempts[editorID] == attempt && admitted() &&
+            client().generation() == generation && host.nativeRootEpoch() == rootEpoch &&
+            editorRoute(identity) == route &&
+            (!fromDraft || flowHolder.probeFor(identity) == probe)
+
+        val broker = host.integrations.localNetwork
+        val dispatch = {
+            if (target != null && !discovery) {
+                runSavedConnectionTest(identity, probe, target, attempt, fromDraft)
+            } else {
+                submitDraftProbe(identity, probe, target, discovery, attempt, fromDraft)
+            }
+        }
+        if (!broker.isLocalLikely(probe.endpointAbsoluteString)) {
+            dispatch()
+            return true
+        }
+        val accepted = broker.runExplicitAction(
+            ownerID = editorID,
             endpoint = probe.endpointAbsoluteString,
             isCurrent = {
-                permissionActions[identity.editorId] == action && admitted() &&
-                    client().generation() == generation && host.nativeRootEpoch() == rootEpoch &&
-                    editorRoute(identity) == route
+                // A changed draft can retire its old permission request even
+                // if no network request has started yet.
+                val current = canDispatch()
+                if (!current) finishProbe(identity, discovery, attempt, ConnectionTestUi.Idle)
+                current
             },
             onDenied = { code ->
-                permissionActions.remove(identity.editorId, action)
-                publishEditor(identity) {
-                    it.copy(testState = ConnectionTestUi.Failed(localNetworkDeniedCopy(code)))
-                }
+                finishProbe(identity, discovery, attempt,
+                    ConnectionTestUi.Failed(localNetworkDeniedCopy(code)))
             },
-            dispatch = {
-                permissionActions.remove(identity.editorId, action)
-                dispatchProviderProbe(identity, probe, discovery)
-            },
+            dispatch = dispatch,
         )
+        if (!accepted) finishProbe(identity, discovery, attempt, ConnectionTestUi.Idle)
+        return accepted
     }
 
-    private fun dispatchProviderProbe(
+    override fun testConnection(identity: ProviderEditorIdentity, probe: ConnectionProbeUi): Boolean =
+        startProbe(identity, probe, discovery = false)
+
+    private fun runSavedConnectionTest(
         identity: ProviderEditorIdentity,
         probe: ConnectionProbeUi,
-        discovery: Boolean,
-    ): Boolean {
-        val savedTarget = probeTargetProviderID(identity, probe)
-        return if (savedTarget != null) runSavedProbe(identity, savedTarget, discovery)
-        else submitDraftProbe(identity, probe, discovery)
-    }
-
-    override fun testConnection(identity: ProviderEditorIdentity, probe: ConnectionProbeUi): Boolean {
-        if (!admitted()) return false
-        return withProbeNetworkPermission(identity, probe, discovery = false)
-    }
-
-    /** Saved-provider probe command path (unchanged frozen grammar). */
-    private fun runSavedProbe(
-        identity: ProviderEditorIdentity,
         providerID: String,
-        discovery: Boolean,
-    ): Boolean {
-        inFlightTests[identity.editorId] = providerID
-        if (!discovery) publishEditor(identity) { it.copy(testState = ConnectionTestUi.Testing) }
+        attempt: Long,
+        fromDraft: Boolean,
+    ) {
         host.trackOperation(
             HostCommandRequest(
                 command = "config.provider.probe",
                 scope = HostScope.ApplicationConfiguration("providers"),
                 stateful = false,
-                correlationID = client().correlationID(if (discovery) "pdisc" else "pprobe"),
-                payload = JsonObject(mapOf("providerID" to JsonPrimitive(providerID))),
+                correlationID = client().correlationID("pprobe"),
+                payload = JsonObject(mapOf(
+                    "providerID" to JsonPrimitive(providerID),
+                    "mode" to JsonPrimitive(HostProviderProbeMode.TEST.wire),
+                )),
             ),
+            beforeSubmit = {
+                draftProbeAttempts[identity.editorId] == attempt &&
+                    (!fromDraft || flowHolder.probeFor(identity) == probe)
+            },
         ) { outcome ->
-            inFlightTests.remove(identity.editorId)
             when (outcome) {
-                is HostOperationOutcome.Completed -> {
-                    if (discovery) {
-                        val models = outcome.value?.let { ProviderWire.decodeDiscoveredModels(it) }
-                            ?: emptyList()
-                        flowHolder.mergeHostCandidateModels(identity, models)
-                    } else {
-                        val count = outcome.value?.let { ProviderWire.discoveredCount(it) } ?: 0
-                        publishEditor(identity) {
-                            it.copy(testState = ConnectionTestUi.Succeeded(count))
-                        }
-                    }
-                }
-                is HostOperationOutcome.Rejected -> if (!discovery) {
-                    logProviderRefusal(outcome.code, outcome.reason)
-                    publishEditor(identity) {
-                        it.copy(testState = ConnectionTestUi.Failed(
-                            providerFailureCopy(outcome.code, outcome.reason)))
-                    }
-                }
-                is HostOperationOutcome.Failed -> if (!discovery) {
-                    logProviderRefusal(outcome.code, outcome.reason)
-                    publishEditor(identity) {
-                        it.copy(testState = ConnectionTestUi.Failed(
-                            providerFailureCopy(outcome.code, outcome.reason)))
-                    }
-                }
-                HostOperationOutcome.Cancelled -> if (!discovery) {
-                    publishEditor(identity) { it.copy(testState = ConnectionTestUi.Idle) }
-                }
-                HostOperationOutcome.Superseded -> Unit
+                is HostOperationOutcome.Completed ->
+                    settleProbe(identity, probe, false, attempt, fromDraft, outcome.value as? JsonObject)
+                is HostOperationOutcome.Rejected ->
+                    finishProbe(identity, false, attempt, probeFailure(false, outcome.code, outcome.reason))
+                is HostOperationOutcome.Failed ->
+                    finishProbe(identity, false, attempt, probeFailure(false, outcome.code, outcome.reason))
+                HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded ->
+                    finishProbe(identity, false, attempt, ConnectionTestUi.Idle)
             }
         }
-        return true
     }
 
     /**
-     * Trusted-host DRAFT probe/discovery (MAIN_CONFIG_DRAFT_PROBE_PARITY
-     * _DECISION): the frozen RAM draft is mapped onto the EXACT closed save
-     * candidate and dispatched through the ORIGINAL provider adapter under
-     * this editor's OWN live route handle with the ephemeral key typed for
-     * this attempt. Nothing is autosaved, no shadow provider exists, and the
-     * result is published ONLY to the matching identity/epoch.
+     * A bounded native probe owns both draft and saved discovery results.
+     * The larger result buffer lets a full provider list reach the editor.
      */
     private fun submitDraftProbe(
         identity: ProviderEditorIdentity,
         probe: ConnectionProbeUi,
+        savedTarget: String?,
         discovery: Boolean,
-    ): Boolean {
+        attempt: Long,
+        fromDraft: Boolean,
+    ) {
         val route = editorRoute(identity)
         if (route == null) {
-            // No accepted runtime / live editor authority: an honest typed
-            // refusal (nothing is dispatched, nothing is implied verified).
-            if (!discovery) {
-                publishEditor(identity) {
-                    it.copy(testState = ConnectionTestUi.Failed(probeUnavailableCopy()))
-                }
-            }
-            return true
+            finishProbe(identity, discovery, attempt, probeFailure(discovery))
+            return
         }
-        val existing = existingProviderID(identity)
-        val providerID = existing ?: draftProbeIDs.computeIfAbsent(identity.editorId) {
-            UUID.randomUUID().toString()
-        }
+        val editorID = identity.editorId
+        val providerID = savedTarget ?: existingProviderID(identity)
+            ?: draftProbeIDs.computeIfAbsent(editorID) { UUID.randomUUID().toString() }
         val extras = ProviderWire.extrasFor(providerID)
+        val preset = probe.supplierPresetId ?: extras?.presetID
         val candidate = ProviderWire.draftProbeCandidate(
             providerID = providerID,
-            kind = extras?.kind ?: CUSTOM_PROVIDER_KIND,
+            kind = preset?.let(catalogKinds::get) ?: extras?.kind ?: CUSTOM_PROVIDER_KIND,
             role = identity.role,
             displayName = extras?.displayName,
-            presetID = extras?.presetID,
+            presetID = preset,
             probe = probe,
         )
-        val handle = draftProbe.submit(candidate.toString(), probe.credentialDraft, route)
+        val mode = when {
+            savedTarget != null -> HostProviderProbeMode.SAVED_DISCOVERY
+            discovery -> HostProviderProbeMode.DISCOVERY
+            else -> HostProviderProbeMode.TEST
+        }
+        val handle = draftProbe.submit(candidate.toString(), probe.credentialDraft, route, mode)
         if (handle == null) {
-            if (!discovery) {
-                publishEditor(identity) {
-                    it.copy(testState = ConnectionTestUi.Failed(probeUnavailableCopy()))
-                }
-            }
-            return true
+            finishProbe(identity, discovery, attempt, probeFailure(discovery))
+            return
         }
-        val attempt = draftProbeSequencer.incrementAndGet()
-        draftProbeAttempts[identity.editorId] = attempt
-        draftProbeHandles[identity.editorId] = handle
-        if (discovery) {
-            inFlightDiscoveries[identity.editorId] = providerID
-        } else {
-            inFlightTests[identity.editorId] = providerID
-            publishEditor(identity) { it.copy(testState = ConnectionTestUi.Testing) }
-        }
+        draftProbeHandles[editorID] = handle
         host.scope.launch(host.ioDispatcher) {
             val deadline = System.nanoTime() + DRAFT_PROBE_BUDGET_NANOS
-            var settled = false
-            while (System.nanoTime() < deadline) {
-                if (draftProbeAttempts[identity.editorId] != attempt) {
-                    // Superseded/cancelled/closed: the native cancel owns the
-                    // real adapter cancellation; publish nothing.
-                    draftProbe.cancel(handle, route)
+            try {
+                while (System.nanoTime() < deadline && draftProbeAttempts[editorID] == attempt) {
+                    val envelope = draftProbe.poll(handle, route)
+                    if (envelope == "P") {
+                        kotlinx.coroutines.delay(DRAFT_PROBE_POLL_MILLIS)
+                        continue
+                    }
+                    val payload = if (envelope.startsWith("S")) {
+                        runCatching {
+                            Json.parseToJsonElement(envelope.substring(1)) as? JsonObject
+                        }.getOrNull()
+                    } else null
+                    draftProbeHandles.remove(editorID, handle)
+                    settleProbe(identity, probe, discovery, attempt, fromDraft, payload)
                     return@launch
                 }
-                when (val envelope = draftProbe.poll(handle, route)) {
-                    "P" -> kotlinx.coroutines.delay(DRAFT_PROBE_POLL_MILLIS)
-                    else -> {
-                        settled = true
-                        draftProbeHandles.remove(identity.editorId)
-                        inFlightTests.remove(identity.editorId)
-                        inFlightDiscoveries.remove(identity.editorId)
-                        val payload = if (envelope.startsWith("S")) {
-                            runCatching {
-                                Json.parseToJsonElement(envelope.substring(1)) as JsonObject
-                            }.getOrNull()
-                        } else {
-                            null
-                        }
-                        if (discovery) {
-                            if (payload != null) {
-                                flowHolder.mergeHostCandidateModels(
-                                    identity,
-                                    ProviderWire.decodeDiscoveredModels(payload),
-                                )
-                            }
-                        } else {
-                            val status = payload?.let { ProviderWire.statusOf(it) }
-                            val failure = payload?.let { ProviderWire.failureOf(it) }
-                            val refusalReason = payload?.let { ProviderWire.reasonOf(it) }
-                            if (status != "connected" && failure != null) {
-                                logProviderRefusal(failure, refusalReason)
-                            }
-                            publishEditor(identity) {
-                                if (status == "connected") {
-                                    it.copy(testState = ConnectionTestUi.Succeeded(
-                                        payload?.let { value -> ProviderWire.discoveredCount(value) } ?: 0))
-                                } else {
-                                    it.copy(testState = ConnectionTestUi.Failed(
-                                        failure?.let { code ->
-                                            providerFailureCopy(code, refusalReason)
-                                        } ?: probeUnavailableCopy()))
-                                }
-                            }
-                        }
-                        return@launch
-                    }
-                }
-            }
-            if (!settled) {
-                draftProbe.cancel(handle, route)
-                draftProbeHandles.remove(identity.editorId)
-                inFlightTests.remove(identity.editorId)
-                inFlightDiscoveries.remove(identity.editorId)
-                if (!discovery) {
-                    publishEditor(identity) {
-                        it.copy(testState = ConnectionTestUi.Failed(probeUnavailableCopy()))
-                    }
-                }
+                finishProbe(identity, discovery, attempt, probeFailure(discovery))
+            } finally {
+                if (draftProbeHandles.remove(editorID, handle)) draftProbe.cancel(handle, route)
             }
         }
-        return true
     }
 
-    private fun probeUnavailableCopy(): String =
-        runCatching {
-            host.appContext.getString(com.floe.android.R.string.providers_probe_unavailable)
-        }.getOrElse { "Couldn't start the connection test. Try again." }
+    private fun settleProbe(
+        identity: ProviderEditorIdentity,
+        probe: ConnectionProbeUi,
+        discovery: Boolean,
+        attempt: Long,
+        fromDraft: Boolean,
+        payload: JsonObject?,
+    ) {
+        if (draftProbeAttempts[identity.editorId] != attempt) return
+        if (fromDraft && flowHolder.probeFor(identity) != probe) {
+            finishProbe(identity, discovery, attempt, ConnectionTestUi.Idle)
+            return
+        }
+        val status = payload?.let(ProviderWire::statusOf)
+        val state = when {
+            status == "cancelled" -> ConnectionTestUi.Idle
+            payload != null && (status == "connected" || (discovery && status == "catalog")) -> {
+                if (discovery) {
+                    val models = ProviderWire.decodeDiscoveredModels(payload).distinctBy { it.remoteModelID }
+                    flowHolder.mergeHostCandidateModels(identity, models)
+                    ConnectionTestUi.Succeeded(models.size, fromCatalog = status == "catalog")
+                } else {
+                    ConnectionTestUi.Succeeded(ProviderWire.discoveredCount(payload))
+                }
+            }
+            else -> probeFailure(discovery, payload?.let(ProviderWire::failureOf),
+                payload?.let(ProviderWire::reasonOf))
+        }
+        finishProbe(identity, discovery, attempt, state)
+    }
+
+    private fun finishProbe(
+        identity: ProviderEditorIdentity,
+        discovery: Boolean,
+        attempt: Long,
+        result: ConnectionTestUi,
+    ) {
+        if (draftProbeAttempts.remove(identity.editorId, attempt)) {
+            publishProbeState(identity, discovery, result)
+        }
+    }
+
+    private fun publishProbeState(
+        identity: ProviderEditorIdentity,
+        discovery: Boolean,
+        result: ConnectionTestUi,
+    ) {
+        updateDestination { state ->
+            val editor = state.editor?.takeIf { it.identity.isCurrentFor(identity) }
+                ?: return@updateDestination state
+            state.copy(editor = if (discovery) editor.copy(discoveryState = result)
+                else editor.copy(testState = result))
+        }
+    }
+
+    private fun probeFailure(
+        discovery: Boolean,
+        code: String? = null,
+        reason: String? = null,
+    ): ConnectionTestUi.Failed {
+        val (resource, fallback) = when {
+            reason == "subscriptionCatalogOnly" ->
+                com.floe.android.R.string.providers_probe_subscription_catalog to
+                    "Use the subscription catalog to add models, then try a chat to verify access."
+            reason == "subscriptionCatalogUnavailable" ->
+                com.floe.android.R.string.providers_probe_subscription_unavailable to
+                    "The subscription model catalog is unavailable."
+            code == "credentialUnavailable" || reason == "draftValidation.connectionChangedRequiresNewCredential" ->
+                com.floe.android.R.string.providers_probe_credential to
+                    "Enter the API key for these connection settings and try again."
+            code == "invalidEnvelope" ->
+                return ConnectionTestUi.Failed(providerFailureCopy(code, reason))
+            discovery ->
+                com.floe.android.R.string.providers_discovery_failed to
+                    "Couldn't load models. Check the endpoint, API key and network, or add a model manually."
+            else ->
+                com.floe.android.R.string.providers_probe_unavailable to
+                    "Couldn't verify the connection. Check the endpoint, API key and network."
+        }
+        return ConnectionTestUi.Failed(
+            runCatching { host.appContext.getString(resource) }.getOrDefault(fallback),
+        )
+    }
 
     private fun reopenSettingsCopy(): String =
         runCatching {
@@ -1602,49 +1590,46 @@ class ProviderHostController internal constructor(
         }
     }
 
-    override fun cancelConnectionTest(identity: ProviderEditorIdentity) {
-        inFlightTests.remove(identity.editorId)
+    private fun retireProbe(identity: ProviderEditorIdentity) {
         draftProbeAttempts.remove(identity.editorId)
-        permissionActions.remove(identity.editorId)
         draftProbeHandles.remove(identity.editorId)?.let { handle ->
             editorRoute(identity)?.let { route -> draftProbe.cancel(handle, route) }
         }
-        publishEditor(identity) { it.copy(testState = ConnectionTestUi.Idle) }
     }
 
-    override fun discoverModels(identity: ProviderEditorIdentity, probe: ConnectionProbeUi): Boolean {
-        if (!admitted()) return false
-        return withProbeNetworkPermission(identity, probe, discovery = true)
+    override fun cancelConnectionTest(identity: ProviderEditorIdentity) {
+        if (currentEditor(identity)?.testState != ConnectionTestUi.Testing) return
+        retireProbe(identity)
+        publishProbeState(identity, discovery = false, ConnectionTestUi.Idle)
     }
+
+    override fun discoverModels(identity: ProviderEditorIdentity, probe: ConnectionProbeUi): Boolean =
+        startProbe(identity, probe, discovery = true)
 
     override fun cancelModelDiscovery(identity: ProviderEditorIdentity) {
-        inFlightDiscoveries.remove(identity.editorId)
-        draftProbeAttempts.remove(identity.editorId)
-        permissionActions.remove(identity.editorId)
-        draftProbeHandles.remove(identity.editorId)?.let { handle ->
-            editorRoute(identity)?.let { route -> draftProbe.cancel(handle, route) }
-        }
+        if (currentEditor(identity)?.discoveryState != ConnectionTestUi.Testing) return
+        retireProbe(identity)
+        publishProbeState(identity, discovery = true, ConnectionTestUi.Idle)
     }
 
-    /**
-     * The persisted provider a probe may legitimately target, or null when
-     * the editor's draft is new/dirty (no unsaved-draft probe API exists).
-     * A saved-profile probe is only honest while the user has not entered a
-     * replacement key and the draft endpoint still equals the persisted one;
-     * anything else would verify the OLD row while implying the draft.
-     */
+    /** Only a matching live draft may reuse the saved profile and its key. */
     private fun probeTargetProviderID(
         identity: ProviderEditorIdentity,
         probe: ConnectionProbeUi,
     ): String? {
         val existing = existingProviderID(identity) ?: return null
         if (probe.credentialDraft != null) return null
-        val row = destinationState.value.list.let {
-            it.conversationProviders + it.imageProviders + it.videoProviders
-        }.firstOrNull { it.providerId == existing } ?: return null
+        val row = findProviderRow(existing) ?: return null
+        val extras = ProviderWire.extrasFor(existing) ?: return null
         val draftEndpoint = probe.endpointAbsoluteString.trim().trimEnd('/')
         val savedEndpoint = row.endpointSummary.trim().trimEnd('/')
-        if (draftEndpoint.isEmpty() || draftEndpoint != savedEndpoint) return null
+        if (draftEndpoint.isEmpty() || draftEndpoint != savedEndpoint ||
+            probe.wireProtocol.swiftRaw != extras.wireProtocol ||
+            probe.allowsPlainHttp != extras.allowsPlainHTTP ||
+            probe.toolNameCompatibility != extras.toolNameCompatibility ||
+            (probe.supplierPresetId != null && probe.supplierPresetId != extras.presetID) ||
+            probe.nonSecretHeaders != ProviderFormLogic.parseNonSecretHeaderLines(extras.nonSecretHeaders)
+        ) return null
         return existing
     }
 
@@ -1673,15 +1658,8 @@ class ProviderHostController internal constructor(
 
     override fun requestOfferDiscovery(identity: ProviderEditorIdentity, role: ProviderServiceRoleUi): Boolean {
         val editor = currentEditor(identity) ?: return false
-        val offer = editor.offers.firstOrNull { it.role == role } ?: return false
-        val probe = ConnectionProbeUi(
-            endpointAbsoluteString = "",
-            wireProtocol = WireProtocolUi.OPENAI_CHAT_COMPLETIONS,
-            nonSecretHeaders = emptyMap(),
-            credentialDraft = null,
-            allowsPlainHttp = false,
-            toolNameCompatibility = false,
-        )
+        if (editor.offers.none { it.role == role }) return false
+        val probe = flowHolder.probeFor(identity) ?: return false
         return discoverModels(identity, probe)
     }
 
@@ -2229,10 +2207,11 @@ internal object ProviderWire {
 
     /** Closed catalog payload: the native router allows exactly these keys
      *  (plus the authorized OPTIONAL continuation for paging). */
-    fun catalogRequestPayload(filter: String, cursor: String? = null): JsonObject =
+    fun catalogRequestPayload(filter: String, cursor: String? = null, picker: Boolean = false): JsonObject =
         JsonObject(buildMap {
             put("query", JsonPrimitive(""))
             put("filter", JsonPrimitive(filter))
+            if (picker) put("projection", JsonPrimitive("picker"))
             if (cursor != null) put("cursor", JsonPrimitive(cursor))
         })
 
@@ -2293,6 +2272,9 @@ internal object ProviderWire {
     /** One catalog row -> the presentation entry (null when malformed). */
     fun catalogEntryOf(element: JsonElement): OfficialSupplierUi? =
         (element as? JsonObject)?.let { decodeCatalogEntry(it) }
+
+    fun hasCatalogConfigurationFlag(element: JsonElement): Boolean =
+        (element as? JsonObject)?.bool("isConfigured") != null
 
     /** presetID -> REAL ProviderKind raw, straight from one catalog page. */
     fun catalogKinds(value: JsonElement): Map<String, String> {
@@ -2355,7 +2337,7 @@ internal object ProviderWire {
             servedRoles = roles.toList(),
             serviceOfferModels = offerModels,
             isLocalEndpoint = kind == "local",
-            isConfigured = false,
+            isConfigured = obj.bool("isConfigured") ?: false,
             suggestsToolNameCompatibility = obj.bool("toolNameCompatibility") ?: false,
         )
     }
@@ -2737,19 +2719,21 @@ internal object ProviderWire {
 
     /** Redacted typed failure identifier (never a raw provider body or key). */
     fun failureOf(payload: JsonObject): String? =
-        payload.string("errorCode") ?: payload.string("failureReason")
+        payload.string("errorCode") ?: payload.string("failureReason")?.substringBefore(':')
 
     /** Closed native diagnostic reason for a settled draft-probe refusal
      * (`draftValidation.<problem>` / `candidate.<field>` / …). Diagnostic
      * only: identifiers minted from closed enums, never secret material. */
-    fun reasonOf(payload: JsonObject): String? = payload.string("reason")
+    fun reasonOf(payload: JsonObject): String? =
+        payload.string("reason") ?: payload.string("failureReason")?.substringAfter(':', "")
 
     fun decodeDiscoveredModels(value: JsonElement): List<ModelDraftRowUi> {
         val array = (value as? JsonObject)?.get("discoveredModels") as? JsonArray
             ?: return emptyList()
         return array.mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
-            val remote = obj.string("remoteModelID") ?: obj.string("id") ?: return@mapNotNull null
+            val remote = (obj.string("remoteModelID") ?: obj.string("id"))
+                ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             // Native discovery returns ModelProfile: nested limits and a
             // scalar OptionSet. Retain legacy flat/array discovery replies.
             val limits = obj["limits"] as? JsonObject

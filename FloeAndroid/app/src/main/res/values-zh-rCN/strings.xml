@@ -344,7 +344,7 @@
     <string name="providers_open_waiting_models">尚未确认模型列表，请稍后重试。</string>
     <string name="providers_load_failed">无法加载提供商，请重试。</string>
     <string name="providers_probe_requires_save">请先保存此提供商，然后再测试连接或获取模型。</string>
-    <string name="providers_probe_unavailable">无法开始连接测试，请重试。</string>
+    <string name="providers_probe_unavailable">无法验证连接，请检查端点、API 密钥和网络。</string>
     <string name="providers_custom_endpoint">自定义端点</string>
     <string name="providers_toggle_failed">无法更新此提供商，其保持原状——请重试。</string>
     <string name="providers_toggle_too_large">该提供商的完整配置过大，无法在此切换。请打开它进行编辑并保存。</string>
@@ -695,4 +695,8 @@
     <string name="preview_components_download_cache">组件下载缓存</string>
     <string name="preview_components_clearing">正在清理下载缓存…</string>
     <string name="phone_automation_relock_failed">未能确认任务结束后已锁屏，请手动锁定设备。</string>
+    <string name="providers_probe_subscription_catalog">从订阅目录添加模型后，发送一条消息验证账号权限。</string>
+    <string name="providers_probe_subscription_unavailable">暂时无法读取订阅模型目录，请稍后再试。</string>
+    <string name="providers_probe_credential">请输入这组连接设置对应的 API 密钥，再试一次。</string>
+    <string name="providers_discovery_failed">无法拉取模型。请检查端点、API 密钥和网络，也可以手动添加。</string>
 </resources>

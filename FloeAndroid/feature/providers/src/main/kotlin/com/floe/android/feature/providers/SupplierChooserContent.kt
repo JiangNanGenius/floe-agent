@@ -46,6 +46,7 @@ import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeSectionRow
 import com.floe.android.design.FloeSegmented
 import com.floe.android.design.FloeSettingsSectionCard
+import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeSearchField
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeUnavailableView
@@ -62,12 +63,12 @@ fun SupplierChooserContent(
 ) {
     var filter by remember(identity.editorId) { mutableStateOf(CatalogFilterUi.ALL) }
     val query = slot.supplierQuery.value
-    val presets = ProviderFormLogic.matchingPresets(catalog.builtInPresets, query)
-    val official = ProviderFormLogic.matchingOfficial(
-        entries = catalog.officialProviders,
-        query = query,
-        filter = filter,
-    )
+    val presets = remember(catalog.builtInPresets, query) {
+        ProviderFormLogic.matchingPresets(catalog.builtInPresets, query)
+    }
+    val official = remember(catalog.officialProviders, query, filter) {
+        ProviderFormLogic.matchingOfficial(catalog.officialProviders, query, filter)
+    }
     val selectedPresetId = slot.snapshot.value.supplier?.presetId
     val selectedFromCatalog = slot.snapshot.value.supplier?.catalogEntryId != null
     val filterDescription = stringResource(R.string.catalog_filter_cd)
@@ -93,7 +94,7 @@ fun SupplierChooserContent(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (catalog.refreshAvailable && catalog.networkActionsAvailable) {
+            if (catalog.refreshAvailable) {
                 if (catalog.refreshInFlight) {
                     Row(
                         modifier = Modifier.heightIn(min = 48.dp),
@@ -117,6 +118,14 @@ fun SupplierChooserContent(
                 onValueChange = { slot.supplierQuery.value = it },
                 placeholder = stringResource(R.string.catalog_search_hint),
             )
+            if (catalog.loadFailed) {
+                FloeStatusLine(
+                    icon = FloeIcons.WarningTriangle,
+                    text = stringResource(R.string.catalog_load_failed),
+                    color = Floe.colors.destructive,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
             Spacer(Modifier.height(10.dp))
             Box(Modifier.semantics { contentDescription = filterDescription }) {
             FloeSegmented(
