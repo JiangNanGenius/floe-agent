@@ -178,9 +178,8 @@ public actor DeviceHistorySync {
     }
 
     public func history(_ taskID: UUID, from peer: FloeDeviceLinkAddress) async throws -> Data {
-        try await withConnection(to: peer) { connection in
-            let manifest = try await Self.request(.init(operation: .prepare, taskID: taskID), on: connection)
-            return try await Self.readArchive(manifest, taskID: taskID, on: connection)
+        try await withReceiveSession(to: peer) { session in
+            try await session.history(taskID)
         }
     }
 
@@ -191,12 +190,50 @@ public actor DeviceHistorySync {
         onPage: @Sendable (DeviceHistoryDelivery) async throws -> Void
     ) async throws {
         guard Self.validCursor(savedCursor) else { throw DeviceHistorySyncError.invalidResponse }
-        try await withConnection(to: peer) { connection in
-            let offered = try await Self.fetchOffers(on: connection)
+        try await withReceiveSession(to: peer) { session in
+            try await session.transferHistory(taskID, after: savedCursor, onPage: onPage)
+        }
+    }
+
+    public func transferWorkspace(
+        _ taskID: UUID, from peer: FloeDeviceLinkAddress,
+        onProgress: @escaping @Sendable (DeviceWorkspaceReceiveProgress) async -> Void
+    ) async throws {
+        guard workspaceHost != nil else { throw DeviceHistorySyncError.unsupportedVersion }
+        try await withReceiveSession(to: peer) { session in
+            try await session.transferWorkspace(taskID, onProgress: onProgress)
+        }
+    }
+
+    /// The selection can import history and files before closing this connection.
+    /// File consent is read again when the workspace phase starts.
+    func withReceiveSession<T: Sendable>(
+        to peer: FloeDeviceLinkAddress, operation: @Sendable (ReceiveSession) async throws -> T
+    ) async throws -> T {
+        let workspaceHost = workspaceHost
+        return try await withConnection(to: peer) { connection in
+            try await operation(ReceiveSession(connection: connection, workspaceHost: workspaceHost))
+        }
+    }
+
+    struct ReceiveSession: Sendable {
+        fileprivate let connection: FloeDeviceLinkConnection
+        fileprivate let workspaceHost: DeviceWorkspaceSyncHost?
+
+        func history(_ taskID: UUID) async throws -> Data {
+            let manifest = try await DeviceHistorySync.request(.init(operation: .prepare, taskID: taskID), on: connection)
+            return try await DeviceHistorySync.readArchive(manifest, taskID: taskID, on: connection)
+        }
+
+        func transferHistory(
+            _ taskID: UUID, after savedCursor: String?,
+            onPage: @Sendable (DeviceHistoryDelivery) async throws -> Void
+        ) async throws {
+            guard DeviceHistorySync.validCursor(savedCursor) else { throw DeviceHistorySyncError.invalidResponse }
+            let offered = try await DeviceHistorySync.fetchOffers(on: connection)
             guard offered.offers.contains(where: { $0.id == taskID }) else { throw DeviceHistorySyncError.notShared }
             guard offered.historyPages else {
-                let manifest = try await Self.request(.init(operation: .prepare, taskID: taskID), on: connection)
-                let data = try await Self.readArchive(manifest, taskID: taskID, on: connection)
+                let data = try await history(taskID)
                 try await onPage(.archive(data))
                 return
             }
@@ -208,8 +245,8 @@ public actor DeviceHistorySync {
                 try Task.checkCancellation()
                 let manifest: Reply
                 do {
-                    manifest = try await Self.request(.init(operation: .preparePage, taskID: taskID,
-                                                            after: cursor, through: through), on: connection)
+                    manifest = try await DeviceHistorySync.request(
+                        .init(operation: .preparePage, taskID: taskID, after: cursor, through: through), on: connection)
                 } catch DeviceHistorySyncError.cursorExpired where through == nil && cursor != nil {
                     // The peer may have restored an older database. Re-read
                     // from the beginning and let the store deduplicate.
@@ -218,7 +255,7 @@ public actor DeviceHistorySync {
                 }
                 guard let upperBound = manifest.through, upperBound >= 0,
                       through == nil || through == upperBound,
-                      let hasMore = manifest.hasMore, Self.validCursor(manifest.nextCursor) else {
+                      let hasMore = manifest.hasMore, DeviceHistorySync.validCursor(manifest.nextCursor) else {
                     throw DeviceHistorySyncError.invalidResponse
                 }
                 if hasMore {
@@ -227,26 +264,23 @@ public actor DeviceHistorySync {
                         throw DeviceHistorySyncError.invalidResponse
                     }
                 }
-                let data = try await Self.readArchive(manifest, taskID: taskID, on: connection)
+                let data = try await DeviceHistorySync.readArchive(manifest, taskID: taskID, on: connection)
                 try await onPage(.page(data, nextCursor: manifest.nextCursor))
                 if !hasMore { return }
                 through = upperBound
                 cursor = manifest.nextCursor
             }
         }
-    }
 
-    public func transferWorkspace(
-        _ taskID: UUID, from peer: FloeDeviceLinkAddress,
-        onProgress: @escaping @Sendable (DeviceWorkspaceReceiveProgress) async -> Void
-    ) async throws {
-        guard let workspaceHost else { throw DeviceHistorySyncError.unsupportedVersion }
-        try await withConnection(to: peer) { connection in
-            let offers = try await Self.fetchOffers(on: connection).offers
+        func transferWorkspace(
+            _ taskID: UUID, onProgress: @escaping @Sendable (DeviceWorkspaceReceiveProgress) async -> Void
+        ) async throws {
+            guard let workspaceHost else { throw DeviceHistorySyncError.unsupportedVersion }
+            let offers = try await DeviceHistorySync.fetchOffers(on: connection).offers
             guard offers.contains(where: { $0.id == taskID && $0.workspaceFiles == true }) else {
                 throw DeviceHistorySyncError.notShared
             }
-            let descriptor = try await Self.request(.init(operation: .prepareWorkspace, taskID: taskID), on: connection)
+            let descriptor = try await DeviceHistorySync.request(.init(operation: .prepareWorkspace, taskID: taskID), on: connection)
             guard let size = descriptor.size, size > 0, size <= DeviceWorkspaceManifest.maximumManifestBytes,
                   let digest = descriptor.digest, DeviceWorkspaceDigest.isValid(digest) else {
                 throw DeviceHistorySyncError.invalidResponse
@@ -255,8 +289,8 @@ public actor DeviceHistorySync {
             data.reserveCapacity(size)
             while data.count < size {
                 try Task.checkCancellation()
-                let reply = try await Self.request(.init(operation: .workspaceManifest, taskID: taskID, offset: data.count),
-                                                   on: connection)
+                let reply = try await DeviceHistorySync.request(
+                    .init(operation: .workspaceManifest, taskID: taskID, offset: data.count), on: connection)
                 guard let bytes = reply.bytes, bytes.count == min(DeviceWorkspaceManifest.chunkSize, size - data.count) else {
                     throw DeviceHistorySyncError.invalidResponse
                 }
@@ -266,13 +300,13 @@ public actor DeviceHistorySync {
                 throw DeviceHistorySyncError.invalidResponse
             }
             let manifest = try JSONDecoder().decode(DeviceWorkspaceManifest.self, from: data).validated()
-            try await workspaceHost.receive(manifest, from: peer.endpointID, taskID: taskID, read: { index, offset, _ in
-                let reply = try await Self.request(.init(operation: .workspaceFile, taskID: taskID, offset: Int(offset),
-                                                         index: index), on: connection)
+            try await workspaceHost.receive(manifest, from: connection.peerEndpointID, taskID: taskID, read: { index, offset, _ in
+                let reply = try await DeviceHistorySync.request(
+                    .init(operation: .workspaceFile, taskID: taskID, offset: Int(offset), index: index), on: connection)
                 guard let bytes = reply.bytes else { throw DeviceHistorySyncError.invalidResponse }
                 return bytes
             }, confirm: { indexes in
-                _ = try await Self.request(.init(operation: .confirmWorkspace, taskID: taskID, indexes: indexes), on: connection)
+                _ = try await DeviceHistorySync.request(.init(operation: .confirmWorkspace, taskID: taskID, indexes: indexes), on: connection)
             }, onProgress: onProgress)
         }
     }
