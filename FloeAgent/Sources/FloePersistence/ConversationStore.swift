@@ -1212,6 +1212,31 @@ public actor SQLiteConversationStore: ConversationStore {
         }
     }
 
+    /// A steer may be committed after the visible page advances past its send
+    /// time. Fetch those exact user rows for the newest run without changing
+    /// the conversation's contiguous paging window.
+    public func consumedSteers(conversationID: UUID, runID: UUID,
+                               before cursor: ConversationMessageCursor) async throws -> [PersistedMessage] {
+        try await database.reader { db in
+            let stamp = PersistenceCodec.encode(cursor.createdAt)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.* FROM pending_user_inputs p JOIN messages m
+                  ON m.id=p.id AND m.conversation_id=p.conversation_id AND m.run_id=p.consumed_run_id
+                WHERE p.target_run_id=? AND p.consumed_run_id=p.target_run_id AND p.conversation_id=?
+                  AND p.mode='steer' AND p.status='consumed' AND m.role='user'
+                  AND (m.created_at<? OR (m.created_at=? AND m.id<?))
+                ORDER BY p.consumed_at DESC, m.id DESC LIMIT 100
+                """, arguments: [runID.uuidString, conversationID.uuidString, stamp, stamp, cursor.messageID.uuidString])
+            let ids = try rows.map(Self.messageID(from:))
+            let parts = try Self.fetchParts(messageIDs: ids, db: db)
+            return try zip(rows, ids).map { row, id in
+                PersistedMessage(id: id, conversationID: conversationID, role: "user", content: row["content"],
+                    createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: parts[id, default: []],
+                    runID: runID)
+            }
+        }
+    }
+
     public func parts(messageID: UUID) async throws -> [MessagePart] {
         try await database.reader { db in
             try Self.fetchParts(messageID: messageID, db: db)
