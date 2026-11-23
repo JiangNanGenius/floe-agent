@@ -316332,61 +316332,61 @@
         }
       }
     },
-    "settings.sync.device_history.enable_mac": {
+    "settings.sync.device_history.enable": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sync Conversations with Mac"
+            "value": "Sync Conversations"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "与 Mac 同步会话"
+            "value": "同步会话"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "與 Mac 同步對話"
+            "value": "同步對話"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac とチャットを同期"
+            "value": "チャットを同期"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac과 대화 동기화"
+            "value": "대화 동기화"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Synchroniser les conversations avec le Mac"
+            "value": "Synchroniser les conversations"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Unterhaltungen mit dem Mac synchronisieren"
+            "value": "Unterhaltungen synchronisieren"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sincronizar conversaciones con el Mac"
+            "value": "Sincronizar conversaciones"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sincronizar conversas com o Mac"
+            "value": "Sincronizar conversas"
           }
         }
       }
@@ -316397,55 +316397,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pair a Mac and choose which conversations to share."
+            "value": "Pair a device and choose which conversations to share."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "配对 Mac 后，可选择要共享的会话。"
+            "value": "配对设备后，可选择要共享的会话。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "配對 Mac 後，可選擇要共享的對話。"
+            "value": "配對裝置後，可選擇要共享的對話。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac とペアリングして、共有するチャットを選びます。"
+            "value": "デバイスをペアリングして、共有するチャットを選びます。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac과 페어링한 다음 공유할 대화를 선택하세요."
+            "value": "기기를 페어링한 다음 공유할 대화를 선택하세요."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Jumelez un Mac et choisissez les conversations à partager."
+            "value": "Jumelez un appareil et choisissez les conversations à partager."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Kopple einen Mac und wähle die Unterhaltungen aus, die du freigeben möchtest."
+            "value": "Kopple ein Gerät und wähle die Unterhaltungen aus, die du freigeben möchtest."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enlaza un Mac y elige qué conversaciones quieres compartir."
+            "value": "Enlaza un dispositivo y elige qué conversaciones quieres compartir."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Emparelhe um Mac e escolha quais conversas compartilhar."
+            "value": "Emparelhe um dispositivo e escolha quais conversas compartilhar."
           }
         }
       }

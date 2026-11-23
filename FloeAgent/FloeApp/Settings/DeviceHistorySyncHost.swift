@@ -30,21 +30,42 @@ final class DeviceHistorySyncHost {
         let source = DeviceHistorySource(list: { allowed in
             try await store.conversations().filter { allowed.contains($0.id) }.map(Self.offer)
         }, export: { id in
-            try await store.deviceHistory(conversationID: id).encoded()
+            do { return try await store.deviceHistory(conversationID: id).encoded() }
+            catch DeviceConversationHistoryError.sizeLimit { throw DeviceHistorySyncError.tooLarge }
+        }, exportPage: { id, cursor, through in
+            do {
+                let page = try await store.deviceHistoryPage(conversationID: id, after: cursor, through: through)
+                return DeviceHistoryPage(archive: page.archive, nextCursor: page.nextCursor,
+                                         through: page.through, hasMore: page.hasMore)
+            } catch DeviceConversationHistoryError.sizeLimit {
+                throw DeviceHistorySyncError.tooLarge
+            } catch DeviceConversationHistoryError.cursorExpired {
+                throw DeviceHistorySyncError.cursorExpired
+            }
         })
         center = DeviceHistorySyncCenter(settingsURL: settingsURL, identityStorage: identity, source: source,
                                          localTasks: { try await store.conversations().map(Self.offer) },
                                          importHistory: { id, data in
-            let history = try DeviceConversationHistory(data: data)
-            guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
-            let receipt: DeviceConversationImport
-            do { receipt = try await store.importDeviceHistory(history) }
-            catch DeviceConversationHistoryError.messageConflict { throw DeviceHistorySyncError.conflict }
-            if receipt.createdConversation || receipt.addedMessages > 0 {
-                await didImport(receipt.conversationID)
-            }
+            try await Self.importMessages(id, data, store: store)
+        }, pagedHistory: DeviceHistoryPageDestination(cursor: { peerID, id in
+            try await store.deviceHistoryCursor(from: peerID, conversationID: id)
+        }, commit: { peerID, id, data, cursor in
+            try await Self.importMessages(id, data, store: store, peerID: peerID, cursor: cursor)
+        }), didImport: didImport)
+    }
+
+    private nonisolated static func importMessages(
+        _ id: UUID, _ data: Data, store: SQLiteConversationStore,
+        peerID: String? = nil, cursor: String? = nil
+    ) async throws -> Int {
+        let history = try DeviceConversationHistory(data: data)
+        guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
+        do {
+            let receipt = try await store.importDeviceHistory(history, sourcePeerID: peerID, nextCursor: cursor)
             return receipt.addedMessages
-        })
+        } catch DeviceConversationHistoryError.messageConflict {
+            throw DeviceHistorySyncError.conflict
+        }
     }
 
     func setForeground(_ foreground: Bool) {

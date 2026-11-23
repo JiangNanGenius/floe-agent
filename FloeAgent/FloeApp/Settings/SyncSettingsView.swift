@@ -292,7 +292,7 @@ private struct DeviceHistorySyncSection: View {
 
     var body: some View {
         Section {
-            Toggle("settings.sync.device_history.enable_mac", isOn: Binding(
+            Toggle("settings.sync.device_history.enable", isOn: Binding(
                 get: { center.enabled },
                 set: { enabled in Task { await center.setEnabled(enabled) } }
             ))
@@ -306,7 +306,7 @@ private struct DeviceHistorySyncSection: View {
                         .navigationTitle(Text("settings.sync.device_history.devices"))
                 } label: {
                     HStack {
-                        Label("settings.sync.device_history.devices", systemImage: "laptopcomputer")
+                        Label("settings.sync.device_history.devices", systemImage: "laptopcomputer.and.iphone")
                         Spacer()
                         if center.busy { ProgressView().controlSize(.small) }
                     }
