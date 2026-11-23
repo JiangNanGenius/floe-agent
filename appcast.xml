@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.18</title>
+      <pubDate>Mon, 23 Nov 2026 09:37:45 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.18</link>
+      <sparkle:version>48</sparkle:version>
+      <sparkle:shortVersionString>1.11.18</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>修复 Mac 新建和切换会话时的卡顿。 Improved Mac responsiveness in task navigation.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.18/Floe-Agent-1.11.18.dmg" length="64384269" type="application/octet-stream" sparkle:edSignature="U4Nc/uaXMzG7GRm75S76GAxnBGBYtSZiVmE2sbLcjWBb7nx9illI0Elc0suJuIC6mMFlfEMtHpYNyVG10PtaAw==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.17</title>
       <pubDate>Mon, 23 Nov 2026 08:49:12 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.17</link>
