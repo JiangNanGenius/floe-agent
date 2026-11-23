@@ -44,8 +44,8 @@ The checks are deliberately fail-closed:
   Full layout lets AGP deflate native ZIP entries, so a deflated entry is
   accepted; any entry that is still stored must also be 16 KiB zip-aligned.
   A mapped ``extractNativeLibs=false`` layout is rejected;
-* for a release embedding the pinned Office engine, ``--office-pins`` is the
-  ONE bounded build-ID exception: the GNU build-id requirement is waived
+* for a release embedding the pinned Office engine, ``--office-pins``
+  binds its upstream libraries to their exact producer digests. The GNU build-id requirement is waived
   only for libraries whose bytes hash exactly to a
   ``core/officeengine/payload-pins.json`` entry (the producer's prebuilt
   libraries ship without a build-id note). Every other gate — ELF 16 KiB
@@ -54,8 +54,10 @@ The checks are deliberately fail-closed:
   pinned library missing from the APK, a hash that drifts from its pin, or
   the producer's official ``libc++_shared.so`` appearing in the APK are each
   hard failures, and the report records the pins file digest and every waived
-  library. Without ``--office-pins`` the behavior is exactly as before (every
-  library needs a build id).
+  library;
+* the ARM64 Iroh FFI in the verified Iroh Android 1.2.0 AAR also ships without
+  a GNU build id. The exact upstream ELF SHA-256 is its binary identity. The
+  report records the AAR and ELF pins, and all other native gates still apply.
 * the supplied preverified SHA-256, source commit, tag and formal signer
   certificate are bound to the exact bytes that are staged and published;
 * an existing non-empty destination is never replaced, and a failure leaves
@@ -139,7 +141,7 @@ TEST_ONLY_NATIVE = {
 }
 REQUIRED_NATIVE = ("libFloeAndroidCore.so", "libfloe_jni.so")
 
-# The ONE bounded build-ID exception for the pinned Office engine (see the
+# The bounded build-ID exception for the pinned Office engine (see the
 # module docstring). payload-pins.json is the module-owned authority for the
 # producer libraries; this toolkit binds the APK bytes to the supplied pins
 # file and records the file digest. It never rewrites pins.
@@ -148,6 +150,15 @@ OFFICE_LIBCXX_NAME = "libc++_shared.so"
 MAX_OFFICE_PINS_JSON_BYTES = 256 * 1024
 OFFICE_SAFE_REL_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*$")
+
+# This is the unmodified jni/arm64-v8a ELF from the Maven Central AAR
+# whose artifact hash is pinned in gradle/verification-metadata.xml.
+IROH_ANDROID_NATIVE_PIN = {
+    "entry": "lib/arm64-v8a/libiroh_ffi.so",
+    "artifact": "computer.iroh:iroh-android:1.2.0",
+    "aarSha256": "2fa89f12369eca9c3d73be318ef70e36444610e6836c6a92caa115af866c2ce6",
+    "elfSha256": "51714c7179625374101d0639df3c946992c1ec3241c27ca4ce6a8074cd4240da",
+}
 
 # The ONE exception to the generic nested-package refusal. The formal
 # full-channel app embeds exactly one independently signed Linux runtime
@@ -1750,6 +1761,7 @@ def native_facts(
     office_libraries = dict((office_pins or {}).get("libraries") or {})
     office_waived: List[str] = []
     office_drift: List[str] = []
+    iroh_binary_pin = None
     official_libcxx_packaged = False
     extraction = extract_native_libs is True
     with zipfile.ZipFile(str(path), "r") as archive:
@@ -1893,11 +1905,13 @@ def native_facts(
                     and basename in office_libraries
                     and sha256 == office_libraries[basename]
                 ):
-                    # The ONE bounded exception: a byte-exact pinned producer
+                    # A byte-exact pinned producer
                     # library without a build-id note. Every other gate above
                     # (stored-entry ZIP alignment, ELF alignment, later
                     # debug/needed/test-only) still applies to this library.
                     office_waived.append(basename)
+                elif name == IROH_ANDROID_NATIVE_PIN["entry"] and sha256 == IROH_ANDROID_NATIVE_PIN["elfSha256"]:
+                    iroh_binary_pin = dict(IROH_ANDROID_NATIVE_PIN)
                 else:
                     problems.append(
                         {
@@ -2022,6 +2036,7 @@ def native_facts(
         "testOnlyLibraries": sorted(set(test_only_libraries)),
         "stripped": not debug_problem,
         "office": office_block,
+        "irohAndroidBinaryPin": iroh_binary_pin,
     }
 
 
@@ -3733,8 +3748,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--office-pins",
         help="existing core/officeengine/payload-pins.json; enables the exact "
         "Office producer-library gate (hash pinning, packaging presence, "
-        "official-libc++ exclusion, bounded build-id waiver). Without it every "
-        "library must still carry a GNU build id.",
+        "official-libc++ exclusion, bounded build-id waiver).",
     )
 
 

@@ -246,19 +246,6 @@ private fun PeerSheet(host: DeviceHistorySyncHost, state: DeviceHistorySyncState
     LaunchedEffect(peer.id) { host.showLocalOffers(peer.id) }
     DeviceSyncSheet(peer.name, onDismiss) {
         SyncStatus(state)
-        FloeSettingsSectionCard(stringResource(R.string.device_history_share_section)) {
-            if (projected) {
-                state.localOffers.forEach { task ->
-                    SyncToggleRow(task.title, task.id in peer.sharedConversations, canManage) {
-                        host.share(peer.id, task.id, it)
-                    }
-                }
-            }
-            if (state.localOffers.isEmpty()) {
-                FloeActionRow(stringResource(R.string.device_history_load_local),
-                    { host.showLocalOffers(peer.id) }, enabled = canManage)
-            }
-        }
         FloeSettingsSectionCard(stringResource(R.string.device_history_receive_section)) {
             FloeActionRow(stringResource(R.string.device_history_list_remote), { host.fetch(peer.id) }, enabled = canReceive)
             if (projected) {
@@ -271,6 +258,19 @@ private fun PeerSheet(host: DeviceHistorySyncHost, state: DeviceHistorySyncState
                         trailing = { SyncCaption(stringResource(R.string.device_history_receive)) },
                         onClick = { host.receive(peer.id, offer.id) }, enabled = canReceive)
                 }
+            }
+        }
+        FloeSettingsSectionCard(stringResource(R.string.device_history_share_section)) {
+            if (projected) {
+                state.localOffers.forEach { task ->
+                    SyncToggleRow(task.title, task.id in peer.sharedConversations, canManage) {
+                        host.share(peer.id, task.id, it)
+                    }
+                }
+            }
+            if (state.localOffers.isEmpty()) {
+                FloeActionRow(stringResource(R.string.device_history_load_local),
+                    { host.showLocalOffers(peer.id) }, enabled = canManage)
             }
         }
         FloeSettingsSectionCard(null) {

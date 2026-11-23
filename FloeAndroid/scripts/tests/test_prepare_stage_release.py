@@ -37,6 +37,7 @@ import unittest
 import warnings
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SCRIPT = Path(__file__).resolve().parents[1] / "prepare-stage-release.py"
@@ -723,6 +724,24 @@ class NativePackagingFactsTests(BaseTempTest):
             tool.native_facts(path, extract_native_libs=True)
         )
         self.assertIn("native.elf-alignment", ids)
+
+    def test_iroh_build_id_identity_is_binary_exact_and_still_requires_alignment(self):
+        pin = tool.IROH_ANDROID_NATIVE_PIN
+        for blob, matches, expected in (
+            (minimal_aarch64_elf(), True, set()),
+            (minimal_aarch64_elf(), False, {"native.build-id"}),
+            (minimal_aarch64_elf(4096), True, {"native.elf-alignment"}),
+        ):
+            with self.subTest(matches=matches, expected=expected):
+                path = self.write_native_zip(zipfile.ZIP_DEFLATED)
+                with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr(pin["entry"], blob)
+                digest = hashlib.sha256(blob).hexdigest() if matches else "0" * 64
+                with patch.dict(pin, elfSha256=digest):
+                    facts = tool.native_facts(path, extract_native_libs=True)
+                    self.assertEqual(facts["irohAndroidBinaryPin"], dict(pin) if matches else None)
+                iroh_problems = {p["id"] for p in facts["problems"] if pin["entry"] in p["message"]}
+                self.assertEqual(iroh_problems, expected)
 
 
 class ManifestParserTests(unittest.TestCase):
