@@ -8168,6 +8168,15 @@ class ConversationHostController internal constructor(
         if (host.nativeRootEpoch() == expectedEpoch) refreshHistory()
     }
 
+    internal fun deviceHistoryCommitted(expectedEpoch: Long, conversationId: String) {
+        if (host.nativeRootEpoch() != expectedEpoch) return
+        refreshHistory()
+        val entry = holders.entries.firstOrNull {
+            it.key.equals(conversationId, ignoreCase = true)
+        }?.value ?: return
+        if (!entry.isTemporary) loadThreadInternal(entry.holder.session)
+    }
+
     private val historyListGeneration = AtomicLong(0)
 
     internal fun refreshHistory() {
