@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的 iOS TestFlight 构建为 1.8.74（395）。** Floe QA 可安装，`publictest1` 等待 Beta 审核。GitHub 和 Feather 最近核验的版本为 1.8.72（393）。 [395 交付记录](releases/builds/FLOE_1.8.74_BUILD395_DELIVERY.md)
+**最近已核验的 iOS TestFlight 构建为 1.8.76（397）。** Floe QA 可安装，`publictest1` 等待 Beta 审核。GitHub 和 Feather 最近核验的版本为 1.8.72（393）。 [397 交付记录](releases/builds/FLOE_1.8.76_BUILD397_DELIVERY.md)
 
 ## 依据与判定
 
@@ -13,7 +13,7 @@
 
 ## 本轮版本记录
 
-1.8.76（397）补齐任务恢复调用后用于内部 Floe QA 和公开 TestFlight。冻结前已核对 Apple 构建号及版本标签未被占用。交付状态以 Apple 回读为准。
+1.8.76（397）固定于 `36339e50da14247e30b73d7b9da7c4286844f92f`／`v1.8.76`。选定会话可以同步工作区文件，运行中发出的引导会进入用户消息时间线。Apple 确认 Floe QA 可安装，公开 `publictest1` 已送审。 [397 交付记录](releases/builds/FLOE_1.8.76_BUILD397_DELIVERY.md)
 
 1.8.75（396）保留冻结源码及首次编译记录。设备编译发现两个任务恢复入口缺少参数，因此此候选未上传。
 
