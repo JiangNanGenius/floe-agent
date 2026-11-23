@@ -209,6 +209,15 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                         guard let workspace else { throw CocoaError(.userCancelled) }
                         return try await workspace.receiveDeviceHistory(id, data, from: peerID, nextCursor: nextCursor)
                     }),
+                    workspaceHost: .init(resolve: { [weak workspace, weak self] id, receiving in
+                        guard let self, let workspace else { throw DeviceHistorySyncError.unavailable }
+                        return try await workspace.acquireDeviceWorkspaceRoot(id, receiving: receiving) { [weak self] taskIDs in
+                            self?.taskTerminals.hasLiveSession(in: taskIDs) ?? true
+                        }
+                    }, ledgerDirectory: directory.appendingPathComponent("DeviceSync/WorkspaceLedger", isDirectory: true),
+                        didImport: { [weak workspace] id in
+                            await workspace?.refreshReceivedDeviceWorkspace(id)
+                        }),
                     didImport: { [weak workspace] id in
                         await workspace?.refreshReceivedDeviceHistory(id)
                     }

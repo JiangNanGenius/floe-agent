@@ -303,6 +303,10 @@ public final class MacTaskTerminalStore: ObservableObject {
 
     public var activeTaskIDs: [UUID] { Array(owners.keys) }
 
+    func hasLiveSession(in taskIDs: Set<UUID>) -> Bool {
+        taskIDs.contains { owners[$0]?.hasLiveSession == true }
+    }
+
     /// Returns the existing owner for `taskID` bound to `workspaceURL`, or
     /// creates one. A changed root with a live old owner throws
     /// ``MacTaskTerminalStoreError/replacementRefused(_:)`` — drain first via

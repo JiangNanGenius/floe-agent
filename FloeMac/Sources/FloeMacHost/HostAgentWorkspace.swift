@@ -2519,6 +2519,92 @@ final class HostAgentWorkspace: ObservableObject {
         }.value
     }
 
+    /// The paired-device transport is given only the root of this saved
+    /// local task. It keeps the bookmark and activity lease for each transfer.
+    func acquireDeviceWorkspaceRoot(
+        _ id: UUID,
+        receiving: Bool,
+        terminalsAreBusy: @escaping @MainActor @Sendable (Set<UUID>) -> Bool
+    ) async throws -> DeviceWorkspaceRoot {
+        guard isReady, !isTerminating, let runtime, let release = admit() else {
+            throw DeviceHistorySyncError.unavailable
+        }
+        do {
+            guard let binding = try await runtime.deviceWorkspaceBinding(for: id, createIfMissing: receiving) else {
+                throw DeviceHistorySyncError.unavailable
+            }
+            let record = binding.record
+            if receiving { try checkDeviceWorkspaceIdle(binding.taskIDs, terminalsAreBusy: terminalsAreBusy) }
+            let url: URL
+            if record.kind == .privateTask {
+                let path = record.internalRelativePath?.split(separator: "/", omittingEmptySubsequences: false) ?? []
+                guard path.count == 2, path[0] == "PrivateTasks", UUID(uuidString: String(path[1])) == id else {
+                    throw DeviceHistorySyncError.unavailable
+                }
+                url = try MacAgentWorkspaceTools.resolvePrivateTaskRoot(record, base: personalTaskLeaseBase)
+            } else {
+                var stale = false
+                url = try URL(resolvingBookmarkData: record.rootBookmark,
+                              options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                              relativeTo: nil, bookmarkDataIsStale: &stale)
+                guard !stale else { throw DeviceHistorySyncError.unavailable }
+            }
+
+            let scoped = record.kind == .project && url.startAccessingSecurityScopedResource()
+            let root = url.resolvingSymlinksInPath()
+            guard let identity = DesignFreezeRegistry.fileIdentity(of: root) else {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                throw DeviceHistorySyncError.unavailable
+            }
+            let scope = FloeDigest.sha256Hex(Data("\(record.id)\0\(root.path)\0\(identity.device):\(identity.inode)".utf8))
+            return .init(scope: scope, url: root, guardCurrent: { [weak self] in
+                guard let self,
+                      let live = try await runtime.deviceWorkspaceBinding(for: id),
+                      live.record.id == record.id,
+                      live.record.kind == record.kind,
+                      live.record.internalRelativePath == record.internalRelativePath,
+                      live.record.rootBookmark == record.rootBookmark,
+                      let pinned = DesignFreezeRegistry.fileIdentity(of: root),
+                      pinned.device == identity.device, pinned.inode == identity.inode else {
+                    throw DeviceHistorySyncError.notShared
+                }
+                if receiving { try await self.checkDeviceWorkspaceIdle(live.taskIDs, terminalsAreBusy: terminalsAreBusy) }
+            }, mutate: { path, operation in
+                let lock = ManagedFileMutationLock.shared
+                lock.lock()
+                defer { lock.unlock() }
+                guard DesignFreezeRegistry.shared.protection(for: path) == nil else { throw DeviceHistorySyncError.busy }
+                try operation()
+            }, release: {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                Task { @MainActor in release() }
+            })
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func checkDeviceWorkspaceIdle(_ taskIDs: Set<UUID>,
+                                          terminalsAreBusy: (Set<UUID>) -> Bool) throws {
+        guard !isTerminating, !hasPendingWorkspaceFileChanges,
+              taskIDs.isDisjoint(with: liveRuns.keys),
+              taskIDs.isDisjoint(with: changingTasks),
+              !liveRuns.values.contains(where: { $0.handle == nil }),
+              !terminalsAreBusy(taskIDs) else { throw DeviceHistorySyncError.busy }
+    }
+
+    func refreshReceivedDeviceWorkspace(_ id: UUID) async {
+        guard isReady, !isTerminating, let runtime, let release = admit() else { return }
+        defer { release() }
+        let selection = historySelection
+        guard let record = try? await runtime.workspaceForConversation(id), !isTerminating else { return }
+        if selectedID == id, historySelection == selection {
+            selectedConversationWorkspace = record
+        }
+        workspaceRevision = UUID()
+    }
+
     private static func skillTools(for service: MacWorkbenchSkillsService, allowsNetwork: Bool) -> [AnyAgentTool] {
         let manager = service.makeManager()
         let catalog = allowsNetwork ? service.makeCatalogProvider() : nil

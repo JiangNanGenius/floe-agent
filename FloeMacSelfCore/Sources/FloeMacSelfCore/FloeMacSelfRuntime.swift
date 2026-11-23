@@ -2114,6 +2114,26 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    /// Resolves the saved task's local file owner without using the active
+    /// workbench selection. Only an explicitly requested receive can bind
+    /// a previously ownerless task to its own private folder.
+    public func deviceWorkspaceBinding(for id: UUID, createIfMissing: Bool = false) async throws
+        -> (record: WorkspaceRecord, taskIDs: Set<UUID>)? {
+        let stores = try requireStores()
+        guard let task = try await stores.conversations.conversation(id: id),
+              task.isVisibleInOrdinaryList else { return nil }
+        var record = try await workspaceForConversation(id)
+        if record == nil, createIfMissing {
+            try ensureAdmissionStillAllowed()
+            try requireAuthority()
+            record = try await stores.workspaces.ensureWorkspace(conversationID: id, title: task.title)
+        }
+        guard let record, record.activeTarget == .local else { return nil }
+        let taskIDs = try await stores.workspaces.conversations(workspaceID: record.id)
+        guard taskIDs.contains(id) else { return nil }
+        return (record, Set(taskIDs))
+    }
+
     // MARK: - Plan and Goal read-back
 
     /// Newest durable plan draft for the conversation, if any. Revisions are

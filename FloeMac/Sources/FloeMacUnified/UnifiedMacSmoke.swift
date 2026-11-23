@@ -137,6 +137,10 @@ final class UnifiedMacSmoke {
             await exerciseSteerTranscript(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--paired-workspace-files-only") {
+            await exercisePairedWorkspaceFiles(model)
+            return
+        }
         let pagedHistoryPair = CommandLine.arguments.contains("--device-history-paged-pair-only")
         if CommandLine.arguments.contains("--device-history-only") || pagedHistoryPair {
             await exerciseDeviceHistory(model, usePagedPeer: pagedHistoryPair)
@@ -1572,7 +1576,8 @@ final class UnifiedMacSmoke {
         }
     }
 
-    private func deviceHistoryFixturePeer(store: SQLiteConversationStore, pages: DeviceHistoryFixturePages? = nil) -> DeviceHistorySyncCenter {
+    private func deviceHistoryFixturePeer(store: SQLiteConversationStore, pages: DeviceHistoryFixturePages? = nil,
+                                          workspaceHost: DeviceWorkspaceSyncHost? = nil) -> DeviceHistorySyncCenter {
         func parse(_ id: UUID, _ data: Data) throws -> DeviceConversationHistory {
             let history = try DeviceConversationHistory(data: data)
             guard history.id == id else { throw DeviceHistorySyncError.invalidResponse }
@@ -1607,7 +1612,7 @@ final class UnifiedMacSmoke {
             importHistory: { id, data in
                 try await store.importDeviceHistory(parse(id, data)).addedMessages
             },
-            pagedHistory: destination)
+            pagedHistory: destination, workspaceHost: workspaceHost)
     }
 
     private func pairDeviceHistoryFixtures(_ center: DeviceHistorySyncCenter, _ peer: DeviceHistorySyncCenter)
@@ -1624,6 +1629,88 @@ final class UnifiedMacSmoke {
         await center.pair(remote, named: "Remote fixture")
         await peer.pair(local, named: "Native Mac fixture")
         return (local, remote)
+    }
+
+    private func exercisePairedWorkspaceFiles(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let center = agent.deviceHistorySync,
+              center.supportsWorkspaceSync, await agent.verifyChatSmoke(), let priorID = agent.selectedID else {
+            finish(["ready": false]); return
+        }
+        let remoteID = UUID()
+        let remoteRoot = root.appendingPathComponent("PairedDeviceFiles", isDirectory: true)
+        let leaf = "nested/receipt.txt"
+        var peer: DeviceHistorySyncCenter?
+        do {
+            try FileManager.default.createDirectory(at: remoteRoot.appendingPathComponent("nested"), withIntermediateDirectories: true)
+            let remoteFile = remoteRoot.appendingPathComponent(leaf)
+            let initial = Data("Remote file v1".utf8)
+            try initial.write(to: remoteFile)
+            let database = try DatabaseManager.inMemory()
+            try await database.migrate()
+            let store = SQLiteConversationStore(database: database)
+            let now = Date()
+            try await store.saveConversationWithCanonicalWorkspace(.init(id: remoteID,
+                title: "Paired workspace", createdAt: now, updatedAt: now))
+            try await store.appendMessage(.init(id: UUID(), conversationID: remoteID, role: "user",
+                content: "Pair a file with this conversation.", createdAt: now))
+            let remote = deviceHistoryFixturePeer(store: store, workspaceHost: .init(resolve: { id, _ in
+                guard id == remoteID else { throw DeviceHistorySyncError.unavailable }
+                return .init(scope: remoteID.uuidString, url: remoteRoot, guardCurrent: {})
+            }, ledgerDirectory: root.appendingPathComponent("PairedDeviceLedger")))
+            peer = remote
+            let (local, other) = try await pairDeviceHistoryFixtures(center, remote)
+            await remote.share(remoteID, with: local.id, enabled: true)
+            let before = await center.remoteConversations(from: other.id)?.first(where: { $0.id == remoteID })
+            let separateConsent = before != nil && before?.workspaceFiles != true
+            await remote.shareWorkspace(remoteID, with: local.id, enabled: true)
+            await center.receive(remoteID, from: other.id, includeWorkspace: true)
+            let selectionPreserved = agent.selectedID == priorID
+            await agent.select(remoteID)
+            guard let record = agent.selectedConversationWorkspace, record.kind == .privateTask else {
+                throw DeviceHistorySyncError.unavailable
+            }
+            let localRoot = try MacAgentWorkspaceTools.resolvePrivateTaskRoot(record, base: agent.personalTaskLeaseBase)
+            let localFile = localRoot.appendingPathComponent(leaf)
+            let firstReceived = try Data(contentsOf: localFile) == initial
+
+            await center.share(remoteID, with: other.id, enabled: true)
+            await center.shareWorkspace(remoteID, with: other.id, enabled: true)
+            let macFile = localRoot.appendingPathComponent("mac.txt")
+            try Data("Created on the Mac".utf8).write(to: macFile)
+            await remote.receive(remoteID, from: local.id, includeWorkspace: true)
+            let reverseReceived = try Data(contentsOf: remoteRoot.appendingPathComponent("mac.txt")) == Data("Created on the Mac".utf8)
+
+            let unsavedRemote = Data("Remote edit".utf8)
+            let localEdit = Data("Local edit".utf8)
+            try unsavedRemote.write(to: remoteFile)
+            agent.hasPendingWorkspaceFileChanges = true
+            await center.receive(remoteID, from: other.id, includeWorkspace: true)
+            agent.hasPendingWorkspaceFileChanges = false
+            let busyRejected = try center.workspaceResult == .interrupted(nil, .workspaceBusy)
+                && Data(contentsOf: localFile) == initial
+
+            try localEdit.write(to: localFile)
+            await center.receive(remoteID, from: other.id, includeWorkspace: true)
+            let copies = try FileManager.default.contentsOfDirectory(at: localFile.deletingLastPathComponent(),
+                includingPropertiesForKeys: nil)
+            let conflictPreserved = try Data(contentsOf: localFile) == localEdit
+                && copies.contains { $0 != localFile && (try? Data(contentsOf: $0)) == unsavedRemote }
+
+            await remote.shareWorkspace(remoteID, with: local.id, enabled: false)
+            let remainingOffer = await center.remoteConversations(from: other.id)?.first(where: { $0.id == remoteID })
+            let workspaceOnlyRevoked = remainingOffer != nil && remainingOffer?.workspaceFiles != true
+            await center.pause()
+            await remote.pause()
+            finish(["separateConsent": separateConsent, "selectionPreserved": selectionPreserved,
+                    "receivingRootReadBack": firstReceived, "reverseReadBack": reverseReceived,
+                    "busyMacWorkspace": busyRejected, "conflictPreserved": conflictPreserved,
+                    "workspaceOnlyRevoked": workspaceOnlyRevoked])
+        } catch {
+            agent.hasPendingWorkspaceFileChanges = false
+            await center.pause()
+            await peer?.pause()
+            finish(["finished": false, "error": String(describing: type(of: error))])
+        }
     }
 
     private func exerciseDeviceHistory(_ model: BridgeAppModel, usePagedPeer: Bool) async {
