@@ -67,7 +67,7 @@ class GeneratorFixtureTests(unittest.TestCase):
     # -- Package shape -------------------------------------------------
 
     def test_package_shape_and_bounds(self):
-        self.assertEqual(len(self.files), 88)
+        self.assertEqual(len(self.files), 110)
         for relative, data in self.files.items():
             if relative in ("content.json", "help/manifest.json"):
                 self.assertLessEqual(len(data), 262_144, relative)
@@ -238,7 +238,7 @@ class GeneratorFixtureTests(unittest.TestCase):
         manifest = self.load_json("help/manifest.json")
         self.assertEqual(content["schemaVersion"], 1)
         self.assertEqual(content["id"], "floe.help.quickstart")
-        self.assertEqual(content["version"], "1.3.0")
+        self.assertEqual(content["version"], "1.4.0")
         self.assertEqual(content["kind"], "help")
         self.assertEqual(content["helpManifest"], "help/manifest.json")
         self.assertEqual(content["sourceRevision"], "")
@@ -399,7 +399,7 @@ class ImageCodecTests(unittest.TestCase):
         cls.converted = bhc.convert_images()
 
     def test_all_images_bounded(self):
-        self.assertEqual(len(self.converted), 4)
+        self.assertEqual(len(self.converted), 26)
         for path, data in self.converted.items():
             self.assertLessEqual(len(data), 1_048_576, path)
             self.assertGreater(len(data), 1000, path)
