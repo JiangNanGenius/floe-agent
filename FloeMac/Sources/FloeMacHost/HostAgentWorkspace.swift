@@ -2586,7 +2586,7 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func checkDeviceWorkspaceIdle(_ taskIDs: Set<UUID>,
-                                          terminalsAreBusy: (Set<UUID>) -> Bool) throws {
+                                          terminalsAreBusy: @MainActor @Sendable (Set<UUID>) -> Bool) throws {
         guard !isTerminating, !hasPendingWorkspaceFileChanges,
               taskIDs.isDisjoint(with: liveRuns.keys),
               taskIDs.isDisjoint(with: changingTasks),

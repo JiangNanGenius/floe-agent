@@ -1640,11 +1640,18 @@ final class UnifiedMacSmoke {
         let remoteRoot = root.appendingPathComponent("PairedDeviceFiles", isDirectory: true)
         let leaf = "nested/receipt.txt"
         var peer: DeviceHistorySyncCenter?
+        var localWorkspace: URL?
+        var phase = "prepare"
+        var transferResults: [String: String] = [:]
         do {
             try FileManager.default.createDirectory(at: remoteRoot.appendingPathComponent("nested"), withIntermediateDirectories: true)
             let remoteFile = remoteRoot.appendingPathComponent(leaf)
             let initial = Data("Remote file v1".utf8)
             try initial.write(to: remoteFile)
+            let draftMarker = "Mac file awaiting a local edit"
+            try Data(draftMarker.utf8).write(to: remoteRoot.appendingPathComponent("edit-fixture.txt"))
+            let payload = Data(repeating: 0x28, count: 410_000) + Data(repeating: 0xd8, count: 399_700)
+            try payload.write(to: remoteRoot.appendingPathComponent("paged.bin"))
             let database = try DatabaseManager.inMemory()
             try await database.migrate()
             let store = SQLiteConversationStore(database: database)
@@ -1659,58 +1666,154 @@ final class UnifiedMacSmoke {
             }, ledgerDirectory: root.appendingPathComponent("PairedDeviceLedger")))
             peer = remote
             let (local, other) = try await pairDeviceHistoryFixtures(center, remote)
+            phase = "receivePrivateWorkspace"
             await remote.share(remoteID, with: local.id, enabled: true)
             let before = await center.remoteConversations(from: other.id)?.first(where: { $0.id == remoteID })
             let separateConsent = before != nil && before?.workspaceFiles != true
             await remote.shareWorkspace(remoteID, with: local.id, enabled: true)
             await center.receive(remoteID, from: other.id, includeWorkspace: true)
+            transferResults[phase] = String(describing: center.workspaceResult)
             let selectionPreserved = agent.selectedID == priorID
             await agent.select(remoteID)
             guard let record = agent.selectedConversationWorkspace, record.kind == .privateTask else {
                 throw DeviceHistorySyncError.unavailable
             }
             let localRoot = try MacAgentWorkspaceTools.resolvePrivateTaskRoot(record, base: agent.personalTaskLeaseBase)
+            localWorkspace = localRoot
             let localFile = localRoot.appendingPathComponent(leaf)
             let firstReceived = try Data(contentsOf: localFile) == initial
+            let pagedFileReceived = try Data(contentsOf: localRoot.appendingPathComponent("paged.bin")) == payload
 
+            phase = "sendPrivateWorkspace"
             await center.share(remoteID, with: other.id, enabled: true)
             await center.shareWorkspace(remoteID, with: other.id, enabled: true)
             let macFile = localRoot.appendingPathComponent("mac.txt")
-            try Data("Created on the Mac".utf8).write(to: macFile)
+            let localText = "Created on the Mac"
+            try Data(localText.utf8).write(to: macFile, options: .atomic)
             await remote.receive(remoteID, from: local.id, includeWorkspace: true)
-            let reverseReceived = try Data(contentsOf: remoteRoot.appendingPathComponent("mac.txt")) == Data("Created on the Mac".utf8)
+            transferResults[phase] = String(describing: remote.workspaceResult)
+            let reverseReceived = try Data(contentsOf: remoteRoot.appendingPathComponent("mac.txt")) == Data(localText.utf8)
+
+            let localEdit = Data("Local edit".utf8)
+            try Data("Remote edit during a Mac draft".utf8).write(to: remoteFile, options: .atomic)
+            phase = "openFileEditor"
+            let draftFile = localRoot.appendingPathComponent("edit-fixture.txt")
+            agent.notificationTaskID = remoteID
+            let taskDeadline = ContinuousClock.now + .seconds(3)
+            while agent.notificationTaskID != nil && ContinuousClock.now < taskDeadline {
+                try await Task.sleep(for: .milliseconds(30))
+            }
+            let pendingText = "A Mac edit still in progress."
+            var busyRejected = false
+            phase = "enterUnsavedEdit"
+            if agent.notificationTaskID == nil, agent.selectedID == remoteID, agent.windowShowsTask {
+                if !agent.smokeInspectorShown { agent.windowCommand = .init(action: .toggleFiles) }
+                let editor = await syncFixtureEditorText(at: draftFile, replacing: pendingText)
+                transferResults["fileEditor"] = "visible=\(agent.smokeInspectorShown), accepted=\(editor.accepted), \(editor.panel ?? "no panel")"
+                if let content = visibleWorkbench?.contentView { capture(content, extension: "pending-workspace-edit.png") }
+                if editor.text == pendingText, agent.hasPendingWorkspaceFileChanges {
+                    phase = "blockBusyWorkspace"
+                    await center.receive(remoteID, from: other.id, includeWorkspace: true)
+                    transferResults[phase] = String(describing: center.workspaceResult)
+                    let retainedDraft = await syncFixtureEditorText(at: draftFile)
+                    busyRejected = try center.workspaceResult == .interrupted(nil, .workspaceBusy)
+                        && agent.hasPendingWorkspaceFileChanges && Data(contentsOf: localFile) == initial
+                        && retainedDraft.text == pendingText
+                    let restored = await syncFixtureEditorText(at: draftFile, replacing: draftMarker)
+                    guard restored.text == draftMarker, !agent.hasPendingWorkspaceFileChanges else {
+                        throw DeviceHistorySyncError.busy
+                    }
+                }
+            }
 
             let unsavedRemote = Data("Remote edit".utf8)
-            let localEdit = Data("Local edit".utf8)
-            try unsavedRemote.write(to: remoteFile)
-            agent.hasPendingWorkspaceFileChanges = true
+            try unsavedRemote.write(to: remoteFile, options: .atomic)
+            try localEdit.write(to: localFile, options: .atomic)
+            phase = "resolveConflict"
             await center.receive(remoteID, from: other.id, includeWorkspace: true)
-            agent.hasPendingWorkspaceFileChanges = false
-            let busyRejected = try center.workspaceResult == .interrupted(nil, .workspaceBusy)
-                && Data(contentsOf: localFile) == initial
-
-            try localEdit.write(to: localFile)
-            await center.receive(remoteID, from: other.id, includeWorkspace: true)
-            let copies = try FileManager.default.contentsOfDirectory(at: localFile.deletingLastPathComponent(),
-                includingPropertiesForKeys: nil)
+            transferResults[phase] = String(describing: center.workspaceResult)
+            let conflicts = localRoot.appendingPathComponent("Floe Sync Conflicts", isDirectory: true)
+            let digest = FloeDigest.sha256Hex(unsavedRemote)
+            let conflict = conflicts.appendingPathComponent(digest, isDirectory: true).appendingPathComponent(leaf)
+            let conflictID = DesignFreezeRegistry.fileIdentity(of: conflict)
             let conflictPreserved = try Data(contentsOf: localFile) == localEdit
-                && copies.contains { $0 != localFile && (try? Data(contentsOf: $0)) == unsavedRemote }
+                && Data(contentsOf: conflict) == unsavedRemote
+            await center.receive(remoteID, from: other.id, includeWorkspace: true)
+            transferResults["repeatConflict"] = String(describing: center.workspaceResult)
+            let repeatedID = DesignFreezeRegistry.fileIdentity(of: conflict)
+            let copies = try FileManager.default.contentsOfDirectory(at: conflicts, includingPropertiesForKeys: nil)
+            let conflictReused = try conflictID != nil && conflictID?.inode == repeatedID?.inode
+                && conflictID?.device == repeatedID?.device && copies.map(\.lastPathComponent) == [digest]
+                && Data(contentsOf: localFile) == localEdit && Data(contentsOf: conflict) == unsavedRemote
 
+            phase = "moveToProject"
+            let projectRoot = root.appendingPathComponent("Mac Project Files", isDirectory: true)
+            try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: false)
+            guard let project = await agent.addWorkspace(name: "Mac file sync project", rootURL: projectRoot,
+                                                          selectForNewTask: false),
+                  await agent.moveTask(remoteID, to: project.id),
+                  agent.selectedConversationWorkspace?.id == project.id else {
+                throw DeviceHistorySyncError.unavailable
+            }
+            let movedOffer = await remote.remoteConversations(from: local.id)?.first { $0.id == remoteID }
+            let previousScopeRevoked = movedOffer != nil && movedOffer?.workspaceFiles != true
+            await center.shareWorkspace(remoteID, with: other.id, enabled: true)
+            let reboundOffer = await remote.remoteConversations(from: local.id)?.first { $0.id == remoteID }
+            let projectOnly = projectRoot.appendingPathComponent("project-only.txt")
+            try Data("Mac project file".utf8).write(to: projectOnly)
+            await remote.receive(remoteID, from: local.id, includeWorkspace: true)
+            let peerProjectFile = remoteRoot.appendingPathComponent(projectOnly.lastPathComponent)
+            let projectSent = try reboundOffer?.workspaceFiles == true
+                && Data(contentsOf: peerProjectFile) == Data("Mac project file".utf8)
+            let peerOnly = remoteRoot.appendingPathComponent("peer-after-move.txt")
+            let peerBytes = Data("Arrived in Mac project".utf8)
+            try peerBytes.write(to: peerOnly)
+            await center.receive(remoteID, from: other.id, includeWorkspace: true)
+            transferResults[phase] = String(describing: center.workspaceResult)
+            let projectReceipt = projectRoot.appendingPathComponent(peerOnly.lastPathComponent)
+            let priorReceipt = localRoot.appendingPathComponent(peerOnly.lastPathComponent)
+            let projectReceived = try Data(contentsOf: projectReceipt) == peerBytes
+                && !FileManager.default.fileExists(atPath: priorReceipt.path)
+
+            phase = "withdrawFileShare"
             await remote.shareWorkspace(remoteID, with: local.id, enabled: false)
             let remainingOffer = await center.remoteConversations(from: other.id)?.first(where: { $0.id == remoteID })
-            let workspaceOnlyRevoked = remainingOffer != nil && remainingOffer?.workspaceFiles != true
+            try Data("Changed after revocation".utf8).write(to: peerOnly)
+            await center.receive(remoteID, from: other.id, includeWorkspace: true)
+            transferResults[phase] = String(describing: center.workspaceResult)
+            let workspaceOnlyRevoked = try remainingOffer != nil && remainingOffer?.workspaceFiles != true
+                && center.workspaceResult == .interrupted(nil, .noLongerShared)
+                && Data(contentsOf: projectReceipt) == peerBytes
             await center.pause()
             await remote.pause()
             finish(["separateConsent": separateConsent, "selectionPreserved": selectionPreserved,
-                    "receivingRootReadBack": firstReceived, "reverseReadBack": reverseReceived,
+                    "receivingRootReadBack": firstReceived, "pagedFileReadBack": pagedFileReceived,
+                    "reverseReadBack": reverseReceived,
                     "busyMacWorkspace": busyRejected, "conflictPreserved": conflictPreserved,
-                    "workspaceOnlyRevoked": workspaceOnlyRevoked])
+                    "conflictCopyReused": conflictReused, "previousScopeRevoked": previousScopeRevoked,
+                    "projectSent": projectSent, "projectReceived": projectReceived,
+                    "workspaceOnlyRevoked": workspaceOnlyRevoked, "transferResults": transferResults])
         } catch {
             agent.hasPendingWorkspaceFileChanges = false
+            let paths = localWorkspace.flatMap { try? FileManager.default.subpathsOfDirectory(atPath: $0.path) } ?? []
             await center.pause()
             await peer?.pause()
-            finish(["finished": false, "error": String(describing: type(of: error))])
+            finish(["finished": false, "phase": phase, "error": String(describing: error),
+                    "transferResults": transferResults, "localPaths": paths.sorted()])
         }
+    }
+
+    private func syncFixtureEditorText(at url: URL, replacing text: String? = nil)
+        async -> MacWorkspaceFilesView.SyncEditorRequest {
+        let request = MacWorkspaceFilesView.SyncEditorRequest(url: url, replacement: text)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while request.text == nil && ContinuousClock.now < deadline {
+            if !request.accepted {
+                NotificationCenter.default.post(name: MacWorkspaceFilesView.syncEditorRequest, object: request)
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        return request
     }
 
     private func exerciseDeviceHistory(_ model: BridgeAppModel, usePagedPeer: Bool) async {

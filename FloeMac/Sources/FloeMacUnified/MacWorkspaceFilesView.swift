@@ -112,6 +112,24 @@ enum MacWorkspaceFilesLayout: Sendable {
 /// exchange inside a pinned directory) and the editor switches to that file,
 /// with bounded read-back verification before the save is accepted.
 struct MacWorkspaceFilesView: View {
+    #if FLOE_MAC_HOST_SMOKE
+    static let syncEditorRequest = Notification.Name("FloeMacWorkspaceFilesView.SyncEditorRequest")
+
+    @MainActor
+    final class SyncEditorRequest {
+        let url: URL
+        let replacement: String?
+        var accepted = false
+        var text: String?
+        var panel: String?
+
+        init(url: URL, replacement: String?) {
+            self.url = url
+            self.replacement = replacement
+        }
+    }
+    #endif
+
     let insertInDraft: (String) -> Void
     var canInsertInDraft: Bool
     var remembersRoot: Bool = true
@@ -246,6 +264,26 @@ struct MacWorkspaceFilesView: View {
         .task { await restoreSavedRoot() }
         .task(id: reloadID) { await loadDirectory() }
         .onChange(of: hasPendingChanges, initial: true) { _, pending in onPendingChanges?(pending) }
+        #if FLOE_MAC_HOST_SMOKE
+        .onReceive(NotificationCenter.default.publisher(for: Self.syncEditorRequest)) { notification in
+            guard let request = notification.object as? SyncEditorRequest, !request.accepted else { return }
+            request.panel = "folder=\(directory?.lastPathComponent ?? "none"), files=\(entries.map(\.name)), loading=\(loading)"
+            let requestedPath = request.url.resolvingSymlinksInPath().standardizedFileURL.path
+            guard let entry = entries.first(where: { $0.url.standardizedFileURL.path == requestedPath }),
+                  isEditableText(entry) else { return }
+            request.accepted = true
+            if editing?.entry.url != entry.url { edit(entry) }
+            Task { @MainActor in
+                let deadline = ContinuousClock.now + .seconds(2)
+                while editing?.entry.url != entry.url && ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+                guard editing?.entry.url == entry.url else { return }
+                if let replacement = request.replacement { editorBinding.wrappedValue = replacement }
+                request.text = editing?.text
+            }
+        }
+        #endif
         .onChange(of: workspaceRevision) { reloadID = UUID() }
         .onChange(of: findRequest) { _, request in
             if request != nil, directory != nil, !loading, !failed { filterFocused = true }
@@ -1367,7 +1405,9 @@ struct MacWorkspaceFilesView: View {
                 url = root
             }
             let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-            guard privateWorkspace == nil || resolved.path == url.path,
+            // Foundation can spell a pinned /private/var directory as /var.
+            // Compare its physical path with the already verified task root.
+            guard privateWorkspace == nil || MacAgentWorkspacePinSupport.physicalPath(resolved.path) == url.path,
                   FileManager.default.isReadableFile(atPath: resolved.path),
                   (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
                 return nil
@@ -2249,13 +2289,14 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
             let real = values.isSymbolicLink == false && values.isAliasFile == false
             let isFolder = real && values.isDirectory == true && values.isPackage != true
             let name = values.localizedName ?? url.lastPathComponent
+            // FileManager can return a different spelling of the same parent.
+            // Keep immediate children under the directory the browser verified.
+            let childURL = directory.appendingPathComponent(url.lastPathComponent, isDirectory: values.isDirectory == true)
             // Ownership labels apply only to the immediate folders of the
             // app-owned conversations root itself, never inside them. Keys
             // are real basenames (per-task UUIDs), not localized names.
-            let ownership = showOwnership && isFolder
-                && url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL
-                ? ownershipLabels[url.lastPathComponent] : nil
-            entries.append(MacWorkspaceFileEntry(url: url, name: name, displayName: ownership,
+            let ownership = showOwnership && isFolder ? ownershipLabels[url.lastPathComponent] : nil
+            entries.append(MacWorkspaceFileEntry(url: childURL, name: name, displayName: ownership,
                                                  folder: isFolder,
                                                  openable: real && values.isRegularFile == true))
         }
