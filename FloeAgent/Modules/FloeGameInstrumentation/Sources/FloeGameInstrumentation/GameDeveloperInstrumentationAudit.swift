@@ -66,7 +66,7 @@ public struct GameDeveloperInstrumentationAudit: Sendable, Equatable {
         switch engine {
         case .unity, .godot, .gdevelop, .cocosCreator:
             return .installerAvailable
-        case .rpgMakerMZ, .tyranoScript:
+        case .rpgMakerMZ, .tyranoScript, .kirikiri, .ons:
             return .projectInstallerMissing
         case .tic80:
             return .snapshotOnly
@@ -93,6 +93,10 @@ public struct GameDeveloperInstrumentationAudit: Sendable, Equatable {
         case .tyranoScript:
             return ("Plays the imported browser export with game-managed saves.",
                     "播放导入的网页版作品，并通过游戏内菜单管理存档。")
+        case .kirikiri:
+            return ("KiriKiri manages its own saves in the native player.", "吉里吉里在原生播放器内管理存档。")
+        case .ons:
+            return ("ONScripter games can be identified and opened as project files.", "可识别并打开 ONScripter 工程文件。")
         case .gdevelop:
             return ("Automated installer available. It records the exact bridge in the project and never rewrites game.json; the exporter/run preparer stamps the same reviewed bytes into the private playable copy. An already-exported playable game needs no re-export. Live fields cover scene, time scale, elapsed time, declared primitive variables and first-scene object positions; unavailable shapes fail honestly.",
                     "已提供自动安装器。它只在工程中记录精确桥文件，绝不改写 game.json；导出器/运行准备器把同样的审核字节写入私有试玩副本。已导出的可玩游戏无需再导出。实时字段覆盖场景、时间缩放、运行时间、已声明原始变量和首场景对象位置；不支持的结构会明确失败。")

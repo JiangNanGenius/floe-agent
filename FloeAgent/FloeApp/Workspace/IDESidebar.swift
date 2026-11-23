@@ -20,7 +20,7 @@ import SwiftUI
 import FloeCore
 import FloeWorkspace
 
-enum IDESidebarMode: String, Identifiable, CaseIterable {
+enum IDESidebarMode: String, Identifiable, CaseIterable, Sendable {
     case files
     case search
     case sourceControl
@@ -133,33 +133,30 @@ struct IDESidebar: View {
                 .background(.bar)
                 .accessibilityIdentifier("workspace.ide.sidebar.ownershipNotice")
             }
-            switch mode {
-            case .files, .search:
-                // Files and search share one tree view model so typing a
-                // query never rescans from a second enumeration of the tree.
-                FileTreeView(viewModel: tree, showsToolbar: mode == .search, dense: true) { path in
-                    onOpenFile(path)
-                }
-                .task { await tree.loadRoot() }
-                .disabled(!pinnedWorkspaceIsCurrent)
-                .accessibilityIdentifier(mode == .search ? "workspace.ide.sidebar.search" : "workspace.ide.sidebar.files")
-            case .sourceControl:
-                // The ordinary source-control surface, pinned to the
-                // workspace this IDE was opened for: one refresh per pinned
-                // workspace identity, its own error alert, and a read-only
-                // lock (with no refresh and no writes) after a switch.
-                SourceControlView(
-                    center: sourceControl,
-                    pinnedRootURL: pinnedRootURL
-                )
-                .id(workspaceID?.uuidString ?? "no-workspace")
-            }
+            modeContent.floeRouteFade(mode)
         }
         .background(FloeTheme.readingSurface)
         // An explicit container keeps the sidebar itself discoverable; without
         // it SwiftUI inherits the identifier into every child.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.ide.sidebar")
+    }
+
+    @ViewBuilder
+    private var modeContent: some View {
+        switch mode {
+        case .files, .search:
+            // Files and search share a single file tree.
+            FileTreeView(viewModel: tree, showsToolbar: mode == .search, dense: true) { path in
+                onOpenFile(path)
+            }
+            .task { await tree.loadRoot() }
+            .disabled(!pinnedWorkspaceIsCurrent)
+            .accessibilityIdentifier(mode == .search ? "workspace.ide.sidebar.search" : "workspace.ide.sidebar.files")
+        case .sourceControl:
+            SourceControlView(center: sourceControl, pinnedRootURL: pinnedRootURL)
+                .id(workspaceID?.uuidString ?? "no-workspace")
+        }
     }
 
     private func refresh() {
@@ -178,21 +175,28 @@ struct IDESidebar: View {
 /// Compact-width presentation: a slide-over drawer over the workbench with a
 /// dismiss scrim, so iPhone keeps the editor visible underneath.
 struct IDESidebarDrawer<Content: View>: View {
+    let mode: IDESidebarMode?
     var onDismiss: () -> Void
-    @ViewBuilder var content: () -> Content
+    @ViewBuilder var content: (IDESidebarMode) -> Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .leading) {
-            Color.black.opacity(0.25)
-                .ignoresSafeArea()
-                .onTapGesture { onDismiss() }
-                .accessibilityLabel(IDELanguageRunText.t("关闭侧边栏", "Close sidebar"))
-            content()
-                .frame(width: 320)
-                .frame(maxHeight: .infinity)
-                .background(FloeTheme.readingSurface)
-                .transition(.move(edge: .leading))
+            if let mode {
+                Color.black.opacity(0.25)
+                    .ignoresSafeArea()
+                    .onTapGesture { onDismiss() }
+                    .accessibilityLabel(IDELanguageRunText.t("关闭侧边栏", "Close sidebar"))
+                    .transition(reduceMotion ? .identity : .opacity)
+                content(mode)
+                    .frame(width: 320)
+                    .frame(maxHeight: .infinity)
+                    .background(FloeTheme.readingSurface)
+                    .transition(FloeTheme.panelTransition(from: .leading, reduceMotion: reduceMotion))
+            }
         }
+        .allowsHitTesting(mode != nil)
+        .accessibilityHidden(mode == nil)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.ide.sidebar.drawer")
     }

@@ -335,7 +335,8 @@ final class VoiceRig {
 
     init(speechNormalizer: @escaping @Sendable (String) -> String = { $0 },
          timing: VoiceConversationCoordinator.Timing = .init(),
-         diagnostics: (any VoiceConversationDiagnostics)? = nil) {
+         diagnostics: (any VoiceConversationDiagnostics)? = nil,
+         supportsStreamingSpeech: @escaping @Sendable () -> Bool = { false }) {
         coordinator = VoiceConversationCoordinator(
             authorization: auth,
             makeStack: { [weak self] in
@@ -361,7 +362,8 @@ final class VoiceRig {
             clock: clock,
             diagnostics: diagnostics,
             timing: timing,
-            speechNormalizer: speechNormalizer
+            speechNormalizer: speechNormalizer,
+            supportsStreamingSpeech: supportsStreamingSpeech
         )
         log.start(coordinator.speechEvents)
     }
@@ -433,6 +435,34 @@ final class VoiceRig {
 @MainActor
 @Suite("Continuous voice coordinator state machine")
 struct VoiceConversationTests {
+
+    @Test("Streaming synthesis supplies successive model updates before the round completes", .timeLimit(.minutes(1)))
+    func streamingSpeechProducesDeltasBeforeModelCompletion() async throws {
+        let rig = VoiceRig(supportsStreamingSpeech: { true })
+        await rig.coordinator.start()
+        await rig.say("请解释一下这个功能")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        let token = try #require(rig.coordinator.currentRound)
+        let first = "这是模型仍在生成时发出的第一段文字，请先朗读这一段。"
+        let second = "第二段随后送到，同一条语音连接会继续读取这段文字。"
+        rig.driving.emit(token, .finalAnswerUpdated(cumulativeText: first))
+        let ready = await rig.waitUntil(1_000) { rig.log.units.count == 1 }
+        try #require(ready)
+        let supply = try #require(rig.log.units.first?.textStream)
+        var iterator = supply.makeAsyncIterator()
+        #expect(await iterator.next() == first)
+        rig.driving.emit(token, .finalAnswerUpdated(cumulativeText: first + second))
+        #expect(await iterator.next() == second)
+        #expect(rig.log.roundTextCompleted == nil)
+        rig.driving.emit(token, .completed(fullText: first + second))
+        #expect(await iterator.next() == nil)
+        await rig.playQueued()
+        rig.stack.stepPlayed(frames: 100)
+        let ended = await rig.waitUntil(1_000) { rig.driving.receipts.last?.status == .completed }
+        try #require(ended)
+        #expect(rig.driving.receipts.last?.spokenText == first + second)
+    }
 
     @Test("Happy path: endpoint sends once, confirmed body speaks, receipt is completed")
     func happyPath() async {

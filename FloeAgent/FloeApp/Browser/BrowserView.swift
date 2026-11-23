@@ -21,7 +21,13 @@ struct BrowserView: View {
         .fullScreenCover(isPresented: $expanded) {
             surface
         }
-        .task(id: center.conversationID) { await center.recoverHandoff() }
+        // The owning thread binds with `prepareSession: false`, so the browser
+        // surface itself prepares the visible task's session when it actually
+        // appears (and whenever the visible task changes while it is shown).
+        .task(id: center.conversationID) {
+            center.prepareVisibleSession()
+            await center.recoverHandoff()
+        }
         .navigationTitle("browser.title")
         .navigationBarTitleDisplayMode(.inline)
     }

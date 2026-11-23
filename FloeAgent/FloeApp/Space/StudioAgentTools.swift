@@ -1405,10 +1405,10 @@ enum StudioToolOutput {
         defer { fileUse.release() }
         try context.cancellation.throwIfCancelled()
         if toolID == "video.importFrames" {
-            guard location.record.kind == .video, let workspaceRoot = context.workspaceRootURL else { throw PersonalContentError.invalidProject }
+            guard location.record.kind == .video else { throw PersonalContentError.invalidProject }
             let input = try StudioMediaSourceContracts.decodeFrames(inputJSON)
-            let source = try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context)
-            guard let sha = input.source.expectedSHA256 else { throw PersonalContentError.invalidProject }
+            let source = try input.source.map { try StudioMediaSourceContracts.workspaceURL($0.workspacePath, context: context) }
+            let sourceDigest = try input.sourceDigest()
             let groupID = Self.requestID(context)
             let hash = SHA256.hash(data: Data(groupID.uuidString.utf8) + (try StudioToolOutput.data(input)))
             let bytes = Array(hash.prefix(16))
@@ -1422,8 +1422,8 @@ enum StudioToolOutput {
                 }
                 changed(id)
                 return try StudioToolOutput.make(StudioFrameImportReceipt(documentID: id, revision: imported.commit.revision,
-                    groupID: imported.commit.groupID, assetID: imported.asset.id, sourceWorkspacePath: input.source.workspacePath,
-                    sourceSHA256: sha, sha256: outputHash, byteCount: imported.asset.byteCount ?? 0,
+                    groupID: imported.commit.groupID, assetID: imported.asset.id, sourceWorkspacePath: input.source?.workspacePath,
+                    sourceSHA256: sourceDigest, sha256: outputHash, byteCount: imported.asset.byteCount ?? 0,
                     width: input.width, height: input.height, frameRate: input.frameRate, frameCount: input.frameCount,
                     replayed: imported.replayed, journalStatus: imported.journalStatus.rawValue,
                     sessionRefreshPending: imported.refreshPending, libraryRefreshPending: refreshPending))
@@ -1432,11 +1432,13 @@ enum StudioToolOutput {
                 return try await receipt(replay)
             }
             guard session.document.revision == input.expectedRevision else { throw MediaPreparedCoreError.documentChanged }
-            let spec = StudioFrameSequenceEncoder.Specification(width: input.width, height: input.height,
-                frameRate: input.frameRate, frameCount: input.frameCount, expectedSHA256: sha)
+            let spec = input.specification
+            let program = input.pixelProgram
+            let workspaceRoot = context.workspaceRootURL
             let cancellation = context.cancellation
             let work = Task.detached(priority: .userInitiated) {
-                try await StudioFrameSequenceEncoder.encode(source: source, workspaceRoot: workspaceRoot, spec: spec, cancellation: cancellation)
+                try await StudioFrameSequenceEncoder.encode(source: source, workspaceRoot: workspaceRoot, spec: spec,
+                    pixelProgram: program, cancellation: cancellation)
             }
             let encoded = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
             defer { try? FileManager.default.removeItem(at: encoded.url) }
@@ -1445,8 +1447,8 @@ enum StudioToolOutput {
                 validateSource: { @MainActor in
                     try cancellation.throwIfCancelled()
                     let current = try await self.location(id, context: context, editing: true)
-                    guard current.url == location.url, current.record.kind == .video,
-                          try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context) == source else {
+                    let currentSource = try input.source.map { try StudioMediaSourceContracts.workspaceURL($0.workspacePath, context: context) }
+                    guard current.url == location.url, current.record.kind == .video, currentSource == source else {
                         throw PersonalContentError.changedDocument
                     }
                 }, identity: identity)
@@ -1692,7 +1694,7 @@ private struct StudioMediaImportReceipt: Encodable {
 private struct StudioFrameImportReceipt: Encodable {
     let toolID = "video.importFrames"
     let documentID: UUID; let revision: Int64; let groupID: UUID; let assetID: UUID
-    let sourceWorkspacePath: String; let sourceSHA256: String; let sha256: String; let byteCount: Int64
+    let sourceWorkspacePath: String?; let sourceSHA256: String; let sha256: String; let byteCount: Int64
     let width: Int; let height: Int; let frameRate: Int; let frameCount: Int
     let replayed: Bool; let journalStatus: String
     let sessionRefreshPending: Bool; let libraryRefreshPending: Bool
@@ -1863,7 +1865,7 @@ private struct StudioRunTool: AgentTool {
 private struct StudioMediaTool: AgentTool {
     struct Arguments: Decodable, Sendable { let projectID: UUID; let toolID: String; let inputJSON: String }
     static let name = "studio.media"
-    static let toolDescription = "Run one actually implemented native image/drawing/video command. Read studio.read and its complete typed example first. inputJSON is ONE object with required expectedRevision (the current studio.read decimal revision, string or integer); objectID is a UUID string, objectIDs an array of image-layer UUID strings, clipIDs an array of video-clip UUID strings for video.nest, compoundID an optional anchor clip UUID selecting an editable source inside this SAME original, number/secondary/start/duration are numbers, text/color/property are strings, flag is boolean and points is an array of {x:number,y:number}. Video captionStyle is an optional CaptionStyle object; it affects all captions. Use actual object IDs to edit, never invent reduced nested types. Unavailable catalog entries cannot execute. Uses the existing coordinator, revision guard, undo and renderer. Host command media.import accepts {expectedRevision,source:{workspacePath,expectedSHA256?}} for this task's authorized relative file (including existing Attachments paths). It copies into this original and commits through the same undo/CAS coordinator; it never reads arbitrary host/App Documents paths or unbound tokens. No shell or code input. Music originals also accept explicit host toolID=music.import with {expectedRevision,source:{workspacePath,expectedSHA256?}} from this task; it imports real WAV/CAF/AIFF/MP3/M4A or SMF MIDI bytes through the native repository and returns actual asset/track/clip IDs. For video.importFrames, read studio.read editFormat for the bounded packed BGRA frame sequence contract; generate the task-relative data file with exec.shell in the resolved Linux environment. Read studio.read hostToolIDs and editFormat; never mint asset metadata without its original bytes."
+    static let toolDescription = "Run one actually implemented native image/drawing/video command. Read studio.read and its complete typed example first. inputJSON is ONE object with required expectedRevision (the current studio.read decimal revision, string or integer); objectID is a UUID string, objectIDs an array of image-layer UUID strings, clipIDs an array of video-clip UUID strings for video.nest, compoundID an optional anchor clip UUID selecting an editable source inside this SAME original, number/secondary/start/duration are numbers, text/color/property are strings, flag is boolean and points is an array of {x:number,y:number}. Video captionStyle is an optional CaptionStyle object; it affects all captions. Use actual object IDs to edit, never invent reduced nested types. Unavailable catalog entries cannot execute. Uses the existing coordinator, revision guard, undo and renderer. Host command media.import accepts {expectedRevision,source:{workspacePath,expectedSHA256?}} for this task's authorized relative file (including existing Attachments paths). It copies into this original and commits through the same undo/CAS coordinator; it never reads arbitrary host/App Documents paths or unbound tokens. No shell or code input. Music originals also accept explicit host toolID=music.import with {expectedRevision,source:{workspacePath,expectedSHA256?}} from this task; it imports real WAV/CAF/AIFF/MP3/M4A or SMF MIDI bytes through the native repository and returns actual asset/track/clip IDs. For video.importFrames, read studio.read editFormat to use an authorized packed BGRA file or a native per-pixel color expression. Read studio.read hostToolIDs and editFormat; never mint asset metadata without its original bytes."
     static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"toolID":{"type":"string"},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","toolID","inputJSON"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true

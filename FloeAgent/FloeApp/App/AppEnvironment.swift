@@ -114,7 +114,7 @@ final class AppEnvironment: ObservableObject {
         let workspace = DeviceWorkspaceSyncHost(resolve: { [weak self] conversationID, receiving in
             guard let self else { throw DeviceHistorySyncError.unavailable }
             return try await self.workspaceCenter.acquireDeviceWorkspaceRoot(conversationID: conversationID, receiving: receiving)
-        }, ledgerDirectory: folder, didImport: { [weak self] conversationID in
+        }, ledgerDirectory: folder, canPropagateWorkspaceChanges: true, didImport: { [weak self] conversationID in
             await self?.workspaceCenter.deviceWorkspaceDidImport(conversationID: conversationID)
         })
         return DeviceHistorySyncHost(store: store, workspaceHost: workspace) { [weak self] conversationID in

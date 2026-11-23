@@ -154,6 +154,29 @@ struct GoalCompletionReceiptTests {
             payloadJSON: payload(["state": "completed"]))
     }
 
+    @Test("Foreground resumes a saved round's automatic verification exactly once")
+    func foregroundResumesSavedVerification() async throws {
+        let f = try await fixture()
+        var goal = try await seed(f)
+        let runID = try await prepare(f, goal: goal)
+        _ = try await receipt(f, runID: runID, call: "foreground-review")
+        try await finish(f, runID: runID)
+        goal.status = .verifying
+        try #require(try await f.environment.intelligenceStore.saveGoalIfRevisionMatches(goal, expectedRevision: goal.revision ?? 1))
+
+        await f.center.resumeSafeRunsAfterForeground()
+        await f.center.resumeSafeRunsAfterForeground()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while try await f.environment.intelligenceStore.goal(id: goal.id)?.status == .verifying,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(try await f.environment.intelligenceStore.goal(id: goal.id)?.status == .completed)
+        #expect(f.spy.reviews.count == 1)
+        #expect(try await f.environment.runStore.runs(conversationID: f.conversationID).map(\.id) == [runID])
+        try await f.center.deleteConversation(id: f.conversationID)
+    }
+
     @Test("Already-durable mixed-typed receipts are reviewed with their original IDs; old output and undispatched/preparation results are excluded")
     func persistedMixedReceiptsStillReachReview() async throws {
         let f = try await fixture()

@@ -183,6 +183,12 @@ final class WorkspaceCenter: ObservableObject {
         return id
     }
 
+    func readProjectWorkspaceID(for conversationID: UUID) async throws -> UUID? {
+        guard let workspace = try await store.ownedWorkspace(conversationID: conversationID),
+              workspace.kind == .project else { return nil }
+        return workspace.id
+    }
+
     /// Ensures a Drawing Assistant review conversation has a canonical
     /// execution workspace BEFORE its first run. `RunLaunchStore` is
     /// fail-closed for an existing conversation without an ownership row —

@@ -12,6 +12,7 @@
 import SwiftUI
 import UIKit
 import AVFoundation
+import Combine
 import FloeCore
 import FloeModels
 import FloePersistence
@@ -431,6 +432,7 @@ struct RootView: View {
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("floe.settings.appearance") private var appearanceValue = "system"
     /// SceneStorage belongs to one WindowGroup content instance even though
     /// navigation and the environment remain app-wide shared objects.
@@ -465,7 +467,7 @@ struct RootView: View {
     /// session identities below. Never persisted across hardware.
     @StateObject private var foldableSupport = FoldableDisplayState()
     @State private var iPadWindowWidth: CGFloat = 0
-    @State private var inspectorAvailableHeight: CGFloat = 0
+    @State private var inspectorPreviewSpace: InspectorPreviewSpace = .none
     /// Linux session/service deep link destination, optionally focused on the
     /// environment the notification came from.
     private struct ExecutionEnvironmentRequest: Identifiable {
@@ -488,6 +490,16 @@ struct RootView: View {
     @State private var presentedDestination: ImportDestinationRequest?
     @State private var lastPresentedDestination: ImportDestinationRequest?
     @State private var destinationNoticeTask: Task<Void, Never>?
+
+    private enum InspectorPreviewSpace: Equatable, Sendable {
+        case none, controls, image
+
+        init(height: CGFloat) {
+            if height >= 550 { self = .image }
+            else if height >= 330 { self = .controls }
+            else { self = .none }
+        }
+    }
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -676,15 +688,6 @@ struct RootView: View {
                 // active notifications and settings entry never do.
                 Task { await environment.voiceRecognitionPreload.activate(
                     foreground: true, persistenceReady: true) }
-                Task {
-                    try? await environment.configurationSync.synchronize()
-                    await environment.conversationCenter.reload()
-                    // Guest git writes through 9p cannot post a host
-                    // notification; re-reading here makes those changes (and
-                    // anything else that landed while suspended) visible in
-                    // an open source-control pane.
-                    await environment.sourceControlCenter.refreshOnForeground()
-                }
             }
             if newPhase == .active || newPhase == .background {
                 // App state avoids retiring a shared model when another window
@@ -1428,6 +1431,7 @@ struct RootView: View {
     private var iPhoneRoot: some View {
         GeometryReader { proxy in
             let drawerWidth = min(390, max(300, proxy.size.width - 44))
+            let inspector = presentableInspectorRoute
             // Top safe area is respected by this GeometryReader, so neither
             // the content column nor the drawer collides with the system
             // status bar. Overlay scrims and drawer backgrounds still extend
@@ -1454,28 +1458,31 @@ struct RootView: View {
                     sidebarColumn
                 }
 
-                if let route = presentableInspectorRoute {
-                    Color.black.opacity(0.18)
-                        .ignoresSafeArea()
-                        .onTapGesture { router.hideInspector() }
-                    NavigationStack { InspectorColumnView(route: route).id(route.id) }
-                        .frame(width: drawerWidth, height: proxy.size.height)
-                        .background(FloeTheme.readingSurface)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .transition(.move(edge: .trailing))
-                        .shadow(radius: 12)
-                        .accessibilityIdentifier("phone.inspector.drawer")
+                ZStack(alignment: .trailing) {
+                    if let route = inspector {
+                        Color.black.opacity(0.18)
+                            .ignoresSafeArea()
+                            .onTapGesture { router.hideInspector() }
+                            .transition(reduceMotion ? .identity : .opacity)
+                        NavigationStack { InspectorColumnView(route: route).id(route.id) }
+                            .floeRouteFade(route)
+                            .frame(width: drawerWidth, height: proxy.size.height)
+                            .background(FloeTheme.readingSurface)
+                            .shadow(radius: 12)
+                            .transition(FloeTheme.panelTransition(from: .trailing, reduceMotion: reduceMotion))
+                            .accessibilityIdentifier("phone.inspector.drawer")
+                    }
                 }
+                .animation(FloeTheme.panelAnimation(reduceMotion: reduceMotion), value: inspector != nil)
             }
-            .animation(.snappy, value: router.inspectorRoute)
         }
         .onChange(of: router.workbenchSelection) { _, _ in
-            withAnimation(.snappy) { isPhoneSidebarOpen = false }
+            isPhoneSidebarOpen = false
         }
         .onChange(of: router.sidebarSelection) { _, _ in
             // Creative mode and plugins change the sidebar route without
             // changing the selected task. Close the phone drawer for them too.
-            withAnimation(.snappy) { isPhoneSidebarOpen = false }
+            isPhoneSidebarOpen = false
         }
     }
 
@@ -1488,39 +1495,46 @@ struct RootView: View {
         NavigationSplitView(columnVisibility: $router.columnVisibility) {
             sidebarColumn
                 .collapseSidebarOnRightSwipe {
-                    withAnimation(.snappy) {
+                    withAnimation(FloeTheme.panelAnimation(reduceMotion: reduceMotion)) {
                         router.columnVisibility = .detailOnly
                     }
                 }
         } detail: {
+            let inspector = presentableInspectorRoute
             HStack(spacing: 0) {
                 contentColumn.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .environment(\.showsComposerBrowserPreview, ordinaryBrowserPreviewVisible &&
                         !showsBrowserInFilePane && presentableInspectorRoute?.content != .browser)
-                if let inspectorRoute = presentableInspectorRoute {
-                    Divider()
+                if let inspectorRoute = inspector {
                     VStack(spacing: 0) {
                         InspectorPaneHeader(content: inspectorRoute.content) {
-                            withAnimation(.snappy) { router.hideInspector() }
+                            router.hideInspector()
                         }
                         NavigationStack {
                             InspectorColumnView(route: inspectorRoute, embedded: true).id(inspectorRoute.id)
                         }
+                        .floeRouteFade(inspectorRoute)
                         if showsBrowserInFilePane {
                             TaskBrowserLivePreview(center: environment.browserCenter,
                                                   conversationID: inspectorRoute.conversationID,
-                                                  inlineImage: inspectorAvailableHeight >= 550)
+                                                  inlineImage: inspectorPreviewSpace == .image)
                         }
                     }
                     .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                        inspectorAvailableHeight = height
+                    .onGeometryChange(for: InspectorPreviewSpace.self) {
+                        InspectorPreviewSpace(height: $0.size.height)
+                    } action: { space in
+                        inspectorPreviewSpace = space
                     }
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(FloeTheme.separator).frame(width: 1).allowsHitTesting(false)
+                    }
+                    .transition(FloeTheme.panelTransition(from: .trailing, reduceMotion: reduceMotion))
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("ipad.inspector.column")
                 }
             }
+            .animation(FloeTheme.panelAnimation(reduceMotion: reduceMotion), value: inspector != nil)
             .toolbar {
                 if let route = presentableInspectorRoute {
                     ToolbarItem(placement: .principal) {
@@ -1531,7 +1545,6 @@ struct RootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .animation(.snappy, value: router.inspectorRoute)
         .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.width } action: { width in
             iPadWindowWidth = width
             keepInspectorColumnsReadable()
@@ -1546,7 +1559,7 @@ struct RootView: View {
     private var showsBrowserInFilePane: Bool {
         // The small-height pane reserves its file toolbar and at least one 44pt file row.
         // The surrounding task surface keeps presenting an open browser across this layout change.
-        guard ordinaryBrowserPreviewVisible, iPadWindowWidth >= 900, inspectorAvailableHeight >= 330,
+        guard ordinaryBrowserPreviewVisible, iPadWindowWidth >= 900, inspectorPreviewSpace != .none,
               let route = presentableInspectorRoute,
               route.conversationID == router.selectedConversationID else { return false }
         return route.content == .workspaceFiles || route.content == .changes
@@ -1566,8 +1579,8 @@ struct RootView: View {
     /// Shared information architecture. NavigationSplitView projects this
     /// as a first column on iPad and a native drawer on iPhone.
     private var sidebarColumn: some View {
-        SidebarObservationHost(center: environment.conversationCenter, workspaces: environment.workspaceCenter) {
-            sidebarContent
+        SidebarObservationHost(center: environment.conversationCenter, workspaces: environment.workspaceCenter) { history in
+            sidebarContent(history)
         }
         .navigationSplitViewColumnWidth(
             min: LayoutSettings.sidebarMinimumWidth,
@@ -1575,7 +1588,7 @@ struct RootView: View {
             max: LayoutSettings.sidebarMaximumWidth)
     }
 
-    private var sidebarContent: some View {
+    private func sidebarContent(_ history: SidebarConversationIndex) -> some View {
         VStack(spacing: 0) {
             List(selection: $router.sidebarSelection) {
                 Section {
@@ -1595,9 +1608,11 @@ struct RootView: View {
                         .tag(SidebarSelection.more(.skills))
                         .accessibilityIdentifier("sidebar.skills")
                 }
-                if !environment.workspaceCenter.projectWorkspaces.isEmpty {
+                if !history.projects.isEmpty {
                     Section("workspace.title") {
-                        ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
+                        ForEach(history.projects) { workspace in
+                            let _ = canvasPresenceRevision
+                            let hasCanvas = WorkspaceCanvasRegistry.exists(workspaceID: workspace.id)
                             DisclosureGroup(
                                 isExpanded: Binding(
                                     get: { expandedWorkspaceIDs.contains(workspace.id) },
@@ -1607,7 +1622,7 @@ struct RootView: View {
                                     }
                                 )
                             ) {
-                                if WorkspaceCanvasRegistry.exists(workspaceID: workspace.id) {
+                                if hasCanvas {
                                     Button {
                                         presentedCanvasWorkspace = workspace
                                     } label: {
@@ -1616,7 +1631,7 @@ struct RootView: View {
                                     .buttonStyle(.plain)
                                     .accessibilityIdentifier("sidebar.workspace.canvas.\(workspace.id.uuidString)")
                                 }
-                                ForEach(conversations(in: workspace.id)) { conversation in
+                                ForEach(history.byProject[workspace.id] ?? []) { conversation in
                                     conversationSidebarRow(conversation)
                                 }
                             } label: {
@@ -1631,7 +1646,7 @@ struct RootView: View {
                                     }
                                     .buttonStyle(.plain)
                                     Spacer(minLength: 4)
-                                    workspaceAddControl(workspace)
+                                    workspaceAddControl(workspace, hasCanvas: hasCanvas)
                                 }
                             }
                             .accessibilityIdentifier("sidebar.workspace.\(workspace.id.uuidString)")
@@ -1645,9 +1660,9 @@ struct RootView: View {
                         }
                     }
                 }
-                if !chatConversations.isEmpty {
+                if !history.chats.isEmpty {
                     Section("settings.all_workspaces_files_view.chat") {
-                        ForEach(chatConversations) { conversation in
+                        ForEach(history.chats) { conversation in
                             conversationSidebarRow(conversation)
                         }
                     }
@@ -1686,9 +1701,9 @@ struct RootView: View {
             if inlineSelection.isActive {
                 InlineSelectionEditingToolbar(
                     model: inlineSelection,
-                    visibleIDs: { inlineSidebarVisibleIDs },
+                    visibleIDs: { inlineSidebarVisibleIDs(history) },
                     center: environment.conversationCenter,
-                    selectedItems: { inlineSidebarSelectedItems },
+                    selectedItems: { inlineSidebarSelectedItems(history) },
                     onRename: { conversationID in
                         if let record = environment.conversationCenter.conversations.first(
                             where: { $0.id == conversationID }) {
@@ -1696,7 +1711,7 @@ struct RootView: View {
                         }
                     },
                     moveTargets: {
-                        environment.workspaceCenter.projectWorkspaces.map {
+                        history.projects.map {
                             InlineMoveTarget(id: $0.id, name: $0.name)
                         }
                     },
@@ -1741,13 +1756,10 @@ struct RootView: View {
                 await environment.conversationCenter.reload()
             }
         )
-        .onChange(of: environment.conversationCenter.conversations.map(\.id)) { _, _ in
-            inlineSelection.pruneInvisible(inlineSidebarVisibleIDs)
-        }
-        .onChange(of: expandedWorkspaceIDs) { _, _ in
-            // Collapsing a project hides its rows: invisible selections
-            // must not stay pending.
-            inlineSelection.pruneInvisible(inlineSidebarVisibleIDs)
+        .onChange(of: inlineSelection.isActive ? inlineSidebarVisibleIDs(history) : []) { _, ids in
+            if inlineSelection.isActive {
+                inlineSelection.pruneInvisible(ids)
+            }
         }
     }
 
@@ -1806,20 +1818,6 @@ struct RootView: View {
             await environment.conversationCenter.endTemporaryChat(
                 expectedConversationID: visibleID,
                 expectedIncarnation: incarnation)
-        }
-    }
-
-    private func conversations(in workspaceID: UUID) -> [ConversationRecord] {
-        environment.conversationCenter.conversations.filter {
-            environment.workspaceCenter.workspaceID(for: $0.id) == workspaceID
-        }
-    }
-
-    private var chatConversations: [ConversationRecord] {
-        let privateIDs = Set(environment.workspaceCenter.workspaces
-            .filter { $0.kind == .privateTask }.map(\.id))
-        return environment.conversationCenter.conversations.filter {
-            environment.workspaceCenter.workspaceID(for: $0.id).map(privateIDs.contains) == true
         }
     }
 
@@ -1946,32 +1944,19 @@ struct RootView: View {
     /// Sidebar conversation rows the user can currently see: expanded
     /// project workspaces plus the Chat section. Collapsed rows are NOT
     /// visible and are pruned from any pending selection.
-    private var inlineSidebarVisibleRecords: [ConversationRecord] {
-        var records: [ConversationRecord] = []
-        for workspace in environment.workspaceCenter.projectWorkspaces
-        where expandedWorkspaceIDs.contains(workspace.id) {
-            records.append(contentsOf: conversations(in: workspace.id))
-        }
-        records.append(contentsOf: chatConversations)
-        return records
+    private func inlineSidebarVisibleIDs(_ history: SidebarConversationIndex) -> Set<UUID> {
+        Set(history.visibleRecords(expandedProjectIDs: expandedWorkspaceIDs).map(\.id))
     }
 
-    private var inlineSidebarVisibleIDs: Set<UUID> {
-        Set(inlineSidebarVisibleRecords.map(\.id))
-    }
-
-    private var inlineSidebarSelectedItems: [TaskBulkItem] {
-        inlineSidebarVisibleRecords
+    private func inlineSidebarSelectedItems(_ history: SidebarConversationIndex) -> [TaskBulkItem] {
+        history.visibleRecords(expandedProjectIDs: expandedWorkspaceIDs)
             .filter { inlineSelection.selectedIDs.contains($0.id) }
             .map { TaskBulkItem(id: $0.id, title: InlineSelectionCopy.untitled($0.title)) }
     }
 
     @ViewBuilder
-    private func workspaceAddControl(_ workspace: WorkspaceRecord) -> some View {
-        // Reading this state makes explicit creation immediately re-project
-        // the optional CanvasProject child without a database refresh.
-        let _ = canvasPresenceRevision
-        if WorkspaceCanvasRegistry.exists(workspaceID: workspace.id) {
+    private func workspaceAddControl(_ workspace: WorkspaceRecord, hasCanvas: Bool) -> some View {
+        if hasCanvas {
             Button {
                 router.startNewTask(workspaceID: workspace.id)
             } label: {
@@ -2010,9 +1995,14 @@ struct RootView: View {
 
     /// Column 2 renders the canonical workbench selection or the selected
     /// primary/More destination.
-    @ViewBuilder
     private var contentColumn: some View {
-        switch router.sidebarSelection ?? .workbench(router.workbenchSelection) {
+        let destination = router.sidebarSelection ?? .workbench(router.workbenchSelection)
+        return destinationContent(destination).floeRouteFade(destination)
+    }
+
+    @ViewBuilder
+    private func destinationContent(_ destination: SidebarSelection) -> some View {
+        switch destination {
         case .workbench(let selection):
             switch selection {
             case .overview:
@@ -2193,9 +2183,7 @@ private struct InspectorColumnView: View {
         .toolbar {
             if !embedded {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.trailing") {
-                        withAnimation(.snappy) { router.hideInspector() }
-                    }
+                    Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.trailing", action: router.hideInspector)
                     .accessibilityIdentifier("inspector.collapse")
                 }
             }
@@ -2430,13 +2418,86 @@ private struct TaskRenameSheet: View {
     }
 }
 
-/// Observe nested stores at the sidebar boundary, not the whole chat tree.
-/// Reading them through AppEnvironment alone does not subscribe to updates.
+struct SidebarConversationIndex: Equatable, Sendable {
+    let projects: [WorkspaceRecord]
+    let byProject: [UUID: [ConversationRecord]]
+    let chats: [ConversationRecord]
+
+    init(conversations: [ConversationRecord], workspaces: [WorkspaceRecord], owners: [UUID: UUID]) {
+        projects = workspaces.filter { $0.kind == .project }
+        let projectIDs = Set(projects.map(\.id))
+        let privateIDs = Set(workspaces.lazy.filter { $0.kind == .privateTask }.map(\.id))
+        var grouped: [UUID: [ConversationRecord]] = [:]
+        var ungrouped: [ConversationRecord] = []
+        // Iterating in recency order preserves the order in every section.
+        for conversation in conversations {
+            guard let owner = owners[conversation.id] else { continue }
+            if privateIDs.contains(owner) {
+                ungrouped.append(conversation)
+            } else if projectIDs.contains(owner) {
+                grouped[owner, default: []].append(conversation)
+            }
+        }
+        byProject = grouped
+        chats = ungrouped
+    }
+
+    func visibleRecords(expandedProjectIDs: Set<UUID>) -> [ConversationRecord] {
+        var records: [ConversationRecord] = []
+        for project in projects where expandedProjectIDs.contains(project.id) {
+            records.append(contentsOf: byProject[project.id] ?? [])
+        }
+        records.append(contentsOf: chats)
+        return records
+    }
+}
+
+@MainActor
+private final class SidebarHistoryModel: ObservableObject {
+    @Published private(set) var index: SidebarConversationIndex
+    private var observation: AnyCancellable?
+
+    init(center: ConversationCenter, workspaces: WorkspaceCenter) {
+        index = SidebarConversationIndex(
+            conversations: center.conversations,
+            workspaces: workspaces.workspaces,
+            owners: workspaces.conversationWorkspaceIDs
+        )
+        observation = Publishers.Merge3(
+            center.$conversations.removeDuplicates().dropFirst().map { _ in () },
+            workspaces.$workspaces.removeDuplicates().dropFirst().map { _ in () },
+            workspaces.$conversationWorkspaceIDs.removeDuplicates().dropFirst().map { _ in () }
+        )
+        // The workspace reload publishes records and ownership in the same
+        // turn. Read both committed fields together after those emissions.
+        .debounce(for: .zero, scheduler: DispatchQueue.main)
+        .sink { [weak self, weak center, weak workspaces] in
+            guard let self, let center, let workspaces else { return }
+            let next = SidebarConversationIndex(
+                conversations: center.conversations,
+                workspaces: workspaces.workspaces,
+                owners: workspaces.conversationWorkspaceIDs
+            )
+            if index != next { index = next }
+        }
+    }
+}
+
+/// Run updates reach the activity badges without rebuilding the sidebar rows.
 private struct SidebarObservationHost<Content: View>: View {
-    @ObservedObject var center: ConversationCenter
-    @ObservedObject var workspaces: WorkspaceCenter
-    @ViewBuilder var content: () -> Content
-    var body: some View { content() }
+    @StateObject private var history: SidebarHistoryModel
+    private let content: (SidebarConversationIndex) -> Content
+
+    init(
+        center: ConversationCenter,
+        workspaces: WorkspaceCenter,
+        @ViewBuilder content: @escaping (SidebarConversationIndex) -> Content
+    ) {
+        _history = StateObject(wrappedValue: SidebarHistoryModel(center: center, workspaces: workspaces))
+        self.content = content
+    }
+
+    var body: some View { content(history.index) }
 }
 
 #if DEBUG

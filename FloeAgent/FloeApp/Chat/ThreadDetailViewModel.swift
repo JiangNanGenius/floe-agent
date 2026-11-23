@@ -743,7 +743,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 // A temporary chat never binds the shared browser surface or
                 // records an owner run: the browser GUI and its session
                 // handoffs are outside the ephemeral tool ceiling.
-                center.environment.browserCenter.bind(to: conversationID)
+                center.environment.browserCenter.bind(to: conversationID, prepareSession: false)
             }
             selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
             // Restore the conversation's remembered Chat/Agent/Plan/Goal
@@ -752,13 +752,15 @@ final class ThreadDetailViewModel: ObservableObject {
             // record, so without this read a Home typed chat or a
             // voice-created chat would silently reopen as a task-capable
             // Agent on the next typed round.
+            let messageStore = center.conversationStore(for: conversationID)
+            let runStore = center.runStore(for: conversationID)
+            async let messagePage = messageStore.messagePage(conversationID: conversationID, before: nil, limit: 20)
+            async let recentRuns = runStore.recentRuns(conversationID: conversationID, limit: 30)
             stage = "preferredMode"
             preferredModeWarning = await restorePreferredExecutionMode(generation: generation)
             guard generation == loadGeneration else { return }
             stage = "runList"
-            let messageStore = center.conversationStore(for: conversationID)
-            async let messagePage = messageStore.messagePage(conversationID: conversationID, before: nil, limit: 20)
-            let loadedRuns = try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30)
+            let loadedRuns = try await recentRuns
             try Task.checkCancellation()
             guard generation == loadGeneration else { return }
             if runs != loadedRuns { runs = loadedRuns }
@@ -774,7 +776,7 @@ final class ThreadDetailViewModel: ObservableObject {
             hasLoaded = true
             logger.info("threadFirstPage elapsed=\(started.duration(to: .now)) messages=\(page.messages.count)")
             // Publish recent history before unrelated configuration and plan reads.
-            if center.providers.isEmpty { await center.reload() }
+            await center.loadPersistedModelsForThreadIfNeeded()
             try Task.checkCancellation()
             guard generation == loadGeneration else { return }
             if !didRestoreConversationModel {
@@ -789,8 +791,17 @@ final class ThreadDetailViewModel: ObservableObject {
             }
             await center.environment.settingsCenter.loadRunningInputMode()
             runningInputMode = center.environment.settingsCenter.runningInputMode
-            await center.environment.workspaceCenter.reload()
-            selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
+            let priorProjectID = selectedProjectID
+            do {
+                let projectID = try await center.environment.workspaceCenter.readProjectWorkspaceID(for: conversationID)
+                try Task.checkCancellation()
+                guard generation == loadGeneration else { return }
+                if selectedProjectID == priorProjectID, selectedProjectID != projectID { selectedProjectID = projectID }
+            } catch is CancellationError {
+                return
+            } catch {
+                logger.warning("threadProjectBindingReadFailed")
+            }
             stage = "visibleRunDetails"
             try await hydrateVisibleRunDetails()
             stage = "planLoad"

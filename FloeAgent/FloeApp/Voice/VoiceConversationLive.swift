@@ -1471,7 +1471,8 @@ extension VoiceConversationCoordinator {
         driving: any VoiceConversationTurnDriving,
         language: VoiceRecognitionLanguage = .automatic,
         diagnostics: (any VoiceConversationDiagnostics)? = FloeVoiceConversationDiagnostics(),
-        speechNormalizer: (@Sendable (String) -> String)? = nil
+        speechNormalizer: (@Sendable (String) -> String)? = nil,
+        supportsStreamingSpeech: @escaping @Sendable () -> Bool = { false }
     ) -> VoiceConversationCoordinator {
         VoiceConversationCoordinator(
             authorization: SystemSpeechAuthorizationProvider(),
@@ -1481,7 +1482,8 @@ extension VoiceConversationCoordinator {
             diagnostics: diagnostics,
             speechNormalizer: speechNormalizer ?? {
                 AnswerSpeechText.spokenText($0, destination: .cloud)
-            }
+            },
+            supportsStreamingSpeech: supportsStreamingSpeech
         )
     }
 }

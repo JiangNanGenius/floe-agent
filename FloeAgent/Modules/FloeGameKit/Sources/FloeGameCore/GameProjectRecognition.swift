@@ -224,6 +224,14 @@ struct GameProjectRecognitionProbe {
             case ("game.json", _), ("floe-game.json", _), ("project.godot", _),
                  ("main.lua", _), ("conf.lua", _), ("story.twine.json", _), ("cart.tic", _):
                 roots.insert(parent)
+            case ("startup.tjs", _), ("nscript.dat", _), ("0.txt", _), ("00.txt", _):
+                // Kirikiri loose startup script and ONScripter script/archive markers.
+                roots.insert(parent)
+            case (_, "xp3"), (_, "nsa"):
+                // Kirikiri XP3 archives and ONScripter NSA archives. The inspector
+                // re-verifies the root's actual marker; a lone extension match in a
+                // nested folder only schedules that root for inspection.
+                roots.insert(parent)
             case (_, "rxproj"), (_, "rvproj"), (_, "rvproj2"), (_, "rpgproject"),
                  (_, "rmmzproject"), (_, "ink"), (_, "twee"), (_, "tic"),
                  (_, "love"), (_, "ms"):

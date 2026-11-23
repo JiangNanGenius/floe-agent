@@ -418,6 +418,31 @@ public enum GameTouchDefaults {
                 summary: "Uses the imported game's touch controls and key configuration.",
                 reference: nil, stick: .none, movement: .init(), buttons: []
             )
+        case .kirikiri:
+            return GameTouchDefaultCatalog(
+                engine: engine, keyboardTransport: keyboardTransport, source: .engineDefault,
+                summary: "Kirikiri/KAG point-and-click preset: tap advances/chooses; Enter/Space advance, Escape opens the right-click menu, Ctrl skips.",
+                reference: nil,
+                stick: .none, movement: .init(),
+                buttons: [
+                    button("kirikiri.advance.enter", .enter),
+                    button("kirikiri.advance.space", .space),
+                    button("kirikiri.menu", .escape),
+                    button("kirikiri.skip", .control)
+                ]
+            )
+        case .ons:
+            return GameTouchDefaultCatalog(
+                engine: engine, keyboardTransport: keyboardTransport, source: .engineDefault,
+                summary: "ONScripter preset: tap/Enter advances and confirms, Escape opens the menu, Space/PageDown advance.",
+                reference: nil,
+                stick: .none, movement: .init(),
+                buttons: [
+                    button("ons.advance.enter", .enter),
+                    button("ons.advance.space", .space),
+                    button("ons.menu", .escape)
+                ]
+            )
         case .ink, .twine:
             return GameTouchDefaultCatalog(
                 engine: engine, keyboardTransport: keyboardTransport, source: .templateFallback,

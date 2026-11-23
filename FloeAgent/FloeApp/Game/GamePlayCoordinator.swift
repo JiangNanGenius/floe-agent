@@ -33,7 +33,7 @@ final class GamePlayCoordinator {
     var activeRequestID: UUID? { session.lastLaunchRequest?.id }
 
     var isRunning: Bool {
-        session.rgssPlay != nil || session.webPresentation != nil
+        session.rgssPlay != nil || session.webPresentation != nil || session.visualNovelPresentation?.isRunning == true
     }
 
     var phaseText: String {
@@ -49,6 +49,7 @@ final class GamePlayCoordinator {
         if let play = session.rgssPlay {
             return String(describing: play.phase)
         }
+        if let native = session.visualNovelPresentation { return native.isRunning ? "running" : "finished" }
         return "idle"
     }
 
@@ -84,6 +85,11 @@ final class GamePlayCoordinator {
                 action: "run", phase: phaseText, stopConfirmed: nil,
                 automaticSave: nil, screenshotSHA256: nil, logs: nil,
                 diagnostic: presentation.inputDiagnostic)
+        }
+        if let native = session.visualNovelPresentation, native.request.id == request.id {
+            return GameRunReceipt(projectID: request.context.projectID, runID: request.id,
+                action: "run", phase: phaseText, stopConfirmed: nil,
+                automaticSave: nil, screenshotSHA256: nil, logs: nil, diagnostic: nil)
         }
         throw GameWorkspaceRegistryError.noSavedRun
     }
@@ -125,6 +131,16 @@ final class GamePlayCoordinator {
     }
 
     func sendButton(_ id: String) async throws {
+        if session.visualNovelPresentation != nil {
+            let alias = ["confirm": "kirikiri.advance.enter", "cancel": "kirikiri.menu"][id] ?? id
+            let controls = GameTouchDefaults.catalog(for: .kirikiri)
+            guard let button = controls.buttons.first(where: { $0.id.rawValue == alias }) else {
+                throw FloeError.validationFailed(IDELanguageRunText.t(
+                    "控件不存在，请指定键盘按键。", "This control is unavailable. Specify a keyboard key."))
+            }
+            try await pulse(button.binding)
+            return
+        }
         let profile = try await currentInputProfile()
         let aliases: [String: String] = ["confirm": "rpg.confirm", "cancel": "rpg.cancel",
             "action1": "rpg.dash", "action2": "rpg.pageUp", "action3": "rpg.pageDown"]
@@ -141,6 +157,11 @@ final class GamePlayCoordinator {
     }
 
     func sendAction(_ name: String) async throws {
+        if session.visualNovelPresentation != nil {
+            if let key = GameKeyboardKey.fromToolName(name) { try await sendChord([key]) }
+            else { try await sendButton(name) }
+            return
+        }
         let profile = try await currentInputProfile()
         if let action = GameTouchAction(rawValue: name), action.isDirection,
            let binding = profile.directionBinding(for: action) {
@@ -163,10 +184,13 @@ final class GamePlayCoordinator {
             try await presentation.pulse(binding, durationMilliseconds: durationMilliseconds)
         } else if let web = session.webPresentation {
             try await web.pulse(binding, durationMilliseconds: durationMilliseconds)
+        } else if let native = session.visualNovelPresentation, let keys = binding.keyboardKeys {
+            try await native.sendKeys(keys, durationMilliseconds: durationMilliseconds)
         } else { throw GameWorkspaceRegistryError.noSavedRun }
     }
 
     func screenshot() async throws -> Data {
+        if let native = session.visualNovelPresentation { return try native.screenshot() }
         if let play = session.rgssPlay {
             guard let data = try await play.captureScreenshot() else {
                 throw RGSSGuestRunError.displayUnavailable("no screenshot is available")
@@ -188,6 +212,7 @@ final class GamePlayCoordinator {
     }
 
     func logs() async throws -> String {
+        if let native = session.visualNovelPresentation { return native.logs }
         if let presentation = session.webPresentation {
             let rows = presentation.player.logs.suffix(200)
             return rows.joined(separator: "\n")
@@ -221,6 +246,10 @@ final class GamePlayCoordinator {
     /// Retains the actual save outcome; the stop path already did the automatic
     /// save. This is used by the tool's explicit save action while running.
     func saveSnapshot() async throws -> String {
+        if session.visualNovelPresentation != nil {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "请在游戏内使用存档菜单。", "Use the game's own save menu."))
+        }
         if let presentation = session.webPresentation {
             let result = await presentation.saves.saveAutomaticIfSupported()
             switch result {

@@ -122,5 +122,38 @@ enum FloeTheme {
     static func motionAnimation(reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : .snappy
     }
+
+    static func panelAnimation(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .smooth(duration: 0.24)
+    }
+
+    static func panelTransition(from edge: Edge, reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .identity : .move(edge: edge).combined(with: .opacity)
+    }
+}
+
+extension View {
+    /// Add feedback to a destination change without keeping the previous
+    /// screen mounted or animating layout inside the new screen.
+    func floeRouteFade<Route: Equatable & Sendable>(_ route: Route) -> some View {
+        modifier(FloeRouteFade(route: route))
+    }
+}
+
+private struct FloeRouteFade<Route: Equatable & Sendable>: ViewModifier {
+    let route: Route
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let motionEnabled = !reduceMotion
+        return content.keyframeAnimator(initialValue: 1.0, trigger: motionEnabled ? route : nil) { view, opacity in
+            view.opacity(motionEnabled ? opacity : 1)
+        } keyframes: { _ in
+            KeyframeTrack(\.self) {
+                MoveKeyframe(0.78)
+                CubicKeyframe(1.0, duration: 0.18)
+            }
+        }
+    }
 }
 #endif

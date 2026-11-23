@@ -81,21 +81,108 @@ nonisolated final class StudioFrameStagingLease: @unchecked Sendable {
     }
 }
 
-/// Fixed native encoder for task-owned raw frames. No guest-authored code runs
-/// in the host; only a bounded BGRA byte stream crosses the workspace boundary.
+/// A bounded graph of scalar operations evaluated per pixel. The graph only
+/// describes color and has no access to files, processes or other app state.
+nonisolated struct StudioPixelProgram: Codable, Sendable {
+    enum Operation: String, Codable, Sendable {
+        case x, y, time, constant, add, subtract, multiply, divide, sine, cosine, absolute, fract, minimum, maximum, step
+
+        var arity: Int {
+            switch self {
+            case .x, .y, .time, .constant: 0
+            case .sine, .cosine, .absolute, .fract: 1
+            default: 2
+            }
+        }
+    }
+
+    struct Node: Codable, Sendable {
+        let op: Operation
+        let inputs: [Int]?
+        let value: Float?
+    }
+
+    let nodes: [Node]
+    let red: Int
+    let green: Int
+    let blue: Int
+
+    func validate(width: Int, height: Int, frameCount: Int) throws {
+        guard (1...32).contains(nodes.count), [red, green, blue].allSatisfy(nodes.indices.contains),
+              width * height * frameCount * nodes.count <= 300_000_000 else {
+            throw FloeError.validationFailed("Use up to 32 pixel operations and a smaller frame size or duration.")
+        }
+        for (index, node) in nodes.enumerated() {
+            let inputs = node.inputs ?? []
+            guard inputs.count == node.op.arity, inputs.allSatisfy({ (0..<index).contains($0) }),
+                  node.op == .constant ? (node.value.map { $0.isFinite && abs($0) <= 10_000 } == true) : node.value == nil else {
+                throw FloeError.validationFailed("Pixel operations must reference earlier nodes and use finite constants.")
+            }
+        }
+    }
+
+    fileprivate func render(width: Int, height: Int, time: Float, cancellation: CancellationToken) throws -> Data {
+        let operations = nodes.map { ($0.op, $0.inputs?.first ?? 0, $0.inputs?.last ?? 0, $0.value ?? 0) }
+        var values = [Float](repeating: 0, count: nodes.count)
+        var data = Data(count: width * height * 4)
+        try data.withUnsafeMutableBytes { storage in
+            let bytes = storage.bindMemory(to: UInt8.self)
+            for row in 0..<height {
+                try cancellation.throwIfCancelled()
+                try Task.checkCancellation()
+                let y = Float(row) / Float(height - 1)
+                for column in 0..<width {
+                    let x = Float(column) / Float(width - 1)
+                    for (index, (op, first, second, constant)) in operations.enumerated() {
+                        let a = values[first], b = values[second]
+                        values[index] = switch op {
+                        case .x: x
+                        case .y: y
+                        case .time: time
+                        case .constant: constant
+                        case .add: a + b
+                        case .subtract: a - b
+                        case .multiply: a * b
+                        case .divide: b == 0 ? 0 : a / b
+                        case .sine: sin(a)
+                        case .cosine: cos(a)
+                        case .absolute: abs(a)
+                        case .fract: a - floor(a)
+                        case .minimum: min(a, b)
+                        case .maximum: max(a, b)
+                        case .step: b < a ? 0 : 1
+                        }
+                    }
+                    let offset = (row * width + column) * 4
+                    bytes[offset] = Self.channel(values[blue])
+                    bytes[offset + 1] = Self.channel(values[green])
+                    bytes[offset + 2] = Self.channel(values[red])
+                    bytes[offset + 3] = 255
+                }
+            }
+        }
+        return data
+    }
+
+    private static func channel(_ value: Float) -> UInt8 {
+        guard value.isFinite else { return 0 }
+        return UInt8((min(1, max(0, value)) * 255).rounded())
+    }
+}
+
 nonisolated enum StudioFrameSequenceEncoder {
     struct Specification: Codable, Sendable {
         let width: Int
         let height: Int
         let frameRate: Int
         let frameCount: Int
-        let expectedSHA256: String
+        let expectedSHA256: String?
 
         func validate() throws -> Int {
             guard (2...2048).contains(width), width.isMultiple(of: 2),
                   (2...2048).contains(height), height.isMultiple(of: 2),
                   (1...60).contains(frameRate), (1...36000).contains(frameCount),
-                  expectedSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+                  expectedSHA256.map({ $0.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil }) ?? true else {
                 throw FloeError.validationFailed("Invalid BGRA frame sequence parameters.")
             }
             let frameBytes = width * height * 4
@@ -112,9 +199,21 @@ nonisolated enum StudioFrameSequenceEncoder {
         var url: URL { lease.url }
     }
 
-    static func encode(source: URL, workspaceRoot: URL, spec: Specification, cancellation: CancellationToken) async throws -> Result {
+    static func encode(source: URL?, workspaceRoot: URL?, spec: Specification, pixelProgram: StudioPixelProgram? = nil,
+                       cancellation: CancellationToken) async throws -> Result {
         let frameBytes = try spec.validate()
         try cancellation.throwIfCancelled(); try Task.checkCancellation()
+        if let pixelProgram {
+            guard source == nil, spec.expectedSHA256 == nil else { throw FloeError.validationFailed("Choose one video frame source.") }
+            try pixelProgram.validate(width: spec.width, height: spec.height, frameCount: spec.frameCount)
+            return try await writeFrames(spec: spec, cancellation: cancellation, read: { index in
+                try pixelProgram.render(width: spec.width, height: spec.height,
+                    time: Float(index) / Float(spec.frameRate), cancellation: cancellation)
+            }, verify: { _ in })
+        }
+        guard let source, let workspaceRoot, let expectedSHA256 = spec.expectedSHA256 else {
+            throw FloeError.validationFailed("Frame input requires an authorized workspace file and its SHA256.")
+        }
         let root = workspaceRoot.resolvingSymlinksInPath().standardizedFileURL
         let normalized = source.standardizedFileURL
         guard normalized.path.hasPrefix(root.path + "/") else { throw FloeError.validationFailed("Frame file is outside the task workspace.") }
@@ -139,6 +238,33 @@ nonisolated enum StudioFrameSequenceEncoder {
               before.st_size == Int64(frameBytes * spec.frameCount) else {
             throw FloeError.validationFailed("Frame file size does not match its dimensions and count.")
         }
+        return try await writeFrames(spec: spec, cancellation: cancellation, read: { _ in
+            var data = Data(count: frameBytes)
+            try data.withUnsafeMutableBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    try cancellation.throwIfCancelled(); try Task.checkCancellation()
+                    let count = Darwin.read(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if count < 0 && errno == EINTR { continue }
+                    guard count > 0 else { throw FloeError.validationFailed("Frame file ended early.") }
+                    offset += count
+                }
+            }
+            return data
+        }, verify: { sourceHash in
+            var after = stat()
+            guard fstat(fd, &after) == 0, before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+                  before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+                  before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+                throw FloeError.validationFailed("Frame source changed while encoding.")
+            }
+            guard sourceHash == expectedSHA256 else { throw FloeError.validationFailed("Frame source SHA256 does not match.") }
+        })
+    }
+
+    private static func writeFrames(spec: Specification, cancellation: CancellationToken, read: (Int) throws -> Data,
+                                    verify: (String) throws -> Void) async throws -> Result {
         let lease = try StudioFrameStagingLease.create()
         let output = lease.url
         let writer = try AVAssetWriter(outputURL: output, fileType: .mp4)
@@ -167,17 +293,7 @@ nonisolated enum StudioFrameSequenceEncoder {
                 guard Date() < deadline else { throw FloeError.validationFailed("Video encoder did not accept a frame.") }
                 try await Task.sleep(for: .milliseconds(5))
             }
-            var data = Data(count: frameBytes)
-            try data.withUnsafeMutableBytes { bytes in
-                var offset = 0
-                while offset < bytes.count {
-                    try cancellation.throwIfCancelled(); try Task.checkCancellation()
-                    let count = Darwin.read(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
-                    if count < 0 && errno == EINTR { continue }
-                    guard count > 0 else { throw FloeError.validationFailed("Frame file ended early.") }
-                    offset += count
-                }
-            }
+            let data = try read(index)
             digest.update(data: data)
             guard let pool = adaptor.pixelBufferPool else { throw FloeError.validationFailed("Video frame pool unavailable.") }
             var buffer: CVPixelBuffer?
@@ -212,15 +328,8 @@ nonisolated enum StudioFrameSequenceEncoder {
                 throw writer.error ?? FloeError.validationFailed("Video frame encoding failed.")
             }
         }
-        var after = stat()
-        guard fstat(fd, &after) == 0, before.st_dev == after.st_dev, before.st_ino == after.st_ino,
-              before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
-              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
-              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
-            throw FloeError.validationFailed("Frame source changed while encoding.")
-        }
         let sourceHash = digest.finalize().map { String(format: "%02x", $0) }.joined()
-        guard sourceHash == spec.expectedSHA256 else { throw FloeError.validationFailed("Frame source SHA256 does not match.") }
+        try verify(sourceHash)
         try cancellation.throwIfCancelled(); try Task.checkCancellation()
         input.markAsFinished()
         writer.endSession(atSourceTime: CMTime(value: Int64(spec.frameCount), timescale: CMTimeScale(spec.frameRate)))

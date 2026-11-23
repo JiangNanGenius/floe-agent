@@ -1073,6 +1073,8 @@ private struct GameSaveStrings: Sendable {
         case .microStudio: return "microStudio"
         case .wasm4: return "WASM-4"
         case .unity: return "Unity"
+        case .kirikiri: return "Kirikiri"
+        case .ons: return "ONScripter"
         }
     }
 

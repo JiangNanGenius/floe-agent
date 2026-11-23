@@ -467,6 +467,30 @@ public struct GameProjectInspector: Sendable {
             addOnce(.wasm4, path: path, kind: .projectMarker)
         }
 
+        // The bundled Kirikiri runtime opens a loose startup.tjs or data.xp3
+        // in the selected directory. Asset archives alone are not entrypoints.
+        if evidence[.kirikiri] == nil {
+            if let marker = lowerNames["startup.tjs"] ?? lowerNames["data.xp3"] {
+                add(.kirikiri, path: try GameRelativePath(marker), kind: .projectMarker)
+            }
+        }
+
+        // ONScripter-family visual novels: nscript.dat, a numbered script
+        // (0.txt / 00.txt), or an NSA archive at the root. Recognition is
+        // naming-only; the engine is not bundled for iOS in this checkout.
+        if evidence[.ons] == nil {
+            let scriptNames = ["0.txt", "00.txt", "nscript.dat"]
+            var marker = scriptNames.compactMap { lowerNames[$0] }.first
+            if marker == nil {
+                marker = names.first(where: {
+                    ($0 as NSString).pathExtension.lowercased() == "nsa"
+                })
+            }
+            if let marker {
+                add(.ons, path: try GameRelativePath(marker), kind: .projectMarker)
+            }
+        }
+
         return makeResult()
     }
 

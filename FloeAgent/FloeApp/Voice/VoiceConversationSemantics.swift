@@ -473,8 +473,13 @@ struct VoiceConversationUtteranceIdentity: Sendable {
 /// Adapts cumulative answer text to the same whole-sentence policy used by
 /// ordinary read-aloud. No punctuation or length rule is duplicated here.
 struct VoiceConversationSentenceSplitter {
+    let streaming: Bool
     private var lastCumulative = ""
     private var consumedCharacters = 0
+
+    init(streaming: Bool = false) {
+        self.streaming = streaming
+    }
 
     var consumedCount: Int { consumedCharacters }
     var consumedText: String { String(lastCumulative.prefix(consumedCharacters)) }
@@ -492,7 +497,7 @@ struct VoiceConversationSentenceSplitter {
         // Re-scan only the unconsumed suffix, preserving the existing
         // cumulative-replacement behavior without re-emitting spoken units.
         let remaining = String(lastCumulative.dropFirst(consumedCharacters))
-        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        var segmenter = TTSTextSegmenter(policy: streaming ? .bounded : .completeSentences, maxCharacters: 180)
         var units = segmenter.append(remaining)
         if finalize { units += segmenter.finish() }
         consumedCharacters = lastCumulative.count - segmenter.pendingCharacterCount

@@ -3364,6 +3364,108 @@
         }
       }
     },
+    "settings.licenses.document.kirikiri.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KiriKiri license"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "吉里吉里许可证"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.kirikit_mpl.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KiriKit (MPL-2.0)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KiriKit（MPL-2.0）"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.shiori_mpl.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shiori (MPL-2.0)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shiori（MPL-2.0）"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.shiorikrkr_ffmpeg.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShioriKrkr FFmpeg (LGPL-2.1)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShioriKrkr FFmpeg（LGPL-2.1）"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.shiorikrkr_deps.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShioriKrkr dependency notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShioriKrkr 依赖许可"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.shiorikrkr_source.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShioriKrkr source and relinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShioriKrkr 源码与重新链接"
+          }
+        }
+      }
+    },
     "settings.licenses.document.slirp_source_offer.title": {
       "extractionState": "manual",
       "localizations": {
@@ -247703,55 +247805,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "· failed %@"
+            "value": " · Tool errors ×%@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": " · 失败 %@"
+            "value": " · %@ 次工具出错"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": " · 失敗 %@"
+            "value": " · %@ 次工具出錯"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "· %@ に失敗しました"
+            "value": " · ツールエラー %@ 件"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "· %@에 실패했습니다"
+            "value": " · 도구 오류 %@건"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "· Échoué %@"
+            "value": " · Erreurs d’outil ×%@"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "· Fehlgeschlagen %@"
+            "value": " · Werkzeugfehler ×%@"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "· Falló %@"
+            "value": " · Errores de herramientas ×%@"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "· Falhou %@"
+            "value": " · Erros de ferramentas ×%@"
           }
         }
       }

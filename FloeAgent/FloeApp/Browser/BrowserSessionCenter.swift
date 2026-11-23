@@ -1,9 +1,13 @@
 // FloeApp — service-owned browser sessions for concurrent tasks.
 //
 // BrowserSessionCenter is the durable owner of handoff receipts, the panel
-// request route and the *visible* projection. Execution itself lives in one
-// independent BrowserTaskSession per trusted conversation, so a background
-// task keeps operating its own tabs while another task's panel is on screen.
+// request route, the *visible* projection and the per-task restorable page
+// snapshots. Execution itself lives in one independent BrowserTaskSession
+// per trusted conversation, so a background task keeps operating its own
+// tabs while another task's panel is on screen. After an app relaunch a
+// reopened task's committed plain-GET pages re-open in their saved tab order
+// and selection; private, preview, form-committed and auth-callback pages
+// are never replayed.
 
 #if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit)
 import Combine
@@ -100,6 +104,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     private var knownRunIDs: [UUID: UUID] = [:]
     private var handoffNeedsContinueByConversation: [UUID: Bool] = [:]
 
+    /// Durable per-task restorable pages, keyed by trusted conversation
+    /// identity. Exactly one durable center per process owns this store;
+    /// ephemeral preview centers never allocate a URL and never write it.
+    private var snapshots: [UUID: BrowserTaskPageSnapshot] = [:]
+    private let snapshotURL: URL?
+    private var snapshotWriteTask: Task<Void, Never>?
+
     /// Lifecycle fence for one browser-owning task. `generation` is bumped on
     /// every release and every explicit trusted reactivation; a session
     /// records the generation it was created under, so a completion from an
@@ -128,10 +139,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         durableHandoffs: Bool = true,
         taskHandoffsEnabled: Bool = true,
         settings: BrowserSettingsService? = nil,
-        handoffStoreURL: URL? = nil
+        handoffStoreURL: URL? = nil,
+        snapshotStoreURL: URL? = nil
     ) {
         let settings = settings ?? BrowserSettingsService.shared
-        self.durableHandoffs = durableHandoffs || handoffStoreURL != nil
+        let effectiveDurable = durableHandoffs || handoffStoreURL != nil || snapshotStoreURL != nil
+        self.durableHandoffs = effectiveDurable
         self.taskHandoffsEnabled = taskHandoffsEnabled
         self.settings = settings
         self.lastAdvancedBrowserFeaturesEnabled = settings.advancedBrowserFeaturesEnabled
@@ -146,6 +159,9 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             .appendingPathComponent("BrowserArtifacts", isDirectory: true)
         artifactDirectory = artifacts
         handoffURL = handoffStoreURL ?? artifacts.deletingLastPathComponent().appendingPathComponent("BrowserHandoffs.json")
+        snapshotURL = effectiveDurable
+            ? (snapshotStoreURL ?? handoffURL.deletingLastPathComponent().appendingPathComponent("BrowserTaskSnapshots.json"))
+            : nil
         sessionConfiguration = BrowserTaskSessionConfiguration(
             protocolVersion: "FloeBrowser/1.0",
             contentWorld: WKContentWorld.world(name: "org.floeagent.browser.agent"),
@@ -189,6 +205,27 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                 do { try persistHandoffs() } catch { handoffError = error.localizedDescription }
             }
         }
+        if let snapshotURL, let data = try? Data(contentsOf: snapshotURL),
+           let saved = try? JSONDecoder().decode([BrowserTaskPageSnapshot].self, from: data) {
+            for snapshot in saved.sorted(by: { $0.savedAt < $1.savedAt }).suffix(BrowserTaskPageSnapshot.maximumSnapshots) {
+                loadValidatedSnapshot(snapshot)
+            }
+        }
+        if effectiveDurable {
+            // Real backgrounding must not lose committed pages that are still
+            // inside the debounce window; NSObject deregisters this selector
+            // observer automatically when the center is released.
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(flushSnapshotsForBackground),
+                name: UIApplication.didEnterBackgroundNotification,
+                object: nil
+            )
+        }
+    }
+
+    @objc private func flushSnapshotsForBackground() {
+        flushBrowserSnapshots()
     }
 
     var settingsService: BrowserSettingsService { settings }
@@ -240,7 +277,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
 
     /// Binds the visible surface to one task. Tabs stay owned by their task
     /// session; unbinding a view never stops another task's WebViews.
-    func bind(to newConversationID: UUID?) {
+    /// `prepareSession` is false for ordinary thread loading: selecting a
+    /// conversation must not create a WKWebView. The browser surface calls
+    /// `prepareVisibleSession()` when it actually appears.
+    func bind(to newConversationID: UUID?, prepareSession: Bool = true) {
         if newConversationID == conversationID,
            newConversationID.map({ store.session(for: $0) != nil }) ?? true {
             return
@@ -248,21 +288,35 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         conversationID = newConversationID
         handoffError = nil
         if let newConversationID {
-            // A human explicitly reopening an archived or restored task is a
-            // trusted reactivation: it lifts the release fence and may create
-            // a fresh session. A late tool callback can never do this.
-            if let session = try? restoreSession(for: newConversationID) {
-                if session.surfaceState == .unbound { session.surfaceState = .ready }
-                if session.isUserControlling { session.surfaceState = .needsUser("User takeover is active") }
-                session.isEditingAddress = false
+            if prepareSession {
+                prepareVisibleSession()
+            } else {
+                // Selection only: restore the durable receipts projection for
+                // this task without creating its browser session.
+                refreshHandoffProjection(for: newConversationID)
             }
-            refreshHandoffProjection(for: newConversationID)
         } else {
             unboundSessionID = UUID()
             handoff = nil
             handoffNeedsContinue = false
             handoffNotified = false
         }
+    }
+
+    /// Creates or restores the visible task's browser session. A human
+    /// explicitly reopening an archived or restored task is a trusted
+    /// reactivation: it lifts the release fence, and after an app relaunch
+    /// the task's persisted committed GET pages re-open here in their saved
+    /// tab order and selection. Never callable from a tool path.
+    @discardableResult
+    func prepareVisibleSession() -> BrowserTaskSession? {
+        guard let conversationID else { return nil }
+        guard let session = try? restoreSession(for: conversationID) else { return nil }
+        if session.surfaceState == .unbound { session.surfaceState = .ready }
+        if session.isUserControlling { session.surfaceState = .needsUser("User takeover is active") }
+        session.isEditingAddress = false
+        refreshHandoffProjection(for: conversationID)
+        return session
     }
 
     // MARK: - Task session resolution
@@ -288,10 +342,11 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         return try makeSession(for: conversationID)
     }
 
-    /// Explicit trusted reactivation used by the visible UI (`bind(to:)`): a
-    /// human reopened this task, so the release fence lifts and a fresh
-    /// session of the next generation may be created. Never callable from a
-    /// tool path.
+    /// Explicit trusted reactivation used by the visible UI (`prepareVisibleSession`):
+    /// a human reopened this task, so the release fence lifts and a fresh
+    /// session of the next generation may be created. After an app relaunch
+    /// the task's persisted committed pages re-open in their saved tabs.
+    /// Never callable from a tool path.
     @discardableResult
     func restoreSession(for conversationID: UUID) throws -> BrowserTaskSession {
         if let existing = store.session(for: conversationID) { return existing }
@@ -309,9 +364,20 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         )
         try store.insert(session)
         objectWillChange.send()
-        _ = session.createTab()
-        session.surfaceState = .ready
+        prepareInitialTabs(of: session)
         return session
+    }
+
+    private func prepareInitialTabs(of session: BrowserTaskSession) {
+        if let snapshot = snapshots[session.conversationID] {
+            // The restored session is a brand-new WebKit identity: the pages
+            // re-navigate as plain GETs, so every document reference, lease
+            // and receipt from before the relaunch stays invalid.
+            session.restoreCommittedPages(snapshot)
+        } else {
+            _ = session.createTab()
+            session.surfaceState = .ready
+        }
     }
 
     /// Atomic first acquisition for one model run. Existing sessions yield
@@ -351,8 +417,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         }
         try store.insert(session)
         objectWillChange.send()
-        _ = session.createTab()
-        session.surfaceState = .ready
+        prepareInitialTabs(of: session)
         return ModelControl(session: session, lease: lease, acquiredNow: true)
     }
 
@@ -977,6 +1042,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         }
         handoffs.removeValue(forKey: conversationID)
         try? persistHandoffs()
+        // Archiving or deleting a task also deletes its restorable pages:
+        // a later relaunch must never replay tabs of a task the user removed.
+        // Write the dictionary directly: merging live sessions here would
+        // resurrect the entry of the session that is being released.
+        if snapshots.removeValue(forKey: conversationID) != nil {
+            persistSnapshots()
+        }
         handoffNeedsContinueByConversation.removeValue(forKey: conversationID)
         knownRunIDs.removeValue(forKey: conversationID)
         store.release(conversationID)?.release()
@@ -1002,6 +1074,83 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             withIntermediateDirectories: true
         )
         try JSONEncoder().encode(Array(handoffs.values)).write(to: handoffURL, options: .atomic)
+    }
+
+    // MARK: - Durable page restore snapshots
+
+    /// Validates one decoded snapshot before it can ever be replayed: URLs
+    /// are re-checked against the restore gate, empty entries are dropped,
+    /// and a selection pointing at a removed tab falls back to the first
+    /// restorable tab.
+    private func loadValidatedSnapshot(_ snapshot: BrowserTaskPageSnapshot) {
+        var ids = Set<UUID>()
+        let tabs = snapshot.tabs.prefix(BrowserTaskPageSnapshot.maximumTabs).filter {
+            BrowserURLPolicy.isRestorablePageURL($0.pageURL) && ids.insert($0.id).inserted
+        }
+        guard !tabs.isEmpty else { return }
+        var validated = snapshot
+        validated.tabs = tabs
+        if !tabs.contains(where: { $0.id == validated.selectedTabID }) {
+            validated.selectedTabID = tabs[0].id
+        }
+        snapshots[validated.conversationID] = validated
+    }
+
+    /// Keeps the committed address until its replacement commits. Closing a
+    /// tab updates the entry even if other restored tabs are still loading.
+    private func updateSnapshot(from session: BrowserTaskSession) -> Bool {
+        let owner = session.conversationID
+        let tabs = session.restorablePages.map { BrowserTaskPageSnapshot.Tab(id: $0.id, pageURL: $0.pageURL) }
+        guard !tabs.isEmpty else { return snapshots.removeValue(forKey: owner) != nil }
+        let selection = session.restorableSelectedTabID
+        if let snapshot = snapshots[owner], snapshot.tabs == tabs, snapshot.selectedTabID == selection {
+            return false
+        }
+        snapshots[owner] = BrowserTaskPageSnapshot(
+            conversationID: owner, tabs: tabs, selectedTabID: selection, savedAt: Date()
+        )
+        return true
+    }
+
+    private func scheduleSnapshotPersist() {
+        guard snapshotURL != nil else { return }
+        guard snapshotWriteTask == nil else { return }
+        snapshotWriteTask = Task { @MainActor [weak self] in
+            // Coalesce bursts of tab/URL changes into one atomic write; the
+            // in-memory store is already current for readers in this process.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self else { return }
+            snapshotWriteTask = nil
+            flushBrowserSnapshots()
+        }
+    }
+
+    /// Atomically persists the restore store at the debounce boundary or on
+    /// backgrounding so suspension cannot lose a recent tab change.
+    func flushBrowserSnapshots() {
+        persistSnapshots()
+    }
+
+    private func persistSnapshots() {
+        guard let snapshotURL else { return }
+        // Keep only the most recent tasks: restore is a convenience for work
+        // in progress, not an ever-growing record of everything ever opened.
+        let bounded = snapshots.values
+            .sorted { $0.savedAt > $1.savedAt }
+            .prefix(BrowserTaskPageSnapshot.maximumSnapshots)
+        let payload = bounded.sorted {
+            $0.conversationID.uuidString < $1.conversationID.uuidString
+        }
+        snapshots = Dictionary(uniqueKeysWithValues: payload.map { ($0.conversationID, $0) })
+        do {
+            try FileManager.default.createDirectory(
+                at: snapshotURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONEncoder().encode(payload).write(to: snapshotURL, options: .atomic)
+        } catch {
+            if conversationID != nil { handoffError = error.localizedDescription }
+        }
     }
 
     /// Screenshot evidence is ephemeral. Keep a bounded recent set and
@@ -1038,6 +1187,13 @@ extension BrowserSessionCenter: BrowserTaskSessionHost {
         // First real human input: the current model holder's logical run is
         // the only run to notify. Browsing that no run holds stays local.
         beginUserControl(for: session, runID: session.currentModelRunID, reason: reason, humanPresent: true)
+    }
+
+    func browserSessionRestorableStateDidChange(_ session: BrowserTaskSession) {
+        // Only the durable center owns a restore store. Ephemeral preview
+        // centers have no URL here and stay silent.
+        guard snapshotURL != nil, updateSnapshot(from: session) else { return }
+        scheduleSnapshotPersist()
     }
 }
 

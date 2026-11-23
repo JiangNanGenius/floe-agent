@@ -81,6 +81,42 @@ enum BrowserURLPolicy {
         return url
     }
 
+    /// Durable-restore gate for one committed page URL. A page may only be
+    /// replayed as a plain GET after an app relaunch when it is an ordinary
+    /// http/https page on a public, multi-label DNS host without embedded
+    /// credentials or authentication-callback parameters (including
+    /// token-carrying fragments). Loopback/private-network pages, local
+    /// previews, single-label intranet hosts, IPv6 literals, `about:blank`
+    /// and bearer-grant callbacks never pass.
+    static func isRestorablePageURL(_ url: URL) -> Bool {
+        guard url.absoluteString.utf8.count <= 4096,
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(), !host.contains(":"),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return false }
+        let labels = host.split(separator: ".")
+        guard labels.count >= 2, let topLevelLabel = labels.last,
+              topLevelLabel.first?.isLetter == true,
+              !["local", "localhost", "internal", "lan", "home", "arpa"].contains(topLevelLabel),
+              !(components.queryItems ?? []).contains(where: { nonRestorableQueryParameters.contains($0.name.lowercased()) })
+        else { return false }
+        // Some authentication flows put their grants inside a fragment route.
+        let fragment = components.fragment ?? ""
+        return !fragment.split(whereSeparator: { $0 == "?" || $0 == "&" }).contains { pair in
+            guard let key = pair.split(separator: "=", maxSplits: 1).first else { return false }
+            return nonRestorableQueryParameters.contains(key.lowercased())
+        }
+    }
+
+    /// Query parameter names that mark a URL as an authentication callback or
+    /// one-time grant. Replaying such a URL after relaunch could re-submit a
+    /// consumed code or expose a token, so the page is never persisted.
+    private static let nonRestorableQueryParameters: Set<String> = [
+        "code", "token", "access_token", "id_token", "refresh_token",
+        "state", "session_state", "auth_code", "oauth_token", "oauth_verifier",
+        "token_type", "key", "api_key", "apikey", "signature", "sig", "x-amz-signature", "x-goog-signature"
+    ]
+
     private static func isAuthorizedPreview(_ url: URL, conversationID: UUID?) -> Bool {
         if let conversationID, url.scheme == "http", url.host == "127.0.0.1", let port = url.port,
            previewLock.withLock({ serviceOrigins.values.contains(where: {

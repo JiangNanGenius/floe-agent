@@ -69,9 +69,7 @@ struct IDEActivityBar: View {
     }
 
     private func toggle(_ candidate: IDESidebarMode) {
-        withAnimation(.snappy(duration: 0.18)) {
-            mode = (mode == candidate) ? nil : candidate
-        }
+        mode = (mode == candidate) ? nil : candidate
     }
 
     @ViewBuilder

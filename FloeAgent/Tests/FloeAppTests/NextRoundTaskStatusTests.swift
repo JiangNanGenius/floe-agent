@@ -294,9 +294,10 @@ struct RunTerminalNotificationRecoveryTests {
         await cleanup(f)
     }
 
-    @Test("A proven failed run remains a failed notification, work record and OS completion")
+    @Test("A proven failed run remains a failed notification and work record; the shared OS window closes normally")
     func durableFinalFailureRemainsVisible() async throws {
         let f = try await fixture()
+        let previousCompletions = f.probe.continuedCompletions.count
         do {
             try await f.environment.runStore.updateRunState(id: f.runID, state: "failed", endedAt: Date())
             f.coordinator.didFinish(runID: f.runID, succeeded: false, message: "Retries exhausted")
@@ -304,10 +305,30 @@ struct RunTerminalNotificationRecoveryTests {
             #expect(f.probe.sent.first?.kind == .failed)
             #expect(f.probe.sent.first?.deepLink.runID == f.runID)
             #expect(f.probe.sent.first?.body.contains("Retries exhausted") == true)
-            #expect(f.probe.continuedCompletions.filter { !$0 }.count == 1)
+            #expect(Array(f.probe.continuedCompletions.dropFirst(previousCompletions)) == [true])
             #expect(!f.coordinator.hasActiveRunForTesting(f.runID))
             try await waitFor { await BackgroundWorkRegistry.shared.snapshot(id: f.runID)?.state == .failed }
         } catch { await cleanup(f); throw error }
+        await cleanup(f)
+    }
+
+    @Test("A failure callback queued before durable success presents only completion")
+    func obsoleteFailureCallbackUsesCommittedSuccess() async throws {
+        let f = try await fixture()
+        let gate = ValidationGate()
+        let previousCompletions = f.probe.continuedCompletions.count
+        do {
+            try await f.environment.runStore.updateRunState(id: f.runID, state: "failed", endedAt: Date())
+            f.coordinator.runFinishValidationBarrierForTesting = { await gate.hold() }
+            f.coordinator.didFinish(runID: f.runID, succeeded: false, message: "Earlier error")
+            try await waitFor { gate.entered }
+            try await f.environment.runStore.updateRunState(id: f.runID, state: "completed", endedAt: Date())
+            gate.release()
+            try await waitFor { f.probe.sent.count == 1 }
+            #expect(f.probe.sent.first?.kind == .completed)
+            #expect(Array(f.probe.continuedCompletions.dropFirst(previousCompletions)) == [true])
+            try await waitFor { await BackgroundWorkRegistry.shared.snapshot(id: f.runID)?.state == .completed }
+        } catch { gate.release(); await cleanup(f); throw error }
         await cleanup(f)
     }
 

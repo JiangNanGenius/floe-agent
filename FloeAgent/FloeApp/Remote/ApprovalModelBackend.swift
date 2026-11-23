@@ -5,6 +5,7 @@ import FloeModels
 import FloeProviders
 import FloeSecurity
 import FloeExecution
+import FloeLocalModels
 
 /// Tool-free, bounded approval-model call. Weak classifiers are parsed
 /// tolerantly, but only one unambiguous allow / deny / ask result is used.
@@ -20,6 +21,14 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
 
     func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
         let thinkingEnabled = reviewKind == .action ? await actionThinkingEnabled() : false
+        // The system model can opt in to light reasoning. Its nil level is a
+        // model-owned default and cannot enforce the user's disabled setting.
+        if !thinkingEnabled, model.providerID == ProviderProfile.onDeviceProviderID,
+           model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
+            return .escalateToHuman(reason: IDELanguageRunText.t(
+                "当前审批模型无法关闭思考。请确认这项操作。",
+                "The current approval model cannot turn off reasoning. Review this action."))
+        }
         let timeoutSeconds = reviewKind == .softwarePackage ? 60 : (thinkingEnabled ? 35 : 18)
         let started = ContinuousClock.now
         FloeLogger(category: .security).info(

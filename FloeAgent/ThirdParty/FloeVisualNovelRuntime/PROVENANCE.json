@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "component": "FloeVisualNovelRuntime",
+  "artifacts": [
+    {
+      "name": "ShioriKrkr.xcframework",
+      "role": "kirikiri-engine",
+      "upstream": "OWCramer/KiriKit",
+      "upstreamVersion": "0.1.3",
+      "upstreamCommit": "c1393f79f669cbe801c71af08ff6e8ed8ab5e72d",
+      "core": "2468785842/krkr2@3ac366c439a142f1712ed3059cb80184cb102dbf",
+      "shioriScripts": "OWCramer/shiori@d337d85d874b2dd7ad420707001b76da06843757",
+      "ffmpeg": "n8.0.3 (8ae0b34901ba60a802f183ee75a250a9fc3e09a5), LGPL-2.1-or-later, static, no-GPL configure",
+      "slices": {
+        "ios-arm64": {"minos": "17.0", "sha256": "2dddb86e5c95a8de6ba85b0a6ffea6befb39be818a8d27f44fe99379b5b0fa69", "signed": false},
+        "ios-arm64-simulator": {"minos": "17.0", "sha256": "71778e33f2a2f8701d0bf3ce44bba66f2457b9864e1c7f67262347ed44db4cfd", "signed": false}
+      },
+      "exportedSymbols": 13,
+      "loadModel": "dlopen at game start; embedded, signed on copy, not linked",
+      "qualification": "Local/Scratch/floe-kirikiri-runtime-20261122/HANDOFF.md (job-004ac64c75ea43d3)"
+    },
+    {
+      "name": "ONS record",
+      "role": "ons-license-and-build-record",
+      "upstream": "Helios-vmg/ONSlaught",
+      "upstreamCommit": "b1d671976f57fb9ed2218f849c8b66a3637f15cc",
+      "license": "BSD-style (ONS/ONSlaught-Licence.txt); mpg123 LGPL-2.1 dynamic on macOS build; MIDI/tracker disabled",
+      "iosSlice": "none-shipped",
+      "verifiedHost": "macOS arm64 probe FloeONSRuntime (Local/Artifacts/floe-visual-novels-20261122)",
+      "qualification": "Local/Scratch/floe-ons-runtime-20261122"
+    }
+  ]
+}

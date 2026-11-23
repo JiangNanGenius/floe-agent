@@ -574,6 +574,7 @@ public actor LocalModelRuntime {
         images: [Data],
         tools: [ToolSchemaDescriptor],
         maxTokens: Int,
+        thinkingEnabled: Bool = false,
         ownerRunID: UUID? = nil,
         onProgress: @escaping @Sendable (LocalInferenceProgress) -> Void,
         onOutput: @escaping @Sendable (String) -> Void
@@ -588,6 +589,7 @@ public actor LocalModelRuntime {
             tools: tools,
             maxTokens: maxTokens,
             ownerRunID: ownerRunID,
+            thinkingEnabled: thinkingEnabled,
             sink: LocalRuntimeStreamSink(onProgress: onProgress, onOutput: onOutput)
         )
     }
@@ -613,6 +615,7 @@ public actor LocalModelRuntime {
         tools: [ToolSchemaDescriptor],
         maxTokens: Int,
         ownerRunID: UUID?,
+        thinkingEnabled: Bool = false,
         sink: LocalRuntimeStreamSink? = nil
     ) async throws -> LocalRuntimeCompletion {
         await acquireInferenceSlot()
@@ -690,6 +693,7 @@ public actor LocalModelRuntime {
                     images: images,
                     tools: tools,
                     maxTokens: maxTokens,
+                    thinkingEnabled: thinkingEnabled,
                     traceID: traceID,
                     sink: sink,
                     deliveredOutput: deliveredOutput
@@ -737,6 +741,7 @@ public actor LocalModelRuntime {
                             images: images,
                             tools: tools,
                             maxTokens: maxTokens,
+                            thinkingEnabled: thinkingEnabled,
                             traceID: traceID,
                             sink: sink,
                             deliveredOutput: deliveredOutput
@@ -810,6 +815,7 @@ public actor LocalModelRuntime {
         images: [Data],
         tools: [ToolSchemaDescriptor],
         maxTokens: Int,
+        thinkingEnabled: Bool,
         traceID: String,
         sink: LocalRuntimeStreamSink?,
         deliveredOutput: LocalDeliveredOutputFlag
@@ -874,6 +880,7 @@ public actor LocalModelRuntime {
                     images: images,
                     tools: tools,
                     maxTokens: min(maxTokens, profile.maximumOutputTokens),
+                    thinkingEnabled: thinkingEnabled,
                     diagnosticTraceID: traceID,
                     onProgress: { progress in
                         sink.onProgress(progress)
@@ -1852,6 +1859,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             toolHistory: toolHistory,
                             forceToolCall: promptBuild.requiresToolCall,
                             maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048),
+                            reasoningPolicy: request.reasoningPolicy,
                             onToolSchemasPrepared: request.onToolSchemasPrepared
                         )
                     } else {
@@ -1886,6 +1894,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             // system instructions is their tool channel.
                             tools: promptBuild.nativeToolSchemas,
                             maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096),
+                            thinkingEnabled: request.reasoningPolicy != .disabled
+                                && request.model.effectiveReasoningEffort != .automatic,
                             ownerRunID: ownerRunID,
                             onProgress: { progress in
                                 watchdogState.noteProgress(progress)

@@ -49,6 +49,16 @@ final class ContinuousVoiceScreenSession: ObservableObject {
     private var subscriptions = Set<AnyCancellable>()
     private var sourceRound: UUID?
     private var source: ConfiguredTTSSpeechSource?
+    /// DeepSeek continuous-synthesis source for the CURRENT round; nil when
+    /// the frozen snapshot selects any other provider (or an unusable
+    /// DeepSeek configuration, which then fails closed through the same
+    /// request validation as the POST route). Created with the frozen
+    /// snapshot exactly like `source`, so a mid-turn settings edit never
+    /// moves an in-flight round.
+    private var streamingSource: DeepSeekStreamingSpeechSource?
+    /// One adapter per screen session: it owns no mutable state, and the
+    /// underlying ephemeral transport session is reused across rounds.
+    private let streamingAdapter = DeepSeekStreamingSpeechAdapter()
     private var historyTask: Task<Void, Never>?
     private var ended = false
     private var pendingTypedText = ""
@@ -93,7 +103,8 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         coordinator = VoiceConversationCoordinator.live(
             driving: driver,
             language: language,
-            speechNormalizer: { text in projection.normalize(text) })
+            speechNormalizer: { text in projection.normalize(text) },
+            supportsStreamingSpeech: { projection.current.provider == .deepSeek })
         coordinator.allowBargeIn = environment.ttsSettingsService.snapshot.allowBargeIn
         driver.onAttachmentsConsumed = { [weak self] files in
             guard let self, self.isActive else { return }
@@ -170,6 +181,20 @@ final class ContinuousVoiceScreenSession: ObservableObject {
                 self.sourceRound = unit.token.id
                 self.source = ConfiguredTTSSpeechSource(snapshot: snapshot,
                     settings: environment.ttsSettingsService, service: environment.ttsSpeechService)
+                self.streamingSource = snapshot.provider == .deepSeek
+                    ? DeepSeekStreamingSpeechSource(snapshot: snapshot,
+                        settings: environment.ttsSettingsService)
+                    : nil
+            }
+            if let textStream = unit.textStream, let streamingSource = self.streamingSource {
+                // Aggregated DeepSeek round unit: one continuous WebSocket
+                // session fed by the model's cleaned body deltas (the
+                // coordinator terminates the stream at round-text
+                // completion; finish_text rides on stream end). PCM is
+                // validated by the bridge exactly like a single ordinary
+                // unit's audio.
+                return streamingSource.synthesize(
+                    textStream: textStream, sessionID: unit.token.id, segmentIndex: unit.index)
             }
             let spoken = AnswerSpeechText.spokenText(unit.text, settings: snapshot)
             guard !spoken.isEmpty else {
@@ -180,6 +205,14 @@ final class ContinuousVoiceScreenSession: ObservableObject {
                 // inaudible silence instead of a zero-byte empty audio error
                 // or a first-chunk timeout.
                 return Self.silentCompletion(for: unit)
+            }
+            if let streamingSource = self.streamingSource {
+                // DeepSeek per-sentence fallback (units without an aggregated
+                // stream): continuous synthesis over the official TTS
+                // WebSocket. Manual/auto read-aloud keeps the POST route.
+                return streamingSource.synthesize(
+                    text: spoken, sessionID: unit.token.id, segmentIndex: unit.index,
+                    adapter: self.streamingAdapter)
             }
             return self.source!.synthesize(text: spoken, sessionID: unit.token.id, segmentIndex: unit.index)
         }, onFailure: { [weak self] error in

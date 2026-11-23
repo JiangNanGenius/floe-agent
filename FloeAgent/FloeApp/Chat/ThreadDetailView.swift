@@ -174,20 +174,8 @@ struct ThreadDetailView: View {
         self.ownsNavigationTitle = ownsNavigationTitle
         self.onSaveToNotes = onSaveToNotes
         self.onInputConsumed = onInputConsumed
-        let model = ThreadDetailViewModel(conversationID: conversationID, center: center)
-        _viewModel = StateObject(wrappedValue: model)
-        _search = StateObject(wrappedValue: ThreadSearchModel(
-            provider: { [weak model] query in
-                guard let model else {
-                    return ThreadSearchResult(hits: [], includesDurableHistory: false)
-                }
-                return await model.searchHits(for: query)
-            },
-            reveal: { [weak model] hit in
-                guard let model else { return false }
-                return await model.revealSearchHit(hit)
-            }
-        ))
+        _viewModel = StateObject(wrappedValue: ThreadDetailViewModel(conversationID: conversationID, center: center))
+        _search = StateObject(wrappedValue: ThreadSearchModel())
     }
 
     @MainActor private func consumeComposerInputIfReady() {
@@ -339,6 +327,12 @@ struct ThreadDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { if !embedded { stateToolbar } }
             .task {
+                let model = viewModel
+                search.connect(provider: { [weak model] query in
+                    await model?.searchHits(for: query) ?? ThreadSearchResult(hits: [], includesDurableHistory: false)
+                }, reveal: { [weak model] hit in
+                    await model?.revealSearchHit(hit) ?? false
+                })
                 if !embedded { viewModel.selectedRunID = router.selectedRunID }
                 await viewModel.load()
                 guard !Task.isCancelled else { return }
@@ -2344,12 +2338,30 @@ private struct MessageBubble: View {
                     AttachmentChipRow(items: attachmentItems, alignment: .leading, onOpen: onOpenAttachment, onDesign: openAttachmentDesign)
                 }
             } else {
-                AssistantMessageView(
-                    text: displayedText ?? message.content, isStreaming: false,
-                    speechOwnerID: message.id,
-                    onSaveToNotes: onSaveToNotes, attachments: attachmentItems,
-                    onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign,
-                    helpRunID: message.runID)
+                VStack(alignment: .leading, spacing: 8) {
+                    AssistantMessageView(
+                        text: displayedText ?? message.content, isStreaming: false,
+                        speechOwnerID: message.id,
+                        onSaveToNotes: onSaveToNotes, attachments: attachmentItems,
+                        onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign,
+                        helpRunID: message.runID)
+                    let results = message.parts.filter { $0.metadata["deviceHistory.tool"] != nil }
+                    if !results.isEmpty {
+                        DisclosureGroup(IDELanguageRunText.t("工具结果", "Tool Results")) {
+                            ForEach(results) { result in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(verbatim: result.metadata["deviceHistory.tool"] ?? "")
+                                        .font(.subheadline.weight(.medium))
+                                    Text(verbatim: result.text ?? "")
+                                        .font(.caption.monospaced()).textSelection(.enabled)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        .font(.subheadline)
+                    }
+                }
             }
         }
         // Keep the text-selection gesture owned by the rendered text.

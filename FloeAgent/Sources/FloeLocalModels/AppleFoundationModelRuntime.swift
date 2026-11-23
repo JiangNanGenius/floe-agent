@@ -161,6 +161,7 @@ public actor AppleFoundationModelRuntime {
         toolHistory: [AppleFoundationToolExchange] = [],
         forceToolCall: Bool = false,
         maxTokens: Int,
+        reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
         onToolSchemasPrepared: (@Sendable ([String]) async -> Void)? = nil
     ) async throws -> LocalRuntimeCompletion {
 #if compiler(>=6.4) && canImport(FoundationModels)
@@ -219,7 +220,7 @@ public actor AppleFoundationModelRuntime {
             toolCallingMode: tools.isEmpty ? .disallowed : .allowed
         )
         let contextOptions = ContextOptions(
-            reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil
+            reasoningLevel: reasoningPolicy != .disabled && model.capabilities.contains(.reasoning) ? .light : nil
         )
         for message in conversation {
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)

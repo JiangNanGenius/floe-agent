@@ -1,0 +1,26 @@
+ShioriKrkr corresponding source and relinking
+===========================================
+
+Application source tag: v1.8.78
+Repository: https://github.com/JiangNanGenius/floe-agent
+
+Floe includes KiriKit 0.1.3 (MPL-2.0) and the KiriKiri core and plug-ins.
+The signed ShioriKrkr framework statically incorporates FFmpeg n8.0.3
+(LGPL-2.1-or-later). The matching App source tag contains both source archives,
+their checksums, pinned engine and plug-in patches, and the procedure to rebuild
+both iOS slices and relink the App.
+
+https://github.com/JiangNanGenius/floe-agent/tree/v1.8.78/FloeAgent/ThirdParty/FloeVisualNovelRuntime/Relink
+
+See Relink/README.md for the build commands. After editing the library, rebuild
+ShioriKrkr and replace the framework in the matching Floe App source, then build
+and sign with your own identity. The applicable license permits modifying the
+library and reverse engineering for debugging those modifications. The full
+license texts accompany this notice.
+
+简体中文
+--------
+上方源码标签提供 KiriKit 和 FFmpeg 对应源码、校验和、固定引擎及插件补丁，
+以及重建和重新链接步骤。可修改库并重建 ShioriKrkr，在同一版本的 Floe 源码
+中替换框架，再使用自己的签名身份安装。适用许可允许修改库以及为调试这些
+修改进行反向工程。完整许可文本随本说明提供。

@@ -454,6 +454,7 @@ public actor MLXTextEngine {
         images: [Data] = [],
         tools: [ToolSchemaDescriptor] = [],
         maxTokens: Int = 1_024,
+        thinkingEnabled: Bool = false,
         diagnosticTraceID: String? = nil,
         onProgress: @escaping @Sendable (LocalInferenceProgress) -> Void,
         onOutput: @escaping @Sendable (String) -> Void
@@ -464,6 +465,7 @@ public actor MLXTextEngine {
             images: images,
             tools: tools,
             maxTokens: maxTokens,
+            thinkingEnabled: thinkingEnabled,
             diagnosticTraceID: diagnosticTraceID,
             sinks: GenerationSinks(
                 onProgress: onProgress,
@@ -656,6 +658,7 @@ public actor MLXTextEngine {
         images: [Data],
         tools: [ToolSchemaDescriptor],
         maxTokens: Int,
+        thinkingEnabled: Bool = false,
         diagnosticTraceID: String?,
         sinks: GenerationSinks?
     ) async throws -> LocalGenerationResult {
@@ -730,12 +733,8 @@ public actor MLXTextEngine {
                         // array still reaches `applyChatTemplate(tools:)` and
                         // makes some templates emit an empty tool preamble.
                         tools: toolSchemas.isEmpty ? nil : toolSchemas,
-                        // Qwen 3.x templates enable thinking by default. Floe
-                        // routes reasoning privately and the on-device path has
-                        // a tight context, so explicitly disable it instead of
-                        // relying on a textual /no_think suffix that some VLM
-                        // templates ignore.
-                        additionalContext: ["enable_thinking": false]
+                        // Apply the request policy in the template itself.
+                        additionalContext: ["enable_thinking": thinkingEnabled]
                     )
                     let value = try await container.prepare(input: input)
                     try errors.check()

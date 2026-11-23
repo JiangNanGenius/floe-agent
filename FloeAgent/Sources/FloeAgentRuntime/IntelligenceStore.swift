@@ -883,6 +883,18 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
+    public func pendingGoalRecoveryConversationIDs() async throws -> Set<UUID> {
+        try await database.reader { db in
+            let ids = try String.fetchAll(db, sql: """
+                SELECT DISTINCT conversation_id FROM conversation_goals
+                WHERE status = 'verifying' OR (status = 'active' AND
+                    CASE WHEN json_valid(progress_json)
+                         THEN json_type(progress_json, '$.queuedResume') = 'object' ELSE 0 END)
+                """)
+            return Set(ids.compactMap(UUID.init(uuidString:)))
+        }
+    }
+
     public func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference]) async throws {
         try await database.writer { db in
             try Self.saveMemory(entry, evidence: evidence, in: db)

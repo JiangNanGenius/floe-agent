@@ -68,6 +68,84 @@
   ],
   "documents": [
     {
+      "id": "kirikiri-license",
+      "repositoryPath": "FloeApp/Resources/Licenses/KiriKiri-License.txt",
+      "bundlePath": "Licenses/KiriKiri-License.txt",
+      "titleKey": "settings.licenses.document.kirikiri.title",
+      "titleFallback": "KiriKiri license",
+      "titleArgument": null,
+      "license": "KiriKiri license",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "kirikit-mpl",
+      "repositoryPath": "FloeApp/Resources/Licenses/KiriKit-MPL-2.0.txt",
+      "bundlePath": "Licenses/KiriKit-MPL-2.0.txt",
+      "titleKey": "settings.licenses.document.kirikit_mpl.title",
+      "titleFallback": "KiriKit (MPL-2.0)",
+      "titleArgument": null,
+      "license": "MPL-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "shiori-mpl",
+      "repositoryPath": "FloeApp/Resources/Licenses/Shiori-MPL-2.0.txt",
+      "bundlePath": "Licenses/Shiori-MPL-2.0.txt",
+      "titleKey": "settings.licenses.document.shiori_mpl.title",
+      "titleFallback": "Shiori (MPL-2.0)",
+      "titleArgument": null,
+      "license": "MPL-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "shiorikrkr-ffmpeg",
+      "repositoryPath": "FloeApp/Resources/Licenses/ShioriKrkr-FFmpeg-LGPL-2.1.txt",
+      "bundlePath": "Licenses/ShioriKrkr-FFmpeg-LGPL-2.1.txt",
+      "titleKey": "settings.licenses.document.shiorikrkr_ffmpeg.title",
+      "titleFallback": "ShioriKrkr FFmpeg (LGPL-2.1)",
+      "titleArgument": null,
+      "license": "LGPL-2.1-or-later",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "shiorikrkr-dependencies",
+      "repositoryPath": "FloeApp/Resources/Licenses/ShioriKrkr-DEPENDENCY-NOTICES.txt",
+      "bundlePath": "Licenses/ShioriKrkr-DEPENDENCY-NOTICES.txt",
+      "titleKey": "settings.licenses.document.shiorikrkr_deps.title",
+      "titleFallback": "ShioriKrkr dependency notices",
+      "titleArgument": null,
+      "license": "Retained third-party notices",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "shiorikrkr-source-offer",
+      "repositoryPath": "FloeApp/Resources/Licenses/ShioriKrkr-SOURCE-OFFER.txt",
+      "bundlePath": "Licenses/ShioriKrkr-SOURCE-OFFER.txt",
+      "titleKey": "settings.licenses.document.shiorikrkr_source.title",
+      "titleFallback": "ShioriKrkr source and relinking",
+      "titleArgument": null,
+      "license": "MPL-2.0; LGPL-2.1-or-later",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
       "id": "iroh-ffi-mit",
       "repositoryPath": "FloeApp/Resources/Licenses/Iroh-FFI-MIT.txt",
       "bundlePath": "Licenses/Iroh-FFI-MIT.txt",
@@ -1273,6 +1351,24 @@
       "section": "swift",
       "noteKey": "settings.licenses.note.openshape3d",
       "evidence": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt"
+    },
+    {
+      "name": "ShioriKrkr (KiriKiri 2/Z)",
+      "version": "KiriKit 0.1.3",
+      "license": "MPL-2.0; KiriKiri license; retained plug-in and dependency notices",
+      "source": "https://github.com/OWCramer/KiriKit/tree/c1393f79f669cbe801c71af08ff6e8ed8ab5e72d",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "ShioriKrkr FFmpeg",
+      "version": "8.0.3",
+      "license": "LGPL-2.1-or-later (FFmpeg 8.0.3 in ShioriKrkr; corresponding source and relink kit)",
+      "source": "https://github.com/FFmpeg/FFmpeg/tree/8ae0b34901ba60a802f183ee75a250a9fc3e09a5",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": null
     },
     {
       "name": "libmaxminddb (offline IP database reader)",
@@ -3167,8 +3263,8 @@
     }
   ],
   "counts": {
-    "components": 242,
-    "documents": 65,
+    "components": 244,
+    "documents": 71,
     "pins": 41
   }
 }

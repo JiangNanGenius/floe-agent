@@ -182,6 +182,39 @@ struct VoiceConversationSpeechUnit: Hashable, Sendable, Identifiable {
     let token: VoiceConversationRoundToken
     let index: Int
     let text: String
+    /// Incremental text supply for ONE AGGREGATED round unit (the DeepSeek
+    /// continuous-synthesis route): the round's cleaned body as ordered
+    /// deltas, terminating when the round text is complete — the transport
+    /// sends `finish_text` when this stream ends. nil for ordinary
+    /// per-sentence units, which keep the whole-text request contract.
+    let textStream: AsyncStream<String>?
+
+    init(
+        id: UUID,
+        token: VoiceConversationRoundToken,
+        index: Int,
+        text: String,
+        textStream: AsyncStream<String>? = nil
+    ) {
+        self.id = id
+        self.token = token
+        self.index = index
+        self.text = text
+        self.textStream = textStream
+    }
+
+    /// Identity is id/token/index/text. The stream is a transient supply
+    /// channel, never part of identity (AsyncStream is not Equatable; two
+    /// units differing only in the stream are the same speech unit).
+    static func == (lhs: VoiceConversationSpeechUnit, rhs: VoiceConversationSpeechUnit) -> Bool {
+        lhs.id == rhs.id && lhs.token == rhs.token
+            && lhs.index == rhs.index && lhs.text == rhs.text
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(index)
+    }
 }
 
 enum VoiceConversationSpeechAppendResult: Sendable, Equatable {

@@ -34,6 +34,7 @@ struct WorkspaceIDEView: View {
     private let root: URL?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.gameIDERunExtensionProvider) private var gameRunProvider
     @State private var gameRunExtension: IDEProjectRunExtension?
     @State private var gameRunRequest: GameIDEGameRunRequest?
@@ -151,7 +152,7 @@ struct WorkspaceIDEView: View {
                                 onOpenFile: { openRoutedPath($0) }
                             )
                             .frame(width: resolvedSidebarWidth(availableWidth: geometry.size.width))
-                            .transition(.move(edge: .leading).combined(with: .opacity))
+                            .transition(FloeTheme.panelTransition(from: .leading, reduceMotion: reduceMotion))
                             Divider()
                         }
                         VStack(spacing: 0) {
@@ -161,6 +162,7 @@ struct WorkspaceIDEView: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                             if showsTerminal, let terminalOwner {
                                 bottomPanel(terminalOwner, availableHeight: geometry.size.height)
+                                    .transition(FloeTheme.panelTransition(from: .bottom, reduceMotion: reduceMotion))
                             }
                             IDEStatusBar(
                                 sourceControl: sourceControlCenter,
@@ -168,12 +170,13 @@ struct WorkspaceIDEView: View {
                                 dirtyBuffers: state.nativeText.dirtyPaths.count
                             )
                         }
+                        .animation(FloeTheme.panelAnimation(reduceMotion: reduceMotion), value: showsTerminal)
                     }
                     .overlay(alignment: .leading) {
-                        if let sidebar, sizeClass == .compact {
-                            IDESidebarDrawer(onDismiss: { self.sidebar = nil }) {
+                        if sizeClass == .compact {
+                            IDESidebarDrawer(mode: sidebar, onDismiss: { self.sidebar = nil }) { mode in
                                 IDESidebar(
-                                    mode: sidebar,
+                                    mode: mode,
                                     center: center,
                                     sourceControl: sourceControlCenter,
                                     workspaceID: workspaceID,
@@ -188,6 +191,7 @@ struct WorkspaceIDEView: View {
                             }
                         }
                     }
+                    .animation(FloeTheme.panelAnimation(reduceMotion: reduceMotion), value: sidebar != nil)
                     }
                 } else { ContentUnavailableView("ide.workspace.unavailable", systemImage: "folder.badge.questionmark") }
             }
@@ -774,7 +778,7 @@ struct WorkspaceIDEView: View {
 
     private func toggleTerminal() {
         if showsTerminal {
-            withAnimation(.snappy) { showsTerminal = false }
+            showsTerminal = false
         } else {
             openTerminalPanel()
         }
@@ -806,7 +810,7 @@ struct WorkspaceIDEView: View {
             // conversation.
             displayOwner = center.environment.localLinuxDisplays.owner(conversationID: nil, workspaceRoot: root)
         }
-        withAnimation(.snappy) { showsTerminal = true }
+        showsTerminal = true
     }
 
     /// True only while the app's current workspace is the one this IDE was
@@ -829,7 +833,7 @@ struct WorkspaceIDEView: View {
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 0)
                 Button {
-                    withAnimation(.snappy) { showsTerminal = false }
+                    showsTerminal = false
                 } label: {
                     Image(systemName: "chevron.down")
                         .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)

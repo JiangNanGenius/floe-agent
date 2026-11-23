@@ -1735,6 +1735,8 @@ final class ConversationCenter: ObservableObject {
     // MARK: - Loading
 
     private var localModelConfigurationRefresh: Task<Void, Never>?
+    private var isRefreshingForeground = false
+    private var isRefreshingForegroundConfiguration = false
     #if DEBUG
     var localModelDiscoveryOverrideForTesting: (@MainActor () async -> Void)?
     func finishLocalModelRefreshForTesting() async { await localModelConfigurationRefresh?.value }
@@ -1759,10 +1761,7 @@ final class ConversationCenter: ObservableObject {
             // so this same reload already projects it everywhere.
             try await reconcileFileAssistantOwnership()
             try await reconcileCanvasAssistantOwnership()
-            conversations = ConversationListOrdering.sorted(
-                try await environment.conversationStore.conversations().filter {
-                    !unavailableFileAssistantConversationIDs.contains($0.id)
-                })
+            try await refreshConversationList()
             // Entry state derives from DURABLE binding/envelope truth, so a
             // relaunch/restore republishes it without opening any page.
             await environment.designEntryState.refreshAll(
@@ -1783,6 +1782,46 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
+    /// Keep the existing thread and sidebar visible during warm re-entry.
+    /// Ownership migration and model discovery belong to bootstrap and their
+    /// existing mutation paths, so a focus change need not revisit every file.
+    func refreshOnForeground() async {
+        guard !isRefreshingForeground, !isClearingHistory else { return }
+        isRefreshingForeground = true
+        defer { isRefreshingForeground = false }
+        Task { [weak self] in await self?.refreshForegroundConfiguration() }
+        do { try await refreshConversationList() }
+        catch is CancellationError { }
+        catch { FloeLogger(category: .app).warning("foregroundConversationRefreshFailed") }
+    }
+
+    private func refreshConversationList() async throws {
+        let previouslyPublished = conversations
+        let stored = try await environment.conversationStore.conversations()
+        try Task.checkCancellation()
+        // A mutation can publish a newer list while the read is in flight.
+        guard !isClearingHistory, conversations == previouslyPublished else { return }
+        let updated = ConversationListOrdering.sorted(stored.filter {
+            !unavailableFileAssistantConversationIDs.contains($0.id)
+        })
+        if conversations != updated { conversations = updated }
+    }
+
+    private func refreshForegroundConfiguration() async {
+        guard !isRefreshingForegroundConfiguration else { return }
+        isRefreshingForegroundConfiguration = true
+        defer { isRefreshingForegroundConfiguration = false }
+        guard await environment.configurationSync.synchronizationEnabled else { return }
+        try? await environment.configurationSync.synchronize()
+        guard !Task.isCancelled else { return }
+        await reloadPersistedModelConfiguration()
+    }
+
+    func loadPersistedModelsForThreadIfNeeded() async {
+        guard providers.isEmpty else { return }
+        await reloadPersistedModelConfiguration(localDiscoveryPending: localModelConfigurationRefresh != nil)
+    }
+
     private func reloadPersistedModelConfiguration(localDiscoveryPending: Bool = false) async {
         async let loadedProviders = environment.configurationStore.providers()
         async let loadedModels = environment.configurationStore.models()
@@ -1792,19 +1831,23 @@ final class ConversationCenter: ObservableObject {
         do {
             let allProviders = try await loadedProviders
             let allModels = try await loadedModels
-            configuredProviders = allProviders
+            if configuredProviders != allProviders { configuredProviders = allProviders }
             environment.webSearchSettingsCenter.refreshKimiDatasetAccounts()
-            configuredModelsByProvider = Dictionary(grouping: allModels, by: \.providerID)
-            providers = allProviders.filter(\.isEnabled)
-            let enabledProviderIDs = Set(providers.map(\.id))
+            let configuredGroups = Dictionary(grouping: allModels, by: \.providerID)
+            if configuredModelsByProvider != configuredGroups { configuredModelsByProvider = configuredGroups }
+            let enabledProviders = allProviders.filter(\.isEnabled)
+            if providers != enabledProviders { providers = enabledProviders }
+            let enabledProviderIDs = Set(enabledProviders.map(\.id))
             let models = allModels.filter {
                 $0.isEnabled && enabledProviderIDs.contains($0.providerID)
                     && ($0.providerID != ProviderProfile.onDeviceProviderID
                         || $0.remoteModelID != AppleFoundationModelIdentity.remoteModelID
                         || appleFoundationAvailable)
             }
-            modelsByProvider = Dictionary(grouping: models, by: \.providerID)
-            modelPreferences = try await loadedPreferences
+            let enabledGroups = Dictionary(grouping: models, by: \.providerID)
+            if modelsByProvider != enabledGroups { modelsByProvider = enabledGroups }
+            let preferences = try await loadedPreferences
+            if modelPreferences != preferences { modelPreferences = preferences }
         } catch {
             // Honest degradation: keep prior state; the list surfaces empty.
         }
@@ -2403,28 +2446,41 @@ final class ConversationCenter: ObservableObject {
             .filter { seen.insert($0.id).inserted }
     }
 
+    private var isRecoveringForegroundRuns = false
+
     func resumeSafeRunsAfterForeground() async {
+        guard environment.persistenceReady, !isRecoveringForegroundRuns, !isClearingHistory else { return }
+        isRecoveringForegroundRuns = true
+        defer { isRecoveringForegroundRuns = false }
         await refreshRuntimeWaitRecovery()
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
-        let candidates = foregroundRecoveryConversations()
-        for conversation in candidates {
-            guard !unavailableFileAssistantConversationIDs.contains(conversation.id),
-                  !deletingConversationIDs.contains(conversation.id) else { continue }
-            await resumeQueuedGoal(conversationID: conversation.id)
-            guard let loadedRuns = try? await environment.runStore.recentRuns(
-                    conversationID: conversation.id, limit: 1
-                  ),
-                  let run = loadedRuns.first,
-                  ["failed", "interrupted", "checkpointed"].contains(run.state) else { continue }
+        let candidateIDs = foregroundRecoveryConversations().map(\.id)
+        let recoverableStates: Set<String> = ["failed", "interrupted", "checkpointed"]
+        async let statusRead = environment.runStore.latestRunSummaries(conversationIDs: candidateIDs)
+        let goalIDs = (try? await environment.intelligenceStore.pendingGoalRecoveryConversationIDs()) ?? []
+        for id in candidateIDs where goalIDs.contains(id) {
+            guard !Task.isCancelled, !isClearingHistory,
+                  !unavailableFileAssistantConversationIDs.contains(id),
+                  !deletingConversationIDs.contains(id) else { continue }
+            await resumeQueuedGoal(conversationID: id)
+            await resumeUnfinishedGoalVerification(conversationID: id, workspaceStore: workspaceStore)
+        }
+        let latest = (try? await statusRead) ?? [:]
+        for id in candidateIDs where latest[id].map({ recoverableStates.contains($0.state) }) == true {
+            guard !Task.isCancelled, !isClearingHistory,
+                  !unavailableFileAssistantConversationIDs.contains(id),
+                  !deletingConversationIDs.contains(id),
+                  let run = try? await environment.runStore.recentRuns(conversationID: id, limit: 1).first,
+                  recoverableStates.contains(run.state) else { continue }
             // A run still owned by a live service/task is not a recovery
             // candidate; retrying it would duplicate an in-flight owner.
-            guard !hasLiveOwner(runID: run.id) else { continue }
+            guard !hasLiveOwner(runID: run.id), !attemptedForegroundRecovery.contains(run.id) else { continue }
             let errors = (try? await environment.runStore.errors(runID: run.id)) ?? []
             if run.state == "failed", errors.last?.recoverable != true { continue }
             let events = (try? await environment.runStore.events(runID: run.id)) ?? []
             guard !events.contains(where: { $0.kind == .toolRequest }) else { continue }
-            let policy = (try? await workspaceStore.taskPolicy(conversationID: conversation.id))
-                ?? TaskPolicy(conversationID: conversation.id)
+            let policy = (try? await workspaceStore.taskPolicy(conversationID: id))
+                ?? TaskPolicy(conversationID: id)
             guard policy.recoveryPolicy == .safePoint || policy.recoveryPolicy == .alwaysRetry else { continue }
             guard attemptedForegroundRecovery.insert(run.id).inserted else { continue }
             // Resume the existing durable run with its recorded provider and
@@ -2441,6 +2497,25 @@ final class ConversationCenter: ObservableObject {
                 // retryable instead of remembering a never-started attempt.
                 attemptedForegroundRecovery.remove(run.id)
             }
+        }
+    }
+
+    /// A round can settle durably before its verifier runs. Cold recovery
+    /// checks the existing receipt using the same stored model and task root.
+    private func resumeUnfinishedGoalVerification(conversationID: UUID, workspaceStore: SQLiteWorkspaceStore) async {
+        guard let goals = try? await environment.intelligenceStore.goals(conversationID: conversationID),
+              let goal = goals.first(where: { !$0.status.isTerminal }), goal.status == .verifying,
+              !goal.acceptanceCriteria.contains(where: \.requiresUserConfirmation),
+              let run = try? await environment.runStore.recentRuns(conversationID: conversationID, limit: 1).first,
+              run.goalID == goal.id, run.state == "completed", !hasLiveOwner(runID: run.id),
+              let modelID = run.modelID, let providerID = run.providerID,
+              let (provider, model) = providerAndModel(modelID: modelID),
+              model.id == modelID, provider.id == providerID,
+              let workspace = try? await workspaceStore.ownedWorkspace(conversationID: conversationID),
+              !isClearingHistory, !deletingConversationIDs.contains(conversationID) else { return }
+        Task { [weak self] in
+            await self?.evaluateAndContinueGoal(completedRunID: run.id, conversationID: conversationID,
+                provider: provider, model: model, workspaceID: workspace.kind == .project ? workspace.id : nil)
         }
     }
 
@@ -5355,7 +5430,8 @@ final class ConversationCenter: ObservableObject {
                 )
                 return AutomaticApprovalPolicy(packageReviewBackend: nil)
             }
-            if mustUseLocalApproval, let localBackend {
+            if mustUseLocalApproval {
+                guard let localBackend else { return AutomaticApprovalPolicy() }
                 FloeLogger(category: .security).info(
                     "approvalRoute mode=automatic route=local offline=\(environment.networkStatusMonitor.isOffline) primaryLocal=\(primaryModel.providerID == ProviderProfile.onDeviceProviderID) model=\(localBackend.model.id.uuidString)"
                 )
@@ -5391,8 +5467,7 @@ final class ConversationCenter: ObservableObject {
                 return AutomaticApprovalPolicy(
                     backend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
                         ? nil : localBackend?.backend,
-                    packageReviewBackend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
-                        ? nil : (localPackageBackend ?? packageBackend)
+                    packageReviewBackend: localPackageBackend
                 )
             }
             return TaskFullAccessPolicy(packageReviewBackend: packageBackend)
@@ -5405,12 +5480,16 @@ final class ConversationCenter: ObservableObject {
     }
 
     private func localApprovalBackend() async -> LocalApprovalRoute? {
-        let localModels = modelsByProvider[ProviderProfile.onDeviceProviderID] ?? []
+        let permitsThinking = environment.settingsCenter.approvalModelThinkingEnabled
+        let localModels = (modelsByProvider[ProviderProfile.onDeviceProviderID] ?? []).filter {
+            $0.isEnabled && $0.capabilities.contains(.text)
+                && (permitsThinking || $0.remoteModelID != AppleFoundationModelIdentity.remoteModelID)
+        }
         let residentID = await environment.localModelRuntime.residentModelID()
         let model: ModelProfile? = if let residentID {
             localModels.first(where: { $0.remoteModelID == residentID })
         } else {
-            localModels.first(where: { $0.isEnabled && $0.capabilities.contains(.text) })
+            localModels.first
         }
         guard let model,
               let provider = providers.first(where: { $0.id == ProviderProfile.onDeviceProviderID })

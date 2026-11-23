@@ -232,6 +232,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
 
     private struct UnitLedger {
         let unit: VoiceConversationSpeechUnit
+        var streamingText: String?
+        var spokenText: String { streamingText ?? unit.text }
         var expectedFrames = 0   // output-rate frames accepted for this unit
         var ended = false        // bridge finished appending this unit
         var completed = false    // audio of this unit played to its end offset
@@ -270,6 +272,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         var pendingUnitTexts: [String] = []
         var pendingCharacters = 0
         var units: [UnitLedger] = []
+        var streamsSpeech: Bool?
+        var streamingSupply: AsyncStream<String>.Continuation?
         var totalQueuedFrames = 0
         var playedFrames = 0
         var modelCompleted = false
@@ -416,6 +420,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     // Speech event channel (single consumer: the app TTS bridge).
     private let speechContinuation: AsyncStream<VoiceConversationSpeechEvent>.Continuation
     let speechEvents: AsyncStream<VoiceConversationSpeechEvent>
+    private let supportsStreamingSpeech: @Sendable () -> Bool
 
     // MARK: - Init
 
@@ -426,7 +431,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         clock: any VoiceConversationScheduling,
         diagnostics: (any VoiceConversationDiagnostics)? = nil,
         timing: Timing = Timing(),
-        speechNormalizer: @escaping @Sendable (String) -> String = { $0 }
+        speechNormalizer: @escaping @Sendable (String) -> String = { $0 },
+        supportsStreamingSpeech: @escaping @Sendable () -> Bool = { false }
     ) {
         self.authorization = authorization
         self.makeStack = makeStack
@@ -435,6 +441,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         self.diagnostics = diagnostics
         self.timing = timing
         self.speechNormalizer = speechNormalizer
+        self.supportsStreamingSpeech = supportsStreamingSpeech
         var continuation: AsyncStream<VoiceConversationSpeechEvent>.Continuation!
         self.speechEvents = AsyncStream(bufferingPolicy: .bufferingNewest(256)) { continuation = $0 }
         self.speechContinuation = continuation
@@ -485,6 +492,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         teardownInFlight = false
         // A previous round should already be fenced away; belt-and-braces:
         if let stale = round {
+            stale.streamingSupply?.finish()
             round = nil
             currentRound = nil
             let driving = self.driving
@@ -817,6 +825,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         observationTasks = []
         teardownInFlight = true
         if let r = round {
+            r.streamingSupply?.finish()
             round = nil
             currentRound = nil
             r.drainWatchdog?.cancel()
@@ -1683,22 +1692,20 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         r.speechTailLost = true
         r.pendingUnitTexts = []
         r.pendingCharacters = 0
+        r.streamingSupply?.finish()
+        r.streamingSupply = nil
         // Discard the mis-projected basis AND ledger: the confirmed final
         // body starts a FRESH split (its own sentences, none replayed — the
         // old projection units were stopped and are never re-queued). Text
         // actually heard is retained in `spokenPrefix` for the receipt.
-        let heard = r.completedSpokenCache
-        if !heard.isEmpty {
-            r.spokenPrefix = [r.spokenPrefix, heard]
-                .filter { !$0.isEmpty }
-                .joined(separator: " ")
-        }
+        r.spokenPrefix = r.completedSpokenCache
         r.speechBasis = ""
-        r.splitter = VoiceConversationSentenceSplitter()
+        r.splitter = VoiceConversationSentenceSplitter(streaming: r.streamsSpeech == true)
         r.units = []
         r.totalQueuedFrames = 0
         r.playedFrames = 0
         r.completedSpokenCache = r.spokenPrefix
+        r.roundStartedEmitted = false
         r.roundTextCompletedEmitted = false
         // The sink's frame clock was reset by stopPlayback; a stale baseline
         // from the discarded projection must not leak into the fresh body.
@@ -1727,7 +1734,12 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     }
 
     private func feedSpeechBasis(_ rawBasis: String, finalize: Bool) {
-        guard let current = round, !current.outputStoppedByApp else { return }
+        guard var current = round, !current.outputStoppedByApp else { return }
+        if current.streamsSpeech == nil {
+            current.streamsSpeech = supportsStreamingSpeech()
+            current.splitter = VoiceConversationSentenceSplitter(streaming: current.streamsSpeech == true)
+            round = current
+        }
         let normalized = speechNormalizer(speechBasis(rawBasis))
         if normalized.hasPrefix(current.speechBasis) {
             // Mutate the splitter ON `round` (a local struct copy would drop
@@ -1805,11 +1817,37 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     /// control events can never outrun the bridge channel.
     private func emitWindowUnits() {
         guard var r = round, !r.outputStoppedByApp else { return }
-        while !r.pendingUnitTexts.isEmpty, r.outstandingUnits < timing.lookaheadUnits {
+        // Freeze the provider on the first speakable content. Reuse a socket
+        // across incoming sentences, rolling over before the existing PCM
+        // per-unit bound can cut off a long answer.
+        while let next = r.pendingUnitTexts.first {
+            if let supply = r.streamingSupply, let last = r.units.indices.last {
+                let old = r.units[last].spokenText
+                let combined = VoiceConversationFrameMath.joinCompletedSentences([old, next])
+                if combined.utf8.count <= 2_400 {
+                    supply.yield(String(combined.dropFirst(old.count)))
+                    r.units[last].streamingText = combined
+                    r.pendingUnitTexts.removeFirst()
+                    r.pendingCharacters -= next.count
+                    continue
+                }
+                supply.finish()
+                r.streamingSupply = nil
+            }
+            guard r.outstandingUnits < timing.lookaheadUnits else { break }
             let text = r.pendingUnitTexts.removeFirst()
             r.pendingCharacters -= text.count
+            let stream: AsyncStream<String>?
+            if r.streamsSpeech == true {
+                let supply = AsyncStream<String>.makeStream()
+                supply.continuation.yield(text)
+                r.streamingSupply = supply.continuation
+                stream = supply.stream
+            } else {
+                stream = nil
+            }
             let unit = VoiceConversationSpeechUnit(
-                id: UUID(), token: r.token, index: r.units.count, text: text
+                id: UUID(), token: r.token, index: r.units.count, text: text, textStream: stream
             )
             r.units.append(UnitLedger(unit: unit))
             if !r.roundStartedEmitted {
@@ -1829,6 +1867,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     private func maybeEmitRoundTextCompleted() {
         guard let r = round, r.modelCompleted, r.allUnitsEmitted,
               !r.roundTextCompletedEmitted else { return }
+        r.streamingSupply?.finish()
+        round?.streamingSupply = nil
         round?.roundTextCompletedEmitted = true
         speechContinuation.yield(.roundTextCompleted(token: r.token, unitCount: r.units.count))
         report("roundTextCompleted", "units=\(r.units.count)")
@@ -1976,7 +2016,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
                 completions.append(r.units[index].unit)
             }
             if r.units[index].completed {
-                spoken.append(r.units[index].unit.text)
+                spoken.append(r.units[index].spokenText)
             } else {
                 let length = r.units[index].expectedFrames
                 let fraction = length > 0
@@ -2069,6 +2109,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     private func finishRound(token: VoiceConversationRoundToken, reason: VoiceConversationStopReason?, drained: Bool) async {
         guard let r = round, r.token == token else { return }
         round = nil
+        r.streamingSupply?.finish()
         currentRound = nil
         r.drainWatchdog?.cancel()
         // A finished/cancelled round's barge candidate is superseded with
@@ -2285,6 +2326,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         r.outputPausedByBarge = false
         r.pendingUnitTexts = []
         r.pendingCharacters = 0
+        r.streamingSupply?.finish()
+        r.streamingSupply = nil
         round = r
         stack?.stopPlayback()
         outputLevel = 0

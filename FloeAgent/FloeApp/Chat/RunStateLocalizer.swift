@@ -229,18 +229,18 @@ struct ConversationActivityBadge: View {
             return $0.id.uuidString > $1.id.uuidString
         }
     }
-    private var activity: ConversationActivityPresentation? {
-        .project(conversationID: conversationID, isOrdinary: listedAsOrdinary && ordinaryAuthority,
-                 snapshot: snapshot, live: liveRun)
-    }
-    private var observationKey: String {
-        "\(conversationID):\(listedAsOrdinary):\(scenePhase == .active):\(liveRun?.id.uuidString ?? ""):\(liveRun?.state ?? ""):\(center.goalPresentationRevision)"
-    }
     private var openHint: String {
         FloeL10n.l("app.run_state_localizer.open_the_conversation_for_details")
     }
 
     var body: some View {
+        let isOrdinary = listedAsOrdinary
+        let run = liveRun
+        let activity = ConversationActivityPresentation.project(
+            conversationID: conversationID, isOrdinary: isOrdinary && ordinaryAuthority,
+            snapshot: snapshot, live: run
+        )
+        let observationKey = "\(conversationID):\(isOrdinary):\(scenePhase == .active):\(run?.id.uuidString ?? ""):\(run?.state ?? ""):\(center.goalPresentationRevision)"
         Group {
             if let activity {
                 if let onOpen, activity.showsTitle {

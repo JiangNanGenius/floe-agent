@@ -385,6 +385,7 @@ ALLOWED_EXACT = {
 FLOESLIRP_STACK_LICENSE = (
     "BSD-3-Clause + per-file MIT (libslirp); LGPL-2.1-or-later (GLib core); LGPL-2.0 (proxy-libintl stubs); BSD-3-Clause WITH PCRE2-exception (PCRE2) — static libraries linked via the FloeSlirp binaryTarget; pinned source, patches, rebuild and relink instructions recorded"
 )
+SHIORIKRKR_FFMPEG_LICENSE = "LGPL-2.1-or-later (FFmpeg 8.0.3 in ShioriKrkr; corresponding source and relink kit)"
 
 # The in-app note text for the slirp stack. The settings.licenses.note.slirp
 # catalog values equal this string (asserted by the bilingual alignment test).
@@ -392,6 +393,11 @@ NOTES_SLIRP_TEXT = 'Floe Agent statically links the FloeSlirp userspace network 
 
 # Explicit, individually reviewed exceptions. Each still prints a notice.
 EXCEPTIONS = {
+    SHIORIKRKR_FFMPEG_LICENSE: (
+        "FFmpeg n8.0.3 is linked into ShioriKrkr and built without GPL or nonfree code. "
+        "ThirdParty/FloeVisualNovelRuntime/Relink contains the pinned source archives, "
+        "checksums and build steps, and Licenses/ShioriKrkr-SOURCE-OFFER.txt ships with the full LGPL text."
+    ),
     FLOESLIRP_STACK_LICENSE: (
         "libslirp 4.9.7 (BSD-3-Clause with 9 per-file MIT sources) plus the "
         "trimmed GLib 2.90.1 core (LGPL-2.1-or-later), PCRE2 10.46 built with "
@@ -579,6 +585,17 @@ NOTES = (
 
 # (name, version, license, source, section, noteKey)
 STATIC_COMPONENTS = (
+    (
+        "ShioriKrkr (KiriKiri 2/Z)", "KiriKit 0.1.3",
+        "MPL-2.0; KiriKiri license; retained plug-in and dependency notices",
+        "https://github.com/OWCramer/KiriKit/tree/c1393f79f669cbe801c71af08ff6e8ed8ab5e72d",
+        "engines", None,
+    ),
+    (
+        "ShioriKrkr FFmpeg", "8.0.3",
+        SHIORIKRKR_FFMPEG_LICENSE, "https://github.com/FFmpeg/FFmpeg/tree/8ae0b34901ba60a802f183ee75a250a9fc3e09a5",
+        "engines", None,
+    ),
     (
         "libmaxminddb (offline IP database reader)", "1.14.1",
         "Apache-2.0; BSD-2-Clause; BSD-3-Clause",
@@ -1053,6 +1070,36 @@ STATIC_COMPONENTS = (
 
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
+    (
+        "kirikiri-license", "FloeApp/Resources/Licenses/KiriKiri-License.txt",
+        "Licenses/KiriKiri-License.txt", "settings.licenses.document.kirikiri.title",
+        "KiriKiri license", None, "KiriKiri license", "full_text", True, "engines",
+    ),
+    (
+        "kirikit-mpl", "FloeApp/Resources/Licenses/KiriKit-MPL-2.0.txt",
+        "Licenses/KiriKit-MPL-2.0.txt", "settings.licenses.document.kirikit_mpl.title",
+        "KiriKit (MPL-2.0)", None, "MPL-2.0", "full_text", True, "engines",
+    ),
+    (
+        "shiori-mpl", "FloeApp/Resources/Licenses/Shiori-MPL-2.0.txt",
+        "Licenses/Shiori-MPL-2.0.txt", "settings.licenses.document.shiori_mpl.title",
+        "Shiori (MPL-2.0)", None, "MPL-2.0", "full_text", True, "engines",
+    ),
+    (
+        "shiorikrkr-ffmpeg", "FloeApp/Resources/Licenses/ShioriKrkr-FFmpeg-LGPL-2.1.txt",
+        "Licenses/ShioriKrkr-FFmpeg-LGPL-2.1.txt", "settings.licenses.document.shiorikrkr_ffmpeg.title",
+        "ShioriKrkr FFmpeg (LGPL-2.1)", None, "LGPL-2.1-or-later", "full_text", True, "engines",
+    ),
+    (
+        "shiorikrkr-dependencies", "FloeApp/Resources/Licenses/ShioriKrkr-DEPENDENCY-NOTICES.txt",
+        "Licenses/ShioriKrkr-DEPENDENCY-NOTICES.txt", "settings.licenses.document.shiorikrkr_deps.title",
+        "ShioriKrkr dependency notices", None, "Retained third-party notices", "notices", True, "engines",
+    ),
+    (
+        "shiorikrkr-source-offer", "FloeApp/Resources/Licenses/ShioriKrkr-SOURCE-OFFER.txt",
+        "Licenses/ShioriKrkr-SOURCE-OFFER.txt", "settings.licenses.document.shiorikrkr_source.title",
+        "ShioriKrkr source and relinking", None, "MPL-2.0; LGPL-2.1-or-later", "notices", True, "engines",
+    ),
     (
         "iroh-ffi-mit", APP_ONLY_NOTICES["iroh-ffi"],
         "Licenses/Iroh-FFI-MIT.txt", "settings.licenses.document.iroh_ffi_mit.title",

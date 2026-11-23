@@ -600,7 +600,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         continuedEligibility.finishRun(Self.workSessionEligibilityID)
         guard !continuedEligibility.hasEligibleWork else { return }
         if #available(iOS 26.0, *) {
-            finishContinuedTasks(success: true)
+            finishContinuedTasks()
         }
     }
 
@@ -952,10 +952,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 } else if !keepsLinuxSessionTask {
                     // Preference restoration and automatic-only workloads
                     // cannot retain a stale Live Activity from another run.
-                    finishContinuedTasks(success: true)
+                    finishContinuedTasks()
                 }
             } else {
-                finishContinuedTasks(success: true)
+                finishContinuedTasks()
                 FloeLogger(category: .app).info(
                     "continuedProcessingFinished reason=preferenceChanged enhanced=\(honored.enhancedBackgroundEnabled)"
                 )
@@ -1056,7 +1056,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // even while the chat surface preference is a visual mode.
             let keepsLinuxSessionTask = loaded && !linuxBackgroundEnabledEnvironmentIDs().isEmpty
             if !keepsConversationTask, !keepsLinuxSessionTask, #available(iOS 26.0, *) {
-                finishContinuedTasks(success: true)
+                finishContinuedTasks()
             }
             FloeLogger(category: .app).info(
                 "continuedProcessingSkipped workload=\(workload) origin=\(origin.rawValue) foreground=\(hasAggregateForegroundScene) enhanced=\(options.enhancedBackgroundEnabled) preference=\(options.legacyPreference.rawValue) loaded=\(loaded)"
@@ -1551,7 +1551,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         continuedEligibility.suspendRun(runID)
         discardObsoleteRunTerminalNotification(runID: runID)
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
-            finishContinuedTasks(success: true, finalStage: message)
+            finishContinuedTasks(finalStage: message)
         }
         retainedPausedRun = (runID, active)
         // A suspension is a real user-action boundary (browser takeover and
@@ -1634,10 +1634,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 if self.pendingRunFinishTasks[runID]?.owner == owner { self.pendingRunFinishTasks[runID] = nil }
                 if self.pendingRunFinishOwners[runID] == owner { self.pendingRunFinishOwners[runID] = nil }
             }
-            let record = try? await self.environment.runStore.run(id: runID)
             #if DEBUG
             if let barrier = self.runFinishValidationBarrierForTesting { await barrier() }
             #endif
+            // Read the most recent durable result after any suspended
+            // delivery work. A later persisted success wins over the error
+            // callback that requested this projection.
+            let record = try? await self.environment.runStore.run(id: runID)
             guard self.pendingRunFinishOwners[runID] == owner,
                   let current = self.activeRuns[runID], current.activationID == activationID,
                   current.conversationID == conversationID else { return }
@@ -1720,7 +1723,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         }
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
-            finishContinuedTasks(success: outcome != .failed)
+            let finalStage: String = switch outcome {
+            case .succeeded: FloeL10n.l("state.round_ended")
+            case .failed: IDELanguageRunText.t("本轮已停止，打开 Floe 查看", "Round stopped. Open Floe to review.")
+            case .cancelled: String(localized: "background.event.cancelled")
+            }
+            // This shared OS handle measures the background window. The
+            // actual run outcome is projected separately to the task and its
+            // notification. Failing the shared handle cannot identify a run
+            // and can leave a generic failure after a later retry succeeds.
+            finishContinuedTasks(finalStage: finalStage)
         }
         // The content flag decides the work record's fate: content-publishing
         // runs (ordinary conversations, media generation) keep an honest
@@ -2578,7 +2590,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             publishLinuxSurfacePager()
             Task { await BackgroundWorkRegistry.shared.remove(id: workID) }
             if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
-                finishContinuedTasks(success: true)
+                finishContinuedTasks()
             }
             FloeLogger(category: .app).info(
                 "linuxBackgroundSessionDisabled environment=\(environmentID)"
@@ -2873,7 +2885,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
         await BackgroundWorkRegistry.shared.register(snapshot)
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
-            finishContinuedTasks(success: true)
+            finishContinuedTasks()
         }
         enqueueTerminalNotification(
             event: .linuxSessionTerminal(
@@ -3058,7 +3070,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
         continuedEligibility.finishRun(workID)
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
-            finishContinuedTasks(success: true)
+            finishContinuedTasks()
         }
         guard linuxBackgroundSessionIsEnabled(environmentID: environmentID) else {
             await BackgroundWorkRegistry.shared.remove(id: workID)
@@ -3878,7 +3890,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // its in-memory `.standard` default. Fail closed until the stored
             // preference has been restored so no transient Live Activity is
             // shown for a PiP/screen-share user.
-            finishContinuedTasks(success: true)
+            finishContinuedTasks()
             FloeLogger(category: .app).info(
                 "backgroundTaskAcceptanceSkipped kind=continued reason=noEligibleUserWorkOrPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue) loaded=\(environment.settingsCenter.launchPreferencesLoaded)"
             )
@@ -3913,7 +3925,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                         // orphaned by slow/hung recovery-point persistence.
                         // Expiration ends the system execution window, then
                         // checkpoints the task. It is not a provider failure.
-                        self.finishContinuedTasks(success: true,
+                        self.finishContinuedTasks(
                             finalStage: IDELanguageRunText.t("已暂停，返回 App 继续", "Paused. Return to the app to continue."))
                         return true
                     },
@@ -3926,7 +3938,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             }
         }
         if !continuedEligibility.hasEligibleWork {
-            finishContinuedTasks(success: true)
+            finishContinuedTasks()
         } else {
             task.updateTitle("Floe Agent", subtitle: FloeL10n.l("platform.background_run_coordinator.resuming_task_in_background"))
             // REAL framework acceptance: the work session's qualification
@@ -3947,7 +3959,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // from progress/suspension/approval therefore cannot resurrect or
             // keep updating a Live Activity after the user turned enhanced
             // background processing off.
-            finishContinuedTasks(success: true)
+            finishContinuedTasks()
             if Date().timeIntervalSince(lastSkippedContinuedUpdateAt) >= 60 {
                 lastSkippedContinuedUpdateAt = Date()
                 FloeLogger(category: .app).debug(
@@ -3973,9 +3985,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     @available(iOS 26.0, *)
-    private func finishContinuedTasks(success: Bool, finalStage: String? = nil) {
+    private func finishContinuedTasks(finalStage: String? = nil) {
         #if DEBUG
-        continuedTaskCompletionForTesting?(success)
+        continuedTaskCompletionForTesting?(true)
         #endif
         // The shared continued task is the session's real qualification: any
         // finish (explicit release, expiration, preference-off) returns the
@@ -3989,7 +4001,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             if let finalStage { task.updateTitle(task.title, subtitle: finalStage) }
             task.progress.totalUnitCount = 100
             task.progress.completedUnitCount = 100
-            task.setTaskCompleted(success: success)
+            task.setTaskCompleted(success: true)
         }
         // Also cancel submitted-but-not-yet-accepted requests, including stale
         // concrete identifiers discoverable from a previous process.
@@ -4058,6 +4070,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 }
             }
         case .active:
+            let returnedFromBackground = isAppInBackground
             isAppInBackground = false
             // A foreground scene owns an unbounded user-visible window again.
             backgroundAutomationWindowStartedAt = nil
@@ -4087,6 +4100,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 // once the database and this scene are both ready.
                 self.flushPendingNotificationRoute()
                 await self.reconcileLinuxBackgroundHold()
+                // System overlays and scene focus changes do not suspend the
+                // process. Leave the persisted-work catch-up to real returns.
+                guard returnedFromBackground else { return }
                 await self.environment.conversationCenter.resumeSafeRunsAfterForeground()
                 await self.reconcilePendingMediaJobs()
                 await self.runDueSchedules()

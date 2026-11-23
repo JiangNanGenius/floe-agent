@@ -33,6 +33,8 @@ struct GameProjectPlayScreen: View {
                     title: session.record?.title ?? "Game") { receipt in
                     if receipt.closeAcknowledged { dismiss() }
                 }
+            } else if let presentation = session.visualNovelPresentation {
+                visualNovelScreen(presentation)
             } else {
                 guestScreen
             }
@@ -43,6 +45,27 @@ struct GameProjectPlayScreen: View {
             Task { await play?.detachViewer() }
         }
         .interactiveDismissDisabled()
+    }
+
+    private func visualNovelScreen(_ presentation: GameProjectVisualNovelRunPresentation) -> some View {
+        NavigationStack {
+            Group {
+                if presentation.isRunning {
+                    GameVisualNovelViewport(presentation: presentation).id(presentation.request.id)
+                } else {
+                    ContentUnavailableView {
+                        Label(copy("游戏已结束", "Game ended"), systemImage: "gamecontroller")
+                    }
+                }
+            }
+            .navigationTitle(session.record?.title ?? session.center.currentWorkspace?.name ?? "Game")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(copy("关闭", "Close")) { Task { await close() } }.disabled(stopping)
+                }
+            }
+        }
     }
 
     private var guestScreen: some View {

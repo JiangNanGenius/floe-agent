@@ -4,10 +4,53 @@
 import Foundation
 import SwiftUI
 import Testing
+import FloeModels
+import FloePersistence
 @testable import FloeApp
 
 @Suite("FloeApp.WorkbenchNavigation")
 struct HomeChatSeparationTests {
+
+    @Test("Sidebar indexes one owner per conversation and preserves the store order")
+    func sidebarGroupingPreservesHistoryOrder() {
+        let firstProject = WorkspaceRecord(name: "First", rootBookmark: Data())
+        let secondProject = WorkspaceRecord(name: "Second", rootBookmark: Data())
+        let privateWorkspace = WorkspaceRecord(name: "Chat", rootBookmark: Data(), kind: .privateTask)
+        let instant = Date(timeIntervalSince1970: 1)
+        let conversations = (0..<6).map { position in
+            ConversationRecord(id: UUID(), title: "\(position)", createdAt: instant, updatedAt: instant)
+        }
+        let owners = [
+            conversations[0].id: firstProject.id, conversations[1].id: privateWorkspace.id,
+            conversations[2].id: secondProject.id, conversations[3].id: firstProject.id,
+            conversations[4].id: UUID()
+        ]
+        let index = SidebarConversationIndex(
+            conversations: conversations, workspaces: [firstProject, privateWorkspace, secondProject], owners: owners
+        )
+        #expect(index.projects.map(\.id) == [firstProject.id, secondProject.id])
+        #expect(index.byProject[firstProject.id] == [conversations[0], conversations[3]])
+        #expect(index.chats == [conversations[1]])
+        #expect(index.visibleRecords(expandedProjectIDs: [firstProject.id, secondProject.id])
+            == [conversations[0], conversations[3], conversations[2], conversations[1]])
+    }
+
+    @Test("A move into a collapsed project removes the same conversation from visible sidebar selection")
+    func sidebarMoveReprojectsVisibleSelection() {
+        let firstProject = WorkspaceRecord(name: "First", rootBookmark: Data())
+        let secondProject = WorkspaceRecord(name: "Second", rootBookmark: Data())
+        let instant = Date(timeIntervalSince1970: 1)
+        let task = ConversationRecord(id: UUID(), title: "Task", createdAt: instant, updatedAt: instant)
+        let before = SidebarConversationIndex(
+            conversations: [task], workspaces: [firstProject, secondProject], owners: [task.id: firstProject.id]
+        )
+        let after = SidebarConversationIndex(
+            conversations: [task], workspaces: [firstProject, secondProject], owners: [task.id: secondProject.id]
+        )
+        #expect(before.visibleRecords(expandedProjectIDs: [firstProject.id]) == [task])
+        #expect(after.visibleRecords(expandedProjectIDs: [firstProject.id]).isEmpty)
+        #expect(after.visibleRecords(expandedProjectIDs: [secondProject.id]) == [task])
+    }
 
     @Test("A new scene starts on a clean task draft with inspector collapsed")
     @MainActor

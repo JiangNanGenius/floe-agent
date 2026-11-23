@@ -316,6 +316,12 @@ final class AppRouter: ObservableObject {
                 effectivePhaseChange,
                 center: environment.remoteSessionCenter
             )
+            if effectivePhaseChange == .active, environment.persistenceReady {
+                Task { await environment.conversationCenter.refreshOnForeground() }
+                // Guest Git writes cannot post a host notification. Refresh
+                // the open source-control pane independently of cloud sync.
+                Task { await environment.sourceControlCenter.refreshOnForeground() }
+            }
         }
     }
 

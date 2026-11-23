@@ -33,6 +33,7 @@ final class ScriptedStreamingEngine: LocalModelTextEngine, @unchecked Sendable {
     private var callIndex = 0
     private var _receivedPrompts: [String] = []
     private var _receivedInstructions: [String] = []
+    private var _receivedThinking: [Bool] = []
     private var _generationCount = 0
     private var _cancellationObserved = false
     private var _shutdownCount = 0
@@ -40,6 +41,7 @@ final class ScriptedStreamingEngine: LocalModelTextEngine, @unchecked Sendable {
 
     var receivedPrompts: [String] { lock.withLock { _receivedPrompts } }
     var receivedInstructions: [String] { lock.withLock { _receivedInstructions } }
+    var receivedThinking: [Bool] { lock.withLock { _receivedThinking } }
     var generationCount: Int { lock.withLock { _generationCount } }
     var cancellationObserved: Bool { lock.withLock { _cancellationObserved } }
     var shutdownCount: Int { lock.withLock { _shutdownCount } }
@@ -80,6 +82,7 @@ final class ScriptedStreamingEngine: LocalModelTextEngine, @unchecked Sendable {
         images: [Data],
         tools: [ToolSchemaDescriptor],
         maxTokens: Int,
+        thinkingEnabled: Bool,
         diagnosticTraceID: String?,
         onProgress: @escaping @Sendable (LocalInferenceProgress) -> Void,
         onOutput: @escaping @Sendable (String) -> Void
@@ -87,6 +90,7 @@ final class ScriptedStreamingEngine: LocalModelTextEngine, @unchecked Sendable {
         lock.withLock {
             _receivedPrompts.append(prompt)
             _receivedInstructions.append(instructions)
+            _receivedThinking.append(thinkingEnabled)
             _generationCount += 1
         }
         var text = ""
@@ -255,6 +259,24 @@ private extension Array where Element == AgentEvent {
 
 @Suite("Local streamed delivery")
 struct LocalStreamDeliveryTests {
+    @Test("Local inference receives the approval request's reasoning policy")
+    @available(macOS 15.4, iOS 26.0, *)
+    func approvalThinkingReachesInference() async throws {
+        let engine = ScriptedStreamingEngine(scripts: Array(repeating: [.output("{\"decision\":\"allow\"}")], count: 3))
+        let harness = try StreamDeliveryHarness(engine: engine)
+        defer { harness.cleanUp() }
+        var model = deliveryModel()
+        for (policy, effort) in [(ProviderReasoningPolicy.modelDefault, ModelReasoningEffort.automatic),
+                                 (.disabled, .low), (.modelDefault, .low)] {
+            model.reasoningEffort = effort
+            let request = ProviderStreamRequest(provider: LocalProviderAdapter.providerProfile,
+                model: model, messages: [(role: "user", content: "Return the review decision.")],
+                toolSchemas: [], reasoningPolicy: policy)
+            for try await _ in harness.adapter().stream(request: request, credentials: ProviderCredentials()) { }
+        }
+        #expect(engine.receivedThinking == [false, false, true])
+    }
+
     @Test("Prose reaches the caller before completion, exactly once")
     @available(macOS 15.4, iOS 26.0, *)
     func proseStreamsBeforeCompletion() async throws {

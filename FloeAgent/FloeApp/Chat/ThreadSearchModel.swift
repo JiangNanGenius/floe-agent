@@ -135,11 +135,18 @@ final class ThreadSearchModel: ObservableObject {
     /// stays exactly at the hit instead of jumping back to the latest reply.
     @Published private(set) var focusedMessageID: UUID?
 
-    private let provider: Provider
-    private let reveal: Reveal
+    private var provider: Provider?
+    private var reveal: Reveal?
     private var searchGeneration = 0
 
-    init(provider: @escaping Provider, reveal: @escaping Reveal) {
+    init(provider: Provider? = nil, reveal: Reveal? = nil) {
+        self.provider = provider
+        self.reveal = reveal
+    }
+
+    /// Bind to the mounted composer, whose state object can survive many
+    /// recreations of the enclosing SwiftUI view value.
+    func connect(provider: @escaping Provider, reveal: @escaping Reveal) {
         self.provider = provider
         self.reveal = reveal
     }
@@ -179,7 +186,7 @@ final class ThreadSearchModel: ObservableObject {
         searchGeneration += 1
         let generation = searchGeneration
         let parsed = ConversationSearchQuery(raw: query)
-        guard !parsed.isEmpty else {
+        guard !parsed.isEmpty, let provider else {
             isSearching = false
             hits = []
             currentIndex = 0
@@ -221,7 +228,7 @@ final class ThreadSearchModel: ObservableObject {
     }
 
     func focusCurrent() async {
-        guard let hit = currentHit else { return }
+        guard let hit = currentHit, let reveal else { return }
         let generation = searchGeneration
         let visible = await reveal(hit)
         // A newer query may have started while the hit was being revealed;

@@ -81,7 +81,7 @@ public struct GameRunProjectDiscovery: Sendable {
         guard (1...256).contains(maximum) else { throw GameProjectError.invalidContext }
         var names = Set<String>()
         let markers: Set<String> = ["package.json", "project.godot", "project.json", "game.json", "floe-game.json",
-            "main.lua", "conf.lua", "cart.wasm", "story.twine.json"]
+            "main.lua", "conf.lua", "cart.wasm", "story.twine.json", "startup.tjs", "data.xp3"]
         let extensions: Set<String> = ["rxproj", "rvproj", "rvproj2", "rpgproject", "rmmzproject",
             "html", "htm", "ink", "twee", "tic", "love", "ms", "wasm"]
         for path in paths {

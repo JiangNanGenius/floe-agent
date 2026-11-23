@@ -287,6 +287,10 @@ struct GameRunPreparationEngine: Sendable {
                 route.prerequisites.first ?? .unsupportedRoute(id: route.routeID, detail: route.notes.first ?? route.routeID))
         case .staticWeb, .portableAssembly, .narrativeAssembly, .runtimePackAssembly, .externalBuild:
             break
+        case .nativeRuntime:
+            // Native routes never reach the Web artifact builder; the App's
+            // run dispatch owns the launch directly.
+            break
         }
         let inspection = try GameRunInspectionComposer.compose(
             context: request.context, selectedRoot: source.root.url,
@@ -347,6 +351,8 @@ struct GameRunPreparationEngine: Sendable {
                                               staging: staging, target: planned.target,
                                               route: planned.route)
         case .guestRuntime, .unavailable:
+            throw GameRunPreparationError.unsupportedEngine(request.engine)
+        case .nativeRuntime:
             throw GameRunPreparationError.unsupportedEngine(request.engine)
         }
         do {

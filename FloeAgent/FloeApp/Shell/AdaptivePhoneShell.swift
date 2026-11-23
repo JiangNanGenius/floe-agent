@@ -30,6 +30,7 @@ struct AdaptivePhoneShell<Primary: View, Sidebar: View>: View {
     private let onPlanChange: ((PhoneShellPlan) -> Void)?
     private let primary: Primary
     private let sidebar: Sidebar
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isExpanded = false
     @State private var expandedSidebarVisible = true
@@ -79,7 +80,7 @@ struct AdaptivePhoneShell<Primary: View, Sidebar: View>: View {
                                 .ignoresSafeArea()
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    withAnimation(.snappy) { isDrawerOpen = false }
+                                    isDrawerOpen = false
                                 }
                                 .accessibilityLabel("app.floe_agent_app.collapse_task_list")
                         }
@@ -87,7 +88,8 @@ struct AdaptivePhoneShell<Primary: View, Sidebar: View>: View {
                 // The sidebar is above the primary's scrim and stays tappable.
                 sidebarContainer(plan: plan)
             }
-            .animation(.snappy, value: isDrawerOpen)
+            .animation(panelAnimation, value: isDrawerOpen)
+            .animation(panelAnimation, value: expandedSidebarVisible)
             // Let the native command rail receive hits outside safe content.
             .simultaneousGesture(shellGesture(plan: plan))
             .onChange(of: plan, initial: true) { _, newPlan in
@@ -106,15 +108,17 @@ struct AdaptivePhoneShell<Primary: View, Sidebar: View>: View {
         }
     }
 
+    private var panelAnimation: Animation? { FloeTheme.panelAnimation(reduceMotion: reduceMotion) }
+
     /// The sidebar action the whole phone shell publishes. Compact opens the
     /// existing drawer; expanded collapses/restores the persistent sidebar.
     /// Both are the same native control and neither creates a second router.
     private func sidebarAction(for mode: PhoneShellPresentationMode) -> PhoneSidebarAction {
         switch mode {
         case .compactDrawer:
-            return { withAnimation(.snappy) { isDrawerOpen = true } }
+            return { isDrawerOpen = true }
         case .expandedSidebar:
-            return { withAnimation(.snappy) { expandedSidebarVisible.toggle() } }
+            return { expandedSidebarVisible.toggle() }
         }
     }
 
@@ -172,12 +176,12 @@ struct AdaptivePhoneShell<Primary: View, Sidebar: View>: View {
                     if !isDrawerOpen, !blocksDrawerGesture,
                        value.startLocation.x < 28,
                        max(horizontal, predicted) > commit {
-                        withAnimation(.snappy) { isDrawerOpen = true }
+                        isDrawerOpen = true
                     } else if isDrawerOpen {
                         let closesLeft = min(horizontal, predicted) < -commit
                         let closesRight = max(horizontal, predicted) > commit
                         if closesLeft || closesRight {
-                            withAnimation(.snappy) { isDrawerOpen = false }
+                            isDrawerOpen = false
                         }
                     } else if horizontal > 0, let onDismissInspector {
                         // Historical phone behaviour: a right drag while the
@@ -189,7 +193,7 @@ struct AdaptivePhoneShell<Primary: View, Sidebar: View>: View {
                           abs(horizontal) > abs(value.translation.height),
                           value.startLocation.x < max(1, plan.sidebarFrame.width) else { return }
                     if max(horizontal, predicted) > FloeTheme.minimumTarget {
-                        withAnimation(.snappy) { expandedSidebarVisible = false }
+                        expandedSidebarVisible = false
                     }
                 }
             }

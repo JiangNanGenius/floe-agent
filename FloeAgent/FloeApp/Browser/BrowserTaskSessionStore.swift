@@ -55,6 +55,28 @@ struct BrowserTaskSessionConfiguration {
     }
 }
 
+/// Durable, per-task restorable browser pages, keyed by the trusted
+/// conversation identity. Only committed plain-GET pages on public origins
+/// are kept: loopback/private-network pages, local previews, `about:blank`,
+/// credential URLs, authentication callbacks and form-committed documents are
+/// excluded, so a relaunch can replay them as a harmless GET (or not at all)
+/// without ever crossing tasks or sessions.
+struct BrowserTaskPageSnapshot: Codable, Equatable {
+    /// Restore-time bounds: only recent tasks are kept, each with at most
+    /// the visible tab limit, and only page URLs below a generous byte cap.
+    static let maximumSnapshots = 64
+    static let maximumTabs = 6
+
+    struct Tab: Codable, Equatable {
+        let id: UUID
+        let pageURL: URL
+    }
+    let conversationID: UUID
+    var tabs: [Tab]
+    var selectedTabID: UUID?
+    var savedAt: Date
+}
+
 /// Narrow callback surface from an execution context back to the service that
 /// owns durable handoff receipts. Ordinary browser state is published by the
 /// session itself; this host callback exists only for identity-bearing user
@@ -65,6 +87,11 @@ protocol BrowserTaskSessionHost: AnyObject {
     /// First real human input on the page, address bar or tab chrome. The
     /// control center registers the takeover before the input proceeds.
     func browserSessionUserStartedInput(_ session: BrowserTaskSession, reason: String)
+    /// The tab set, order, selection or one tab's committed restorable URL
+    /// changed. The owning center refreshes the durable restore snapshot.
+    /// Ephemeral hosts (and the default) ignore this: only the single durable
+    /// center persists browser pages.
+    func browserSessionRestorableStateDidChange(_ session: BrowserTaskSession)
 }
 
 @MainActor
@@ -74,6 +101,8 @@ extension BrowserTaskSessionHost {
     func browserSessionUserStartedInput(_ session: BrowserTaskSession, reason: String) {
         browserSessionRequestedUserControl(session, reason: reason)
     }
+
+    func browserSessionRestorableStateDidChange(_ session: BrowserTaskSession) {}
 }
 
 /// One model run's control of this task's browser. `runID` is the
@@ -595,6 +624,13 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         var nextEventSequence: Int
         var events: [BrowserProtocolEvent]
         var visualFallbackEvidence: VisualFallbackEvidence?
+        /// The committed plain-GET page eligible for durable restore. Nil for
+        /// blank, loopback/private, local-preview, credential, auth-callback
+        /// and form-committed documents; those are never replayed on relaunch.
+        var restorableURL: URL?
+        /// The provisional main-frame load just allowed was a non-GET (form)
+        /// submission, so its commit must not become restorable.
+        var formSubmissionPending = false
     }
 
     let conversationID: UUID
@@ -621,6 +657,12 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         didSet { if oldValue && !returningToModel { finishClosedWindows() } }
     }
     private var deferredWindowClosures: [UUID] = []
+    /// True while pages persisted by the owning center are being re-navigated
+    /// after a relaunch. The last committed URL remains available even if a
+    /// replayed page cannot load.
+    private(set) var restoreInProgress = false
+    /// Restored tabs whose replayed GET has not committed, failed or settled.
+    private var restoredTabIDsPending = Set<UUID>()
     var isEditingAddress = false
     private(set) var isReleased = false
     private(set) var activeExecutionCount = 0
@@ -773,6 +815,85 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             generation: $0.documentGeneration, routeGeneration: $0.routeGeneration, url: $0.webView.url) }
     }
 
+    // MARK: - Durable page restore
+
+    /// One restorable committed page of this task's browser.
+    struct RestorablePage: Equatable {
+        let id: UUID
+        let pageURL: URL
+    }
+
+    /// The committed plain-GET pages, in tab order, eligible for restore.
+    var restorablePages: [RestorablePage] {
+        tabs.compactMap { tab in
+            guard let url = tab.restorableURL, BrowserURLPolicy.isRestorablePageURL(url) else { return nil }
+            return RestorablePage(id: tab.id, pageURL: url)
+        }
+    }
+
+    /// The selection to persist: the active tab when it is restorable, else
+    /// the first restorable tab.
+    var restorableSelectedTabID: UUID? {
+        if let activeTabID, tabs.contains(where: { $0.id == activeTabID && $0.restorableURL != nil }) {
+            return activeTabID
+        }
+        return restorablePages.first?.id
+    }
+
+    /// Decides whether one committed document may be replayed after relaunch.
+    /// A form-committed document never becomes restorable even on a public
+    /// origin: a replayed GET cannot reproduce a submitted form.
+    static func restorableCommitURL(loadURL: URL?, formSubmission: Bool) -> URL? {
+        guard !formSubmission, let loadURL, BrowserURLPolicy.isRestorablePageURL(loadURL) else { return nil }
+        return loadURL
+    }
+
+    /// Rebuilds this task's tabs after an app relaunch. Every tab gets a fresh
+    /// WebKit page and re-navigates its persisted URL as a plain GET: tab IDs,
+    /// order and the selection survive, while document identities, model
+    /// control and receipts are all minted fresh by the new session.
+    func restoreCommittedPages(_ snapshot: BrowserTaskPageSnapshot) {
+        guard !isReleased, tabs.isEmpty, !restoreInProgress else { return }
+        let entries = snapshot.tabs
+            .filter { BrowserURLPolicy.isRestorablePageURL($0.pageURL) }
+            .prefix(maximumTabs)
+        guard !entries.isEmpty else {
+            _ = createTab()
+            surfaceState = .ready
+            return
+        }
+        lastActivityAt = Date()
+        restoreInProgress = true
+        restoredTabIDsPending.removeAll()
+        for entry in entries {
+            guard let id = makeTab(selectForModel: false, restoredID: entry.id) else { continue }
+            // Keep the validated pageURL on the tab from the start: an
+            // offline or failed replay must not erase the durable snapshot
+            // of a page that was legitimately committed before the relaunch.
+            tabs[tabs.count - 1].restorableURL = entry.pageURL
+            restoredTabIDsPending.insert(id)
+            tabs[tabs.count - 1].webView.load(URLRequest(url: entry.pageURL))
+        }
+        guard !tabs.isEmpty else {
+            restoreInProgress = false
+            _ = createTab()
+            surfaceState = .ready
+            return
+        }
+        let selected = tabs.first(where: { $0.id == snapshot.selectedTabID }) ?? tabs[0]
+        activate(selected.id)
+        surfaceState = .loading
+    }
+
+    /// A restored tab's replayed navigation reached a terminal WebKit state.
+    private func noteRestoreSettled(tabID: UUID) {
+        guard restoreInProgress else { return }
+        restoredTabIDsPending.remove(tabID)
+        guard restoredTabIDsPending.isEmpty else { return }
+        restoreInProgress = false
+        if !isUserControlling, !takeoverPending, case .loading = surfaceState { surfaceState = .ready }
+    }
+
     func focusModelPageForTakeover() {
         guard isModelActive, let modelTab = fixedViewportTab else { return }
         if activeTabID != modelTab.id { activate(modelTab.id) }
@@ -784,7 +905,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     }
 
     private func makeTab(for popup: (configuration: WKWebViewConfiguration, opener: Tab)? = nil,
-                         selectForModel: Bool = true) -> UUID? {
+                         selectForModel: Bool = true,
+                         restoredID: UUID? = nil) -> UUID? {
         guard !isReleased, !takeoverPending, !returningToModel else { return nil }
         guard tabs.count < maximumTabs else {
             tabLimitNotice = IDELanguageRunText.t(
@@ -809,7 +931,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         webView.allowsBackForwardNavigationGestures = true
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        let id = UUID()
+        let id = restoredID ?? UUID()
         tabs.append(Tab(
             id: id,
             openerID: popup?.opener.id,
@@ -820,18 +942,20 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             revision: 0,
             nextEventSequence: 1,
             events: [],
-            visualFallbackEvidence: nil
+            visualFallbackEvidence: nil,
+            restorableURL: nil
         ))
         if selectForModel {
             resetLivePreview()
             activeTabID = id
             if modelControl != nil, let tab = activeTab { lockViewport(tab) }
-        } else {
+        } else if restoredID == nil {
             humanBrowsingTabID = id
         }
         installObservers(for: id, webView: webView)
         appendEvent(tabID: id, method: "Target.targetCreated")
         syncChromeState()
+        if restoredID == nil { host?.browserSessionRestorableStateDidChange(self) }
         return id
     }
 
@@ -885,6 +1009,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         refreshVisibleAddress()
         syncChromeState()
         appendEvent(tabID: id, method: "Target.targetActivated")
+        host?.browserSessionRestorableStateDidChange(self)
     }
 
     func close(_ id: UUID) {
@@ -913,6 +1038,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         tabs[index].webView.removeFromSuperview()
         page.isUserInteractionEnabled = false
         tabs.remove(at: index)
+        noteRestoreSettled(tabID: id)
         if humanBrowsingTabID == id {
             humanBrowsingTabID = tabs.first(where: { $0.id == openerID && $0.viewport.fixedSize == nil })?.id
         }
@@ -933,6 +1059,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             return
         }
         syncChromeState()
+        host?.browserSessionRestorableStateDidChange(self)
     }
 
     private func finishClosedWindows() {
@@ -952,10 +1079,13 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         tabs[index].documentGeneration += 1
         tabs[index].revision = 0
         tabs[index].visualFallbackEvidence = nil
+        tabs[index].restorableURL = nil
+        noteRestoreSettled(tabID: tabID)
         tabs[index].webView.load(URLRequest(url: URL(string: "about:blank")!))
         addressText = ""
         appendEvent(tabID: tabID, method: "Page.frameNavigated")
         syncChromeState()
+        host?.browserSessionRestorableStateDidChange(self)
     }
 
     func clearTabLimitNotice() {
@@ -981,6 +1111,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
         guard let url = try? BrowserURLPolicy.validate(candidate, conversationID: conversationID, allowLocalNetwork: true),
               let activeWebView else { return }
+        if let activeTabID { noteRestoreSettled(tabID: activeTabID) }
         activeWebView.load(URLRequest(url: url))
     }
 
@@ -1395,6 +1526,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         pendingNativePreviews.removeAll()
         deferredWindowClosures.removeAll()
         isReleased = true
+        restoreInProgress = false
+        restoredTabIDsPending.removeAll()
         navigationReceipt?.settle(.replaced)
         navigationReceipt = nil
         for tab in tabs { tab.viewport.release(tab.webView) }
@@ -2221,6 +2354,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                                "Use a link on the current page to go to this fragment.")
             }
         }
+        noteRestoreSettled(tabID: tab.id)
         guard let navigation = tab.webView.load(URLRequest(url: url)) else {
             return failure(command, status: .failed, code: "navigation", "WebKit did not start the navigation.")
         }
@@ -3212,7 +3346,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         tabs.map {
             BrowserTabSnapshot(
                 id: $0.id,
-                url: $0.webView.url?.absoluteString ?? "",
+                url: ($0.webView.url ?? $0.restorableURL)?.absoluteString ?? "",
                 title: $0.webView.title ?? "",
                 isActive: $0.id == activeTabID
             )
@@ -3252,9 +3386,22 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         let url = navigationAction.request.url
         let policy = navigationPolicy(for: url, type: navigationAction.navigationType, from: webView,
                                       canOpenExternally: Self.canOpenExternally(navigationAction.request))
-        if policy == .allow, navigationAction.targetFrame?.isMainFrame == true, let url {
+        if navigationAction.targetFrame?.isMainFrame == true,
+           let index = tabs.firstIndex(where: { $0.webView === webView }), policy == .allow, let url {
+            let tab = tabs[index]
+            let restoring = restoredTabIDsPending.contains(tab.id)
+            let request = navigationAction.request
+            let nonGETSubmission = (request.httpMethod ?? "GET").uppercased() != "GET"
+                || request.httpBody != nil || request.httpBodyStream != nil
+            // Automatic replays cannot redirect to a local endpoint or an
+            // authentication callback. Explicit navigation uses the normal policy.
+            if restoring, nonGETSubmission || !BrowserURLPolicy.isRestorablePageURL(url) {
+                noteRestoreSettled(tabID: tab.id)
+                return (.cancel, preferences)
+            }
             if usesWideLayout(url) { preferences.preferredContentMode = .desktop }
-            if let tab = tabs.first(where: { $0.webView === webView }) { lockViewport(tab, destination: url) }
+            if !restoring || tab.id == activeTabID { lockViewport(tab, destination: url) }
+            tabs[index].formSubmissionPending = nonGETSubmission
         }
         return (policy, preferences)
     }
@@ -3272,6 +3419,8 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         if activeTabID == id { resetLivePreview() }
         impeccableCaptures.fence(tabID: id, reason: .navigation)
         stagedExports.fenceTab(id, reason: .navigation)
+        noteRestoreSettled(tabID: id)
+        host?.browserSessionRestorableStateDidChange(self)
     }
 
     func navigationPolicy(for destination: URL?, type: WKNavigationType, from webView: WKWebView,
@@ -3316,6 +3465,12 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         if tabs[index].id == activeTabID { resetLivePreview() }
         tabs[index].documentID = UUID().uuidString
         tabs[index].documentGeneration += 1
+        // The committed document becomes the durable restore candidate only
+        // when the load was a plain GET to a public, credential-free page.
+        tabs[index].restorableURL = Self.restorableCommitURL(
+            loadURL: webView.url, formSubmission: tabs[index].formSubmissionPending
+        )
+        tabs[index].formSubmissionPending = false
         if let receipt = navigationReceipt, receipt.page === webView {
             if receipt.navigation === navigation {
                 receipt.started = true
@@ -3333,6 +3488,8 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
             method: "Page.frameNavigated"
         )
         if tabs[index].id == activeTabID { syncChromeState() }
+        noteRestoreSettled(tabID: tabs[index].id)
+        host?.browserSessionRestorableStateDidChange(self)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -3351,6 +3508,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
             refreshVisibleAddress()
             syncChromeState()
         }
+        noteRestoreSettled(tabID: tabs[index].id)
         surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
         // Title/back-forward availability are WebKit getters, not @Published
         // fields; notify the visible projection explicitly.
@@ -3366,6 +3524,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         let stopped = recordNavigationFailure(navigation, in: webView, error: error)
         let nsError = error as NSError
         appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
+        noteRestoreSettled(tabID: tabID)
         if stopped { surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready }
         else { surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))") }
     }
@@ -3379,6 +3538,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         let stopped = recordNavigationFailure(navigation, in: webView, error: error)
         let nsError = error as NSError
         appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
+        noteRestoreSettled(tabID: tabID)
         if stopped { surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready }
         else { surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))") }
     }

@@ -136,6 +136,32 @@ import FloeMedia
             #expect(try Data(contentsOf: source) == sourceBytes)
         }
     }
+    @Test func pixelProgramImportsASilentNativeClipWithoutAWorkspaceFrameFile() async throws {
+        try await withContexts { initial, _ in
+            var context = initial
+            context.toolCallID = "render-native-pixels"
+            let id = try await create("video", context)
+            let read = try await invoke("studio.read", ["projectID": id.uuidString, "limit": 12000], context)
+            let revision = try #require(read["revision"] as? String)
+            #expect((read["editFormat"] as? String)?.contains("pixelProgram") == true)
+            let input: [String: Any] = ["expectedRevision": revision,
+                "width": 32, "height": 32, "frameRate": 4, "frameCount": 4,
+                "pixelProgram": ["nodes": [["op": "x"], ["op": "y"], ["op": "time"]],
+                                 "red": 0, "green": 1, "blue": 2]]
+            let arguments = ["projectID": id.uuidString, "toolID": "video.importFrames", "inputJSON": try encode(input)]
+            let receipt = try await invoke("studio.media", arguments, context)
+            #expect(receipt["sourceWorkspacePath"] == nil)
+            let location = try await PersonalContentService.shared.library().resolve(id)
+            let session = try await PersonalMediaFactory.session(id: id, directory: location.url)
+            let asset = try #require(session.document.assets.first)
+            #expect(asset.kind == .video && asset.metadata?.audioTracks == 0)
+            #expect(session.document.trackGraph.tracks.flatMap(\.clips).contains { $0.assetID == asset.id })
+            let replay = try await invoke("studio.media", arguments, context)
+            #expect(replay["replayed"] as? Bool == true)
+            #expect(replay["assetID"] as? String == receipt["assetID"] as? String)
+        }
+    }
+
     @Test func guestFrameFileImportsAsRealVideoAndPreservesTaskBoundary() async throws {
         try await withContexts { initial, other in
             var context = initial

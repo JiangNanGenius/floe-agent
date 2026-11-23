@@ -517,8 +517,9 @@ extension Notification.Name {
         if action == "edit", toolID == "video.importFrames" {
             let placement = try importPlacement(inputJSON)
             let input = try StudioMediaSourceContracts.decodeFrames(placement.payload)
-            let source = try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context)
-            guard let sha = input.source.expectedSHA256, let call = context.toolCallID, !call.isEmpty else { throw FloeError.unauthorized }
+            let source = try input.source.map { try StudioMediaSourceContracts.workspaceURL($0.workspacePath, context: context) }
+            let sourceDigest = try input.sourceDigest()
+            guard let call = context.toolCallID, !call.isEmpty else { throw FloeError.unauthorized }
             func uuid(_ data: Data) -> UUID {
                 let bytes = Array(SHA256.hash(data: data).prefix(16))
                 return UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
@@ -531,18 +532,20 @@ extension Notification.Name {
                 imported = replay
             } else {
                 guard session.document.revision == input.expectedRevision else { throw MediaPreparedCoreError.documentChanged }
-                let spec = StudioFrameSequenceEncoder.Specification(width: input.width, height: input.height,
-                    frameRate: input.frameRate, frameCount: input.frameCount, expectedSHA256: sha)
+                let spec = input.specification
+                let program = input.pixelProgram
                 let cancellation = context.cancellation
                 let workspaceRoot = scope.root
                 let work = Task.detached(priority: .userInitiated) {
-                    try await StudioFrameSequenceEncoder.encode(source: source, workspaceRoot: workspaceRoot, spec: spec, cancellation: cancellation)
+                    try await StudioFrameSequenceEncoder.encode(source: source, workspaceRoot: workspaceRoot, spec: spec,
+                        pixelProgram: program, cancellation: cancellation)
                 }
                 let encoded = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
                 imported = try await session.importAuthorizedFile(encoded.url, expectedRevision: input.expectedRevision,
                     expectedSHA256: encoded.outputSHA256, actor: .model, cancellation: cancellation, validateSource: {
                         let (_, current) = try await resolve(id, scope: scope, editing: true)
-                        guard current == directory, try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context) == source else {
+                        let currentSource = try input.source.map { try StudioMediaSourceContracts.workspaceURL($0.workspacePath, context: context) }
+                        guard current == directory, currentSource == source else {
                             throw PersonalContentError.changedDocument
                         }
                     }, identity: identity, placement: placement.placement)
@@ -556,7 +559,7 @@ extension Notification.Name {
             }
             struct Receipt: Encodable { let projectID: UUID; let revision: Int64; let groupID: UUID; let assetID: UUID; let sourceSHA256: String; let outputSHA256: String?; let replayed: Bool; let journalStatus: String; let sessionRefreshPending: Bool; let placements: [Placement]? }
             return try StudioToolOutput.make(Receipt(projectID: id, revision: imported.commit.revision,
-                groupID: imported.commit.groupID, assetID: imported.asset.id, sourceSHA256: sha,
+                groupID: imported.commit.groupID, assetID: imported.asset.id, sourceSHA256: sourceDigest,
                 outputSHA256: imported.asset.contentHash, replayed: imported.replayed,
                 journalStatus: imported.journalStatus.rawValue, sessionRefreshPending: imported.refreshPending, placements: placements))
         }
@@ -635,7 +638,7 @@ extension Notification.Name {
 struct StudioWorkspaceVideoCreateTool: AgentTool {
     struct Arguments: Decodable, Sendable { let action: String; let title: String?; let projectID: UUID?; let toolID: String?; let inputJSON: String? }
     static let name = "studio.workspaceVideo"
-    static let toolDescription = "Create or edit a native video project in this task's workspace, preserving source files. Read the project first for its revision and object IDs. Import uses inputJSON {expectedRevision,source:{workspacePath,expectedSHA256?},trackID,startSeconds}; video.importFrames uses the same placement plus its frame fields."
+    static let toolDescription = "Create or edit a native video project in this task's workspace, preserving source files. Read the project first for its revision and object IDs. Import uses inputJSON {expectedRevision,source:{workspacePath,expectedSHA256?},trackID,startSeconds}. For edit toolID video.importFrames, also specify width, height, frameRate and frameCount. Choose the workspace source with a SHA256, or use a native pixelProgram. " + StudioMediaSourceContracts.pixelProgramGuide
     static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["create","import","edit","undo","redo"]},"title":{"type":"string","minLength":1,"maxLength":160},"projectID":{"type":"string","format":"uuid"},"toolID":{"type":"string"},"inputJSON":{"type":"string","maxLength":262144}},"required":["action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true

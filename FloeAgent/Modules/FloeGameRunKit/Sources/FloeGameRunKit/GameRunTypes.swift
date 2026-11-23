@@ -69,6 +69,9 @@ public enum GameRunRouteAction: String, Codable, Equatable, Sendable {
     case externalBuild
     /// This engine has no Web route in this build; a guest runtime is required.
     case guestRuntime
+    /// The engine ships as a bundled, signed native runtime that runs the
+    /// project on device (no Web artifact, no guest environment, no download).
+    case nativeRuntime
     /// No supported route exists for the selected known engine.
     case unavailable
 }

@@ -1,0 +1,4 @@
+{
+  "en-US": "Open a long task after returning to Floe from another app. Ask a question during a run and check Agent & Permissions for the approval model's reasoning setting. On paired devices, share a conversation and its workspace, then check files and attachments after a second sync. Open a supported game project, run it from the workbench or IDE, and reopen it to check saves. Find the updated illustrated guide under Settings > Help.",
+  "zh-Hans": "切回 Floe 后打开一条较长的任务。在运行中发起提问，并到「Agent 与权限」查看审批模型思考设置。配对设备共享会话和工作区后，再次同步并检查文件与附件。从游戏工作台或 IDE 运行受支持的工程，重开后检查存档。更新后的图文指南位于「设置 → 帮助」。"
+}

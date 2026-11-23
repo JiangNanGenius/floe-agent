@@ -42,6 +42,10 @@ enum GameRunRoutePlanner {
             return try renpy(index: index, entry: entry, web: web, availability: availability)
         case .tyranoScript:
             return tyranoScript(index: index, web: web)
+        case .kirikiri:
+            return kirikiri(index: index)
+        case .ons:
+            return ons(index: index)
         case .tic80:
             return try narrative(engine: .tic80, marker: "cart.tic", index: index,
                                  availability: availability)
@@ -406,6 +410,49 @@ enum GameRunRoutePlanner {
         return staticRoute(engine: .tyranoScript, entry: web.entry, routeID: route,
             notes: ["Plays the imported browser export with its own runtime and per-project browser saves."],
             evidence: [web.entry, engine, kag, scenario.path])
+    }
+
+    // MARK: - Native visual-novel runtimes
+
+    /// Kirikiri 2/Z plays through the bundled ShioriKrkr native engine
+    /// (dlopen'd at game start, embedded and signed with the App). The route
+    /// is real and prerequisite-free: no Web artifact, no guest environment.
+    private static func kirikiri(index: GameRunSourceIndex) -> GameRunRouteEvaluation {
+        let startup = first(index, "startup.tjs")
+        let xp3 = first(index, "data.xp3")
+        guard startup != nil || xp3 != nil else {
+            return unavailable(engine: .kirikiri, routeID: "native.kirikiri",
+                detail: "Select the game folder containing startup.tjs or data.xp3.")
+        }
+        var evidence: [GameEngineEvidence] = []
+        if let startup { evidence.append(.init(path: startup, kind: .projectMarker)) }
+        if let xp3 { evidence.append(.init(path: xp3, kind: .dataLayout)) }
+        return .init(plan: .init(engine: .kirikiri, action: .nativeRuntime,
+                                 routeID: "native.kirikiri-shiorikrkr", entry: nil,
+                                 prerequisites: [],
+                                 notes: ["Played on device by the bundled ShioriKrkr Kirikiri engine; game scripts stay inside the per-game sandbox and saves persist across runs."]),
+                     evidence: evidence)
+    }
+
+    /// ONScripter-family projects are recognized honestly: the pinned ONSlaught
+    /// iOS engine slice is not bundled in this checkout, so the route reports
+    /// the exact missing prerequisite instead of faking a run. The macOS arm64
+    /// probe slice is qualified separately from the same pinned commit.
+    private static func ons(index: GameRunSourceIndex) -> GameRunRouteEvaluation {
+        let script = first(index, "nscript.dat") ?? first(index, "0.txt") ?? first(index, "00.txt")
+        let nsa = index.files.first {
+            $0.path.value.lowercased().hasSuffix(".nsa")
+        }?.path
+        guard let marker = script ?? nsa else {
+            return unavailable(engine: .ons, routeID: "native.ons",
+                detail: "No ONScripter script (0.txt/00.txt/nscript.dat) or NSA archive was found in this root.")
+        }
+        return .init(plan: .init(engine: .ons, action: .unavailable,
+                                 routeID: "native.ons", entry: nil,
+                                 prerequisites: [.guestRuntime(id: "onslaught-ios",
+                                    detail: "This ONScripter project requires the pinned ONSlaught iOS engine slice, which is not bundled in this build. The project files are preserved unchanged; the same pinned commit is verified on the macOS arm64 host.")],
+                                 notes: ["No fake run is offered for ONS in this build."]),
+                     evidence: [.init(path: marker, kind: .projectMarker)])
     }
 
     // MARK: - Narrative and fantasy consoles

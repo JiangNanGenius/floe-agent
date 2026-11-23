@@ -1,0 +1,956 @@
+diff --git a/trunk/src/AudioFormats.cpp b/trunk/src/AudioFormats.cpp
+index c09b31f..1c1befa 100644
+--- a/trunk/src/AudioFormats.cpp
++++ b/trunk/src/AudioFormats.cpp
+@@ -32,8 +32,12 @@
+ #include <cerrno>
+ 
+ mp3_static_data mp3_decoder::static_data;
++#if FLOEONS_ENABLE_MODMUSIC
+ mod_static_data mod_decoder::static_data;
++#endif
++#if FLOEONS_ENABLE_MIDI
+ midi_static_data midi_decoder::static_data;
++#endif
+ 
+ size_t ogg_read(void *buffer,size_t size,size_t nmemb,void *s){
+ 	NONS_DataStream *stream=(NONS_DataStream *)s;
+@@ -366,6 +370,7 @@ void mp3_decoder::loop(){
+ 		mpg123_seek(this->handle,0,SEEK_SET);
+ }
+ 
++#if FLOEONS_ENABLE_MODMUSIC
+ static const size_t BUFFERSIZE=32768;
+ static std::vector<SBYTE> audiobuffer;
+ 
+@@ -513,7 +518,9 @@ void mod_decoder::loop(){
+ 	Player_SetPosition(0);
+ 	Player_Start(this->module);
+ }
++#endif
+ 
++#if FLOEONS_ENABLE_MIDI
+ custom_FILE NONS_fopen(const char *filename){
+ 	return midi_decoder::static_data.get_file(filename);
+ }
+@@ -630,3 +637,4 @@ void midi_decoder::loop(){
+ 	mid_song_seek(this->song,0);
+ 	mid_song_start(this->song);
+ }
++#endif
+diff --git a/trunk/src/AudioFormats.h b/trunk/src/AudioFormats.h
+index 8e96845..610d01c 100644
+--- a/trunk/src/AudioFormats.h
++++ b/trunk/src/AudioFormats.h
+@@ -32,11 +32,16 @@
+ #include "OpenAL.h"
+ #include "IOFunctions.h"
+ #include "ThreadManager.h"
++#include "floeons_build.h"
+ #include <vorbis/vorbisfile.h>
+ #include <FLAC++/decoder.h>
+ #include <mpg123.h>
++#if FLOEONS_ENABLE_MODMUSIC
+ #include <mikmod.h>
++#endif
++#if FLOEONS_ENABLE_MIDI
+ #include "libtimidity/timidity.h"
++#endif
+ 
+ class ogg_decoder:public decoder{
+ 	OggVorbis_File file;
+@@ -97,6 +102,7 @@ public:
+ 	void loop();
+ };
+ 
++#if FLOEONS_ENABLE_MODMUSIC
+ class mod_static_data:public static_initializer{
+ 	bool perform_initialization();
+ public:
+@@ -112,7 +118,9 @@ public:
+ 	audio_buffer *get_buffer(bool &error);
+ 	void loop();
+ };
++#endif
+ 
++#if FLOEONS_ENABLE_MIDI
+ class midi_static_data:public static_initializer{
+ 	bool perform_initialization();
+ public:
+@@ -135,3 +143,4 @@ public:
+ 	void loop();
+ };
+ #endif
++#endif
+diff --git a/trunk/src/GUI.cpp b/trunk/src/GUI.cpp
+index d8a6367..d49e3aa 100644
+--- a/trunk/src/GUI.cpp
++++ b/trunk/src/GUI.cpp
+@@ -854,13 +854,20 @@ void NONS_ButtonLayer::addSpriteButton(ulong index,ulong sprite){
+ }
+ 
+ int NONS_ButtonLayer::getUserInput(ulong expiration){
+-	if (!this->buttons.size()){
++	return getUserInput(expiration, false);
++}
++
++int NONS_ButtonLayer::getUserInput(ulong expiration, bool preserveText){
++	if (this->buttons.empty() && !preserveText){
+ 		NONS_LongRect rect=this->loadedGraphic.clip_rect();
+ 		this->addImageButton(0,0,0,rect.w,rect.h,0,0);
+ 		//return LONG_MIN;
+ 	}
+ 	NONS_EventQueue queue;
+-	this->screen->BlendNoText(0);
++	if (preserveText)
++		this->screen->BlendAll(0);
++	else
++		this->screen->BlendNoText(0);
+ 	this->screen->copyBufferToScreenWithoutUpdating();
+ 	NONS_Surface screenCopy=this->screen->screen->get_screen().clone();
+ 	map_t::iterator e=this->buttons.end(),
+diff --git a/trunk/src/GUI.h b/trunk/src/GUI.h
+index 097e3fd..bf0407c 100644
+--- a/trunk/src/GUI.h
++++ b/trunk/src/GUI.h
+@@ -383,6 +383,7 @@ struct NONS_ButtonLayer{
+ 		INT_MIN if SDL_QUIT was received
+ 	*/
+ 	int getUserInput(ulong expiration=0);
++	int getUserInput(ulong expiration, bool preserveText);
+ private:
+ 	bool react_to_movement(map_t::iterator &mouseOver,SDL_Event *event,const NONS_ConstSurface &screenCopy);
+ 	void react_to_updown(map_t::iterator &mouseOver,SDLKey key,const NONS_ConstSurface &screenCopy);
+diff --git a/trunk/src/IOFunctions.cpp b/trunk/src/IOFunctions.cpp
+index 5c4d99f..2018755 100644
+--- a/trunk/src/IOFunctions.cpp
++++ b/trunk/src/IOFunctions.cpp
+@@ -47,6 +47,15 @@
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <time.h>
++#if defined(__APPLE__)
++/* Darwin has no O_LARGEFILE/lseek64; off_t and lseek are always 64-bit. */
++#ifndef O_LARGEFILE
++#define O_LARGEFILE 0
++#endif
++#ifndef lseek64
++#define lseek64 lseek
++#endif
++#endif
+ #endif
+ 
+ #define STDOUT_FILENAME "stdout.txt"
+@@ -1084,6 +1093,23 @@ std::wstring getConfigLocation(){
+ 	path.push_back('/');
+ 	return path;
+ #elif NONS_SYS_UNIX
++	/* FloeONSRuntime: allow an explicit, pre-created absolute run-state root.
++	   When FLOE_ONS_STATE_ROOT is set, ALL engine state (global settings.cfg
++	   and per-game save directories) is written under it instead of
++	   $HOME/.ONSlaught, so a run can be fully disposable without touching
++	   HOME. The directory is created if missing. */
++	{
++		const char *floe_root=getenv("FLOE_ONS_STATE_ROOT");
++		if (floe_root && floe_root[0]){
++			std::string res=floe_root;
++			while (res.size()>1 && res[res.size()-1]=='/')
++				res.resize(res.size()-1);
++			if (mkdir(res.c_str(),0755) && errno!=EEXIST)
++				return L"./";
++			res.push_back('/');
++			return UniFromUTF8(res);
++		}
++	}
+ 	passwd* pwd=getpwuid(getuid());
+ 	if (!pwd)
+ 		return L"./";
+diff --git a/trunk/src/Image.cpp b/trunk/src/Image.cpp
+index 3dc453e..386b6fd 100644
+--- a/trunk/src/Image.cpp
++++ b/trunk/src/Image.cpp
+@@ -36,7 +36,7 @@
+ #include "Archive.h"
+ #include "ScreenSpace.h"
+ #include "GUI.h"
+-#include <SDL/SDL_image.h>
++#include "floe_image_loader.h"
+ #define PNG_SKIP_SETJMP_CHECK
+ #include <png.h>
+ #include <list>
+@@ -465,7 +465,7 @@ NONS_SurfaceManager::index_t NONS_SurfaceManager::load_image(const std::wstring
+ 		if (!stream)
+ 			break;
+ 		SDL_RWops rw=stream->to_rwops();
+-		SDL_Surface *surface=IMG_Load_RW(&rw,0);
++		SDL_Surface *surface=FLOEIMG_Load_RW(&rw,0);
+ 		if (surface)
+ 			r=SDL_to_index_t(this,surface);
+ 		else if (this->svg_functions.valid){
+@@ -1389,7 +1389,7 @@ void NONS_ConstSurface::save_bitmap(const std::wstring &filename,bool fill_alpha
+ 	if (!*this)
+ 		return;
+ 	if (threaded)
+-		holder.call(bind(write_png_file,filename,this->clone(),fill_alpha));
++		holder.call(::bind(write_png_file,filename,this->clone(),fill_alpha));
+ 	else
+ 		write_png_file(filename,*this,fill_alpha);
+ }
+diff --git a/trunk/src/ONSlaught.cpp b/trunk/src/ONSlaught.cpp
+index ed944c3..eb2a38b 100644
+--- a/trunk/src/ONSlaught.cpp
++++ b/trunk/src/ONSlaught.cpp
+@@ -68,6 +68,9 @@ void handle_SIGINT(int){
+ }
+ 
+ volatile bool stopEventHandling=0;
++#if NONS_SYS_UNIX
++extern NONS_Mutex caption_mutex;
++#endif
+ 
+ int lastClickX=0;
+ int lastClickY=0;
+@@ -107,6 +110,7 @@ bool decode_joystick_event(SDL_Event &event){
+ void handleInputEvent(SDL_Event event){
+ 	long x,y;
+ 	switch(event.type){
++
+ 		case SDL_JOYAXISMOTION:
+ 		case SDL_JOYBUTTONDOWN:
+ 			if (!decode_joystick_event(event))
+@@ -312,6 +316,10 @@ void initialize(int argc,char **argv){
+ 	useArgumentsFile(L"arguments.txt",cmdl_arg);
+ 	CLOptions.parse(cmdl_arg);
+ 
++#if defined(__APPLE__)
++	setenv("SDL12COMPAT_ALLOW_THREADED_DRAWS", "0", 0);
++	setenv("SDL12COMPAT_ALLOW_THREADED_PUMPS", "0", 0);
++#endif
+ 	SDL_Init(SDL_INIT_EVERYTHING&~SDL_INIT_AUDIO);
+ 	atexit(SDL_Quit);
+ 	SDL_EnableUNICODE(1);
+@@ -356,6 +364,31 @@ extern Uint64 over_pixel_count;
+ extern double over_time_sum;
+ #endif
+ 
++#if defined(__APPLE__)
++struct FloeFullscreenRequest {
++    NONS_VirtualScreen *screen;
++    bool fullscreen;
++    SDL_sem *completed;
++};
++
++bool floeSetFullscreen(NONS_VirtualScreen *screen, bool fullscreen) {
++    if (pthread_main_np()) {
++        screen->toggleFullscreen(fullscreen);
++        return true;
++    }
++    FloeFullscreenRequest request = {screen, fullscreen, SDL_CreateSemaphore(0)};
++    if (!request.completed) return false;
++    SDL_Event event = {};
++    event.type = SDL_USEREVENT;
++    event.user.code = 2;
++    event.user.data1 = &request;
++    const bool queued = SDL_PushEvent(&event) == 0;
++    if (queued) SDL_SemWait(request.completed);
++    SDL_DestroySemaphore(request.completed);
++    return queued;
++}
++#endif
++
+ int main(int argc,char **argv){
+ #ifdef NONS_NO_STDOUT
+ 	//Have at least one reference to std::cout, or some functions are liable to
+@@ -384,6 +417,23 @@ int main(int argc,char **argv){
+ 					if (!SDL_PollEvent(&event))
+ 						break;
+ 				}
++#if NONS_SYS_UNIX
++				/* Floe patch: apply caption changes marshalled from worker threads. */
++				if (event.type==SDL_USEREVENT && event.user.code==1){
++					const char *caption=(const char *)event.user.data1;
++					SDL_WM_SetCaption(caption?caption:"",0);
++					free(event.user.data1);
++					continue;
++				}
++#endif
++#if defined(__APPLE__)
++                if (event.type == SDL_USEREVENT && event.user.code == 2) {
++                    auto *request = static_cast<FloeFullscreenRequest *>(event.user.data1);
++                    request->screen->toggleFullscreen(request->fullscreen);
++                    SDL_SemPost(request->completed);
++                    continue;
++                }
++#endif
+ 				handleInputEvent(event);
+ 			}
+ 			SDL_Delay(10);
+diff --git a/trunk/src/OpenAL.cpp b/trunk/src/OpenAL.cpp
+index 076bc7c..7596893 100644
+--- a/trunk/src/OpenAL.cpp
++++ b/trunk/src/OpenAL.cpp
+@@ -184,13 +184,17 @@ decoder *initialize_decoder(const std::wstring &filename,bool prioritize_filesys
+ 		{L".ogg",new_decoder<ogg_decoder>},
+ 		{L".mp3",new_decoder<mp3_decoder>},
+ 		{L".flac",new_decoder<flac_decoder>},
++#if FLOEONS_ENABLE_MIDI
+ 		{L".mid",new_decoder<midi_decoder>},
++#endif
++#if FLOEONS_ENABLE_MODMUSIC
+ 		{L".it",new_decoder<mod_decoder>},
+ 		{L".xm",new_decoder<mod_decoder>},
+ 		{L".s3m",new_decoder<mod_decoder>},
+ 		{L".mod",new_decoder<mod_decoder>},
+ 		{L".669",new_decoder<mod_decoder>},
+ 		{L".med",new_decoder<mod_decoder>}
++#endif
+ 	};
+ 	const size_t n=sizeof(array)/sizeof(*array);
+ 	for (size_t a=0;a<n;a++)
+diff --git a/trunk/src/ScriptInterpreter.cpp b/trunk/src/ScriptInterpreter.cpp
+index 31c195f..f0a398c 100644
+--- a/trunk/src/ScriptInterpreter.cpp
++++ b/trunk/src/ScriptInterpreter.cpp
+@@ -42,7 +42,7 @@ HWND mainWindow=0;
+ #endif
+ #include "../video_player.h"
+ 
+-#if NONS_SYS_LINUX
++#if NONS_SYS_UNIX
+ NONS_Mutex caption_mutex;
+ #endif
+ 
+@@ -410,7 +410,7 @@ NONS_ScriptInterpreter::NONS_ScriptInterpreter(bool initialize):stop_interpretin
+ 	this->commandList[L"end"]=                     &NONS_ScriptInterpreter::command_end                  |ALLOW_IN_DEFINE|ALLOW_IN_RUN;
+ 	this->commandList[L"erasetextwindow"]=         &NONS_ScriptInterpreter::command_erasetextwindow                      |ALLOW_IN_RUN;
+ 	this->commandList[L"exbtn_d"]=                 0                                                                     |ALLOW_IN_RUN;
+-	this->commandList[L"exbtn"]=                   0                                                                     |ALLOW_IN_RUN;
++	this->commandList[L"exbtn"]=                   &NONS_ScriptInterpreter::command_spbtn                                                                     |ALLOW_IN_RUN;
+ 	this->commandList[L"exec_dll"]=                &NONS_ScriptInterpreter::command_unimplemented        |ALLOW_IN_DEFINE|ALLOW_IN_RUN;
+ 	this->commandList[L"existspbtn"]=              &NONS_ScriptInterpreter::command_undocumented                         |ALLOW_IN_RUN;
+ 	this->commandList[L"fileexist"]=               &NONS_ScriptInterpreter::command_fileexist                            |ALLOW_IN_RUN;
+@@ -600,7 +600,7 @@ NONS_ScriptInterpreter::NONS_ScriptInterpreter(bool initialize):stop_interpretin
+ 	this->commandList[L"tan"]=                     &NONS_ScriptInterpreter::command_add                  |ALLOW_IN_DEFINE|ALLOW_IN_RUN;
+ 	this->commandList[L"tateyoko"]=                &NONS_ScriptInterpreter::command_unimplemented                        |ALLOW_IN_RUN;
+ 	this->commandList[L"texec"]=                   &NONS_ScriptInterpreter::command_texec                                |ALLOW_IN_RUN;
+-	this->commandList[L"textbtnwait"]=             0                                                                     |ALLOW_IN_RUN;
++	this->commandList[L"textbtnwait"]=             &NONS_ScriptInterpreter::command_btnwait                                                                     |ALLOW_IN_RUN;
+ 	this->commandList[L"textclear"]=               &NONS_ScriptInterpreter::command_textclear                            |ALLOW_IN_RUN;
+ 	this->commandList[L"textcolor"]=               &NONS_ScriptInterpreter::command_textcolor                            |ALLOW_IN_RUN;
+ 	this->commandList[L"textgosub"]=               &NONS_ScriptInterpreter::command_textgosub            |ALLOW_IN_DEFINE|ALLOW_IN_RUN;
+@@ -1785,6 +1785,10 @@ void findStops(const std::wstring &src,std::vector<std::pair<ulong,ulong> > &sto
+ }
+ 
+ void NONS_ScriptInterpreter::handle_wait_state(std::vector<printingPage> &pages,std::vector<printingPage>::iterator i2,ulong stop,wchar_t trigger,long add){
++	// Capture the story, before a custom click/menu subroutine changes
++	// the stack and layers. Resume at this story statement when loaded.
++	if (!this->insideTextgosub())
++		this->textWaitSaveSnapshot = this->serializeSave();
+ 	std::vector<printingPage> temp;
+ 	printingPage temp2(*i2);
+ 	temp2.print.erase(temp2.print.begin(),temp2.print.begin()+temp2.stops[stop].first);
+@@ -2189,41 +2193,46 @@ inline std::wstring get_human_save_filename(int file){
+ 	return save_directory+L"save"+itoaw(file)+L".xml";
+ }
+ 
+-bool NONS_ScriptInterpreter::save(int file){
+-	if (this->insideTextgosub())
+-		return 0;
+-	std::string xml,
+-		human_xml;
+-	{
+-		TiXmlDocument doc("");
+-		TiXmlElement *root=new TiXmlElement("savegame");
+-		doc.LinkEndChild(root);
+-		{
+-			std::string hash;
+-			for (ulong a=0;a<5;a++)
+-				hash.append(itohexc(this->script->hash[a],8));
+-			root->SetAttribute("hash",hash);
+-		}
+-		root->LinkEndChild(this->save_control());
+-		root->LinkEndChild(this->store->save_locals());
+-		root->LinkEndChild(this->screen->save(this->stored_state));
+-		root->LinkEndChild(this->save_interpreter());
+-		root->LinkEndChild(this->audio->save());
+-		if (CLOptions.verbosity==VERBOSITY_RESERVED)
+-			doc.Print(human_xml,0);
+-		xml <<doc;
+-	}
+-	if (CLOptions.verbosity==VERBOSITY_RESERVED)
+-		NONS_File::write(get_human_save_filename(file),&human_xml[0],human_xml.size());
+-	std::vector<uchar> encoded_buffer,
+-		decoded_buffer;
+-	encode_buffer(encoded_buffer,xml);
+-	NONS_File::write(get_save_filename(file),&encoded_buffer[0],encoded_buffer.size());
+-
+-	this->store->saveData();
+-	NONS_Surface::filelog_writeout();
++std::string NONS_ScriptInterpreter::serializeSave(std::string *humanReadable){
++    TiXmlDocument doc("");
++    TiXmlElement *root = new TiXmlElement("savegame");
++    doc.LinkEndChild(root);
++    std::string hash;
++    for (ulong a=0; a<5; a++)
++        hash.append(itohexc(this->script->hash[a], 8));
++    root->SetAttribute("hash", hash);
++    root->LinkEndChild(this->save_control());
++    root->LinkEndChild(this->store->save_locals());
++    root->LinkEndChild(this->screen->save(this->stored_state));
++    root->LinkEndChild(this->save_interpreter());
++    root->LinkEndChild(this->audio->save());
++    if (humanReadable && CLOptions.verbosity==VERBOSITY_RESERVED)
++        doc.Print(*humanReadable, 0);
++    std::string xml;
++    xml << doc;
++    return xml;
++}
+ 
+-	return 1;
++bool NONS_ScriptInterpreter::save(int file){
++    std::string human_xml;
++    const bool fromTextWait = this->insideTextgosub() != 0;
++    const std::string xml = fromTextWait ? this->textWaitSaveSnapshot : this->serializeSave(&human_xml);
++    if (xml.empty())
++        return false;
++    if (CLOptions.verbosity==VERBOSITY_RESERVED) {
++        if (fromTextWait)
++            human_xml = xml;
++        if (!human_xml.empty())
++            NONS_File::write(get_human_save_filename(file), &human_xml[0], human_xml.size());
++    }
++    std::vector<uchar> encoded_buffer;
++    encode_buffer(encoded_buffer, xml);
++    if (encoded_buffer.empty() ||
++        !NONS_File::write(get_save_filename(file), encoded_buffer.data(), encoded_buffer.size()))
++        return false;
++    this->store->saveData();
++    NONS_Surface::filelog_writeout();
++    return true;
+ }
+ 
+ ErrorCode NONS_ScriptInterpreter::load(int file){
+@@ -2296,6 +2305,13 @@ ErrorCode NONS_ScriptInterpreter::command___userCommandCall__(NONS_Statement &st
+ ErrorCode NONS_ScriptInterpreter::command_add(NONS_Statement &stmt){
+ 	MINIMUM_PARAMETERS(2);
+ 	NONS_VariableMember *var;
++	if (!stdStrCmpCI(stmt.commandName, L"add") && !stmt.parameters[0].empty() && stmt.parameters[0][0] == L'$') {
++		GET_STR_VARIABLE(var,0);
++		std::wstring suffix;
++		GET_STR_VALUE(suffix,1);
++		var->set(var->getWcs() + suffix);
++		return NONS_NO_ERROR;
++	}
+ 	GET_INT_VARIABLE(var,0);
+ 	long val;
+ 	GET_INT_VALUE(val,1);
+@@ -2691,39 +2707,69 @@ ErrorCode NONS_ScriptInterpreter::command_btndown(NONS_Statement &stmt){
+ }
+ 
+ ErrorCode NONS_ScriptInterpreter::command_btnwait(NONS_Statement &stmt){
+-	MINIMUM_PARAMETERS(1);
+-	if (!this->imageButtons)
+-		return NONS_NO_BUTTON_IMAGE;
+-	NONS_VariableMember *var;
+-	GET_INT_VARIABLE(var,0);
+-	int choice=this->imageButtons->getUserInput(this->imageButtonExpiration);
+-	if (choice==INT_MIN)
+-		return NONS_END;
+-	var->set(choice+1);
+-	this->btnTimer=NONS_Clock().get();
+-	if (choice>=0 && stdStrCmpCI(stmt.commandName,L"btnwait2")){
+-		delete this->imageButtons;
+-		this->imageButtons=0;
++    MINIMUM_PARAMETERS(1);
++    const bool textWait = !stdStrCmpCI(stmt.commandName, L"textbtnwait");
++    if (!this->imageButtons && !textWait)
++        return NONS_NO_BUTTON_IMAGE;
++    NONS_VariableMember *var;
++    GET_INT_VARIABLE(var,0);
++
++    int choice;
++    if (this->imageButtons) {
++        choice = this->imageButtons->getUserInput(this->imageButtonExpiration, textWait);
++    } else {
++        // A custom text wait can start after btndef clear. Wait for ordinary
++        // click, menu or wheel input even when there is no image button.
++        NONS_Surface blank = this->screen->screen->get_screen().clone_without_pixel_copy();
++        NONS_ButtonLayer textInput(blank, this->screen);
++        textInput.inputOptions.Wheel = true;
++        choice = textInput.getUserInput(this->imageButtonExpiration, true);
++    }
++    if (choice==INT_MIN)
++        return NONS_END;
++    var->set(choice+1);
++    this->btnTimer=NONS_Clock().get();
++    if (this->imageButtons && choice>=0 && !textWait && stdStrCmpCI(stmt.commandName,L"btnwait2")){
++        delete this->imageButtons;
++        this->imageButtons=0;
++    }
++    return NONS_NO_ERROR;
++}
++
++#if NONS_SYS_UNIX
++/* Floe patch: AppKit requires window caption/geometry changes on the main
++   thread. Marshal SDL_WM_SetCaption through the SDL event queue; the main
++   event loop in ONSlaught.cpp applies it. */
++static void floe_set_caption_mainthread(const std::string &utf8){
++	SDL_Event e;
++	memset(&e,0,sizeof(e));
++	e.type=SDL_USEREVENT;
++	e.user.code=1;
++	e.user.data1=strdup(utf8.c_str());
++	e.user.data2=0;
++	if (SDL_PushEvent(&e)!=0){
++		free(e.user.data1);
++		o_stderr <<"floe: failed to queue caption change\n";
+ 	}
+-	return NONS_NO_ERROR;
+ }
++#endif
+ 
+ ErrorCode NONS_ScriptInterpreter::command_caption(NONS_Statement &stmt){
+ 	if (!stmt.parameters.size()){
+ #if NONS_SYS_UNIX
+-		NONS_MutexLocker ml(caption_mutex);
+-#endif
++		floe_set_caption_mainthread(std::string());
++#else
+ 		SDL_WM_SetCaption("",0);
++#endif
+ 	}else{
+ 		std::wstring temp;
+ 		GET_STR_VALUE(temp,0);
+-#if !NONS_SYS_WINDOWS
+ #if NONS_SYS_UNIX
+-		NONS_MutexLocker ml(caption_mutex);
+-#endif
+-		SDL_WM_SetCaption(UniToUTF8(temp).c_str(),0);
+-#else
++		floe_set_caption_mainthread(UniToUTF8(temp));
++#elif NONS_SYS_WINDOWS
+ 		SetWindowText(mainWindow,temp.c_str());
++#else
++		SDL_WM_SetCaption(UniToUTF8(temp).c_str(),0);
+ #endif
+ 	}
+ 	return NONS_NO_ERROR;
+@@ -4134,9 +4180,18 @@ ErrorCode NONS_ScriptInterpreter::command_maxkaisoupage(NONS_Statement &stmt){
+ 	return NONS_NO_ERROR;
+ }
+ 
++#if defined(__APPLE__)
++extern bool floeSetFullscreen(NONS_VirtualScreen *screen, bool fullscreen);
++#endif
+ ErrorCode NONS_ScriptInterpreter::command_menu_full(NONS_Statement &stmt){
+-	this->screen->screen->toggleFullscreen(!stdStrCmpCI(stmt.commandName,L"menu_full"));
+-	return NONS_NO_ERROR;
++    const bool fullscreen = !stdStrCmpCI(stmt.commandName, L"menu_full");
++#if defined(__APPLE__)
++    if (!floeSetFullscreen(this->screen->screen, fullscreen))
++        return NONS_UNDEFINED_ERROR;
++#else
++    this->screen->screen->toggleFullscreen(fullscreen);
++#endif
++    return NONS_NO_ERROR;
+ }
+ 
+ ErrorCode NONS_ScriptInterpreter::command_menuselectcolor(NONS_Statement &stmt){
+@@ -5184,13 +5239,19 @@ ErrorCode NONS_ScriptInterpreter::command_skip(NONS_Statement &stmt){
+ 
+ ErrorCode NONS_ScriptInterpreter::command_spbtn(NONS_Statement &stmt){
+ 	MINIMUM_PARAMETERS(2);
+-	if (!this->imageButtons)
+-		return NONS_NO_BUTTON_IMAGE;
+ 	long sprite,button_index;
+ 	GET_INT_VALUE(sprite,0);
+ 	if (sprite<0 || sprite>999)
+ 		return NONS_INVALID_RUN_TIME_PARAMETER_VALUE;
+ 	GET_INT_VALUE(button_index,1);
++	if (button_index <= 0)
++		return NONS_INVALID_RUN_TIME_PARAMETER_VALUE;
++	if (!this->imageButtons) {
++		NONS_Surface blank = this->screen->screen->get_screen().clone_without_pixel_copy();
++		this->imageButtons = new NONS_ButtonLayer(blank, this->screen);
++		this->imageButtons->inputOptions.Wheel = this->useWheel;
++		this->imageButtons->inputOptions.EscapeSpace = this->useEscapeSpace;
++	}
+ 	this->imageButtons->addSpriteButton(--button_index,sprite);
+ 	return NONS_NO_ERROR;
+ }
+@@ -5372,14 +5433,18 @@ ErrorCode NONS_ScriptInterpreter::command_tal(NONS_Statement &stmt){
+ }
+ 
+ ErrorCode NONS_ScriptInterpreter::command_texec(NONS_Statement &stmt){
+-	NONS_StackElement *frame=this->get_last_textgosub_frame();
+-	if (!frame)
+-		return NONS_NOT_IN_TEXTGOSUB_CALL;
+-	if (frame->textgosubTriggeredBy=='\\')
+-		this->Printer(L"\\");
+-	else if (!frame->pages.front().print.size())
+-		this->Printer(L"");
+-	return NONS_NO_ERROR;
++    NONS_StackElement *frame=this->get_last_textgosub_frame();
++    if (!frame)
++        return NONS_NOT_IN_TEXTGOSUB_CALL;
++    // The textgosub handler has already processed input. Apply the
++    // pending text transition without entering a second click wait.
++    if (frame->textgosubTriggeredBy=='\\') {
++        this->screen->clearText();
++    } else if (!frame->pages.empty() && frame->pages.front().print.empty()) {
++        if (this->screen->output->NewLine())
++            this->screen->clearText();
++    }
++    return NONS_NO_ERROR;
+ }
+ 
+ ErrorCode NONS_ScriptInterpreter::command_textclear(NONS_Statement &stmt){
+diff --git a/trunk/src/ScriptInterpreter.h b/trunk/src/ScriptInterpreter.h
+index 0e8d6c0..c123a4d 100644
+--- a/trunk/src/ScriptInterpreter.h
++++ b/trunk/src/ScriptInterpreter.h
+@@ -157,6 +157,7 @@ class NONS_ScriptInterpreter{
+ 	void handle_wait_state(std::vector<printingPage> &pages,std::vector<printingPage>::iterator,ulong stop,wchar_t trigger,long add);
+ 	void print_command(NONS_RedirectedOutput &ro,ulong current_line,const std::wstring &commandName,const std::vector<std::wstring> &parameters,ulong mode);
+ 	TiXmlElement *save_control();
++	std::string serializeSave(std::string *humanReadable = nullptr);
+ 	void load_control(TiXmlElement *);
+ 	TiXmlElement *save_interpreter();
+ 	void load_interpreter(TiXmlElement *);
+@@ -221,6 +222,7 @@ class NONS_ScriptInterpreter{
+ 	//Here, we keep state that's sensitive to modifications inside a command.
+ 	interpreter_stored_state stored_state;
+ 	bool skip_save_on_load;
++	std::string textWaitSaveSnapshot;
+ 
+ 	ErrorCode command_caption(NONS_Statement &stmt);
+ 	ErrorCode command_alias(NONS_Statement &stmt);
+diff --git a/trunk/src/Thread.cpp b/trunk/src/Thread.cpp
+index 3f09082..e0abf5a 100644
+--- a/trunk/src/Thread.cpp
++++ b/trunk/src/Thread.cpp
+@@ -44,6 +44,9 @@
+ void NONS_Event::init(){
+ #if NONS_SYS_WINDOWS
+ 	this->event=CreateEvent(0,0,0,0);
++#elif NONS_SYS_UNIX && defined(__APPLE__)
++	/* POSIX unnamed semaphores are ENOSYS on macOS; SDL semaphores work. */
++	this->sem=SDL_CreateSemaphore(0);
+ #elif NONS_SYS_UNIX
+ 	sem_init(&this->sem,0,0);
+ #elif NONS_SYS_PSP
+@@ -57,6 +60,8 @@ NONS_Event::~NONS_Event(){
+ 		return;
+ #if NONS_SYS_WINDOWS
+ 	CloseHandle(this->event);
++#elif NONS_SYS_UNIX && defined(__APPLE__)
++	SDL_DestroySemaphore(this->sem);
+ #elif NONS_SYS_UNIX
+ 	sem_destroy(&this->sem);
+ #elif NONS_SYS_PSP
+@@ -67,6 +72,8 @@ NONS_Event::~NONS_Event(){
+ void NONS_Event::set(){
+ #if NONS_SYS_WINDOWS
+ 	SetEvent(this->event);
++#elif NONS_SYS_UNIX && defined(__APPLE__)
++	SDL_SemPost(this->sem);
+ #elif NONS_SYS_UNIX
+ 	sem_post(&this->sem);
+ #elif NONS_SYS_PSP
+@@ -83,6 +90,8 @@ void NONS_Event::reset(){
+ void NONS_Event::wait(){
+ #if NONS_SYS_WINDOWS
+ 	WaitForSingleObject(this->event,INFINITE);
++#elif NONS_SYS_UNIX && defined(__APPLE__)
++	SDL_SemWait(this->sem);
+ #elif NONS_SYS_UNIX
+ 	while (sem_wait(&this->sem)<0 && errno==EINTR);
+ #elif NONS_SYS_PSP
+diff --git a/trunk/src/Thread.h b/trunk/src/Thread.h
+index 61d1c5b..69aafe5 100644
+--- a/trunk/src/Thread.h
++++ b/trunk/src/Thread.h
+@@ -84,6 +84,10 @@ class NONS_Event{
+ 	bool initialized;
+ #if NONS_SYS_WINDOWS
+ 	HANDLE event;
++#elif NONS_SYS_UNIX && defined(__APPLE__)
++	/* POSIX unnamed semaphores (sem_init) are ENOSYS on macOS; use the
++	   SDL semaphore implementation instead (same as the PSP path). */
++	SDL_sem *sem;
+ #elif NONS_SYS_UNIX
+ 	sem_t sem;
+ #elif NONS_SYS_PSP
+diff --git a/trunk/src/ThreadManager.cpp b/trunk/src/ThreadManager.cpp
+index 03c2ba2..95f8bdb 100644
+--- a/trunk/src/ThreadManager.cpp
++++ b/trunk/src/ThreadManager.cpp
+@@ -52,10 +52,12 @@ void NONS_ManagedThread::init(ulong index){
+ 	this->index=index;
+ 	this->startCallEvent.init();
+ 	this->callEndedEvent.init();
+-	this->thread.call(runningThread,this);
++	/* Initialize all shared state BEFORE starting the worker so it can
++	   never observe indeterminate function/parameter/destroy values. */
+ 	this->function=0;
+ 	this->parameter=0;
+ 	this->destroy=0;
++	this->thread.call(runningThread,this);
+ }
+ 
+ NONS_ManagedThread::~NONS_ManagedThread(){
+diff --git a/trunk/src/floe_image_loader.cpp b/trunk/src/floe_image_loader.cpp
+new file mode 100644
+index 0000000..6f288dc
+--- /dev/null
++++ b/trunk/src/floe_image_loader.cpp
+@@ -0,0 +1,170 @@
++/*
++ * FloeONSRuntime minimal image loader implementation.
++ * Floe-authored (MPL-2.0). See floe_image_loader.h for the contract.
++ */
++#include "floe_image_loader.h"
++
++#include <vector>
++#include <cstring>
++
++#include <png.h>
++#include <jpeglib.h>
++#include <setjmp.h>
++
++namespace {
++
++bool read_all(SDL_RWops *src, std::vector<unsigned char> &out){
++    const int size = SDL_RWseek(src, 0, RW_SEEK_END);
++    if (size <= 0 || size > 64 * 1024 * 1024 || SDL_RWseek(src, 0, RW_SEEK_SET) < 0)
++        return false;
++    out.resize(static_cast<size_t>(size));
++    return SDL_RWread(src, out.data(), 1, size) == size;
++}
++
++SDL_Surface *surface_from_rgba(int w, int h, const unsigned char *rgba){
++#if SDL_BYTEORDER == SDL_BIG_ENDIAN
++	const Uint32 rmask = 0xFF000000, gmask = 0x00FF0000, bmask = 0x0000FF00, amask = 0x000000FF;
++#else
++	const Uint32 rmask = 0x000000FF, gmask = 0x0000FF00, bmask = 0x00FF0000, amask = 0xFF000000;
++#endif
++	SDL_Surface *s = SDL_CreateRGBSurface(SDL_SWSURFACE, w, h, 32, rmask, gmask, bmask, amask);
++	if (!s)
++		return 0;
++	SDL_LockSurface(s);
++	for (int y = 0; y < h; y++){
++		Uint32 *row = (Uint32 *)((char *)s->pixels + y * s->pitch);
++		const unsigned char *src = rgba + (size_t)y * (size_t)w * 4;
++		for (int x = 0; x < w; x++){
++			row[x] = SDL_MapRGBA(s->format, src[0], src[1], src[2], src[3]);
++			src += 4;
++		}
++	}
++	SDL_UnlockSurface(s);
++	return s;
++}
++
++struct mem_reader {
++	const unsigned char *data;
++	size_t size;
++	size_t pos;
++};
++
++void png_mem_read(png_structp png_ptr, png_bytep out, png_size_t count){
++	mem_reader *r = (mem_reader *)png_get_io_ptr(png_ptr);
++	if (!r || r->pos + count > r->size){
++		png_error(png_ptr, "read past end of memory");
++		return;
++	}
++	memcpy(out, r->data + r->pos, count);
++	r->pos += count;
++}
++
++SDL_Surface *load_png(const unsigned char *data, size_t size){
++	png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0);
++	if (!png)
++		return 0;
++	png_infop info = png_create_info_struct(png);
++	if (!info){
++		png_destroy_read_struct(&png, 0, 0);
++		return 0;
++	}
++	SDL_Surface *ret = 0;
++	std::vector<unsigned char> pixels;
++	if (setjmp(png_jmpbuf(png))){
++		png_destroy_read_struct(&png, &info, 0);
++		return 0;
++	}
++	mem_reader reader = { data, size, 0 };
++	png_set_read_fn(png, &reader, png_mem_read);
++	png_read_info(png, info);
++	png_uint_32 w = 0, h = 0;
++	int depth = 0, color_type = 0;
++	png_get_IHDR(png, info, &w, &h, &depth, &color_type, 0, 0, 0);
++	/* Normalize every input to 8-bit RGBA. */
++	if (color_type == PNG_COLOR_TYPE_PALETTE)
++		png_set_palette_to_rgb(png);
++	if (color_type == PNG_COLOR_TYPE_GRAY && depth < 8)
++		png_set_expand_gray_1_2_4_to_8(png);
++	if (png_get_valid(png, info, PNG_INFO_tRNS))
++		png_set_tRNS_to_alpha(png);
++	if (depth == 16)
++		png_set_strip_16(png);
++	if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
++		png_set_gray_to_rgb(png);
++	if (!(color_type & PNG_COLOR_MASK_ALPHA) && !png_get_valid(png, info, PNG_INFO_tRNS))
++		png_set_filler(png, 0xFF, PNG_FILLER_AFTER);
++	png_read_update_info(png, info);
++	pixels.resize((size_t)w * h * 4);
++	std::vector<png_bytep> rows(h);
++	for (png_uint_32 y = 0; y < h; y++)
++		rows[y] = &pixels[(size_t)y * w * 4];
++	png_read_image(png, &rows[0]);
++	png_read_end(png, 0);
++	png_destroy_read_struct(&png, &info, 0);
++	ret = surface_from_rgba((int)w, (int)h, &pixels[0]);
++	return ret;
++}
++
++struct jpeg_err_mgr {
++	jpeg_error_mgr base;
++	jmp_buf jump;
++};
++
++void jpeg_fail(j_common_ptr cinfo){
++	jpeg_err_mgr *err = (jpeg_err_mgr *)cinfo->err;
++	longjmp(err->jump, 1);
++}
++
++SDL_Surface *load_jpeg(const unsigned char *data, unsigned long size){
++	jpeg_decompress_struct cinfo;
++	jpeg_err_mgr jerr;
++	cinfo.err = jpeg_std_error(&jerr.base);
++	jerr.base.error_exit = jpeg_fail;
++	if (setjmp(jerr.jump)){
++		jpeg_destroy_decompress(&cinfo);
++		return 0;
++	}
++	jpeg_create_decompress(&cinfo);
++	jpeg_mem_src(&cinfo, (unsigned char *)data, size);
++	jpeg_read_header(&cinfo, TRUE);
++	cinfo.out_color_space = JCS_RGB;
++	jpeg_start_decompress(&cinfo);
++	const int w = (int)cinfo.output_width, h = (int)cinfo.output_height;
++	std::vector<unsigned char> rgb((size_t)w * h * 3);
++	while (cinfo.output_scanline < cinfo.output_height){
++		JSAMPROW row = &rgb[(size_t)cinfo.output_scanline * w * 3];
++		jpeg_read_scanlines(&cinfo, &row, 1);
++	}
++	jpeg_finish_decompress(&cinfo);
++	jpeg_destroy_decompress(&cinfo);
++	std::vector<unsigned char> rgba((size_t)w * h * 4);
++	for (size_t a = 0, n = (size_t)w * h; a < n; a++){
++		rgba[a * 4 + 0] = rgb[a * 3 + 0];
++		rgba[a * 4 + 1] = rgb[a * 3 + 1];
++		rgba[a * 4 + 2] = rgb[a * 3 + 2];
++		rgba[a * 4 + 3] = 255;
++	}
++	return surface_from_rgba(w, h, &rgba[0]);
++}
++
++} // namespace
++
++SDL_Surface *FLOEIMG_Load_RW(SDL_RWops *src, int freesrc){
++	SDL_Surface *ret = 0;
++	std::vector<unsigned char> bytes;
++	if (src && read_all(src, bytes) && bytes.size() >= 8){
++		const unsigned char *p = &bytes[0];
++		if (p[0] == 0x89 && p[1] == 'P' && p[2] == 'N' && p[3] == 'G')
++			ret = load_png(p, bytes.size());
++		else if (p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF)
++			ret = load_jpeg(p, (unsigned long)bytes.size());
++		else if (p[0] == 'B' && p[1] == 'M'){
++			/* BMP: delegate to the SDL core. */
++			if (SDL_RWseek(src, 0, RW_SEEK_SET) == 0)
++				ret = SDL_LoadBMP_RW(src, 0);
++		}
++	}
++	if (freesrc && src)
++		SDL_RWclose(src);
++	return ret;
++}
+diff --git a/trunk/src/floe_image_loader.h b/trunk/src/floe_image_loader.h
+new file mode 100644
+index 0000000..90144ad
+--- /dev/null
++++ b/trunk/src/floe_image_loader.h
+@@ -0,0 +1,30 @@
++/*
++ * FloeONSRuntime minimal image loader.
++ * Floe-authored (MPL-2.0). Replaces the SDL_image 1.2 dependency
++ * (IMG_Load_RW) so the runtime links without SDL_image on modern
++ * macOS/iOS toolchains.
++ *
++ * Supported input formats (v1): PNG (libpng), JPEG (libjpeg-turbo),
++ * and any BMP variant handled by the SDL core (SDL_LoadBMP_RW).
++ * Unsupported formats fail closed and return 0, matching IMG_Load_RW
++ * semantics. Original copyright notices of libpng/libjpeg remain with
++ * their respective projects (permissive licenses, already linked).
++ */
++#ifndef FLOE_IMAGE_LOADER_H
++#define FLOE_IMAGE_LOADER_H
++
++#include <SDL/SDL.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Drop-in IMG_Load_RW replacement. If freesrc is non-zero, the RWops is
++   closed before this function returns. Returns 0 on failure. */
++SDL_Surface *FLOEIMG_Load_RW(SDL_RWops *src, int freesrc);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/trunk/src/floeons_build.h b/trunk/src/floeons_build.h
+new file mode 100644
+index 0000000..12d6ed7
+--- /dev/null
++++ b/trunk/src/floeons_build.h
+@@ -0,0 +1,24 @@
++/*
++ * FloeONSRuntime build configuration.
++ * Floe-authored (MPL-2.0). This file is part of the Floe ONS runtime
++ * integration layer, not part of upstream ONSlaught.
++ *
++ * License-driven feature switches for the minimal runtime:
++ * - MIDI (libtimidity) is LGPL; statically linking it into the Floe App
++ *   would impose relink/replacement obligations. Disabled by default.
++ * - Tracker module music (libmikmod) is an extra native dependency not
++ *   needed for ONS BGM/SE coverage; disabled by default.
++ * Both can be re-enabled by a future owner after a linking decision.
++ */
++#ifndef FLOEONS_BUILD_H
++#define FLOEONS_BUILD_H
++
++#ifndef FLOEONS_ENABLE_MIDI
++#define FLOEONS_ENABLE_MIDI 0
++#endif
++
++#ifndef FLOEONS_ENABLE_MODMUSIC
++#define FLOEONS_ENABLE_MODMUSIC 0
++#endif
++
++#endif
+diff --git a/trunk/src/libFLAC++/metadata.cpp b/trunk/src/libFLAC++/metadata.cpp
+index 7039624..3418234 100644
+--- a/trunk/src/libFLAC++/metadata.cpp
++++ b/trunk/src/libFLAC++/metadata.cpp
+@@ -803,7 +803,7 @@ namespace FLAC {
+ 		{
+ 			FLAC__ASSERT(is_valid());
+ 			// vendor_string is a special kind of entry
+-			const ::FLAC__StreamMetadata_VorbisComment_Entry vendor_string = { strlen((const char *)string), (FLAC__byte*)string }; // we can cheat on const-ness because we make a copy below:
++			const ::FLAC__StreamMetadata_VorbisComment_Entry vendor_string = { (FLAC__uint32)strlen((const char *)string), (FLAC__byte*)string }; // we can cheat on const-ness because we make a copy below:
+ 			return (bool)::FLAC__metadata_object_vorbiscomment_set_vendor_string(object_, vendor_string, /*copy=*/true);
+ 		}
+ 

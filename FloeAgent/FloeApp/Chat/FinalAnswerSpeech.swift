@@ -25,7 +25,8 @@ enum FinalAnswerSpeech {
         // Bound durable answers are the canonical legacy fallback. Unbound
         // notices and messages from another run are never inferred as answers.
         guard let message = messages.last(where: { $0.role == "assistant" && $0.runID == runID }) else { return nil }
-        let parts = message.parts.filter { $0.kind == .text }.sorted { $0.partIndex < $1.partIndex }.compactMap(\.text)
+        let parts = message.parts.filter { $0.kind == .text && $0.metadata["deviceHistory.tool"] == nil }
+            .sorted { $0.partIndex < $1.partIndex }.compactMap(\.text)
         let text = parts.isEmpty ? message.content : parts.joined(separator: "\n")
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return Answer(id: message.id, runID: runID, text: text)

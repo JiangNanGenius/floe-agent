@@ -7,12 +7,21 @@ public enum GameEngineID: String, CaseIterable, Codable, Hashable, Sendable {
     case phaser, kaplay, godot, babylon, playcanvas, love, renpy, tic80
     case ink, twine, gdevelop, cocosCreator, microStudio, wasm4, unity
     case tyranoScript
+    /// Kirikiri 2/Z visual novels (startup.tjs / XP3 archives), played by the
+    /// bundled ShioriKrkr native engine. Import/play only: no starter template.
+    case kirikiri
+    /// ONScripter-family visual novels (nscript/arc.nsa). Recognized and
+    /// routed honestly; the iOS engine slice is not bundled in this checkout.
+    case ons
 
     /// Engines offered by the starter and build catalogs.
     public static let authoringEngines = allCases.filter { !$0.isImportOnly }
 
     public var isImportOnly: Bool {
-        self == .tyranoScript
+        switch self {
+        case .tyranoScript, .kirikiri, .ons: return true
+        default: return false
+        }
     }
 }
 

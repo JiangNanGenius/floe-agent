@@ -81,6 +81,7 @@ private final class SearchChainEngine: LocalModelTextEngine, @unchecked Sendable
         images: [Data],
         tools: [ToolSchemaDescriptor],
         maxTokens: Int,
+        thinkingEnabled: Bool,
         diagnosticTraceID: String?,
         onProgress: @escaping @Sendable (LocalInferenceProgress) -> Void,
         onOutput: @escaping @Sendable (String) -> Void

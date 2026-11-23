@@ -3249,5 +3249,435 @@ struct BrowserTaskSessionTests {
         #expect(try #require(text.textPage).text.contains("Alpha beta gamma."))
     }
 
+    // MARK: - Durable page restore (process relaunch)
+
+    private func makeRestoreFiles(directory: URL) throws -> (handoffURL: URL, snapshotURL: URL) {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return (
+            directory.appendingPathComponent("BrowserHandoffs.json"),
+            directory.appendingPathComponent("BrowserTaskSnapshots.json")
+        )
+    }
+
+    private func restoreCenter(_ files: (handoffURL: URL, snapshotURL: URL)) -> BrowserSessionCenter {
+        BrowserSessionCenter(durableHandoffs: false, handoffStoreURL: files.handoffURL, snapshotStoreURL: files.snapshotURL)
+    }
+
+    private func load(
+        _ html: String,
+        at baseURL: URL,
+        tab: UUID,
+        in session: BrowserTaskSession,
+        registry: ToolRunnerRegistry,
+        context: ToolContext
+    ) async throws -> [String: Any] {
+        let webView = try #require(session.tabs.first(where: { $0.id == tab })?.webView)
+        webView.loadHTMLString(html, baseURL: baseURL)
+        let waited = try await run(
+            registry,
+            "browser.wait",
+            "{\"tabID\":\"\(tab)\",\"condition\":\"load\",\"timeoutMilliseconds\":10000}",
+            as: context
+        )
+        #expect(waited.contains("\"status\":\"ok\""), Comment(rawValue: waited))
+        return try page(waited)
+    }
+
+    @Test("A rebuilt center restores committed GET pages in saved tab order and selection with a fresh identity")
+    func rebuiltCenterRestoresCommittedPagesOrderSelectionAndFreshIdentity() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        var center: BrowserSessionCenter? = restoreCenter(files)
+        let owner = UUID()
+        center?.bind(to: owner)
+        let session = try #require(center?.session(for: owner))
+        let registry = makeRegistry(center!)
+        let ctx = context(for: owner)
+        let tab1 = try #require(session.activeTabID)
+        let base1 = URL(string: "https://restore.fixture/first")!
+        try await load(fixturePage("alpha"), at: base1, tab: tab1, in: session, registry: registry, context: ctx)
+        let tab2 = try #require(center?.createTab())
+        let base2 = URL(string: "https://restore.fixture/second")!
+        try await load(fixturePage("beta"), at: base2, tab: tab2, in: session, registry: registry, context: ctx)
+        center?.activate(tab2)
+        let page = try await observe(tab: tab2, registry: registry, context: ctx)
+        let oldDocument = try #require(page["documentID"] as? String)
+        // A durable human-takeover receipt bound to the pre-restart session.
+        center?.takeControl(runID: UUID())
+        let oldReceipt = try #require(center?.handoff)
+        center?.flushBrowserSnapshots()
+        #expect(FileManager.default.fileExists(atPath: files.snapshotURL.path))
+        let oldSessionID = session.sessionID
+
+        // Process end: release the center and every process-local session.
+        center = nil
+
+        let rebuilt = restoreCenter(files)
+        rebuilt.bind(to: owner)
+        let restored = try #require(rebuilt.session(for: owner))
+        #expect(restored !== session)
+        #expect(restored.sessionID != oldSessionID)
+        #expect(restored.tabs.map(\.id) == [tab1, tab2])
+        #expect(restored.activeTabID == tab2)
+        #expect(restored.restoreInProgress)
+        // Each restored tab keeps its validated pageURL from the start.
+        #expect(restored.tabs.first(where: { $0.id == tab2 })?.restorableURL == base2)
+
+        // The pre-restart receipt can never claim the replacement session.
+        #expect(rebuilt.handoff?.sessionID == oldReceipt.sessionID)
+        #expect(rebuilt.handoff?.sessionID != restored.sessionID)
+        #expect(!restored.isUserControlling && restored.modelControl == nil)
+
+        // Recovery targets the exact original run and still cannot hand the
+        // new page to anyone.
+        var recovered = 0
+        rebuilt.deliverHandoff = { receipt, resume in
+            #expect(receipt.id == oldReceipt.id && !resume)
+            recovered += 1
+            return false
+        }
+        await rebuilt.recoverHandoff(conversationID: owner, runID: UUID())
+        #expect(recovered == 0)
+        await rebuilt.recoverHandoff(conversationID: owner, runID: oldReceipt.runID!)
+        #expect(recovered == 1)
+        #expect(!restored.isUserControlling && restored.modelControl == nil)
+
+        // An offline replay fails but must not erase the durable snapshot.
+        // (Very slow DNS can keep the replay pending past the bounded wait;
+        // the snapshot assertions below hold in either state.)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while restored.restoreInProgress && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        rebuilt.flushBrowserSnapshots()
+        let persisted = try JSONDecoder().decode(
+            [BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL)
+        )
+        let entry = try #require(persisted.first(where: { $0.conversationID == owner }))
+        #expect(entry.tabs.map(\.id) == [tab1, tab2])
+        #expect(entry.selectedTabID == tab2)
+        #expect(entry.tabs.first(where: { $0.id == tab2 })?.pageURL == base2)
+
+        // Old DOM references and the old session identity are stale.
+        let staleSession = await rebuilt.execute(
+            BrowserCommand(sessionID: oldSessionID, tabID: tab1, expectedDocumentID: oldDocument, action: .observe(cursor: nil)),
+            in: owner)
+        #expect(staleSession.status == .stale && staleSession.error?.code == "session")
+        let staleDocument = await rebuilt.execute(
+            BrowserCommand(sessionID: restored.sessionID, tabID: tab1, expectedDocumentID: oldDocument, action: .observe(cursor: nil)),
+            in: owner)
+        #expect(staleDocument.status == .stale && staleDocument.error?.code == "document")
+
+        // The first real model call observes the page again after its commit.
+        let restoredWeb = try #require(restored.tabs.first(where: { $0.id == tab2 })?.webView)
+        restoredWeb.loadHTMLString(fixturePage("beta"), baseURL: base2)
+        let waited = await restored.execute(
+            BrowserCommand(sessionID: restored.sessionID, tabID: tab2, action: .wait(.load))
+        )
+        #expect(waited.status == .ok, Comment(rawValue: waited.message ?? "restored page did not load"))
+        let registry2 = makeRegistry(rebuilt)
+        let observed = try await run(registry2, "browser.observe", "{\"tabID\":\"\(tab2)\"}", as: context(for: owner))
+        #expect(observed.contains("ready-beta"), Comment(rawValue: observed))
+
+        // A fresh takeover binds to the restored session's identity.
+        rebuilt.takeControl(runID: UUID())
+        #expect(rebuilt.handoff?.sessionID == restored.sessionID)
+        rebuilt.discard(conversationID: owner)
+    }
+
+    @Test("Restored pages stay scoped to their exact task across a rebuild")
+    func restoredPagesStayScopedToTheirExactTask() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        var center: BrowserSessionCenter? = restoreCenter(files)
+        let ownerA = UUID(), ownerB = UUID()
+        center?.bind(to: ownerA)
+        let sessionA = try #require(center?.session(for: ownerA))
+        let registry = makeRegistry(center!)
+        let baseA = URL(string: "https://restore.fixture/task-a")!
+        let a1 = try #require(sessionA.activeTabID)
+        try await load(fixturePage("alpha"), at: baseA, tab: a1, in: sessionA, registry: registry, context: context(for: ownerA))
+        _ = try await run(registry, "browser.tabs", "{}", as: context(for: ownerB))
+        let sessionB = try #require(center?.session(for: ownerB))
+        let baseB = URL(string: "https://restore.fixture/task-b")!
+        let b1 = try #require(sessionB.activeTabID)
+        try await load(fixturePage("beta"), at: baseB, tab: b1, in: sessionB, registry: registry, context: context(for: ownerB))
+        center?.flushBrowserSnapshots()
+        let persisted = try JSONDecoder().decode(
+            [BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL)
+        )
+        #expect(Set(persisted.map(\.conversationID)) == [ownerA, ownerB])
+        center = nil
+
+        let rebuilt = restoreCenter(files)
+        rebuilt.bind(to: ownerA)
+        let restoredA = try #require(rebuilt.session(for: ownerA))
+        #expect(restoredA.tabs.map(\.id) == [a1])
+        // The other task is untouched until its own bind.
+        #expect(rebuilt.session(for: ownerB) == nil)
+        rebuilt.bind(to: ownerB)
+        let restoredB = try #require(rebuilt.session(for: ownerB))
+        #expect(restoredB !== restoredA)
+        #expect(restoredB.tabs.map(\.id) == [b1])
+        #expect(restoredA.tabs.map(\.id) == [a1])
+        #expect(restoredB.tabs.first?.restorableURL == baseB)
+        // A task that never browsed restores as the honest blank default.
+        let ownerC = UUID()
+        rebuilt.bind(to: ownerC)
+        let blankC = try #require(rebuilt.session(for: ownerC))
+        #expect(blankC.tabs.count == 1 && blankC.tabs[0].restorableURL == nil)
+        rebuilt.discard(conversationID: ownerA)
+        rebuilt.discard(conversationID: ownerB)
+        rebuilt.discard(conversationID: ownerC)
+    }
+
+    @Test("Deleting a task deletes its restorable pages before any rebuild")
+    func deletingTaskRemovesItsRestorablePages() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        var center: BrowserSessionCenter? = restoreCenter(files)
+        let owner = UUID()
+        center?.bind(to: owner)
+        let session = try #require(center?.session(for: owner))
+        let registry = makeRegistry(center!)
+        let tab = try #require(session.activeTabID)
+        try await load(
+            fixturePage("alpha"),
+            at: URL(string: "https://restore.fixture/delete-me")!,
+            tab: tab,
+            in: session,
+            registry: registry,
+            context: context(for: owner)
+        )
+        center?.flushBrowserSnapshots()
+        // Archive/delete path: the center drops the owner and its snapshot together.
+        center?.discard(conversationID: owner)
+        let afterDelete = try JSONDecoder().decode(
+            [BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL)
+        )
+        #expect(!afterDelete.contains(where: { $0.conversationID == owner }))
+        center = nil
+
+        let rebuilt = restoreCenter(files)
+        rebuilt.bind(to: owner)
+        let blank = try #require(rebuilt.session(for: owner))
+        #expect(blank.tabs.count == 1 && blank.activeTabID != nil)
+        rebuilt.discard(conversationID: owner)
+    }
+
+    @Test("Closing tabs updates the persisted restore state on the same center")
+    func closingTabsUpdatesThePersistedRestoreState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        let center = restoreCenter(files)
+        let owner = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let session = try #require(center.session(for: owner))
+        let registry = makeRegistry(center)
+        let tab1 = try #require(session.activeTabID)
+        try await load(fixturePage("alpha"), at: URL(string: "https://restore.fixture/keep")!,
+                       tab: tab1, in: session, registry: registry, context: context(for: owner))
+        let tab2 = try #require(center.createTab())
+        try await load(fixturePage("beta"), at: URL(string: "https://restore.fixture/drop")!,
+                       tab: tab2, in: session, registry: registry, context: context(for: owner))
+        center.flushBrowserSnapshots()
+        center.close(tab2)
+        center.flushBrowserSnapshots()
+        var persisted = try JSONDecoder().decode(
+            [BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL)
+        )
+        let entry = try #require(persisted.first(where: { $0.conversationID == owner }))
+        #expect(entry.tabs.map(\.id) == [tab1])
+        // Closing the last tab blanks it honestly and removes the restore entry.
+        center.close(tab1)
+        center.flushBrowserSnapshots()
+        persisted = try JSONDecoder().decode(
+            [BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL)
+        )
+        #expect(!persisted.contains(where: { $0.conversationID == owner }))
+    }
+
+    @Test("Binding with prepareSession false selects only; the surface prepares the session")
+    func bindingWithoutPreparationSelectsOnlyUntilTheSurfacePrepares() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        center.bind(to: owner, prepareSession: false)
+        #expect(center.conversationID == owner)
+        #expect(center.session(for: owner) == nil)
+        #expect(center.tabs.isEmpty)
+        let session = center.prepareVisibleSession()
+        #expect(session != nil)
+        #expect(center.session(for: owner) === session)
+        #expect(session?.tabs.count == 1)
+        // The default path keeps preparing eagerly for existing callers.
+        let other = UUID()
+        center.bind(to: other)
+        #expect(center.session(for: other) != nil)
+        // Re-binding the prepared conversation is a no-op.
+        center.bind(to: owner, prepareSession: false)
+        #expect(center.session(for: owner) === session)
+        center.discard(conversationID: owner)
+        center.discard(conversationID: other)
+    }
+
+    @Test("A restored task with prepareSession false replays only when the surface prepares it")
+    func durableRestoreWaitsForTheSurfaceWithPrepareSessionFalse() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        var center: BrowserSessionCenter? = restoreCenter(files)
+        let owner = UUID()
+        center?.bind(to: owner)
+        let session = try #require(center?.session(for: owner))
+        let registry = makeRegistry(center!)
+        let tab = try #require(session.activeTabID)
+        let base = URL(string: "https://restore.fixture/deferred")!
+        try await load(fixturePage("alpha"), at: base, tab: tab, in: session, registry: registry, context: context(for: owner))
+        center?.flushBrowserSnapshots()
+        center = nil
+
+        let rebuilt = restoreCenter(files)
+        rebuilt.bind(to: owner, prepareSession: false)
+        #expect(rebuilt.conversationID == owner)
+        #expect(rebuilt.session(for: owner) == nil)
+        let restored = rebuilt.prepareVisibleSession()
+        #expect(restored?.tabs.map(\.id) == [tab])
+        #expect(restored?.restoreInProgress == true)
+        rebuilt.discard(conversationID: owner)
+    }
+
+    @Test("A resumed model can reopen saved tabs before the browser panel mounts")
+    func resumedRunRestoresSavedTabsBeforeUserOpensPanel() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        let owner = UUID()
+        let tabs = ["first", "second"].map {
+            BrowserTaskPageSnapshot.Tab(id: UUID(), pageURL: URL(string: "https://restore.invalid/\($0)")!)
+        }
+        let snapshot = BrowserTaskPageSnapshot(
+            conversationID: owner, tabs: tabs, selectedTabID: tabs[1].id, savedAt: Date()
+        )
+        try JSONEncoder().encode([snapshot]).write(to: files.snapshotURL, options: .atomic)
+
+        let center = restoreCenter(files)
+        center.bind(to: owner, prepareSession: false)
+        let control = try center.beginModelControl(conversationID: owner, runID: UUID())
+        #expect(control.session.tabs.map(\.id) == tabs.map(\.id))
+        #expect(control.session.activeTabID == tabs[1].id)
+        control.session.close(tabs[0].id)
+        center.flushBrowserSnapshots()
+        let saved = try JSONDecoder().decode([BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL))
+        #expect(saved.first?.tabs == [tabs[1]])
+        center.discard(conversationID: owner)
+    }
+
+    @Test("Restore policy admits only plain public GET pages")
+    func restorePolicyAdmitsOnlyPlainPublicPages() {
+        #expect(BrowserURLPolicy.isRestorablePageURL(URL(string: "https://example.com/docs/page?lang=swift")!))
+        #expect(BrowserURLPolicy.isRestorablePageURL(URL(string: "http://example.com/")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "https://user:pass@example.com/")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "https://example.com/cb?code=secret&state=xyz")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "https://example.com/cb#access_token=secret&token_type=bearer")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "https://example.com/#/callback?%61ccess_token=secret")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "https://example.com/file?X-Amz-Signature=secret")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "http://127.0.0.1:8080/preview")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "http://0x7f.0.0.1/preview")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "http://service.internal./preview")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "http://192.168.1.10/router")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "http://intranet/dashboard")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "http://[fd00::1]/local")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "about:blank")!))
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: "data:text/html,hi")!))
+        let long = "https://example.com/" + String(repeating: "a", count: 4096)
+        #expect(!BrowserURLPolicy.isRestorablePageURL(URL(string: long)!))
+    }
+
+    @Test("Form-committed documents never become restorable")
+    func formCommittedDocumentsNeverBecomeRestorable() {
+        let publicURL = URL(string: "https://example.com/form-result")!
+        #expect(BrowserTaskSession.restorableCommitURL(loadURL: publicURL, formSubmission: false) == publicURL)
+        #expect(BrowserTaskSession.restorableCommitURL(loadURL: publicURL, formSubmission: true) == nil)
+        #expect(BrowserTaskSession.restorableCommitURL(
+            loadURL: URL(string: "http://127.0.0.1:9000/x")!, formSubmission: false) == nil)
+        #expect(BrowserTaskSession.restorableCommitURL(loadURL: nil, formSubmission: false) == nil)
+    }
+
+    @Test("A corrupt snapshot file is ignored and replaced on the next flush")
+    func corruptSnapshotFileIsIgnored() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        try "not json".write(to: files.snapshotURL, atomically: true, encoding: .utf8)
+        let center = restoreCenter(files)
+        let owner = UUID()
+        center.bind(to: owner)
+        #expect(center.session(for: owner) != nil)
+        center.flushBrowserSnapshots()
+        let data = try Data(contentsOf: files.snapshotURL)
+        _ = try JSONDecoder().decode([BrowserTaskPageSnapshot].self, from: data)
+        center.discard(conversationID: owner)
+    }
+
+    @Test("Snapshot loading clamps tab counts, drops unsafe URLs and bounds the task set")
+    func snapshotLoadingClampsTabsAndDropsUnsafeURLs() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = try makeRestoreFiles(directory: directory)
+        let owner = UUID()
+        let longURL = URL(string: "https://example.com/" + String(repeating: "a", count: 5000))!
+        let crafted = BrowserTaskPageSnapshot(
+            conversationID: owner,
+            tabs: (0..<8).map {
+                BrowserTaskPageSnapshot.Tab(id: UUID(), pageURL: URL(string: "https://example.com/page/\($0)")!)
+            } + [
+                BrowserTaskPageSnapshot.Tab(id: UUID(), pageURL: longURL),
+                BrowserTaskPageSnapshot.Tab(id: UUID(), pageURL: URL(string: "http://192.168.1.1/")!),
+                BrowserTaskPageSnapshot.Tab(id: UUID(), pageURL: URL(string: "http://intranet/")!)
+            ],
+            selectedTabID: nil,
+            savedAt: Date()
+        )
+        try JSONEncoder().encode([crafted]).write(to: files.snapshotURL, options: .atomic)
+        let center = restoreCenter(files)
+        center.bind(to: owner)
+        let session = try #require(center.session(for: owner))
+        #expect(session.tabs.count == BrowserTaskPageSnapshot.maximumTabs)
+        center.discard(conversationID: owner)
+
+        // The on-disk store is bounded to the most recent tasks.
+        let many = (0..<BrowserTaskPageSnapshot.maximumSnapshots + 6).map { index in
+            BrowserTaskPageSnapshot(
+                conversationID: UUID(),
+                tabs: [BrowserTaskPageSnapshot.Tab(
+                    id: UUID(),
+                    pageURL: URL(string: "https://example.com/task/\(index)")!
+                )],
+                selectedTabID: nil,
+                savedAt: Date().addingTimeInterval(TimeInterval(-index))
+            )
+        }
+        try JSONEncoder().encode(many).write(to: files.snapshotURL, options: .atomic)
+        let bounded = restoreCenter(files)
+        bounded.flushBrowserSnapshots()
+        let stored = try JSONDecoder().decode(
+            [BrowserTaskPageSnapshot].self, from: Data(contentsOf: files.snapshotURL)
+        )
+        #expect(stored.count == BrowserTaskPageSnapshot.maximumSnapshots)
+    }
+
 }
 #endif

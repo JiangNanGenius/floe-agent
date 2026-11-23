@@ -15,11 +15,23 @@ struct StudioMediaImportInput: Codable, Sendable {
 }
 struct StudioFrameSequenceInput: Codable, Sendable {
     let expectedRevision: Int64
-    let source: StudioMediaImportInput.Source
+    let source: StudioMediaImportInput.Source?
+    var pixelProgram: StudioPixelProgram? = nil
     let width: Int
     let height: Int
     let frameRate: Int
     let frameCount: Int
+
+    var specification: StudioFrameSequenceEncoder.Specification {
+        .init(width: width, height: height, frameRate: frameRate, frameCount: frameCount,
+              expectedSHA256: source?.expectedSHA256)
+    }
+
+    func sourceDigest() throws -> String {
+        if let digest = source?.expectedSHA256 { return digest }
+        guard let pixelProgram else { throw FloeError.validationFailed("Frame source is missing.") }
+        return StudioToolOutput.hash(try StudioToolOutput.data(pixelProgram))
+    }
 }
 struct StudioAudioInspectInput: Codable, Sendable {
     let assetID: MusicAssetID?
@@ -40,6 +52,7 @@ enum StudioMediaSourceContracts {
     static let hostToolIDs: Set<String> = ["media.import"]
     static let videoHostToolIDs: Set<String> = ["media.import", "video.importFrames"]
     static let musicHostToolIDs: Set<String> = ["music.import"]
+    static let pixelProgramGuide = #"pixelProgram, for example {"nodes":[{"op":"x"},{"op":"y"},{"op":"time"},{"op":"sine","inputs":[2]}],"red":0,"green":1,"blue":3}. x and y are normalized from the top-left, time is seconds, constant takes value, sine/cosine/absolute/fract take one earlier node index, and add/subtract/multiply/divide/minimum/maximum/step take two. red/green/blue are node indices and outputs are clipped to 0...1. Use up to 32 nodes and 300 million pixel-node evaluations per clip. The receipt hashes the pixel program when no source file was used."#
     private static func object(_ json: String, allowed: Set<String>) throws -> [String: Any] {
         guard let value = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
               Set(value.keys).isSubset(of: allowed) else {
@@ -69,19 +82,24 @@ enum StudioMediaSourceContracts {
         return input
     }
     static func decodeFrames(_ json: String) throws -> StudioFrameSequenceInput {
-        var value = try object(json, allowed: ["expectedRevision", "source", "width", "height", "frameRate", "frameCount"])
-        let sourceJSON = try JSONSerialization.data(withJSONObject: [
-            "expectedRevision": value["expectedRevision"] ?? NSNull(),
-            "source": value["source"] ?? NSNull()
-        ])
-        let imported = try decodeImport(String(decoding: sourceJSON, as: UTF8.self))
-        guard let sha = imported.source.expectedSHA256 else {
-            throw FloeError.validationFailed("Frame input requires the task file's SHA256.")
-        }
-        value["expectedRevision"] = imported.expectedRevision
+        var value = try object(json, allowed: ["expectedRevision", "source", "pixelProgram", "width", "height", "frameRate", "frameCount"])
+        let revisionOnly = try JSONSerialization.data(withJSONObject: ["expectedRevision": value["expectedRevision"] ?? NSNull()])
+        let revision = try StudioMediaToolContract.decode(String(decoding: revisionOnly, as: UTF8.self))
+        guard let expected = revision.expectedRevision else { throw MediaPreparedCoreError.documentChanged }
+        value["expectedRevision"] = expected
         let input = try JSONDecoder().decode(StudioFrameSequenceInput.self, from: JSONSerialization.data(withJSONObject: value))
-        _ = try StudioFrameSequenceEncoder.Specification(width: input.width, height: input.height,
-            frameRate: input.frameRate, frameCount: input.frameCount, expectedSHA256: sha).validate()
+        _ = try input.specification.validate()
+        switch (input.source, input.pixelProgram) {
+        case (.some, nil):
+            let sourceJSON = try JSONSerialization.data(withJSONObject: ["expectedRevision": expected, "source": value["source"] ?? NSNull()])
+            guard try decodeImport(String(decoding: sourceJSON, as: UTF8.self)).source.expectedSHA256 != nil else {
+                throw FloeError.validationFailed("Frame input requires the task file's SHA256.")
+            }
+        case (nil, .some(let program)):
+            try program.validate(width: input.width, height: input.height, frameCount: input.frameCount)
+        default:
+            throw FloeError.validationFailed("Choose one frame source: source or pixelProgram.")
+        }
         return input
     }
     static func workspaceURL(_ path: String, context: ToolContext) throws -> URL {

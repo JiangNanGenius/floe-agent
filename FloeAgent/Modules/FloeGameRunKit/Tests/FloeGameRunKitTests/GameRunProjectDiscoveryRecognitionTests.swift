@@ -15,7 +15,10 @@ final class GameRunProjectDiscoveryRecognitionTests: XCTestCase {
             "Library/RenPy/game/script.rpyc": "compiled script marker",
             "Library/RenPyArchive/game/archive.rpa":
                 "RPA-2.0 0000000000000018" + String(repeating: "x", count: 32),
-            "Library/Other/game/other.rpa": "unrelated .rpa suffix"
+            "Library/Other/game/other.rpa": "unrelated .rpa suffix",
+            "Library/KiriPacked/base/data.xp3": "packed entry marker",
+            "Library/KiriLoose/startup.tjs": "var window = new Window();",
+            "Library/AssetOnly/sound.xp3": "not an entry archive"
         ]
         let project = try await TestProject.make(workspace: workspace,
                                                  files: contents.mapValues { Data($0.utf8) })
@@ -26,6 +29,9 @@ final class GameRunProjectDiscoveryRecognitionTests: XCTestCase {
         XCTAssertEqual(roots.first { $0.root?.value == "Library/RenPy" }?.engines, [.renpy])
         XCTAssertEqual(roots.first { $0.root?.value == "Library/RenPyArchive" }?.engines, [.renpy])
         XCTAssertEqual(roots.first { $0.root?.value == "Library/Other" }?.engines, [])
+        XCTAssertEqual(roots.first { $0.root?.value == "Library/KiriPacked/base" }?.engines, [.kirikiri])
+        XCTAssertEqual(roots.first { $0.root?.value == "Library/KiriLoose" }?.engines, [.kirikiri])
+        XCTAssertFalse(roots.contains { $0.root?.value == "Library/AssetOnly" })
     }
 
     func testNestedArbitraryNativeJSONAndExportedRootsAreDiscovered() async throws {

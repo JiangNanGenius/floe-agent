@@ -19,6 +19,7 @@ import FloeGameIDEBridge
 import FloeGamePortableKit
 import FloeGameRuntime
 import FloeGameRunKit
+import FloeVisualNovelRuntime
 import FloeGameStarterKit
 import FloeGameProjectFlow
 import FloeGameProjectIntegration
@@ -156,6 +157,7 @@ final class GameWorkspaceSession {
     private(set) var visualSession: GameEditingSession?
     private(set) var rgssPlay: RGSSGuestPlaySession?
     private(set) var webPresentation: GameProjectWebRunPresentation?
+    private(set) var visualNovelPresentation: GameProjectVisualNovelRunPresentation?
     private(set) var lastLaunchRequest: GameIDEProjectRunRequest?
     private(set) var lastStopReceipt: GameRunReceipt?
     private(set) var lastRGSSStop: RGSSGuestStopOutcome?
@@ -187,6 +189,8 @@ final class GameWorkspaceSession {
     var selection: GameProjectSelectionSnapshot? { project.selectionSnapshot }
     var isSpace: Bool { record != nil }
 
+    var ownsPlayer: Bool { webPresentation != nil || rgssPlay != nil || visualNovelPresentation != nil }
+
     /// The actual live visual surface, if it is really running. Root's play
     /// screen can observe this directly; a pointer assigned before start does
     /// not satisfy it.
@@ -196,6 +200,9 @@ final class GameWorkspaceSession {
         }
         if let rgssPlay, rgssPlay.phase == .running {
             return .rgss(rgssPlay)
+        }
+        if let visualNovelPresentation, visualNovelPresentation.isRunning {
+            return .visualNovel(visualNovelPresentation)
         }
         return nil
     }
@@ -250,6 +257,8 @@ final class GameWorkspaceSession {
         if let play {
             await play.rgssPresentation?.prepareForStop()
         }
+        visualNovelPresentation?.stop()
+        visualNovelPresentation = nil
         // A failing stop retains the owned guest job/scope instead of closing
         // the project underneath a process that may still write.
         if let rgssPlay {
@@ -319,6 +328,7 @@ final class GameWorkspaceSession {
 
     func replaceProject(_ value: GameWorkspaceProjectSession) { project = value }
     func setWebPresentation(_ value: GameProjectWebRunPresentation?) { webPresentation = value }
+    func setVisualNovelPresentation(_ value: GameProjectVisualNovelRunPresentation?) { visualNovelPresentation = value }
     func setLastLaunchRequest(_ value: GameIDEProjectRunRequest?) { lastLaunchRequest = value }
     func setLastStopReceipt(_ value: GameRunReceipt?) { lastStopReceipt = value }
     func setLastRGSSStop(_ value: RGSSGuestStopOutcome?) { lastRGSSStop = value }
@@ -341,11 +351,13 @@ final class GameWorkspaceSession {
 enum GameWorkspaceVisualPresentation {
     case web(GameProjectWebRunPresentation)
     case rgss(RGSSGuestPlaySession)
+    case visualNovel(GameProjectVisualNovelRunPresentation)
 
     var isReady: Bool {
         switch self {
         case .web(let value): return value.controller.phase == .running
         case .rgss(let value): return value.phase == .running
+        case .visualNovel(let value): return value.isRunning
         }
     }
 }
@@ -850,7 +862,7 @@ final class GameWorkspaceRegistry {
             throw GameWorkspaceRegistryError.environmentRootMismatch
         }
         if try session.project.context.environmentID == environmentID { return session }
-        if session.webPresentation != nil || session.rgssPlay != nil {
+        if session.ownsPlayer {
             throw GameWorkspaceRegistryError.editorBusy
         }
         if let visual = session.visualSession,
@@ -1278,6 +1290,14 @@ final class GameWorkspaceRegistry {
         let task = Task { @MainActor [weak session] in
             guard let session else { return }
             var unconfirmed = false
+            if let native = session.visualNovelPresentation,
+               requestID == nil || native.request.id == requestID {
+                native.stop()
+                session.setVisualNovelPresentation(nil)
+                session.setLastStopReceipt(GameRunReceipt(projectID: session.key.projectID,
+                    runID: native.request.id, action: "stop", phase: "stopped", stopConfirmed: true,
+                    automaticSave: nil, screenshotSHA256: nil, logs: nil, diagnostic: nil))
+            }
             if let presentation = session.webPresentation,
                requestID == nil || presentation.request.id == requestID {
                 let receipt = await presentation.stop()
@@ -1332,8 +1352,11 @@ final class GameWorkspaceRegistry {
         switch selection.engine {
         case .rpgMakerXP, .rpgMakerVX, .rpgMakerVXAce:
             try await ensurePlayableSession(for: session)
-        case .phaser, .kaplay, .babylon, .playcanvas, .rpgMakerMV, .tic80, .wasm4, .ink, .twine, .microStudio, .tyranoScript:
+        case .phaser, .kaplay, .babylon, .playcanvas, .rpgMakerMV, .tic80, .wasm4, .ink, .twine, .microStudio, .tyranoScript, .kirikiri:
             break // These adapters serve or assemble the game on device.
+        case .ons:
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "此版本暂不支持运行 ONScripter 游戏。", "This version cannot run ONScripter games yet."))
         case .rpgMakerMZ, .godot, .unity, .gdevelop, .cocosCreator, .love, .renpy:
             let context = try session.project.context
             let execution = try await composeExecution(for: session)
@@ -1371,6 +1394,9 @@ final class GameWorkspaceRegistry {
             session.finishLaunch(token)
         } catch {
             session.finishLaunch(token)
+            if request.engine == .kirikiri, session.lastLaunchRequest?.id == request.id, !session.ownsPlayer {
+                session.setLastLaunchRequest(nil)
+            }
             throw error
         }
     }
@@ -1387,7 +1413,7 @@ final class GameWorkspaceRegistry {
             await stopPlay(session, requestID: priorID, cancelLaunch: false)
             try Task.checkCancellation()
             guard session.launchIsCurrent(token) else { throw GameIDEBridgeError.superseded }
-            if session.webPresentation != nil || session.rgssPlay != nil {
+            if session.ownsPlayer {
                 throw GameWorkspaceRegistryError.stopUnconfirmed
             }
             if let receipt = session.lastStopReceipt, receipt.runID == priorID,
@@ -1403,13 +1429,52 @@ final class GameWorkspaceRegistry {
         session.setLastLaunchRequest(request)
         if RGSSEngineProfiles.isRGSS(request.engine) {
             try await performRGSSLaunch(session: session, request: request, token: token)
+        } else if request.engine == .kirikiri {
+            try await performKirikiriLaunch(session: session, request: request, token: token)
         } else {
             try await performWebLaunch(session: session, request: request, token: token)
         }
-        try Task.checkCancellation()
-        guard session.launchIsCurrent(token) else {
+        guard !Task.isCancelled, session.launchIsCurrent(token) else {
             try await cleanupOwnedRequest(session: session, request: request)
+            try Task.checkCancellation()
             throw GameIDEBridgeError.superseded
+        }
+    }
+
+    private func performKirikiriLaunch(session: GameWorkspaceSession,
+                                       request: GameIDEProjectRunRequest, token: UInt64) async throws {
+        let root = request.context.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let source = request.gameRoot.map { root.appendingPathComponent($0.value, isDirectory: true) } ?? root
+        let resolvedSource = source.standardizedFileURL.resolvingSymlinksInPath()
+        guard resolvedSource.path == root.path || resolvedSource.path.hasPrefix(root.path + "/") else {
+            throw GameIDEBridgeError.workspaceChanged
+        }
+        let support = session.support.appendingPathComponent("KiriKiri", isDirectory: true)
+        let rootID = GameDigest.sha256(Data((request.gameRoot?.value ?? ".").utf8))
+        let saves = support.appendingPathComponent("Saves", isDirectory: true)
+            .appendingPathComponent(rootID, isDirectory: true)
+        let work = support.appendingPathComponent("Runs", isDirectory: true)
+            .appendingPathComponent(request.id.uuidString, isDirectory: true)
+        let fallbackFont = Bundle.main.url(forResource: "MiSans-Regular", withExtension: "ttf",
+                                           subdirectory: "EngineeringViewers")
+        let staging = Task.detached(priority: .userInitiated) {
+            try KirikiriSandboxBuilder.stage(gameRoot: resolvedSource, savesDirectory: saves,
+                                             workDirectory: work, fallbackFont: fallbackFont)
+        }
+        let sandbox = try await withTaskCancellationHandler {
+            try await staging.value
+        } onCancel: { staging.cancel() }
+        do {
+            try Task.checkCancellation()
+            try requireOpen(session)
+            guard session.launchIsCurrent(token), try session.project.context == request.context else {
+                throw GameIDEBridgeError.superseded
+            }
+            let native = try GameProjectVisualNovelRunPresentation(request: request, sandbox: sandbox)
+            session.setVisualNovelPresentation(native)
+        } catch {
+            try? sandbox.dispose()
+            throw error
         }
     }
 
@@ -1509,6 +1574,10 @@ final class GameWorkspaceRegistry {
     private func cleanupOwnedRequest(session: GameWorkspaceSession,
                                      request: GameIDEProjectRunRequest) async throws {
         var unconfirmed = false
+        if let native = session.visualNovelPresentation, native.request.id == request.id {
+            native.stop()
+            session.setVisualNovelPresentation(nil)
+        }
         if let presentation = session.webPresentation,
            presentation.request.id == request.id {
             let receipt = await presentation.stop()
@@ -1746,7 +1815,7 @@ final class GameWorkspaceRegistry {
     }
 
     private func reloadStarterResources(for session: GameWorkspaceSession) async throws {
-        if session.webPresentation != nil || session.rgssPlay != nil {
+        if session.ownsPlayer {
             throw GameWorkspaceRegistryError.editorBusy
         }
         if let visual = session.visualSession,

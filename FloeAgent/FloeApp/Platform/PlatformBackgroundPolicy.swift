@@ -346,7 +346,11 @@ public final class BackgroundPolicyRegistry {
             handleID: handleID
         ) else { return }
         guard let continuedTaskHandler else {
-            task.setTaskCompleted(success: false)
+            // An old request can arrive before the app restores a task
+            // owner. Close the unattached system window without manufacturing
+            // a terminal outcome for any conversation.
+            task.updateTitle(task.title, subtitle: IDELanguageRunText.t("打开 Floe 查看任务", "Open Floe to view the task."))
+            task.setTaskCompleted(success: true)
             _ = continuedLifecycle.completeHandle(
                 identifier: task.identifier,
                 handleID: handleID

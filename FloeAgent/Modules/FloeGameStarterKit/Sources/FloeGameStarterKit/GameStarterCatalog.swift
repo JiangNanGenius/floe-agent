@@ -90,6 +90,26 @@ public struct GameStarterCatalog: Sendable {
             engineLicense: "TyranoScript terms", templateKind: .importOnly,
             templateRoot: nil, provider: nil, runtimePack: nil, files: [], expectedFiles: [],
             prerequisites: [], notes: [], defaultInput: .init(engine: .tyranoScript, movement: .init(), buttons: []),
+            sourcePins: []),
+        GameStarterDescriptor(
+            engine: .kirikiri, displayName: "Kirikiri", starterVersion: "",
+            entry: try! GameRelativePath("startup.tjs"), webEntry: nil,
+            readiness: .importOnly, sourceLicense: "krkr2 BSD-style KiriKiri license; KiriKit MPL-2.0; FFmpeg LGPL-2.1",
+            engineLicense: "KiriKiri license (BSD-style)", templateKind: .importOnly,
+            templateRoot: nil, provider: nil, runtimePack: nil, files: [], expectedFiles: [],
+            prerequisites: [],
+            notes: ["Played by the bundled ShioriKrkr native engine; scripts stay in the game sandbox."],
+            defaultInput: .init(engine: .kirikiri, movement: .init(), buttons: []),
+            sourcePins: []),
+        GameStarterDescriptor(
+            engine: .ons, displayName: "ONScripter", starterVersion: "",
+            entry: try! GameRelativePath("0.txt"), webEntry: nil,
+            readiness: .importOnly, sourceLicense: "ONSlaught BSD-style license; mpg123 LGPL-2.1 (macOS probe)",
+            engineLicense: "ONSlaught BSD-style", templateKind: .importOnly,
+            templateRoot: nil, provider: nil, runtimePack: nil, files: [], expectedFiles: [],
+            prerequisites: [],
+            notes: ["The pinned ONSlaught iOS engine slice is not bundled in this checkout; the run route reports the exact prerequisite."],
+            defaultInput: .init(engine: .ons, movement: .init(), buttons: []),
             sourcePins: [])
     ]
 
