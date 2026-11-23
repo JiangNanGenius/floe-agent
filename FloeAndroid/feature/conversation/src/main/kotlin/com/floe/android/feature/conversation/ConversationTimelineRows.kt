@@ -242,7 +242,7 @@ private fun UserMessageRow(
                 onOpen = { chip ->
                     chip.attachmentId?.let {
                         holder.openMessageAttachment(
-                            AttachmentOpenRequest(holder.conversationId, message.id, it)
+                            AttachmentOpenRequest(holder.conversationId, message.id, it, chip.name)
                         )
                     }
                 },
@@ -262,6 +262,7 @@ private fun UserMessageRow(
                     }
                 },
             )
+            SharedToolResults(message.sharedToolResults, message.sharedToolResultCount)
         }
     }
 }
@@ -520,13 +521,16 @@ private fun AssistantRow(
             isStreaming = false,
             highlightQuery = searchHighlightQuery,
         )
+        SharedToolResults(row.sharedToolResults, row.sharedToolResultCount)
         AttachmentChipRow(
             chips = row.attachmentChips,
             alignEnd = false,
             onOpen = { chip ->
                 row.attachedMessageId?.let { messageId ->
                     chip.attachmentId?.let {
-                        holder.openMessageAttachment(AttachmentOpenRequest(holder.conversationId, messageId, it))
+                        holder.openMessageAttachment(
+                            AttachmentOpenRequest(holder.conversationId, messageId, it, chip.name),
+                        )
                     }
                 }
             },
@@ -609,6 +613,50 @@ private fun AssistantRow(
                 color = Floe.colors.secondaryLabel,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun SharedToolResults(results: List<SharedToolResultUi>, total: Int) {
+    if (results.isEmpty()) return
+    var expanded by remember { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = FloeLayout.MinimumTarget)
+                .clickable(role = Role.Button) { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            FloeText(
+                stringResource(R.string.shared_tool_results),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            IconGlyph(if (expanded) FloeIcons.ChevronUp else FloeIcons.ChevronDown,
+                Floe.colors.secondaryLabel, 14.dp)
+        }
+        if (!expanded) return@Column
+        results.forEach { result ->
+            FloeText(result.name, style = Floe.typography.bodyEmphasized)
+            val statusLabel = when (result.status?.lowercase()) {
+                "ok", "succeeded", "success" -> R.string.tool_status_succeeded
+                "error", "failed", "failure" -> R.string.tool_status_failed
+                "cancelled" -> R.string.tool_status_cancelled
+                "denied" -> R.string.tool_status_denied
+                else -> null
+            }
+            statusLabel?.let {
+                FloeText(stringResource(it), style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel)
+            }
+            FloeText(result.summary, style = Floe.typography.metadata,
+                modifier = Modifier.padding(bottom = 8.dp))
+        }
+        if (results.size < total) {
+            FloeText(stringResource(R.string.shared_tool_results_shown, results.size, total),
+                style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
         }
     }
 }

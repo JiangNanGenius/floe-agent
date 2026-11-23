@@ -281,7 +281,21 @@ private fun PeerSheet(host: DeviceHistorySyncHost, state: DeviceHistorySyncState
                             stringResource(R.string.device_history_workspace_share),
                             task.id in peer.workspaceShares,
                             canManage,
-                        ) { host.shareWorkspace(peer.id, task.id, it) }
+                        ) { enabled ->
+                            host.shareWorkspace(peer.id, task.id, enabled)
+                        }
+                        if (task.id in peer.workspaceShares) {
+                            // Explicit per-conversation opt-in; both devices
+                            // must grant it before either converges renames
+                            // and deletions against the confirmed baseline.
+                            SyncToggleRow(
+                                stringResource(R.string.device_history_workspace_propagate),
+                                peer.convergesWorkspace(task.id),
+                                canManage,
+                            ) { enabled ->
+                                host.shareWorkspace(peer.id, task.id, enabled = true, propagateChanges = enabled)
+                            }
+                        }
                     }
                 }
             }
@@ -375,12 +389,25 @@ private fun SyncStatus(state: DeviceHistorySyncState) {
         DeviceHistoryStatus.WORKSPACE_PAUSED -> stringResource(R.string.device_history_workspace_paused)
         DeviceHistoryStatus.WORKSPACE_RECEIVED -> {
             val receipt = state.workspaceReceipt ?: return
-            if (receipt.conflicts > 0) {
-                stringResource(R.string.device_history_workspace_received_conflicts, receipt.files, receipt.conflicts)
-            } else {
-                stringResource(R.string.device_history_workspace_received, receipt.files, receipt.directories)
+            when {
+                receipt.moved > 0 || receipt.deleted > 0 || receipt.preserved > 0 ->
+                    stringResource(
+                        R.string.device_history_workspace_received_converged,
+                        receipt.files, receipt.moved, receipt.deleted, receipt.preserved,
+                    )
+                receipt.conflicts > 0 ->
+                    stringResource(R.string.device_history_workspace_received_conflicts, receipt.files, receipt.conflicts)
+                else -> stringResource(R.string.device_history_workspace_received, receipt.files, receipt.directories)
             }
         }
+    }
+    if (state.restoredAttachments > 0 || state.failedAttachments > 0) {
+        SyncCaption(
+            stringResource(
+                R.string.device_history_attachments_received,
+                state.restoredAttachments, state.failedAttachments,
+            ),
+        )
     }
     if (state.workspaceHistoryReceived && state.status != DeviceHistoryStatus.WORKSPACE_RECEIVED) {
         SyncCaption(stringResource(R.string.device_history_workspace_partial))

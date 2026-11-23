@@ -4,4 +4,9 @@
     <files-path name="working" path="ExternalEdits/working/" />
     <!-- Original versions are granted read-only, only after an explicit review tap. -->
     <files-path name="versions" path="ExternalEdits/versions/" />
+    <!-- Space → Files per-document edit working copies: one bounded writable
+         copy per authorized session, granted read+write only to the launched
+         editor. Recovery originals under space-files-edits/ stay private. -->
+    <files-path name="space_edits" path="space-files-edits/working/" />
+    <cache-path name="message_attachment_previews" path="message-attachment-previews/" />
 </paths>

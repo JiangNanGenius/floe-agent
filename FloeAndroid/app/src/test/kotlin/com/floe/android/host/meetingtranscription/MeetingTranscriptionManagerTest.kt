@@ -5,6 +5,8 @@ import com.floe.android.host.meeting.MediaProbe
 import com.floe.android.host.meeting.MeetingIds
 import com.floe.android.host.meeting.MeetingMaterial
 import com.floe.android.host.meeting.MeetingRepository
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttempt
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttemptPhase
 import com.floe.android.host.meeting.ProbedMedia
 import com.floe.android.host.voice.C03AudioChunk
 import com.floe.android.host.voice.C03CloudVoiceSelection
@@ -248,10 +250,162 @@ class MeetingTranscriptionManagerTest {
             )
         }
 
+    @Test
+    fun `provider speaker labels are committed verbatim and absent stays null`() = runBlocking {
+        val (repository, material, _) = fixture()
+        val backend = FakeBackend(speaker = "Alice")
+        val manager = manager(repository, backend)
+
+        manager.transcribe(material.meetingId, material.id)
+
+        val segments = repository.detail(material.meetingId).transcription.segments
+        assertEquals(2, segments.size)
+        assertEquals("Alice", segments[0].speaker)
+        assertEquals("Alice", segments[1].speaker)
+
+        val noSpeaker = manager(repository, FakeBackend())
+        val second = repository.createMeeting("No speaker")
+        val secondMaterialId = MeetingIds.newId()
+        val staging = repository.importStagingFile(second.id, secondMaterialId, "m4a")
+        staging.writeBytes(ByteArray(256) { (it and 0x7f).toByte() })
+        val plain = repository.commitImport(
+            meetingId = second.id,
+            materialId = secondMaterialId,
+            stagedFile = staging,
+            displayName = "Plain.m4a",
+            extension = "m4a",
+            mimeType = "audio/mp4",
+            durationMillis = 60_000L,
+            hasVideo = false,
+        )
+        noSpeaker.transcribe(plain.meetingId, plain.id)
+        assertEquals(
+            listOf(null, null),
+            repository.detail(plain.meetingId).transcription.segments.map { it.speaker },
+        )
+    }
+
+    @Test
+    fun `failed attempt leaves a durable retry checkpoint with original identifiers`() =
+        runBlocking {
+            val (repository, material, audioFile) = fixture("Checkpoint")
+            val original = audioFile.readBytes()
+            val backend = FakeBackend(failChunkIndex = 1)
+            val manager = manager(repository, backend)
+
+            val failure = assertThrows(MeetingTranscriptionException::class.java) {
+                runBlocking { manager.transcribe(material.meetingId, material.id) }
+            }
+            assertEquals(MeetingTranscriptionFailureCode.PROVIDER_REJECTED, failure.failure.code)
+
+            val attempt = awaitLastAttempt(repository, material.meetingId) {
+                it.phase == MeetingTranscriptionLastAttemptPhase.FAILED
+            }
+            assertEquals(material.id, attempt.materialId)
+            assertEquals(0L, attempt.expectedTranscriptionRevision)
+            assertEquals(MeetingTranscriptionFailureCode.PROVIDER_REJECTED.name, attempt.failureCode)
+            assertEquals("providerRejectedFixture", attempt.failureReason)
+            assertTrue(attempt.retryable)
+            // Nothing was committed and the audio is untouched.
+            assertEquals(0L, repository.detail(material.meetingId).transcription.revision)
+            assertArrayEquals(original, audioFile.readBytes())
+        }
+
+    @Test
+    fun `cancelled attempt records a cancelled checkpoint`() = runBlocking {
+        val (repository, material, _) = fixture()
+        val backend = FakeBackend()
+        val extractor = BlockingExtractor()
+        val manager = manager(repository, backend, extractor)
+
+        val job = launch(Dispatchers.Default) {
+            runCatching { manager.transcribe(material.meetingId, material.id) }
+        }
+        withTimeout(5_000) { extractor.entered.await() }
+        manager.cancel()
+        withTimeout(5_000) { job.join() }
+
+        val attempt = awaitLastAttempt(repository, material.meetingId) {
+            it.phase == MeetingTranscriptionLastAttemptPhase.CANCELLED
+        }
+        assertEquals(material.id, attempt.materialId)
+        assertTrue(attempt.retryable)
+        assertEquals(0L, repository.detail(material.meetingId).transcription.revision)
+    }
+
+    @Test
+    fun `retry from the durable checkpoint completes and clears it`() = runBlocking {
+        val (repository, material, _) = fixture()
+        val failing = manager(repository, FakeBackend(failChunkIndex = 1))
+        assertThrows(MeetingTranscriptionException::class.java) {
+            runBlocking { failing.transcribe(material.meetingId, material.id) }
+        }
+        val checkpoint = awaitLastAttempt(repository, material.meetingId) {
+            it.phase == MeetingTranscriptionLastAttemptPhase.FAILED
+        }
+
+        // Reopening the meeting: a fresh manager (process restart) starts from
+        // exactly the recorded meeting/material/checkpoint.
+        val reopened = manager(repository, FakeBackend())
+        val receipt = reopened.transcribe(
+            meetingId = material.meetingId,
+            materialId = checkpoint.materialId,
+            expectedTranscriptionRevision = checkpoint.expectedTranscriptionRevision,
+        )
+        assertFalse(receipt.idempotent)
+        assertEquals(1L, receipt.transcriptionRevision)
+        assertEquals(
+            null,
+            repository.detail(material.meetingId).transcription.lastAttempt,
+        )
+    }
+
+    @Test
+    fun `successful transcription clears a stale interrupted checkpoint`() = runBlocking {
+        val (repository, material, _) = fixture()
+        repository.recordTranscriptionAttempt(
+            meetingId = material.meetingId,
+            attempt = MeetingTranscriptionLastAttempt(
+                materialId = material.id,
+                expectedTranscriptionRevision = 0L,
+                phase = MeetingTranscriptionLastAttemptPhase.RUNNING,
+                failureCode = null,
+                failureReason = null,
+                retryable = true,
+                updatedAtMillis = System.currentTimeMillis(),
+            ),
+        )
+        assertNotNull(repository.detail(material.meetingId).transcription.lastAttempt)
+
+        manager(repository, FakeBackend()).transcribe(material.meetingId, material.id)
+
+        assertEquals(
+            null,
+            repository.detail(material.meetingId).transcription.lastAttempt,
+        )
+    }
+
+    private suspend fun awaitLastAttempt(
+        repository: MeetingRepository,
+        meetingId: String,
+        predicate: (MeetingTranscriptionLastAttempt) -> Boolean,
+    ): MeetingTranscriptionLastAttempt {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (true) {
+            val attempt = repository.detail(meetingId).transcription.lastAttempt
+            if (attempt != null && predicate(attempt)) return attempt
+            check(System.currentTimeMillis() <= deadline) {
+                "timed out waiting for the durable transcription attempt record"
+            }
+            kotlinx.coroutines.delay(10)
+        }
+    }
+
     private class FakeBackend(
         private val configurationFailure: C03VoiceFailure? = null,
         private val failChunkIndex: Int? = null,
         private val emptyTranscript: Boolean = false,
+        private val speaker: String? = null,
     ) : MeetingTranscriptionBackend {
         var planCalls = 0
         var finishCalls = 0
@@ -315,6 +469,7 @@ class MeetingTranscriptionManagerTest {
                 start = sourceStartSeconds + 0.5,
                 end = sourceStartSeconds + 1.5,
                 text = text,
+                speaker = speaker,
             )
             return segments.size
         }

@@ -1,0 +1,186 @@
+[
+  {
+    "name" : "old-peer-offers",
+    "reply" : {
+      "offers" : [
+        {
+          "id" : "10000000-0000-0000-0000-000000000001",
+          "title" : "Legacy fixture",
+          "workspaceFiles" : true
+        }
+      ],
+      "version" : 1
+    },
+    "request" : {
+      "operation" : "offers",
+      "version" : 1
+    },
+    "setup" : "Absent historyPages selects offers/prepare/chunk. Absent new capability keys keeps copy-only workspace sync."
+  },
+  {
+    "name" : "capability-offers",
+    "reply" : {
+      "attachmentTransfer" : true,
+      "historyPages" : true,
+      "offers" : [
+        {
+          "attachmentTransfer" : true,
+          "id" : "10000000-0000-0000-0000-000000000001",
+          "title" : "Legacy fixture",
+          "workspaceFiles" : true,
+          "workspaceSyncVersion" : 2
+        }
+      ],
+      "version" : 1
+    },
+    "request" : {
+      "operation" : "offers",
+      "version" : 1
+    },
+    "setup" : "This selected conversation is shared, current workspace scope is authorized, and sender enabled v2 file convergence."
+  },
+  {
+    "name" : "v1-archive-descriptor",
+    "reply" : {
+      "digest" : "828a543c06deeb021cec0238e3d797c1ac965559a9600a06564fea3ac0c87628",
+      "size" : 332,
+      "version" : 1
+    },
+    "request" : {
+      "operation" : "prepare",
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "Synthetic old sender uses legacy-v1-archive.json; an updated sender can use projected-v1-archive.json."
+  },
+  {
+    "name" : "v2-final-page",
+    "reply" : {
+      "digest" : "29a54ea96fc35e0429cf0d33fa5808adff7a44df8017b7f5cea8b095167dc1f4",
+      "hasMore" : false,
+      "nextCursor" : "synthetic-cursor-final",
+      "size" : 1000,
+      "through" : 2,
+      "version" : 1
+    },
+    "request" : {
+      "historyVersion" : 2,
+      "operation" : "preparePage",
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "Archive bytes are typed-v2-archive.json. Cursor is opaque wire-only fixture data."
+  },
+  {
+    "name" : "attachment-file",
+    "reply" : {
+      "bytes" : "RmxvZSBmaXh0dXJlCg==",
+      "version" : 1
+    },
+    "request" : {
+      "attachmentID" : "40000000-0000-0000-0000-000000000001",
+      "count" : 13,
+      "offset" : 0,
+      "operation" : "attachmentFile",
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "Workspace consent remains valid and attachment ID belongs to this task and user message."
+  },
+  {
+    "name" : "attachment-revoked",
+    "reply" : {
+      "failure" : "notShared",
+      "version" : 1
+    },
+    "request" : {
+      "attachmentID" : "40000000-0000-0000-0000-000000000001",
+      "count" : 13,
+      "offset" : 0,
+      "operation" : "attachmentFile",
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "Conversation sharing remains, but workspace consent has been revoked."
+  },
+  {
+    "name" : "v2-archive-chunk-revoked",
+    "reply" : {
+      "failure" : "notShared",
+      "version" : 1
+    },
+    "request" : {
+      "offset" : 0,
+      "operation" : "chunk",
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "Workspace consent is revoked after preparePage requested historyVersion 2 but before the chunk."
+  },
+  {
+    "name" : "copy-only-confirmation",
+    "reply" : {
+      "version" : 1
+    },
+    "request" : {
+      "indexes" : [
+        0
+      ],
+      "operation" : "confirmWorkspace",
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "A current prepared workspace has a verified file at index zero."
+  },
+  {
+    "name" : "v2-rename-delete-receipt",
+    "reply" : {
+      "version" : 1
+    },
+    "request" : {
+      "indexes" : [
+
+      ],
+      "operation" : "confirmWorkspace",
+      "removals" : [
+        "notes/retired.txt"
+      ],
+      "renames" : [
+        {
+          "digest" : "9abefdaaaf6c45aeb85d9ee9ef5146b216b70bf4fa88baf9777fa4ce871890bd",
+          "from" : "notes/before.txt",
+          "to" : "notes/after.txt"
+        }
+      ],
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "V2 consent remains; old paths were baselined, current prepared manifest has notes/after.txt with the same digest. Replaying the same rename receipt succeeds."
+  },
+  {
+    "name" : "copy-only-rejects-v2-receipt",
+    "reply" : {
+      "failure" : "invalidResponse",
+      "version" : 1
+    },
+    "request" : {
+      "indexes" : [
+
+      ],
+      "operation" : "confirmWorkspace",
+      "removals" : [
+        "notes/retired.txt"
+      ],
+      "renames" : [
+        {
+          "digest" : "9abefdaaaf6c45aeb85d9ee9ef5146b216b70bf4fa88baf9777fa4ce871890bd",
+          "from" : "notes/before.txt",
+          "to" : "notes/after.txt"
+        }
+      ],
+      "taskID" : "10000000-0000-0000-0000-000000000001",
+      "version" : 1
+    },
+    "setup" : "Prepare succeeded and workspace approval remains copy-only; nonempty removals or renames are refused."
+  }
+]

@@ -632,10 +632,9 @@ public struct JobsSubmitTool: AgentTool {
         if let purpose = args.purpose { object["purpose"] = purpose }
         if let wait = args.wait { object["wait"] = wait }
         if let service = args.service {
-            var value: [String: Any] = ["runtime": service.runtime.rawValue,
-                                        "entry": service.entry,
-                                        "arguments": service.arguments ?? [],
-                                        "cwd": service.cwd ?? "."]
+            var value: [String: Any] = ["runtime": service.runtime.rawValue, "entry": service.entry]
+            if let arguments = service.arguments { value["arguments"] = arguments }
+            if let cwd = service.cwd { value["cwd"] = cwd }
             if let port = service.port { value["port"] = port }
             object["service"] = value
         }

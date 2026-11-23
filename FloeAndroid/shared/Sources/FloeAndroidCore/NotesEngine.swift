@@ -209,7 +209,7 @@ actor NotesEngine {
         "notebook.create", "notebook.rename", "notebook.delete",
         "document.create", "document.duplicate", "document.saveMessage",
         "document.createLinkedMindMap", "document.apply", "document.undo",
-        "document.setTrashed", "document.permanentlyDelete", "document.markOpened",
+        "document.setTrashed", "document.trashBatch", "document.permanentlyDelete", "document.markOpened",
         "document.setFavorite", "document.setTags", "document.coverApply",
         "document.cacheOfficePreview", "resource.importCommit",
         "resource.discardUnreferenced", "resources.collectDeleted",
@@ -264,6 +264,8 @@ actor NotesEngine {
             result = try await documentUndo(payload)
         case "document.setTrashed":
             result = try await documentSetTrashed(payload)
+        case "document.trashBatch":
+            result = try await documentTrashBatch(payload)
         case "document.permanentlyDelete":
             result = try await documentPermanentlyDelete(payload)
         case "document.history":
@@ -698,6 +700,25 @@ actor NotesEngine {
         return try successEncoded("document", updated)
     }
 
+    private func documentTrashBatch(_ payload: NotesJSONValue?) async throws -> Data {
+        let values = try NotesPayload(payload).array("documents")
+        guard !values.isEmpty, values.count <= 500 else {
+            throw NotesDomainError.invalidPayload("trashSelectionSize")
+        }
+        let targets = try values.map { value in
+            let target = try NotesPayload(value)
+            return (id: try target.uuid("documentID"), expectedRevision: try target.int("expectedRevision"))
+        }
+        guard Set(targets.map { $0.id }).count == targets.count else {
+            throw NotesDomainError.invalidPayload("duplicateTrashSelection")
+        }
+        let updated = try await requireStore().trashDocuments(targets)
+        for document in updated {
+            recordChange(kind: "document.trashed", documentID: document.id, revision: document.revision)
+        }
+        return success(["count": updated.count])
+    }
+
     private func documentPermanentlyDelete(_ payload: NotesJSONValue?) async throws -> Data {
         let payload = try NotesPayload(payload)
         let id = try payload.uuid("documentID")
@@ -1024,7 +1045,8 @@ actor NotesEngine {
         let payload = try NotesPayload(payload)
         let query = try payload.string("query")
         let limit = min(200, max(1, try payload.intOrNil("limit") ?? 50))
-        let values = try await requireStore().search(query, limit: limit)
+        let trashOnly = try payload.boolOrNil("trashOnly") ?? false
+        let values = try await requireStore().search(query, limit: limit, trashOnly: trashOnly)
         return try successEncoded("documents", values.map { summary($0) })
     }
 

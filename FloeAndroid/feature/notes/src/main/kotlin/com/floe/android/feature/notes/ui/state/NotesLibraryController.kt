@@ -19,6 +19,7 @@ import com.floe.android.feature.notes.NotesEdit
 import com.floe.android.feature.notes.NotesException
 import com.floe.android.feature.notes.NotesProtocol
 import com.floe.android.feature.notes.NotesService
+import com.floe.android.feature.notes.NotesTrashTarget
 import com.floe.android.feature.notes.ui.api.NotesCoverImageRequest
 import com.floe.android.feature.notes.ui.api.NotesHostPorts
 import com.floe.android.feature.notes.ui.api.NotesImageProbeRequest
@@ -117,6 +118,7 @@ internal class NotesLibraryController(
         private set
 
     private var searchJob: Job? = null
+    private var searchGeneration = 0L
     private val coverJobs = mutableMapOf<String, Job>()
     private var disposed = false
 
@@ -145,6 +147,7 @@ internal class NotesLibraryController(
             if (selectedNotebookID != null && books.none { it.id == selectedNotebookID }) {
                 selectedNotebookID = null
             }
+            if (query.isNotBlank()) scheduleSearch(clearResults = false)
             runCatching { service.collectDeletedResources() }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -161,8 +164,9 @@ internal class NotesLibraryController(
     }
 
     fun applyFilter(value: NotesLibraryFilter) {
+        val changesSearchScope = (filter == NotesLibraryFilter.TRASH) != (value == NotesLibraryFilter.TRASH)
         filter = value
-        if (query.isBlank()) searchResults = null
+        if (changesSearchScope) scheduleSearch()
         persistWorkspace()
     }
 
@@ -196,23 +200,32 @@ internal class NotesLibraryController(
 
     fun applySearch(value: String) {
         query = value
+        scheduleSearch()
+    }
+
+    private fun scheduleSearch(clearResults: Boolean = true) {
+        val value = query.trim()
+        val trashOnly = filter == NotesLibraryFilter.TRASH
+        val generation = ++searchGeneration
         searchJob?.cancel()
         if (value.isBlank()) {
             searchResults = null
             searching = false
             return
         }
+        if (clearResults) searchResults = null
+        searching = true
         searchJob = scope.launch {
-            delay(260)
-            searching = true
             try {
-                searchResults = service.search(value.trim(), limit = 100)
+                delay(260)
+                val results = service.search(value, limit = 100, trashOnly = trashOnly)
+                if (searchGeneration == generation && !disposed) searchResults = results
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                failure = error.toNotesFailure()
+                if (searchGeneration == generation && !disposed) failure = error.toNotesFailure()
             } finally {
-                searching = false
+                if (searchGeneration == generation) searching = false
             }
         }
     }
@@ -359,6 +372,26 @@ internal class NotesLibraryController(
         } catch (error: Throwable) {
             failure = error.toNotesFailure()
             false
+        }
+    }
+
+    suspend fun trashBatch(targets: List<NotesTrashTarget>): Boolean {
+        if (targets.isEmpty() || busy || disposed) return false
+        busy = true
+        failure = null
+        return try {
+            service.trashDocuments(targets)
+            notice = NotesLibraryNotice.TRASH_UPDATED
+            load(initial = false)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            load(initial = false)
+            failure = error.toNotesFailure()
+            false
+        } finally {
+            busy = false
         }
     }
 

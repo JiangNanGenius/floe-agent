@@ -179,7 +179,7 @@ class CaptureHostController internal constructor(
             }
             val sessionId = UUID.randomUUID().toString()
             val launchId = UUID.randomUUID().toString()
-            val plan = VpnPlan.fromConfig(config, appContext.packageName)
+            val plan = VpnPlan.fromConfig(config)
             mutableState.value = machine.begin(
                 current = mutableState.value,
                 owner = config.owner,
@@ -824,6 +824,24 @@ class CaptureHostController internal constructor(
                     invalid = listing.invalid,
                 )
             }
+        }
+    }
+
+    fun removeRawCapture(sessionId: String) {
+        scope.launch(ioDispatcher) {
+            synchronized(lock) {
+                if (pendingRawExport != null || rawExportJob?.isActive == true ||
+                    mutableRawState.value.captures.none { it.sessionId == sessionId }) return@launch
+                val removed = runCatching { rawLibrary.remove(sessionId) }.getOrDefault(false)
+                mutableRawState.update { state ->
+                    state.copy(
+                        captures = if (removed) state.captures.filterNot { it.sessionId == sessionId } else state.captures,
+                        exported = if (removed && state.exported?.sessionId == sessionId) null else state.exported,
+                        removeFailed = !removed,
+                    )
+                }
+            }
+            refreshRawCaptures()
         }
     }
 

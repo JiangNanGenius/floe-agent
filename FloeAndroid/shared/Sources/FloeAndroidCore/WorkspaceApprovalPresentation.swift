@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 import FloeAgentRuntime
+import FloeAndroidJobTools
 import FloeModels
 import FloeWorkspace
 import FloeBrowser
@@ -111,8 +112,15 @@ enum WorkspaceApprovalPresentation {
     static let toolNames: Set<String> = [
         "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
         "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory",
-        "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile",
+        "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "workspace.publishOutput",
     ]
+
+    static func isManagedService(_ call: ToolCall) -> Bool {
+        guard call.toolName == JobsSubmitTool.name,
+              let object = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any]
+        else { return false }
+        return object["service"] is [String: Any]
+    }
 
     /// Bind both the complete captured request and every visible detail. The
     /// digests stay in process memory and never authorize a model path.
@@ -141,18 +149,20 @@ enum WorkspaceApprovalPresentation {
               let raw = try? JSONSerialization.jsonObject(with: waiting.toolCall.argumentsJSON) as? [String: Any]
         else { return nil }
         let guarder = WorkspacePathGuard(rootURL: launch.rootURL)
-        func path(_ path: String) -> String? {
+        func isDisplayable(_ text: String, limit: Int = 256, path: Bool = true) -> Bool {
+            text.utf8.count <= limit &&
+            (!path || (!text.isEmpty && text == text.trimmingCharacters(in: .whitespacesAndNewlines))) &&
+            text.unicodeScalars.allSatisfy { scalar in
+                switch scalar.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate, .unassigned:
+                    return false
+                default: return true
+                }
+            }
+        }
+        func path(_ path: String, limit: Int = 256) -> String? {
             // Only a complete, unambiguous local relative name is shown.
-            guard !path.isEmpty, path.utf8.count <= 256,
-                  path == path.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !path.hasPrefix("/"), !path.contains("\\"),
-                  path.unicodeScalars.allSatisfy({ scalar in
-                      switch scalar.properties.generalCategory {
-                      case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate, .unassigned:
-                          return false
-                      default: return true
-                      }
-                  }) else { return nil }
+            guard isDisplayable(path, limit: limit), !path.hasPrefix("/"), !path.contains("\\") else { return nil }
             let components = path.split(separator: "/", omittingEmptySubsequences: false)
             guard !components.isEmpty,
                   components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
@@ -250,6 +260,39 @@ enum WorkspaceApprovalPresentation {
             result.merge(["operation": .string("deleteFile"), "target": .string(target),
                           "source": .string("none"), "overwrite": .string("conditional"),
                           "precondition": .string("exists"), "recursive": .boolean(args.recursive ?? false)]) { _, new in new }
+        case WorkspacePublishOutputTool.name:
+            guard Set(raw.keys).isSubset(of: ["path", "displayName", "scope"]),
+                  let args = try? decoder.decode(WorkspacePublishOutputTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+                  args.scope == nil || args.scope == "local",
+                  (try? WorkspacePublishOutputTool(environment: environment).validate(args)) != nil,
+                  let target = path(args.path) else { return nil }
+            let displayName = args.displayName ?? (target as NSString).lastPathComponent
+            guard RunOutputFile.isValidDisplayName(displayName), isDisplayable(displayName) else { return nil }
+            result.merge(["operation": .string("publishOutput"), "target": .string(target),
+                          "source": .string("none"), "overwrite": .string("forbidden"),
+                          "precondition": .string("fileExists"), "displayName": .string(displayName)]) { _, new in new }
+        case JobsSubmitTool.name:
+            guard Set(raw.keys).isSubset(of: ["tool", "arguments", "purpose", "wait", "service"]),
+                  let declaration = raw["service"] as? [String: Any],
+                  Set(declaration.keys).isSubset(of: ["runtime", "entry", "arguments", "cwd", "port"]),
+                  let args = try? decoder.decode(JobsSubmitTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+                  args.tool == "exec.shell", let service = args.service,
+                  !service.isStatic, let port = service.port,
+                  (try? service.validateForJobSubmit()) != nil,
+                  (try? C01ManagedServicePayload.combine(innerArguments: Data(args.arguments.utf8),
+                                                         declaration: service, acceptedEpoch: 0)) != nil,
+                  let target = path(service.entry, limit: 2048) else { return nil }
+            let cwd = service.cwd ?? "."
+            let arguments = service.arguments ?? []
+            guard cwd == "." || path(cwd, limit: 2048) != nil,
+                  arguments.allSatisfy({ isDisplayable($0, limit: 2048, path: false) }) else { return nil }
+            result.merge(["operation": .string("startService"), "target": .string(target),
+                          "source": .string("none"), "overwrite": .string("forbidden"),
+                          "precondition": .string("fileExists"), "service": .object([
+                            "runtime": .string(service.runtime.rawValue), "port": .integer(Int64(port)),
+                            "cwd": .string(cwd), "arguments": .array(arguments.map(Value.string)),
+                            "wait": .boolean(args.wait ?? true),
+                          ])]) { _, new in new }
         default: return nil
         }
         return result

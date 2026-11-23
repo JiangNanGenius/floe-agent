@@ -207,6 +207,11 @@
     <string name="device_access_error_backend_failed">系统服务拒绝了该操作。</string>
     <string name="device_access_adb_no_connection">未找到无线调试。请打开开发者选项，开启无线调试后再启动服务。已保存的配对会保留。</string>
     <string name="device_access_adb_connection_failed">无法连接无线调试。请确认它已开启后再启动服务，已保存的配对会保留。</string>
+    <string name="device_access_adb_pairing_verification_failed">无线调试无法验证当前配对。请使用 Android 提供的新配对码重新连接。</string>
+    <string name="device_access_adb_pair_again">重新配对</string>
+    <string name="device_access_adb_connect_port_label">无线调试端口</string>
+    <string name="device_access_adb_connect_port_hint">填写无线调试主页面“IP 地址和端口”中冒号后的数字。</string>
+    <string name="device_access_adb_connect_port_submit">使用此端口连接</string>
     <string name="device_access_adb_pair_first">请先与 Android 配对，再启动服务。</string>
     <string name="device_access_adb_start_failed">服务未能启动。请打开详情查看原因后，再尝试启动。</string>
     <string name="device_access_usb_bootstrap">复制 USB 初始化命令</string>

@@ -28,18 +28,26 @@
 extern "C" {
 int32_t floe_device_history_offers(uint64_t, char *, int32_t);
 int64_t floe_device_history_export_open(uint64_t, const char *);
+int64_t floe_device_history_export_version_open(uint64_t, const char *, int32_t);
 int32_t floe_device_history_export_read(int64_t, int64_t, uint8_t *, int32_t);
 int32_t floe_device_history_export_close(int64_t);
 int32_t floe_device_history_receive_cursor(uint64_t, const char *, const char *, char *, int32_t);
 int64_t floe_device_history_export_page_open(uint64_t, const char *, const uint8_t *, int32_t, int64_t);
+int64_t floe_device_history_export_page_version_open(
+    uint64_t, const char *, const uint8_t *, int32_t, int64_t, int32_t);
 int32_t floe_device_history_export_page_info(int64_t, char *, int32_t);
 int64_t floe_device_history_import_begin(uint64_t, const char *);
 int64_t floe_device_history_import_page_begin(
     uint64_t, const char *, const char *, const uint8_t *, int32_t);
 int32_t floe_device_history_import_write(int64_t, const uint8_t *, int32_t);
 int32_t floe_device_history_import_commit(int64_t, char *, int32_t);
+int32_t floe_device_history_import_version_commit(int64_t, int32_t, char *, int32_t);
 int32_t floe_device_history_import_abort(int64_t);
 int32_t floe_device_history_stats(char *, int32_t);
+int64_t floe_device_history_attachment_open(uint64_t, const char *, const char *);
+int32_t floe_device_history_attachments_pending(uint64_t, const char *, char *, int32_t);
+int32_t floe_device_history_attachment_restore_commit(
+    int64_t, const char *, const char *, const char *, char *, int32_t);
 }
 
 namespace {
@@ -128,6 +136,17 @@ Java_com_floe_android_bridge_DeviceHistoryNative_exportOpen(
                                            conversation_value.c_str());
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_floe_android_bridge_DeviceHistoryNative_exportVersionOpen(
+    JNIEnv *env, jobject, jlong epoch, jstring conversationID, jint version) {
+    if (epoch <= 0) return status_not_installed;
+    if (version != 1 && version != 2) return status_shape;
+    std::string conversation;
+    if (!ascii_arg(env, conversationID, uuid_limit, &conversation)) return status_shape;
+    return floe_device_history_export_version_open(
+        static_cast<uint64_t>(epoch), conversation.c_str(), version);
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_floe_android_bridge_DeviceHistoryNative_exportRead(
     JNIEnv *env, jobject, jlong ticket, jlong offset, jbyteArray target) {
@@ -173,6 +192,58 @@ Java_com_floe_android_bridge_DeviceHistoryNative_exportPageOpen(
     return floe_device_history_export_page_open(
         static_cast<uint64_t>(epoch), conversation.c_str(),
         after_bytes.data(), after_bytes.size, through);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_floe_android_bridge_DeviceHistoryNative_exportPageVersionOpen(
+    JNIEnv *env, jobject, jlong epoch, jstring conversationID, jbyteArray after,
+    jlong through, jint version) {
+    if (epoch <= 0) return status_not_installed;
+    if (through < -1 || (version != 1 && version != 2)) return status_shape;
+    std::string conversation;
+    CursorBytes cursor;
+    if (!ascii_arg(env, conversationID, uuid_limit, &conversation) ||
+        !optional_cursor_arg(env, after, cursor)) return status_shape;
+    return floe_device_history_export_page_version_open(
+        static_cast<uint64_t>(epoch), conversation.c_str(), cursor.data(), cursor.size, through, version);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_floe_android_bridge_DeviceHistoryNative_attachmentOpen(
+    JNIEnv *env, jobject, jlong epoch, jstring conversationID, jstring attachmentID) {
+    if (epoch <= 0) return status_not_installed;
+    std::string conversation, attachment;
+    if (!ascii_arg(env, conversationID, uuid_limit, &conversation) ||
+        !ascii_arg(env, attachmentID, uuid_limit, &attachment)) return status_shape;
+    return floe_device_history_attachment_open(
+        static_cast<uint64_t>(epoch), conversation.c_str(), attachment.c_str());
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_floe_android_bridge_DeviceHistoryNative_attachmentsPending(
+    JNIEnv *env, jobject, jlong epoch, jstring conversationID, jbyteArray reply) {
+    if (epoch <= 0) return status_not_installed;
+    std::string conversation;
+    if (!ascii_arg(env, conversationID, uuid_limit, &conversation)) return status_shape;
+    return reply_call(env, reply, [&](char *buffer, int32_t capacity) {
+        return floe_device_history_attachments_pending(
+            static_cast<uint64_t>(epoch), conversation.c_str(), buffer, capacity);
+    });
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_floe_android_bridge_DeviceHistoryNative_attachmentRestoreCommit(
+    JNIEnv *env, jobject, jlong ticket, jstring attachmentID, jstring messageID,
+    jstring sha256, jbyteArray reply) {
+    if (ticket <= 0) return status_shape;
+    std::string attachment, message, digest;
+    if (!ascii_arg(env, attachmentID, uuid_limit, &attachment) ||
+        !ascii_arg(env, messageID, uuid_limit, &message) ||
+        !ascii_arg(env, sha256, 64, &digest) || digest.size() != 64) return status_shape;
+    return reply_call(env, reply, [&](char *buffer, int32_t capacity) {
+        return floe_device_history_attachment_restore_commit(
+            ticket, attachment.c_str(), message.c_str(), digest.c_str(), buffer, capacity);
+    });
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -237,6 +308,15 @@ Java_com_floe_android_bridge_DeviceHistoryNative_importCommit(
     if (ticket <= 0) return status_shape;
     return reply_call(env, reply, [ticket](char *buffer, int32_t capacity) {
         return floe_device_history_import_commit(ticket, buffer, capacity);
+    });
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_floe_android_bridge_DeviceHistoryNative_importVersionCommit(
+    JNIEnv *env, jobject, jlong ticket, jint expectedVersion, jbyteArray reply) {
+    if (ticket <= 0 || (expectedVersion != 1 && expectedVersion != 2)) return status_shape;
+    return reply_call(env, reply, [&](char *buffer, int32_t capacity) {
+        return floe_device_history_import_version_commit(ticket, expectedVersion, buffer, capacity);
     });
 }
 

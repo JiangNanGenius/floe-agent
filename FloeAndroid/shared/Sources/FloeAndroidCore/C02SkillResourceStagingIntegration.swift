@@ -8,11 +8,15 @@
 // epoch-fenced uninstall):
 //
 //   * TARGET GATE — the run's pinned C02 execution target MUST be
-//     localLinux. A remote (ssh) target is the honest
-//     `remoteResourceStagingUnavailable` boundary: the existing
-//     C02SSHExecutionAdapter is exec-only and no internal run-bound upload
-//     exists (the model-facing SFTP lane refuses the environment target),
-//     so pinned bytes are NEVER silently staged for a remote task.
+//     localLinux, unless the generation bound an explicit run-bound remote
+//     workspace write authority (the SAME C02 execution-target domain plus
+//     the C02 SSH adapter). With that authority a remote (ssh) target
+//     resolves to the verified remote staging destination and the pinned
+//     bytes are published missing-only over ONE exclusive typed SFTP
+//     channel per skill.read; without it a remote target stays the honest
+//     `remoteResourceStagingUnavailable` boundary — the model-facing SFTP
+//     lanes are never broadened and pinned bytes are NEVER silently staged
+//     or copied to a fallback local path.
 //   * WORKSPACE — LinuxWorkspaceAuthority.trustedWorkspaceRoot answers the
 //     SAME Core task root the run config exports (nil instead of a guess).
 //     The stager re-asks immediately before publish, so a retired/rebound
@@ -57,16 +61,49 @@ public enum C02SkillResourceStaging {
     public static let guestWorkspaceRoot = "/workspace"
 }
 
+// MARK: - Run-bound remote write authority
+
+/// The explicit remote staging authority for one accepted root generation:
+/// the SAME C02 execution-target domain that mints the per-publish run-bound
+/// write authorization, and the SAME C02 SSH execution adapter whose
+/// exclusive SFTP channels carry the typed staging operation. Without this
+/// binding the remote lane stays the honest `remoteResourceStagingUnavailable`
+/// refusal; with it, no new credential route, no model-facing SFTP policy
+/// change and no fallback local copy is introduced.
+public struct C02SkillResourceStagingRemoteAuthority: Sendable {
+    public var domain: C02ExecutionTargetDomain
+    public var adapter: C02SSHExecutionAdapter
+
+    public init(domain: C02ExecutionTargetDomain, adapter: C02SSHExecutionAdapter) {
+        self.domain = domain
+        self.adapter = adapter
+    }
+}
+
 // MARK: - Pure policy (unit-testable without any runtime infrastructure)
 
 /// The local/remote/workspace decision as a pure function of the facts the
 /// trusted host read. Never invents support: every nil/mismatch is a precise
 /// reason string from SkillStageReason.
 public enum C02SkillResourceStagingPolicy {
+    /// Historical shape: a remote target without a bound write authority is
+    /// the honest `remoteResourceStagingUnavailable` refusal.
     public static func resolution(
         pin: C02RunTargetPin?,
         target: C02ExecutionTarget?,
         workspaceRoot: URL?
+    ) -> SkillWorkspaceStageResolution {
+        resolution(pin: pin, target: target, workspaceRoot: workspaceRoot, remoteWriteAuthorized: false)
+    }
+
+    /// - Parameter remoteWriteAuthorized: true only when the trusted host
+    ///   bound the explicit run-bound remote workspace write authority for
+    ///   this generation (the install-time `remoteAuthority != nil` fact).
+    public static func resolution(
+        pin: C02RunTargetPin?,
+        target: C02ExecutionTarget?,
+        workspaceRoot: URL?,
+        remoteWriteAuthorized: Bool
     ) -> SkillWorkspaceStageResolution {
         guard let pin else {
             return .unavailable(reason: SkillStageReason.noLocalExecutionTarget)
@@ -79,8 +116,25 @@ public enum C02SkillResourceStagingPolicy {
         }
         switch target.kind {
         case .ssh:
-            // Honest remote boundary (N07 spec): no silent local staging.
-            return .unavailable(reason: SkillStageReason.remoteResourceStagingUnavailable)
+            guard remoteWriteAuthorized else {
+                // Honest remote boundary: no bound run-bound write authority
+                // means no silent local staging and no fabricated upload.
+                return .unavailable(reason: SkillStageReason.remoteResourceStagingUnavailable)
+            }
+            guard let remote = target.remote,
+                  let destination = SkillRemoteStagingDestination(
+                      hostID: remote.hostID,
+                      environmentID: target.environmentID,
+                      taskID: target.taskID,
+                      targetRevision: target.revision,
+                      rootEpoch: target.rootEpoch,
+                      runtimeGeneration: remote.runtimeGeneration,
+                      remoteWorkspaceRoot: remote.remoteRootPath) else {
+                // The pinned remote facts are malformed: refuse precisely
+                // instead of staging against unverifiable identity.
+                return .unavailable(reason: SkillStageReason.taskWorkspaceUnavailable)
+            }
+            return .remote(destination)
         case .localLinux:
             guard let workspaceRoot else {
                 return .unavailable(reason: SkillStageReason.taskWorkspaceUnavailable)
@@ -100,25 +154,33 @@ public enum C02SkillResourceStagingComposition {
     /// stager's initial check and its pre-publish re-check both observe
     /// live truth.
     public static func productionResolver(
-        executionTargets: C02ExecutionTargetDomain
+        executionTargets: C02ExecutionTargetDomain,
+        remoteAuthority: C02SkillResourceStagingRemoteAuthority? = nil
     ) -> @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution {
         { runID, conversationID in
             let pin = try? await executionTargets.runTargetPin(runID: runID)
             guard let pin else {
                 return C02SkillResourceStagingPolicy.resolution(
-                    pin: nil, target: nil, workspaceRoot: nil)
+                    pin: nil, target: nil, workspaceRoot: nil, remoteWriteAuthorized: false)
             }
             let target = try? await executionTargets.executionTarget(taskID: pin.taskID)
-            guard let target, target.kind == .localLinux, pin.matches(target) else {
+            guard let target, pin.matches(target) else {
                 return C02SkillResourceStagingPolicy.resolution(
-                    pin: pin, target: target, workspaceRoot: nil)
+                    pin: pin, target: target, workspaceRoot: nil, remoteWriteAuthorized: false)
+            }
+            if target.kind == .ssh {
+                // Remote-pinned: the decision is authority-bound only; a
+                // remote task never pays for, nor sees, a local root.
+                return C02SkillResourceStagingPolicy.resolution(
+                    pin: pin, target: target, workspaceRoot: nil,
+                    remoteWriteAuthorized: remoteAuthority != nil)
             }
             // Local target: only now resolve the workspace (a remote-pinned
             // task never pays for, nor sees, a local root).
             let root = await LinuxWorkspaceAuthority.trustedWorkspaceRoot(
                 runID: runID, conversationID: conversationID)
             return C02SkillResourceStagingPolicy.resolution(
-                pin: pin, target: target, workspaceRoot: root)
+                pin: pin, target: target, workspaceRoot: root, remoteWriteAuthorized: false)
         }
     }
 
@@ -141,6 +203,20 @@ public enum C02SkillResourceStagingComposition {
     /// control parcels; no second shell/GUI; no stdin injection.
     public static func productionPublisher(epoch: UInt64) -> any SkillGuestResourcePublishing {
         C02LiveGuestResourcePublisher(acceptedEpoch: epoch)
+    }
+
+    /// The remote staging transport for this generation: one fresh run-bound
+    /// C02 SSH authorization per publish, one exclusive typed SFTP channel
+    /// per publish. Nil authority means no remote transport is installed and
+    /// the remote lane stays the honest refusal.
+    public static func productionRemotePublisher(
+        epoch: UInt64,
+        authority: C02SkillResourceStagingRemoteAuthority
+    ) -> any SkillRemoteResourcePublishing {
+        C02RemoteSkillResourcePublisher.production(
+            domain: authority.domain,
+            adapter: authority.adapter,
+            acceptedEpoch: epoch)
     }
 }
 
@@ -344,6 +420,26 @@ private struct EpochBoundResourceProber: SkillGuestVisibilityProbing {
     }
 }
 
+private struct EpochBoundRemoteResourcePublisher: SkillRemoteResourcePublishing {
+    let base: any SkillRemoteResourcePublishing
+    let isLive: @Sendable () -> Bool
+
+    func publishStagedBundle(
+        _ bundle: SkillStagingBundle,
+        to destination: SkillRemoteStagingDestination,
+        runID: UUID,
+        conversationID: UUID?,
+        cancellation: CancellationToken
+    ) async -> SkillRemotePublishOutcome {
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed(detail: nil) }
+        let result = await base.publishStagedBundle(
+            bundle, to: destination, runID: runID,
+            conversationID: conversationID, cancellation: cancellation)
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed(detail: nil) }
+        return result
+    }
+}
+
 // MARK: - Generation-bound runtime (C02ToolResultIntegration box pattern)
 
 public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
@@ -351,6 +447,7 @@ public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
     private let resolve: @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution
     private let prober: (any SkillGuestVisibilityProbing)?
     private let publisher: (any SkillGuestResourcePublishing)?
+    private let remotePublisher: (any SkillRemoteResourcePublishing)?
     private let liveEpoch: @Sendable () -> UInt64
 
     init(
@@ -358,12 +455,14 @@ public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
         resolve: @escaping @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution,
         prober: (any SkillGuestVisibilityProbing)?,
         publisher: (any SkillGuestResourcePublishing)?,
+        remotePublisher: (any SkillRemoteResourcePublishing)? = nil,
         liveEpoch: @escaping @Sendable () -> UInt64
     ) {
         self.epoch = epoch
         self.resolve = resolve
         self.prober = prober
         self.publisher = publisher
+        self.remotePublisher = remotePublisher
         self.liveEpoch = liveEpoch
     }
 
@@ -392,6 +491,12 @@ public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
         guard isLive(), let publisher else { return nil }
         return EpochBoundResourcePublisher(base: publisher, isLive: { [weak self] in self?.isLive() == true })
     }
+
+    /// The remote staging transport for THIS live generation only.
+    func remoteResourcePublisher() -> (any SkillRemoteResourcePublishing)? {
+        guard isLive(), let remotePublisher else { return nil }
+        return EpochBoundRemoteResourcePublisher(base: remotePublisher, isLive: { [weak self] in self?.isLive() == true })
+    }
 }
 
 public enum C02SkillResourceStagingIntegration {
@@ -419,18 +524,26 @@ public enum C02SkillResourceStagingIntegration {
     /// Installs (or replaces) the generation's resource staging. Main calls
     /// this once per accepted root generation AFTER the execution-target
     /// domain exists; a newer generation replaces an older one, and only the
-    /// owning generation may clear it.
+    /// owning generation may clear it. `remoteAuthority` binds the explicit
+    /// run-bound remote workspace write authority (SAME domain + SAME SSH
+    /// adapter); nil keeps the remote lane the honest refusal.
     public static func install(
         epoch: UInt64,
         executionTargets: C02ExecutionTargetDomain,
+        remoteAuthority: C02SkillResourceStagingRemoteAuthority? = nil,
         liveEpoch: @escaping @Sendable () -> UInt64 = { G02NativeRootEpoch.readback() ?? 0 }
     ) -> C02SkillResourceStagingRuntime {
         let runtime = C02SkillResourceStagingRuntime(
             epoch: epoch,
             resolve: C02SkillResourceStagingComposition.productionResolver(
-                executionTargets: executionTargets),
+                executionTargets: executionTargets,
+                remoteAuthority: remoteAuthority),
             prober: C02SkillResourceStagingComposition.productionProber(),
             publisher: C02SkillResourceStagingComposition.productionPublisher(epoch: epoch),
+            remotePublisher: remoteAuthority.map {
+                C02SkillResourceStagingComposition.productionRemotePublisher(
+                    epoch: epoch, authority: $0)
+            },
             liveEpoch: liveEpoch)
         box.set(runtime)
         return runtime
@@ -444,11 +557,12 @@ public enum C02SkillResourceStagingIntegration {
         resolve: @escaping @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution,
         prober: (any SkillGuestVisibilityProbing)?,
         publisher: (any SkillGuestResourcePublishing)? = nil,
+        remotePublisher: (any SkillRemoteResourcePublishing)? = nil,
         liveEpoch: @escaping @Sendable () -> UInt64
     ) -> C02SkillResourceStagingRuntime {
         let runtime = C02SkillResourceStagingRuntime(
             epoch: epoch, resolve: resolve, prober: prober,
-            publisher: publisher, liveEpoch: liveEpoch)
+            publisher: publisher, remotePublisher: remotePublisher, liveEpoch: liveEpoch)
         box.set(runtime)
         return runtime
     }

@@ -47,7 +47,9 @@ import com.floe.android.design.ComposerAvailability
 import com.floe.android.host.HomeSendToken
 import com.floe.android.host.RuntimeHost
 import com.floe.android.feature.conversation.ApprovalModeUi
+import com.floe.android.feature.conversation.ChatReasoningUi
 import com.floe.android.feature.conversation.FloeDraftAttachmentTray
+import com.floe.android.feature.conversation.chatReasoningLabel
 import com.floe.android.feature.providers.ReasoningEffortUi
 
 import kotlinx.coroutines.launch
@@ -101,6 +103,7 @@ fun HomeLaunchpadPage(
     // text change; selection/composition stay in the live TextFieldValue.
     var dialog by remember { mutableStateOf(HomeDialog.NONE) }
     var agentModeKey by remember { mutableStateOf("agent") }
+    var draftChatReasoning by remember { mutableStateOf(ChatReasoningUi.FAST) }
     var modeMenuOpen by remember { mutableStateOf(false) }
     var permissionMenuOpen by remember { mutableStateOf(false) }
     var reasoningMenuOpen by remember { mutableStateOf(false) }
@@ -424,6 +427,7 @@ fun HomeLaunchpadPage(
                         text = text,
                         mode = agentModeKey,
                         temporary = false,
+                        chatReasoning = draftChatReasoning.takeIf { agentModeKey == "chat" },
                     ) { reason ->
                         // Restore the draft on an honest failure; the error is
                         // surfaced on the launchpad instead of losing text.
@@ -478,15 +482,15 @@ fun HomeLaunchpadPage(
                 // unavailability.
                 FloeComposerChip(
                     icon = FloeIcons.Gauge,
-                    text = if (rootWorkspace == null) {
-                        stringResource(R.string.reasoning_auto)
-                    } else {
-                        savedReasoning?.let {
-                            reasoningEffortLabel(it)
-                        } ?: stringResource(R.string.root_reasoning_unset)
+                    text = when {
+                        agentModeKey == "chat" -> stringResource(chatReasoningLabel(draftChatReasoning))
+                        rootWorkspace == null -> stringResource(R.string.reasoning_auto)
+                        else -> savedReasoning?.let { reasoningEffortLabel(it) }
+                            ?: stringResource(R.string.root_reasoning_unset)
                     },
                     onClick = {
                         when {
+                            agentModeKey == "chat" -> reasoningMenuOpen = true
                             rootWorkspace == null -> dialog = HomeDialog.REASONING
                             usableModelOptions.isEmpty() -> onOpenSettingsSection("PROVIDERS")
                             else -> reasoningMenuOpen = true
@@ -494,7 +498,18 @@ fun HomeLaunchpadPage(
                     },
                 )
                 FloeChipMenu(expanded = reasoningMenuOpen, onDismiss = { reasoningMenuOpen = false }) {
-                    ReasoningEffortUi.entries.forEach { effort ->
+                    if (agentModeKey == "chat") {
+                        ChatReasoningUi.entries.forEach { preference ->
+                            CupertinoMenuEntry(
+                                title = stringResource(chatReasoningLabel(preference)),
+                                selected = draftChatReasoning == preference,
+                                onClick = {
+                                    draftChatReasoning = preference
+                                    reasoningMenuOpen = false
+                                },
+                            )
+                        }
+                    } else ReasoningEffortUi.entries.forEach { effort ->
                         CupertinoMenuEntry(
                             title = reasoningEffortLabel(effort),
                             selected = savedReasoning == effort,

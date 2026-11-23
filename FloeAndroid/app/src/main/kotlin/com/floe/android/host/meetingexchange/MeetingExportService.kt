@@ -19,6 +19,8 @@ internal class MeetingExportService(
     private val labels: MeetingExportLabels,
     private val zoneId: ZoneId = ZoneId.systemDefault(),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val renderDocument: (MeetingExportSnapshot, MeetingExportFormat) -> MeetingExportDocument =
+        { _, _ -> throw MeetingExportSizeException() },
 ) {
     suspend fun prepare(
         meetingId: String,
@@ -49,13 +51,18 @@ internal class MeetingExportService(
                 )
             }
             try {
+                val snapshot = MeetingExportSnapshot.from(detail)
                 MeetingExportPreparationResult.Ready(
-                    MeetingExportFormatter.format(
-                        snapshot = MeetingExportSnapshot.from(detail),
-                        format = format,
-                        labels = labels,
-                        zoneId = zoneId,
-                    ),
+                    if (format.isText) {
+                        MeetingExportFormatter.format(
+                            snapshot = snapshot,
+                            format = format,
+                            labels = labels,
+                            zoneId = zoneId,
+                        )
+                    } else {
+                        renderDocument(snapshot, format)
+                    },
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled

@@ -677,7 +677,8 @@ extension FacadeRunDomain {
         retryWorkspaceReadOnly: Bool = false,
         explicitExecutionMode: ExplicitExecutionMode? = nil,
         reasoningIngress: AutomaticReasoningEffortIngress = .continuation,
-        reasoningAttachments: [AttachmentRef] = []
+        reasoningAttachments: [AttachmentRef] = [],
+        chatReasoning: ChatReasoningPreference? = nil
     ) async throws -> ConversationRunService {
         let temporary = bundle.identity == .temporary
         let isNotes = bundle.identity == .notes
@@ -904,13 +905,21 @@ extension FacadeRunDomain {
         // path and the trusted PRoot package-review class for real shell
         // calls, never a deterministic allow or a `.linuxVM` guest claim.
         let model: ModelProfile
+        let reasoningPolicy: ProviderReasoningPolicy
+        let usesTools = toolsEnabled && (launch.model.explicitCapabilities ?? launch.model.capabilities).contains(.tools)
         if isNotes || temporary {
             model = launch.model
+            reasoningPolicy = .modelDefault
+        } else if explicitExecutionMode == .chat {
+            (model, reasoningPolicy) = try await resolvedChatReasoningModel(
+                runID: runID, launch: launch, goal: goal, attachments: reasoningAttachments,
+                bundle: bundle, ingress: reasoningIngress, usesTools: usesTools, preferred: chatReasoning)
         } else {
             model = try await resolvedRunReasoningModel(
                 runID: runID, launch: launch, goal: goal, attachments: reasoningAttachments,
                 bundle: bundle, reasoningIngress: reasoningIngress,
-                usesTools: toolsEnabled && (launch.model.explicitCapabilities ?? launch.model.capabilities).contains(.tools))
+                usesTools: usesTools)
+            reasoningPolicy = .modelDefault
         }
         var configuration = Self.runtimeConfiguration(
             conversationID: conversationID,
@@ -924,6 +933,7 @@ extension FacadeRunDomain {
                 ? resolvedExecutionTarget?.target.environmentID : environmentID,
             localLinuxShellTarget: resolvedExecutionTarget?.target.kind == .localLinux,
             explicitExecutionMode: explicitExecutionMode)
+        configuration.reasoningPolicy = reasoningPolicy
         if var owner = owners[runID], owner.conversationID == conversationID,
            owner.epoch == epoch, !owner.cancelRequested, G02NativeRootEpoch.readback() == epoch,
            fenceIsValid(owner.launchToken) {

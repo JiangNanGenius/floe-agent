@@ -230,6 +230,13 @@ data class C03TimedSegment(
     val start: Double,
     val end: Double,
     val text: String,
+    /**
+     * Optional provider-supplied speaker label. Null when the configured
+     * provider does not diarize; Android has no local diarization model, so
+     * this is never synthesized and a null speaker renders as the neutral
+     * "Speaker" fallback in exports/UI.
+     */
+    val speaker: String? = null,
 ) {
     fun normalized(): C03TimedSegment? {
         if (!start.isFinite() || !end.isFinite()) return null
@@ -237,7 +244,11 @@ data class C03TimedSegment(
         if (end - start > 24.0 * 60.0 * 60.0) return null
         val clean = text.trim().replace(Regex("\\s+"), " ")
         if (clean.isEmpty() || clean.length > 2_000) return null
-        return C03TimedSegment(start, end, clean)
+        val cleanSpeaker = speaker
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.take(120)
+        return C03TimedSegment(start, end, clean, cleanSpeaker)
     }
 }
 

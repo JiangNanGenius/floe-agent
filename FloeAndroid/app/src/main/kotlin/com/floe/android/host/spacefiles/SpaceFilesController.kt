@@ -5,6 +5,7 @@ import com.floe.android.host.PlatformLaunchOwnership
 import com.floe.android.safgateway.MoveMode
 import com.floe.android.safgateway.PageRequest
 import com.floe.android.safgateway.PickAcceptResult
+import com.floe.android.safgateway.PreparedState
 import com.floe.android.safgateway.SafCancelToken
 import com.floe.android.safgateway.SafDocument
 import com.floe.android.safgateway.SafDocumentRef
@@ -16,10 +17,18 @@ import com.floe.android.safgateway.SafPlatformBackend
 import com.floe.android.safgateway.SafSize
 import com.floe.android.safgateway.SafUriKind
 import com.floe.android.safgateway.SafUriRef
+import com.floe.android.safgateway.SavePolicy
+import com.floe.android.safgateway.SaveReceipt
+import com.floe.android.safgateway.StagedCopy
+import com.floe.android.safgateway.StagedLocalRef
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
+import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
@@ -36,6 +45,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -71,6 +82,12 @@ internal class SpaceFilesController(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Stable per-controller-generation picker identity (never user data). */
     val launchNamespace: String = PlatformLaunchOwnership.mintNamespace(),
+    /**
+     * App-private durable root for native-edit working copies + recovery
+     * (filesDir in the App; tests may leave it null to stage under cache).
+     * Provider bytes are never written here — only verified working copies.
+     */
+    editsRoot: File? = null,
 ) {
     private val _state = MutableStateFlow(SpaceFilesUiState())
     val state: StateFlow<SpaceFilesUiState> = _state
@@ -82,16 +99,42 @@ internal class SpaceFilesController(
     private val previewGeneration = AtomicLong(0)
     private val pickIncarnation = AtomicLong(0)
     private val openIncarnation = AtomicLong(0)
+    private val editIncarnation = AtomicLong(0)
     private val pageSize = 200
 
     /** One in-flight "load more" per listing; two overlapping requests would
-     * otherwise append the same provider page twice. */
+     *  otherwise append the same provider page twice. */
     private val browseMoreInFlight = AtomicBoolean(false)
     private val transferMoreInFlight = AtomicBoolean(false)
 
     private val stagingRoot: File = cacheRoot.apply { runCatching { mkdirs() } }
     private val previewDir = File(stagingRoot, "previews")
     private val relayDir = File(stagingRoot, "relay")
+
+    // ------------------------------------------------------------------
+    // Native edit sessions (durable working copies + verified save-back)
+    // ------------------------------------------------------------------
+
+    private val durableEditsRoot: File = (editsRoot ?: File(stagingRoot, "edits"))
+        .apply { runCatching { mkdirs() } }
+    private val editWorkingRoot = File(durableEditsRoot, "working")
+    private val editRecoveryRoot = File(durableEditsRoot, "recovery")
+
+    /** Crash-safe session rows; also the App-owned commit coordinator that
+     *  persists recovery receipts before permitting a destructive write. */
+    private val editJournal: SpaceFilesEditJournal? = runCatching {
+        SpaceFilesEditJournal(File(durableEditsRoot, "journal")) { sessionId, fileName ->
+            File(editWorkingRoot, sessionId).apply { runCatching { mkdirs() } }.let { File(it, fileName) }
+        }
+    }.getOrNull()
+
+    /** Session registry: one row per provider document, keyed by session id. */
+    private val editSessions = LinkedHashMap<String, SpaceFilesEditSession>()
+    private val editLock = Mutex()
+
+    /** Working-copy change watchers + debounced reconciles. */
+    private val editObservers = ConcurrentHashMap<String, android.os.FileObserver>()
+    private val editDebounce = ConcurrentHashMap<String, Job>()
 
     private val entryOrder: Comparator<SpaceFileEntry> =
         compareBy<SpaceFileEntry>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) })
@@ -110,6 +153,7 @@ internal class SpaceFilesController(
                 refreshCatalogInternal(openFirstUsable = false)
                 reloadBrowseInternal()
             }
+            restoreEditSessionsInternal()
         }
     }
 
@@ -121,7 +165,17 @@ internal class SpaceFilesController(
         launchOwned {
             refreshCatalogInternal(openFirstUsable = false)
             reloadBrowseInternal()
+            reconcileActiveEditsInternal()
         }
+    }
+
+    /** Returning from an editor (or any resume) re-checks every live session:
+     *  unchanged copies stay silent, changed ones enter the save-back ladder. */
+    private suspend fun reconcileActiveEditsInternal() {
+        val active = editLock.withLock {
+            editSessions.values.filter { it.phase != SpaceFilesEditPhase.FINISHED }.map { it.id }
+        }
+        active.forEach { reconcileEditInternal(it) }
     }
 
     /**
@@ -141,6 +195,7 @@ internal class SpaceFilesController(
             current.copy(
                 pick = null,
                 openRequest = null,
+                editLaunch = null,
                 preview = null,
                 previewLoading = false,
                 transfer = null,
@@ -157,6 +212,10 @@ internal class SpaceFilesController(
     /** Process teardown only (the App host keeps one controller for its life). */
     fun close() {
         if (!closed.compareAndSet(false, true)) return
+        editObservers.values.forEach { runCatching { it.stopWatching() } }
+        editObservers.clear()
+        editDebounce.values.forEach { it.cancel() }
+        editDebounce.clear()
         scope.cancel()
         runCatching { service.close() }
     }
@@ -1443,6 +1502,669 @@ internal class SpaceFilesController(
                 },
             )
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Native editing: per-document writable working copy + verified save-back
+    // ------------------------------------------------------------------
+
+    /** User asked to edit one row natively. Gated by the provider's own
+     *  write flag; the tree grant must currently allow read+write so the
+     *  verified bytes can land back at the same source. */
+    fun requestEdit(entry: SpaceFileEntry) {
+        launchOwned { startEditInternal(entry) }
+    }
+
+    /** Re-launch the editor for one live session (or resume an existing
+     *  session for the exact same provider document). */
+    fun requestEditLaunch(sessionId: String) {
+        launchOwned {
+            val row = editLock.withLock { editSessions[sessionId] } ?: return@launchOwned
+            if (row.phase == SpaceFilesEditPhase.FINISHED) return@launchOwned
+            runCatching { measuredEdit(row.workingFile) }.onFailure {
+                saveEditRow(row.copy(
+                    phase = SpaceFilesEditPhase.RECOVERABLE_FAILURE,
+                    errorCode = "copyUnavailable",
+                    updatedAtMillis = clock(),
+                ))
+            }.onSuccess { publishEditLaunch(row) }
+        }
+    }
+
+    internal suspend fun startEditInternal(entry: SpaceFileEntry): String? {
+        if (entry.isDirectory) return null
+        if (!SpaceFilesEditPolicy.supportsEdit(
+                isDirectory = entry.isDirectory,
+                isVirtual = entry.isVirtual,
+                canWrite = entry.canWrite,
+                sizeBytes = entry.sizeBytes,
+            )) {
+            publishFailure(
+                SpaceFilesOperation.EDIT,
+                when {
+                    entry.isVirtual -> SpaceFilesFailure(
+                        SpaceFilesProblem.UNSUPPORTED,
+                        "virtual document has no raw byte representation for an editor",
+                    )
+                    !entry.canWrite -> SpaceFilesFailure(SpaceFilesProblem.READ_ONLY)
+                    else -> SpaceFilesFailure(SpaceFilesProblem.SIZE_LIMIT)
+                },
+            )
+            return null
+        }
+        val anchor = entry.ref.tree ?: entry.ref.uri
+        val evidence = withContext(ioDispatcher) {
+            runCatching { service.grants.currentAccess(anchor) }.getOrNull()
+        }
+        when {
+            evidence?.read != true -> {
+                publishFailure(SpaceFilesOperation.EDIT, SpaceFilesProblem.GRANT_REVOKED)
+                return null
+            }
+            evidence.write != true -> {
+                publishFailure(SpaceFilesOperation.EDIT, SpaceFilesProblem.READ_ONLY)
+                return null
+            }
+        }
+        editLock.withLock {
+            editSessions.values.firstOrNull {
+                it.target.uri == entry.ref.uri && it.phase != SpaceFilesEditPhase.FINISHED
+            }?.let { existing ->
+                return existing.id.also { publishEditLaunch(existing) }
+            }
+            if (editSessions.values.count { it.phase != SpaceFilesEditPhase.FINISHED } >=
+                SpaceFilesEditPolicy.MAX_ACTIVE_SESSIONS
+            ) {
+                publishFailure(
+                    SpaceFilesOperation.EDIT,
+                    SpaceFilesFailure(SpaceFilesProblem.FAILED, "sessionLimit"),
+                )
+                return null
+            }
+        }
+        // Live capability re-check: the row flag is only a UI hint; the
+        // provider's CURRENT flags decide whether a save-back can ever land.
+        val live = awaitProvider { cancel -> service.operations.metadata(entry.ref, cancel) }
+        val liveDoc = (live as? SafOutcome.Success)?.value
+        if (liveDoc == null) {
+            publishFailure(
+                SpaceFilesOperation.EDIT,
+                (live as? SafOutcome.Failure)?.failure?.toSpaceFilesFailure((live as? SafOutcome.Failure)?.detail)
+                    ?: SpaceFilesFailure(SpaceFilesProblem.FAILED),
+            )
+            return null
+        }
+        if (!liveDoc.capabilities.write) {
+            publishFailure(
+                SpaceFilesOperation.EDIT,
+                SpaceFilesFailure(SpaceFilesProblem.READ_ONLY, "provider flags do not mark this document writable"),
+            )
+            return null
+        }
+        val sessionId = UUID.randomUUID().toString()
+        val dir = File(editWorkingRoot, sessionId).apply { runCatching { mkdirs() } }
+        if (!dir.isDirectory) {
+            publishFailure(SpaceFilesOperation.EDIT, SpaceFilesProblem.FAILED, "workingCopyUnavailable")
+            return null
+        }
+        val outcome = awaitProvider { cancel ->
+            service.workingCopy.importDocument(
+                entry.ref, dir, SpaceFilesEditPolicy.EDIT_BYTE_LIMIT, cancel,
+            )
+        }
+        val copy = when (outcome) {
+            is SafOutcome.Failure -> {
+                runCatching { dir.deleteRecursively() }
+                publishFailure(SpaceFilesOperation.EDIT, outcome)
+                return null
+            }
+            is SafOutcome.Success -> outcome.value.staged
+        }
+        val now = clock()
+        val row = SpaceFilesEditSession(
+            id = sessionId,
+            target = entry.ref,
+            name = copy.displayName.ifBlank { entry.name },
+            mimeType = entry.mimeType,
+            baselineSha256 = copy.sha256,
+            baselineBytes = copy.bytes,
+            workingFile = copy.local.file,
+            createdAtMillis = now,
+            updatedAtMillis = now,
+            phase = SpaceFilesEditPhase.EDITING,
+        )
+        editLock.withLock { editSessions[sessionId] = row }
+        runCatching { editJournal?.save(row) }
+        runCatching { watchEdit(row) }
+        publishEditSessions()
+        publishEditLaunch(row)
+        return sessionId
+    }
+
+    /** The composition observed the real ACTION_EDIT result. */
+    fun completeEditLaunch(id: Long, result: SpaceFilesEditLaunchResult) {
+        val launch = _state.value.editLaunch ?: return
+        if (launch.id != id) return
+        _state.update { it.copy(editLaunch = null) }
+        when (result) {
+            SpaceFilesEditLaunchResult.LAUNCHED -> Unit
+            SpaceFilesEditLaunchResult.NO_HANDLER -> settleEditLaunchFailure(
+                launch.sessionId, "noHandler", SpaceFilesProblem.NO_HANDLER,
+            )
+            SpaceFilesEditLaunchResult.FAILED -> settleEditLaunchFailure(
+                launch.sessionId, "launchFailed", SpaceFilesProblem.FAILED,
+            )
+        }
+    }
+
+    private fun settleEditLaunchFailure(sessionId: String, code: String, problem: SpaceFilesProblem) {
+        launchOwned {
+            val row = editLock.withLock { editSessions[sessionId] } ?: return@launchOwned
+            saveEditRow(row.copy(
+                phase = SpaceFilesEditPhase.FINISHED,
+                errorCode = code,
+                updatedAtMillis = clock(),
+            ))
+            publishFailure(SpaceFilesOperation.EDIT, problem)
+        }
+    }
+
+    /**
+     * The verified save-back ladder for one changed working copy:
+     *  1. preserve the CURRENT provider bytes into caller-owned recovery
+     *     storage BEFORE any destructive possibility (`prepareSave`);
+     *  2. if the observed source hash differs from the import baseline the
+     *     result is a CONFLICT — both versions stay recoverable and NOTHING
+     *     is written;
+     *  3. otherwise `commitSave` writes + read-back-verifies, non-destructive
+     *     sibling fallback included; only the provider read-back hash may
+     *     report committed bytes.
+     * Triggered by the working-copy watcher debounce and by every resume.
+     */
+    internal suspend fun reconcileEditInternal(sessionId: String) {
+        val row = editLock.withLock { editSessions[sessionId] } ?: return
+        if (row.phase in setOf(
+                SpaceFilesEditPhase.FINISHED,
+                SpaceFilesEditPhase.CONFLICT,
+                SpaceFilesEditPhase.SAVING,
+            )) {
+            return
+        }
+        val measured = runCatching { measuredEdit(row.workingFile) }.getOrElse {
+            saveEditRow(row.copy(
+                phase = SpaceFilesEditPhase.RECOVERABLE_FAILURE,
+                errorCode = "copyUnavailable",
+                updatedAtMillis = clock(),
+            ), expected = row)
+            return
+        }
+        if (SpaceFilesEditPolicy.workingState(measured.first, row.baselineSha256) ==
+            SpaceFilesEditPolicy.WorkingState.UNCHANGED
+        ) {
+            return
+        }
+        val saving = row.copy(phase = SpaceFilesEditPhase.SAVING, errorCode = null, updatedAtMillis = clock())
+        if (!saveEditRow(saving, expected = row)) return
+        val recoveryAvailable = withContext(ioDispatcher) {
+            runCatching {
+                if (!editRecoveryRoot.isDirectory) editRecoveryRoot.mkdirs()
+                editRecoveryRoot.isDirectory && !Files.isSymbolicLink(editRecoveryRoot.toPath())
+            }.getOrDefault(false)
+        }
+        if (!recoveryAvailable) {
+            saveEditRow(saving.copy(
+                phase = SpaceFilesEditPhase.RECOVERABLE_FAILURE,
+                errorCode = "recoveryStoreUnavailable",
+                updatedAtMillis = clock(),
+            ))
+            publishFailure(SpaceFilesOperation.EDIT, SpaceFilesProblem.FAILED, "recoveryStoreUnavailable")
+            return
+        }
+        val preparedOutcome = awaitProvider { cancel ->
+            service.workingCopy.prepareSave(
+                row.target, row.baselineSha256, editRecoveryRoot,
+                SpaceFilesEditPolicy.EDIT_BYTE_LIMIT, cancel,
+            )
+        }
+        val prepared = when (preparedOutcome) {
+            is SafOutcome.Failure -> {
+                val mapped = preparedOutcome.failure.toSpaceFilesFailure(preparedOutcome.detail)
+                saveEditRow(row.copy(
+                    phase = SpaceFilesEditPhase.RECOVERABLE_FAILURE,
+                    errorCode = preparedOutcome.failure.code,
+                    updatedAtMillis = clock(),
+                ))
+                publishFailure(SpaceFilesOperation.EDIT, mapped)
+                return
+            }
+            is SafOutcome.Success -> preparedOutcome.value
+        }
+        if (prepared.state == PreparedState.SOURCE_CHANGED) {
+            // Crash recovery: when the live source already holds exactly the
+            // working bytes (the prepareSave receipt proves the observed
+            // source hash), a previous save landed before its journal ACK —
+            // process death between the provider commit and the journal save
+            // — or another writer produced identical bytes. Settle as
+            // verified at the same source instead of forcing the user
+            // through a false conflict; a genuinely different source still
+            // conflicts with BOTH versions kept (never an overwrite).
+            val alreadyAtSource = prepared.observedSourceSha256 == measured.first &&
+                prepared.receipt.bytes == measured.second
+            // Both settlement saves are fenced with `expected = saving`: a
+            // session finished/dismissed under the in-flight provider hop can
+            // never be re-created here, and its notice is published only when
+            // the matching row transition really happened.
+            val settled = alreadyAtSource && saveEditRow(row.copy(
+                phase = SpaceFilesEditPhase.SAVED,
+                errorCode = null,
+                savedSiblingName = null,
+                baselineSha256 = measured.first,
+                baselineBytes = measured.second,
+                recoveryReceiptId = prepared.receipt.receiptId,
+                updatedAtMillis = clock(),
+            ), expected = saving)
+            if (settled) {
+                _state.update {
+                    it.copy(notice = SpaceFilesNotice.Completed(
+                        SpaceFilesOperation.EDIT,
+                        row.name,
+                        detail = null, // null = verified at the same source document
+                    ))
+                }
+                afterEditSaved(row.target)
+            } else if (!alreadyAtSource && saveEditRow(row.copy(
+                    phase = SpaceFilesEditPhase.CONFLICT,
+                    errorCode = "sourceChanged",
+                    recoveryReceiptId = prepared.receipt.receiptId,
+                    updatedAtMillis = clock(),
+                ), expected = saving)
+            ) {
+                publishFailure(
+                    SpaceFilesOperation.EDIT,
+                    SpaceFilesFailure(
+                        SpaceFilesProblem.CONFLICT,
+                        "the file changed elsewhere since it was opened; your edits and the current file are both kept",
+                    ),
+                )
+            }
+            return
+        }
+        val commitOutcome = awaitProvider { cancel ->
+            service.workingCopy.commitSave(
+                prepared,
+                StagedLocalRef(row.workingFile, row.workingFile.name),
+                measured.first,
+                SavePolicy(
+                    preferSaveAsWhenReplacementNotProven = false,
+                    allowDestructiveOverwrite = true,
+                    allowSaveAsSibling = true,
+                    recoveryByteLimit = SpaceFilesEditPolicy.EDIT_BYTE_LIMIT,
+                    // Human-readable sibling convention, matching the
+                    // conflict-export path; the final surfaced name still
+                    // comes from the provider read-back below.
+                    siblingName = editedSiblingName(row.name),
+                ),
+                editJournal,
+                cancel,
+            )
+        }
+        val receipt = (commitOutcome as? SafOutcome.Success)?.value
+        if (receipt == null) {
+            saveEditRow(row.copy(
+                phase = SpaceFilesEditPhase.RECOVERABLE_FAILURE,
+                errorCode = "commitUnavailable",
+                recoveryReceiptId = prepared.receipt.receiptId,
+                updatedAtMillis = clock(),
+            ))
+            publishFailure(SpaceFilesOperation.EDIT, SpaceFilesProblem.FAILED, "commit unavailable")
+            return
+        }
+        when (receipt) {
+            is SaveReceipt.Committed -> {
+                saveEditRow(row.copy(
+                    phase = SpaceFilesEditPhase.SAVED,
+                    errorCode = null,
+                    savedSiblingName = null,
+                    // The provider now holds these bytes; a later edit round
+                    // compares against THIS verified state, not the import one.
+                    baselineSha256 = measured.first,
+                    baselineBytes = measured.second,
+                    recoveryReceiptId = prepared.receipt.receiptId,
+                    updatedAtMillis = clock(),
+                ))
+                _state.update {
+                    it.copy(notice = SpaceFilesNotice.Completed(
+                        SpaceFilesOperation.EDIT,
+                        row.name,
+                        detail = null, // null = verified at the same source document
+                    ))
+                }
+                afterEditSaved(row.target)
+            }
+            is SaveReceipt.SaveAsCreated -> {
+                // The created ref carries no display name and a real provider
+                // may adjust the requested sibling name on collision: the
+                // user-facing label must be the provider's actual name.
+                val siblingName = createdDisplayName(receipt.created.created, editedSiblingName(row.name))
+                saveEditRow(row.copy(
+                    phase = SpaceFilesEditPhase.SAVED,
+                    errorCode = null,
+                    savedSiblingName = siblingName,
+                    baselineSha256 = measured.first,
+                    baselineBytes = measured.second,
+                    recoveryReceiptId = prepared.receipt.receiptId,
+                    updatedAtMillis = clock(),
+                ))
+                _state.update {
+                    it.copy(notice = SpaceFilesNotice.Completed(
+                        SpaceFilesOperation.EDIT,
+                        row.name,
+                        detail = siblingName, // non-null = explicit recovery sibling
+                    ))
+                }
+                afterEditSaved(row.target)
+            }
+            is SaveReceipt.Conflict -> {
+                saveEditRow(row.copy(
+                    phase = SpaceFilesEditPhase.CONFLICT,
+                    errorCode = "conflict",
+                    recoveryReceiptId = receipt.recovery.receiptId,
+                    updatedAtMillis = clock(),
+                ))
+                publishFailure(
+                    SpaceFilesOperation.EDIT,
+                    SpaceFilesFailure(
+                        SpaceFilesProblem.CONFLICT,
+                        "the file changed while saving; your edits and the current file are both kept",
+                    ),
+                )
+            }
+            is SaveReceipt.RecoverableFailure -> {
+                saveEditRow(row.copy(
+                    phase = SpaceFilesEditPhase.RECOVERABLE_FAILURE,
+                    errorCode = receipt.code,
+                    recoveryReceiptId = prepared.receipt.receiptId,
+                    updatedAtMillis = clock(),
+                ))
+                publishFailure(
+                    SpaceFilesOperation.EDIT,
+                    SpaceFilesFailure(SpaceFilesProblem.FAILED, receipt.code),
+                )
+            }
+        }
+    }
+
+    fun reconcileEdit(sessionId: String) {
+        launchOwned { reconcileEditInternal(sessionId) }
+    }
+
+    /** CONFLICT resolution: export the edited working bytes as an EXPLICIT new
+     *  document next to the original (the original is never overwritten). */
+    fun saveConflictCopyAsNew(sessionId: String) {
+        launchOwned {
+            val row = editLock.withLock {
+                editSessions[sessionId]?.takeIf { it.phase == SpaceFilesEditPhase.CONFLICT }
+            } ?: return@launchOwned
+            val tree = row.target.tree ?: run {
+                publishFailure(SpaceFilesOperation.EDIT, SpaceFilesProblem.GRANT_MISSING)
+                return@launchOwned
+            }
+            val measured = runCatching { measuredEdit(row.workingFile) }.getOrElse {
+                saveEditRow(row.copy(errorCode = "copyUnavailable", updatedAtMillis = clock()))
+                return@launchOwned
+            }
+            val staged = StagedCopy(
+                local = StagedLocalRef(row.workingFile, row.workingFile.name),
+                sourceUri = row.target.uri,
+                sourceDocumentId = row.target.documentId,
+                bytes = measured.second,
+                sha256 = measured.first,
+                sizeHintBytes = null,
+                lastModifiedHintMillis = null,
+                displayName = row.name,
+            )
+            val outcome = awaitProvider { cancel ->
+                service.workingCopy.exportStagedCopy(
+                    staged, tree, row.target.parentDocumentId,
+                    editedSiblingName(row.name), cancel,
+                )
+            }
+            when (outcome) {
+                is SafOutcome.Failure -> publishFailure(SpaceFilesOperation.EDIT, outcome)
+                is SafOutcome.Success -> {
+                    // Same rule as the commit-fallback sibling: surface the
+                    // provider's actual display name, not the requested one.
+                    val siblingName = createdDisplayName(outcome.value.created, editedSiblingName(row.name))
+                    saveEditRow(row.copy(
+                        phase = SpaceFilesEditPhase.FINISHED,
+                        errorCode = null,
+                        savedSiblingName = siblingName,
+                        updatedAtMillis = clock(),
+                    ))
+                    _state.update {
+                        it.copy(notice = SpaceFilesNotice.Completed(
+                            SpaceFilesOperation.EDIT,
+                            row.name,
+                            detail = siblingName,
+                        ))
+                    }
+                    reloadBrowseInternal()
+                }
+            }
+        }
+    }
+
+    /** CONFLICT resolution: keep the provider version; the edited working copy
+     *  and the recovery original stay on disk (a copy is never discarded). */
+    fun keepProviderVersion(sessionId: String) {
+        launchOwned {
+            val row = editLock.withLock {
+                editSessions[sessionId]?.takeIf { it.phase == SpaceFilesEditPhase.CONFLICT }
+            } ?: return@launchOwned
+            saveEditRow(row.copy(
+                phase = SpaceFilesEditPhase.FINISHED,
+                errorCode = "keptProviderVersion",
+                updatedAtMillis = clock(),
+            ))
+        }
+    }
+
+    /** Close one session: stop watching, keep every copy, free the editor's
+     *  grant (the composition revokes the URI it minted for this session). */
+    fun finishEdit(sessionId: String) {
+        launchOwned {
+            val row = editLock.withLock { editSessions[sessionId] } ?: return@launchOwned
+            if (row.phase == SpaceFilesEditPhase.SAVING) return@launchOwned
+            stopWatchingEdit(sessionId)
+            saveEditRow(row.copy(phase = SpaceFilesEditPhase.FINISHED, updatedAtMillis = clock()))
+        }
+    }
+
+    /** Remove one finished session from the surface. Copies ALWAYS stay on
+     *  disk (working copy + recovery original); only the metadata row goes. */
+    fun dismissEdit(sessionId: String) {
+        launchOwned {
+            stopWatchingEdit(sessionId)
+            editLock.withLock { editSessions.remove(sessionId) }
+            runCatching { editJournal?.remove(sessionId) }
+            publishEditSessions()
+        }
+    }
+
+    // ---- edit plumbing -------------------------------------------------
+
+    private fun publishEditLaunch(row: SpaceFilesEditSession) {
+        _state.update {
+            it.copy(editLaunch = SpaceFilesEditLaunch(
+                id = editIncarnation.incrementAndGet(),
+                sessionId = row.id,
+                file = row.workingFile,
+                mimeType = row.mimeType.ifBlank { "*/*" },
+                name = row.name,
+            ))
+        }
+    }
+
+    private suspend fun publishEditSessions() {
+        val rows = editLock.withLock { editSessions.values.toList() }
+        _state.update { it.copy(editSessions = rows.sortedByDescending { row -> row.updatedAtMillis }) }
+    }
+
+    private suspend fun saveEditRow(row: SpaceFilesEditSession, expected: SpaceFilesEditSession? = null): Boolean {
+        val updated = editLock.withLock {
+            if (expected != null && editSessions[row.id] != expected) return@withLock false
+            editSessions[row.id] = row
+            true
+        }
+        if (!updated) return false
+        runCatching { editJournal?.save(row) }
+        publishEditSessions()
+        return true
+    }
+
+    /** Display name the provider actually gave a just-created sibling. The
+     * created ref carries no name and the provider may adjust the requested
+     * name (collision), so the label surfaced to the user is read back live;
+     * when the read fails the bounded requested name stays the honest
+     * fallback (bytes were still verified by the save receipt itself). */
+    private suspend fun createdDisplayName(ref: SafDocumentRef, fallback: String): String =
+        when (val outcome = awaitProvider { cancel -> service.operations.metadata(ref, cancel) }) {
+            is SafOutcome.Success -> outcome.value.displayName.ifBlank { fallback }
+            is SafOutcome.Failure -> fallback
+        }
+
+    /** Verified size + streamed SHA-256 of one working copy (bounded). */
+    private fun measuredEdit(file: File): Pair<String, Long> {
+        if (!file.isFile || file.length() !in 0..SpaceFilesEditPolicy.EDIT_BYTE_LIMIT) {
+            throw IllegalStateException("copyUnavailable")
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        var bytes = 0L
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                bytes += count
+                if (bytes > SpaceFilesEditPolicy.EDIT_BYTE_LIMIT) throw IllegalStateException("contentTooLarge")
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) } to bytes
+    }
+
+    @Suppress("DEPRECATION")
+    private fun watchEdit(row: SpaceFilesEditSession) {
+        if (editObservers.containsKey(row.id)) return
+        val dir = row.workingFile.parentFile ?: return
+        val observer = object : android.os.FileObserver(
+            dir.path, android.os.FileObserver.CLOSE_WRITE or android.os.FileObserver.MOVED_TO,
+        ) {
+            override fun onEvent(event: Int, path: String?) {
+                if (path == row.workingFile.name) {
+                    editDebounce.remove(row.id)?.cancel()
+                    editDebounce[row.id] = scope.launch(ioDispatcher) {
+                        delay(600)
+                        reconcileEdit(row.id)
+                    }
+                }
+            }
+        }
+        // Register only a watcher that actually started: a failed start must
+        // not leave a registered observer whose stopWatching() would later
+        // throw past the session teardown (finish/dismiss never re-create).
+        if (editObservers.putIfAbsent(row.id, observer) == null) {
+            runCatching { observer.startWatching() }.onFailure {
+                editObservers.remove(row.id, observer)
+            }
+        }
+    }
+
+    private fun stopWatchingEdit(sessionId: String) {
+        editDebounce.remove(sessionId)?.cancel()
+        // Teardown must never throw past the row removal below: the debounce
+        // is already cancelled and a dead observer is inert.
+        runCatching { editObservers.remove(sessionId)?.stopWatching() }
+    }
+
+    /** After a verified save the provider listing + the open preview (when it
+     *  shows the exact saved document) are refreshed from the current bytes. */
+    private suspend fun afterEditSaved(target: SafDocumentRef) {
+        reloadBrowseInternal()
+        val preview = _state.value.preview
+        if (preview != null && preview.ref.uri == target.uri) {
+            previewInternal(entryFromTarget(target, preview.name, preview.mimeType, preview.isVirtual))
+        }
+    }
+
+    private fun entryFromTarget(
+        target: SafDocumentRef,
+        name: String,
+        mimeType: String,
+        isVirtual: Boolean,
+    ): SpaceFileEntry = SpaceFileEntry(
+        name = name,
+        mimeType = mimeType,
+        sizeBytes = null,
+        lastModifiedMillis = null,
+        isDirectory = false,
+        isVirtual = isVirtual,
+        ref = target,
+        canWrite = true,
+        canRename = true,
+        canDelete = true,
+        canCopy = true,
+        canMove = true,
+        canCreateChildren = false,
+    )
+
+    private fun editedSiblingName(original: String): String {
+        val dot = original.lastIndexOf('.')
+        val candidate = if (dot > 0) {
+            original.substring(0, dot) + " (edited)" + original.substring(dot)
+        } else {
+            "$original (edited)"
+        }
+        return if (SpaceFilesNames.isSafeSegment(candidate)) candidate else "$original.edited"
+    }
+
+    /** Restore durable sessions after process start; an interrupted SAVING
+     *  ladder re-enters from EDITING (prepareSave re-observes the source, so
+     *  a crash between write and read-back can only resolve to conflict). */
+    private suspend fun restoreEditSessionsInternal() {
+        val journal = editJournal ?: return
+        val loaded = runCatching { journal.load() }.getOrElse {
+            _state.update { current ->
+                current.copy(notice = SpaceFilesNotice.Failed(
+                    SpaceFilesOperation.EDIT,
+                    SpaceFilesFailure(SpaceFilesProblem.FAILED, "editJournalUnavailable"),
+                ))
+            }
+            return
+        }
+        // Finished sessions never re-surface after a restart; their copies
+        // remain on disk and the metadata row is retired.
+        loaded.filter { it.phase == SpaceFilesEditPhase.FINISHED }
+            .forEach { runCatching { journal.remove(it.id) } }
+        val restored = loaded.filterNot { it.phase == SpaceFilesEditPhase.FINISHED }
+        if (restored.isEmpty()) return
+        editLock.withLock {
+            restored.forEach { row ->
+                val reconciling = row.phase == SpaceFilesEditPhase.SAVING
+                editSessions[row.id] = if (reconciling) {
+                    row.copy(phase = SpaceFilesEditPhase.EDITING, errorCode = "reconciling")
+                } else {
+                    row
+                }
+            }
+        }
+        publishEditSessions()
+        editLock.withLock { editSessions.values.toList() }
+            .filter { it.phase != SpaceFilesEditPhase.FINISHED }
+            .forEach { row ->
+                runCatching { watchEdit(row) }
+                reconcileEditInternal(row.id)
+            }
     }
 
     // ------------------------------------------------------------------

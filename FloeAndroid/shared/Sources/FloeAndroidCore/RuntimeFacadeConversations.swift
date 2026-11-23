@@ -1630,10 +1630,15 @@ public struct ConversationMessageRowWire: Sendable, Equatable {
     /// partial inline is never produced by this builder.
     public let contentInlineComplete: Bool
     public let partCount: Int
+    public let attachments: [[String: String]]
+    public let sharedToolResults: [[String: String]]
+    public let sharedToolResultCount: Int
 
     public init(messageID: UUID, role: String, createdAtRaw: String, runID: UUID?,
                 content: String?, contentHandle: String?, totalBytes: Int,
-                contentInlineComplete: Bool, partCount: Int) {
+                contentInlineComplete: Bool, partCount: Int,
+                attachments: [[String: String]] = [], sharedToolResults: [[String: String]] = [],
+                sharedToolResultCount: Int = 0) {
         self.messageID = messageID
         self.role = role
         self.createdAtRaw = createdAtRaw
@@ -1643,6 +1648,9 @@ public struct ConversationMessageRowWire: Sendable, Equatable {
         self.totalBytes = totalBytes
         self.contentInlineComplete = contentInlineComplete
         self.partCount = partCount
+        self.attachments = attachments
+        self.sharedToolResults = sharedToolResults
+        self.sharedToolResultCount = sharedToolResultCount
     }
 
     public var wireObject: [String: Any] {
@@ -1659,6 +1667,11 @@ public struct ConversationMessageRowWire: Sendable, Equatable {
         // Explicit JSON null for a message with no owning run (same
         // invariant as the file's other `?? NSNull()` projections).
         object["runID"] = runID?.uuidString ?? NSNull()
+        if !attachments.isEmpty { object["attachments"] = attachments }
+        if sharedToolResultCount > 0 {
+            object["sharedToolResults"] = sharedToolResults
+            object["sharedToolResultCount"] = sharedToolResultCount
+        }
         return object
     }
 }

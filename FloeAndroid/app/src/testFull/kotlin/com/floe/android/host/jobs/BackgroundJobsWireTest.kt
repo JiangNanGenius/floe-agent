@@ -87,7 +87,8 @@ class BackgroundJobsWireTest {
     }
 
     @Test fun cancelRequestCarriesExactTaskRunAndJob() {
-        val request = Json.parseToJsonElement(BackgroundJobsWire.cancelRequest(
+        val request = Json.parseToJsonElement(BackgroundJobsWire.actionRequest(
+            action = BackgroundJobsWire.ACTION_CANCEL,
             "cancel-1", 7, conversation, run, job)).jsonObject
         assertEquals("jobs.cancel", request["action"]?.jsonPrimitive?.content)
         assertEquals("7", request["epoch"]?.jsonPrimitive?.content)

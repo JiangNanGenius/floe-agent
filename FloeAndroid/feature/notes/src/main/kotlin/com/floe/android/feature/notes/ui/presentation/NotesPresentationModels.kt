@@ -110,8 +110,7 @@ public fun filterAndSortDocuments(
     val searching = query.isNotBlank()
     val filtered = source.filter { document ->
         if (searching) {
-            // Search is global: it includes notes outside Recently Opened and
-            // the current notebook, while still never mixing in Trash.
+            // Search spans notebooks and preserves the active/Trash boundary.
             val include = if (filter == NotesLibraryFilter.TRASH) {
                 document.deletedAt != null
             } else {

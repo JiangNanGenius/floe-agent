@@ -2,10 +2,8 @@
 //
 // Trusted App transport for THIS task's finite background jobs
 // (`floe.taskjobs/30`, BridgeV30) over the EXISTING `floe_bridge_exchange`
-// C ABI. Closed actions only:
-//
-//   jobs.list   {conversationID, runID?}
-//   jobs.cancel {conversationID, runID, jobID}
+// C ABI. Listing is bounded to the task. Cancel, restart and open preview
+// require exact conversationID, runID and jobID.
 //
 // The native owner answers with bounded durable projections. This codec never
 // synthesizes a state, never turns a cancellation request into a terminal and
@@ -31,6 +29,8 @@ internal object BackgroundJobsWire {
     const val SCHEMA = "floe.taskjobs/30"
     const val ACTION_LIST = "jobs.list"
     const val ACTION_CANCEL = "jobs.cancel"
+    const val ACTION_RESTART_SERVICE = "jobs.restartService"
+    const val ACTION_OPEN_SERVICE_PREVIEW = "jobs.openServicePreview"
     const val MAX_JOBS = 50
     const val MAX_REQUEST_BYTES = 65_536
 
@@ -55,7 +55,8 @@ internal object BackgroundJobsWire {
         }.toString()
     }
 
-    fun cancelRequest(
+    fun actionRequest(
+        action: String,
         requestID: String,
         epoch: Long,
         conversationID: String,
@@ -68,7 +69,7 @@ internal object BackgroundJobsWire {
             put("operation", "command")
             put("requestID", requestID)
             put("epoch", epoch)
-            put("action", ACTION_CANCEL)
+            put("action", action)
             put(
                 "payload",
                 buildJsonObject {
@@ -148,6 +149,10 @@ internal object BackgroundJobsWire {
                         ?.takeIf { it > 0 },
                     dependencyKind = dependencyKind?.takeIf { it == "job" || it == "service" },
                     dependencyState = dependencyState?.takeIf { it in DEPENDENCY_STATES },
+                    canRestartService = target == "service" && terminal &&
+                        value["canRestartService"]?.jsonPrimitive?.booleanOrNull == true,
+                    canOpenServicePreview = target == "service" && !terminal && !cancellationRequested &&
+                        value["canOpenServicePreview"]?.jsonPrimitive?.booleanOrNull == true,
                 )
             }
         } catch (_: Exception) {

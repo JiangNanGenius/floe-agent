@@ -233,7 +233,11 @@ data class MessageUi(
     val trustedNoticeSummary: String? = null,
     /** Original full wire timestamp for chronology; never sort by display HH:mm. */
     val createdAtEpochMillis: Long? = null,
+    val sharedToolResults: List<SharedToolResultUi> = emptyList(),
+    val sharedToolResultCount: Int = 0,
 )
+
+data class SharedToolResultUi(val name: String, val summary: String, val status: String?)
 
 /* -------------------------------- approvals -------------------------------- */
 
@@ -271,8 +275,20 @@ data class WorkspaceFileApprovalUi(
     val sourcePrecondition: String? = null,
     val expectedOccurrences: Long? = null,
     val recursive: Boolean? = null,
+    val outputDisplayName: String? = null,
+    val managedService: WorkspaceServiceApprovalUi? = null,
 ) {
     override fun toString(): String = "WorkspaceFileApprovalUi(operation=$operation, details=redacted)"
+}
+
+data class WorkspaceServiceApprovalUi(
+    val runtime: String,
+    val port: Int,
+    val cwd: String,
+    val arguments: List<String>,
+    val waitForReadiness: Boolean,
+) {
+    override fun toString(): String = "WorkspaceServiceApprovalUi(details=redacted)"
 }
 
 /** Private request identity only; a verified live node is still required before allowing. */
@@ -1028,6 +1044,7 @@ data class AttachmentOpenRequest(
     val conversationId: String,
     val messageId: String,
     val attachmentId: String?,
+    val displayName: String = "",
 ) {
     val key: String get() = "$conversationId/$messageId/${attachmentId ?: "missing"}"
 }
@@ -1056,6 +1073,15 @@ data class ModelOptionUi(
 )
 
 /** ⇄ AgentExecutionMode. */
+enum class ChatReasoningUi(val swiftRaw: String) {
+    FAST("fast"),
+    AUTOMATIC("automatic"),
+    LOW("low"),
+    MEDIUM("medium"),
+    HIGH("high"),
+    MAXIMUM("maximum"),
+}
+
 enum class AgentExecutionModeUi(val swiftRaw: String) {
     AGENT("agent"),
     CHAT("chat"),
@@ -1148,6 +1174,8 @@ sealed interface TimelineRowUi {
         val text: String,
         val attachedMessageId: String? = null,
         val attachmentChips: List<AttachmentChipUi> = emptyList(),
+        val sharedToolResults: List<SharedToolResultUi> = emptyList(),
+        val sharedToolResultCount: Int = 0,
     ) : TimelineRowUi {
         override val id get() = "assistant.$rowId"
     }
@@ -1218,8 +1246,10 @@ sealed interface TimelineRowUi {
 
 /* --------------------------- background job surface ------------------------- */
 
+enum class BackgroundServiceAction { RESTART, OPEN_PREVIEW }
+
 /**
- * One THIS-task finite background job, projected from the durable native row
+ * One task-owned background job, projected from the durable native row
  * (`floe.taskjobs/30`). Only closed identity/state/progress fields exist: the
  * host never sends payloads, commands, output text, workspace paths or private
  * paths here, and this module never infers a terminal state from a
@@ -1244,6 +1274,8 @@ data class BackgroundJobUi(
     /** `job` or `service` when this job is a required dependency. */
     val dependencyKind: String? = null,
     val dependencyState: String? = null,
+    val canRestartService: Boolean = false,
+    val canOpenServicePreview: Boolean = false,
 ) {
     /** Per-job Stop is offered only while the durable row is nonterminal. */
     val canCancel: Boolean get() = !terminal
@@ -1341,6 +1373,7 @@ data class ThreadUiState(
      * newer plan revision presents once; an explicit Plan selection at this
      * same revision survives refreshes and process reopen. */
     val lastPresentedPlanRevision: String? = null,
+    val chatReasoning: ChatReasoningUi = ChatReasoningUi.FAST,
     val childRuns: List<ChildRunUi>,
     val decisions: List<ToolDecisionUi>,
     /** On-demand delegated-child transcripts, published per load request. */

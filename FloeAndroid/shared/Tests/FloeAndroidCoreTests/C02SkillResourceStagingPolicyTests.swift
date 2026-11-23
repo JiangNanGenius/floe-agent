@@ -99,6 +99,43 @@ final class C02SkillResourceStagingPolicyTests: XCTestCase, @unchecked Sendable 
         XCTAssertEqual(reasonNoWorkspace, SkillStageReason.taskWorkspaceUnavailable)
     }
 
+    func testSSHTargetWithBoundRemoteWriteAuthorityResolvesRemoteLane() {
+        let runID = UUID(), taskID = UUID()
+        let pinned = target(taskID: taskID, kind: .ssh)
+        let outcome = C02SkillResourceStagingPolicy.resolution(
+            pin: pin(runID: runID, taskID: taskID),
+            target: pinned,
+            // Even when a local workspace root still resolves for this run,
+            // the remote lane must win: never a silent local stage.
+            workspaceRoot: workspace,
+            remoteWriteAuthorized: true)
+        guard case .remote(let destination) = outcome else {
+            return XCTFail("expected remote lane, got \(outcome)")
+        }
+        XCTAssertEqual(destination.taskID, taskID)
+        XCTAssertEqual(destination.environmentID, pinned.environmentID)
+        XCTAssertEqual(destination.targetRevision, pinned.revision)
+        XCTAssertEqual(destination.rootEpoch, pinned.rootEpoch)
+        XCTAssertEqual(destination.remoteWorkspaceRoot, "/home/floe/task")
+        XCTAssertEqual(destination.runtimeGeneration, "gen-1")
+        XCTAssertEqual(destination.hostID, pinned.remote?.hostID)
+    }
+
+    func testSSHTargetWithMalformedRemoteFactsRefusesPrecisely() {
+        let runID = UUID(), taskID = UUID()
+        var malformed = target(taskID: taskID, kind: .ssh)
+        malformed.remote?.remoteRootPath = "/home/floe/../task"
+        let outcome = C02SkillResourceStagingPolicy.resolution(
+            pin: pin(runID: runID, taskID: taskID),
+            target: malformed,
+            workspaceRoot: workspace,
+            remoteWriteAuthorized: true)
+        guard case .unavailable(let reason) = outcome else {
+            return XCTFail("expected refusal, got \(outcome)")
+        }
+        XCTAssertEqual(reason, SkillStageReason.taskWorkspaceUnavailable)
+    }
+
     // MARK: - Integration box (install / current / uninstall fencing)
 
     func testDomainStagerRefusesHonestlyWhileNoRuntimeIsInstalled() async throws {

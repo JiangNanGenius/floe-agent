@@ -16,8 +16,20 @@ internal data class DeviceHistoryPeer(
     val address: FloeDeviceLinkAddress,
     val sharedConversations: Set<UUID> = emptySet(),
     val workspaceShares: Map<UUID, String> = emptyMap(),
+    /**
+     * Per-conversation convergence consent (`2` = explicitly re-granted after
+     * delete/rename propagation existed). Absent entries keep the original
+     * copy-only semantics on the wire, exactly like the frozen Apple peer.
+     */
+    val workspaceSyncVersions: Map<UUID, Int> = emptyMap(),
 ) {
     val id: String get() = address.endpointId
+
+    fun sharesWorkspace(task: UUID): Boolean =
+        task in sharedConversations && task in workspaceShares
+
+    fun convergesWorkspace(task: UUID): Boolean =
+        sharesWorkspace(task) && workspaceSyncVersions[task] == 2
 }
 
 internal data class DeviceHistoryPreferences(
@@ -28,6 +40,20 @@ internal data class DeviceHistoryPreferences(
     val peers: List<DeviceHistoryPeer> = emptyList(),
 ) {
     fun shares(): Map<String, Set<UUID>> = peers.associate { it.id to it.sharedConversations }
+
+    /** The durable per-peer workspace share scopes (peer → task → scope). */
+    fun workspaceShares(): Map<String, Map<UUID, String>> = peers.mapNotNull { peer ->
+        val scopes = peer.workspaceShares.filterKeys { it in peer.sharedConversations }
+        if (scopes.isEmpty()) null else peer.id to scopes
+    }.toMap()
+
+    /** The explicit per-peer convergence consents (peer → task → version). */
+    fun workspaceVersions(): Map<String, Map<UUID, Int>> = peers.mapNotNull { peer ->
+        val versions = peer.workspaceSyncVersions.filter {
+            it.key in peer.sharedConversations && it.key in peer.workspaceShares
+        }
+        if (versions.isEmpty()) null else peer.id to versions
+    }.toMap()
 }
 
 /** Pairings belong to the local installation, alongside the device's Keystore identity. */
@@ -66,11 +92,21 @@ internal class DeviceHistoryPreferenceStore(context: Context) {
                     task to values.getString(key).also { require(validScope(it)) }
                 }
             }.orEmpty()
+            val versions = row.optJSONObject("workspaceSyncVersions")
+            require((versions?.length() ?: 0) <= MAX_SHARED_CONVERSATIONS)
+            val workspaceSyncVersions = versions?.let { values ->
+                values.keys().asSequence().associate { key ->
+                    val task = UUID.fromString(key)
+                    require(task in sharedIds && task in workspaceShares)
+                    task to values.getInt(key).also { require(it == 2) }
+                }
+            }.orEmpty()
             DeviceHistoryPeer(
                 name = row.getString("name").also { require(it.isNotBlank() && it.length <= 100) },
                 address = FloeDeviceLinkAddress.fromJson(row.getJSONObject("address").toString()),
                 sharedConversations = sharedIds,
                 workspaceShares = workspaceShares,
+                workspaceSyncVersions = workspaceSyncVersions,
             )
         }
         require(peers.distinctBy { it.id }.size == peers.size)
@@ -89,6 +125,9 @@ internal class DeviceHistoryPreferenceStore(context: Context) {
     fun write(value: DeviceHistoryPreferences) {
         val peers = value.peers.map { peer ->
             require(peer.workspaceShares.all { (task, scope) -> task in peer.sharedConversations && validScope(scope) })
+            require(peer.workspaceSyncVersions.all { (task, version) ->
+                task in peer.sharedConversations && task in peer.workspaceShares && version == 2
+            })
             JSONObject()
                 .put("name", peer.name)
                 .put("address", JSONObject(peer.address.toJson()))
@@ -96,6 +135,12 @@ internal class DeviceHistoryPreferenceStore(context: Context) {
                 .apply {
                     if (peer.workspaceShares.isNotEmpty()) {
                         put("workspaceShares", JSONObject(peer.workspaceShares.mapKeys { it.key.toString() }))
+                    }
+                    if (peer.workspaceSyncVersions.isNotEmpty()) {
+                        put(
+                            "workspaceSyncVersions",
+                            JSONObject(peer.workspaceSyncVersions.mapKeys { it.key.toString() }),
+                        )
                     }
                 }
         }

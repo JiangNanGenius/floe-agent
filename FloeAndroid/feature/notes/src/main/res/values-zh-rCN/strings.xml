@@ -2,6 +2,10 @@
 <resources>
     <string name="notes_title">手记</string>
     <string name="notes_search_placeholder">搜索手记</string>
+    <string name="notes_search_trash">搜索废纸篓</string>
+    <string name="notes_select_multiple">多选手记</string>
+    <string name="notes_trash_selection_title">将 %1$d 项移到废纸篓？</string>
+    <string name="notes_trash_selection_body">这些手记可以从废纸篓恢复。</string>
     <string name="notes_filter_recent">最近</string>
     <string name="notes_filter_all">全部</string>
     <string name="notes_filter_mind_maps">思维导图</string>

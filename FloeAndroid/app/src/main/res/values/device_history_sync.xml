@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Frozen v2 device-sync extension strings (English). -->
+    <string name="device_history_workspace_propagate">Sync renames and deletions</string>
+    <string name="device_history_workspace_received_converged">Workspace synced. Saved %1$d files, renamed %2$d, moved %3$d to recovery, preserved %4$d differences.</string>
+    <string name="device_history_attachments_received">Restored %1$d attachments. %2$d attachments are pending; sync again to retry.</string>
+</resources>

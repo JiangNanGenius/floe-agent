@@ -259,6 +259,7 @@ private fun FloeShellContent(
     var artifactPath by rememberSaveable { mutableStateOf<String?>(null) }
     var artifactSurfaceName by rememberSaveable { mutableStateOf<String?>(null) }
     var artifactToken by rememberSaveable { mutableLongStateOf(0L) }
+    var artifactEditWithExternalApp by rememberSaveable { mutableStateOf(false) }
     var artifactNativeEpoch by rememberSaveable { mutableLongStateOf(0L) }
     var artifactHostGeneration by rememberSaveable { mutableLongStateOf(0L) }
     var artifactSessionEpoch by rememberSaveable { mutableLongStateOf(0L) }
@@ -661,6 +662,7 @@ private fun FloeShellContent(
                         artifactPath = request.relativePath
                         artifactSurfaceName = request.surface.name
                         artifactToken = request.token
+                        artifactEditWithExternalApp = request.editWithExternalApp
                         artifactNativeEpoch = request.nativeEpoch
                         artifactHostGeneration = request.hostGeneration
                         artifactSessionEpoch = request.sessionEpoch
@@ -1432,7 +1434,7 @@ private fun FloeShellContent(
         // through the destination's own requestIsCurrent gate.
         val artifactRequest = remember(
             artifactTaskId, artifactWorkspaceId, artifactPath, artifactSurfaceName, artifactToken,
-            artifactNativeEpoch, artifactHostGeneration, artifactSessionEpoch,
+            artifactNativeEpoch, artifactHostGeneration, artifactSessionEpoch, artifactEditWithExternalApp,
         ) {
             val task = artifactTaskId
             val workspace = artifactWorkspaceId
@@ -1447,6 +1449,7 @@ private fun FloeShellContent(
                     surface = surface, token = token,
                     nativeEpoch = artifactNativeEpoch, hostGeneration = artifactHostGeneration,
                     sessionEpoch = artifactSessionEpoch,
+                    editWithExternalApp = artifactEditWithExternalApp,
                 )
             } else {
                 null

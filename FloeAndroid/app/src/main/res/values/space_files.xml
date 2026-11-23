@@ -63,6 +63,29 @@
     <string name="space_files_busy_copy">Copying…</string>
     <string name="space_files_busy_move">Moving…</string>
     <string name="space_files_busy_preview">Loading preview…</string>
+    <string name="space_files_busy_edit">Saving changes…</string>
+
+    <!-- Native editing: one authorized document at a time is copied into a
+         private editable working copy; verified bytes are written back to the
+         same source or an explicit sibling, and the original is preserved. -->
+    <string name="space_files_edit">Edit</string>
+    <string name="space_files_edit_open_editor">Open editor</string>
+    <string name="space_files_edit_preparing">Preparing an editable copy…</string>
+    <string name="space_files_edit_sessions">Being edited</string>
+    <string name="space_files_edit_waiting">Waiting for edits…</string>
+    <string name="space_files_edit_saving">Saving changes…</string>
+    <string name="space_files_edit_saved_same">Saved your edits to this file.</string>
+    <string name="space_files_edit_saved_sibling">Saved your edits as %1$s. The original is unchanged.</string>
+    <string name="space_files_edit_conflict">This file changed while you were editing. Nothing was overwritten; choose how to keep your edits.</string>
+    <string name="space_files_edit_save_as_new">Save edited copy as new file</string>
+    <string name="space_files_edit_keep_provider">Keep the file version</string>
+    <string name="space_files_edit_finish">Done</string>
+    <string name="space_files_edit_retry">Check again</string>
+    <string name="space_files_edit_failed">The edits couldn\'t be saved. The original is unchanged.</string>
+    <string name="space_files_edit_finished_kept">Finished. The editable copy stays in app storage for recovery.</string>
+    <string name="space_files_edit_retain_hint">Edited copies and preserved originals stay in app storage until you tap Done.</string>
+    <string name="space_files_notice_edited">Saved your edits to %1$s.</string>
+
 
     <string name="space_files_transfer_copy_title">Copy %1$s</string>
     <string name="space_files_transfer_move_title">Move %1$s</string>

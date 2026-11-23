@@ -3,6 +3,7 @@ package com.floe.android
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -16,6 +17,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -57,6 +60,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -79,6 +83,10 @@ import com.floe.android.design.FloeVerticalDivider
 import com.floe.android.design.IconGlyph
 import com.floe.android.host.PlatformLaunchOwnership
 import com.floe.android.host.spacefiles.SpaceFileEntry
+import com.floe.android.host.spacefiles.SpaceFilesEditLaunchResult
+import com.floe.android.host.spacefiles.SpaceFilesEditPhase
+import com.floe.android.host.spacefiles.SpaceFilesEditPolicy
+import com.floe.android.host.spacefiles.SpaceFilesEditSession
 import com.floe.android.host.spacefiles.SpaceFilesFailure
 import com.floe.android.host.spacefiles.SpaceFilesHost
 import com.floe.android.host.spacefiles.SpaceFilesNames
@@ -196,6 +204,54 @@ internal fun SpaceFilesDestination(onClose: () -> Unit) {
         controller.completeOpenRequest(request.id, result)
     }
 
+    // ---- ACTION_EDIT with a per-document writable working-copy grant -----
+    val editLaunch = state.editLaunch
+    LaunchedEffect(editLaunch) {
+        val request = editLaunch ?: return@LaunchedEffect
+        val fileUri = runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.externaledits", request.file)
+        }.getOrElse {
+            controller.completeEditLaunch(request.id, SpaceFilesEditLaunchResult.FAILED)
+            return@LaunchedEffect
+        }
+        val intent = Intent(Intent.ACTION_EDIT).apply {
+            setDataAndType(fileUri, request.mimeType)
+            clipData = ClipData.newRawUri(request.name, fileUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        // Same truthful probe as ACTION_VIEW: the real startActivity call is
+        // the only handler evidence; launching is never a saved receipt.
+        val result = try {
+            context.startActivity(intent)
+            SpaceFilesEditLaunchResult.LAUNCHED
+        } catch (_: ActivityNotFoundException) {
+            SpaceFilesEditLaunchResult.NO_HANDLER
+        } catch (_: Exception) {
+            SpaceFilesEditLaunchResult.FAILED
+        }
+        controller.completeEditLaunch(request.id, result)
+    }
+
+    // A finished session's editor grant is revoked exactly once (idempotent):
+    // the FileProvider URI is deterministic for the working file, so it can
+    // be recomputed here without the composition remembering it.
+    val finishedEditSessions = state.editSessions
+        .filter { it.phase == SpaceFilesEditPhase.FINISHED }
+    val finishedEditKey = finishedEditSessions.map { it.id }.toSet()
+    LaunchedEffect(finishedEditKey) {
+        finishedEditSessions.forEach { session ->
+            runCatching {
+                val fileUri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.externaledits", session.workingFile)
+                context.revokeUriPermission(
+                    fileUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+        }
+    }
+
     // ---- local presentation state ---------------------------------------
     var selectedEntry by remember { mutableStateOf<SpaceFileEntry?>(null) }
     var nameSheet by remember { mutableStateOf<NameSheetState?>(null) }
@@ -231,6 +287,15 @@ internal fun SpaceFilesDestination(onClose: () -> Unit) {
                 onManageRoots = { rootsSheet = true },
             )
             FloeDivider()
+            SpaceFilesEditSessionsSection(
+                sessions = state.editSessions,
+                onOpenEditor = controller::requestEditLaunch,
+                onRetry = controller::reconcileEdit,
+                onSaveAsNew = controller::saveConflictCopyAsNew,
+                onKeepProvider = controller::keepProviderVersion,
+                onFinish = controller::finishEdit,
+                onDismiss = controller::dismissEdit,
+            )
             if (wide) {
                 Row(Modifier.weight(1f).fillMaxWidth()) {
                     SpaceFilesRootsPane(
@@ -307,6 +372,7 @@ internal fun SpaceFilesDestination(onClose: () -> Unit) {
         onDismiss = { selectedEntry = null },
         onPreview = { selectedEntry = null; controller.preview(it) },
         onOpenWith = { selectedEntry = null; controller.requestExternalOpen(it) },
+        onEdit = { selectedEntry = null; controller.requestEdit(it) },
         onRename = {
             selectedEntry = null
             nameSheet = NameSheetState(NameSheetKind.RENAME, it, it.name)
@@ -382,6 +448,10 @@ internal fun SpaceFilesDestination(onClose: () -> Unit) {
         onOpenWith = { preview ->
             controller.dismissPreview()
             controller.openPreviewExternally(preview)
+        },
+        onEdit = { preview ->
+            controller.dismissPreview()
+            controller.requestEdit(preview.toEntry())
         },
     )
 
@@ -1027,6 +1097,13 @@ private fun noticeText(notice: SpaceFilesNotice): String? = when (notice) {
         } else {
             stringResource(R.string.space_files_notice_moved, notice.name)
         }
+        // EDIT: detail == null means verified at the same source document;
+        // a non-null detail is the explicit sibling's display name.
+        SpaceFilesOperation.EDIT -> if (notice.detail != null) {
+            stringResource(R.string.space_files_edit_saved_sibling, notice.detail)
+        } else {
+            stringResource(R.string.space_files_notice_edited, notice.name)
+        }
         else -> null
     }
 }
@@ -1192,6 +1269,7 @@ private fun SpaceFilesEntrySheet(
     onDismiss: () -> Unit,
     onPreview: (SpaceFileEntry) -> Unit,
     onOpenWith: (SpaceFileEntry) -> Unit,
+    onEdit: (SpaceFileEntry) -> Unit,
     onRename: (SpaceFileEntry) -> Unit,
     onCopy: (SpaceFileEntry) -> Unit,
     onMove: (SpaceFileEntry) -> Unit,
@@ -1239,6 +1317,22 @@ private fun SpaceFilesEntrySheet(
                         onClick = { onOpenWith(entry) },
                         enabled = !busy && !entry.isVirtual,
                     )
+                    // Native editing is offered only where the provider's own
+                    // flags mark the exact document writable; the controller
+                    // re-probes the grant before preparing the working copy.
+                    if (SpaceFilesEditPolicy.supportsEdit(
+                            isDirectory = entry.isDirectory,
+                            isVirtual = entry.isVirtual,
+                            canWrite = entry.canWrite,
+                            sizeBytes = entry.sizeBytes,
+                        )) {
+                        FloeCapsuleButton(
+                            label = stringResource(R.string.space_files_edit),
+                            onClick = { onEdit(entry) },
+                            enabled = !busy,
+                            prominent = true,
+                        )
+                    }
                 }
                 FloeCapsuleButton(
                     label = stringResource(R.string.space_files_rename),
@@ -1579,6 +1673,161 @@ private fun SpaceFilesTransferSheet(
 }
 
 // ---------------------------------------------------------------------------
+// Native edit sessions
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SpaceFilesEditSessionsSection(
+    sessions: List<SpaceFilesEditSession>,
+    onOpenEditor: (String) -> Unit,
+    onRetry: (String) -> Unit,
+    onSaveAsNew: (String) -> Unit,
+    onKeepProvider: (String) -> Unit,
+    onFinish: (String) -> Unit,
+    onDismiss: (String) -> Unit,
+) {
+    if (sessions.isEmpty()) return
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FloeText(
+            text = stringResource(R.string.space_files_edit_sessions),
+            style = Floe.typography.section,
+        )
+        sessions.forEach { session ->
+            SpaceFilesEditSessionRow(
+                session = session,
+                onOpenEditor = { onOpenEditor(session.id) },
+                onRetry = { onRetry(session.id) },
+                onSaveAsNew = { onSaveAsNew(session.id) },
+                onKeepProvider = { onKeepProvider(session.id) },
+                onFinish = { onFinish(session.id) },
+                onDismiss = { onDismiss(session.id) },
+            )
+        }
+        FloeText(
+            text = stringResource(R.string.space_files_edit_retain_hint),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+    }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun SpaceFilesEditSessionRow(
+    session: SpaceFilesEditSession,
+    onOpenEditor: () -> Unit,
+    onRetry: () -> Unit,
+    onSaveAsNew: () -> Unit,
+    onKeepProvider: () -> Unit,
+    onFinish: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Floe.colors.fillTertiary)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FloeText(
+            text = session.name,
+            style = Floe.typography.bodyEmphasized,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        val captionRes = when (session.phase) {
+            SpaceFilesEditPhase.EDITING -> R.string.space_files_edit_waiting
+            SpaceFilesEditPhase.SAVING -> R.string.space_files_edit_saving
+            SpaceFilesEditPhase.SAVED -> if (session.savedSiblingName != null) {
+                R.string.space_files_edit_saved_sibling
+            } else {
+                R.string.space_files_edit_saved_same
+            }
+            SpaceFilesEditPhase.CONFLICT -> R.string.space_files_edit_conflict
+            SpaceFilesEditPhase.RECOVERABLE_FAILURE -> R.string.space_files_edit_failed
+            SpaceFilesEditPhase.FINISHED -> R.string.space_files_edit_finished_kept
+        }
+        val captionArgs: Array<out Any> = when (session.phase) {
+            SpaceFilesEditPhase.SAVED -> arrayOf(session.savedSiblingName ?: session.name)
+            else -> emptyArray()
+        }
+        FloeText(
+            text = stringResource(captionRes, *captionArgs),
+            style = Floe.typography.metadata,
+            color = when (session.phase) {
+                SpaceFilesEditPhase.CONFLICT, SpaceFilesEditPhase.RECOVERABLE_FAILURE ->
+                    Floe.colors.destructive
+                else -> Floe.colors.secondaryLabel
+            },
+        )
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (session.phase != SpaceFilesEditPhase.FINISHED) {
+                TextAction(
+                    label = stringResource(R.string.space_files_edit_open_editor),
+                    onClick = onOpenEditor,
+                    enabled = session.phase != SpaceFilesEditPhase.SAVING,
+                )
+            }
+            if (session.phase == SpaceFilesEditPhase.CONFLICT) {
+                TextAction(
+                    label = stringResource(R.string.space_files_edit_save_as_new),
+                    onClick = onSaveAsNew,
+                )
+                TextAction(
+                    label = stringResource(R.string.space_files_edit_keep_provider),
+                    onClick = onKeepProvider,
+                )
+            }
+            if (session.phase == SpaceFilesEditPhase.RECOVERABLE_FAILURE) {
+                TextAction(
+                    label = stringResource(R.string.space_files_edit_retry),
+                    onClick = onRetry,
+                )
+            }
+            if (session.phase == SpaceFilesEditPhase.FINISHED) {
+                TextAction(
+                    label = stringResource(R.string.space_files_notice_dismiss),
+                    onClick = onDismiss,
+                )
+            } else {
+                TextAction(
+                    label = stringResource(R.string.space_files_edit_finish),
+                    onClick = onFinish,
+                    enabled = session.phase != SpaceFilesEditPhase.SAVING,
+                )
+            }
+        }
+    }
+}
+
+/** Row/preview → edit request identity (the controller re-probes everything). */
+private fun SpaceFilesPreview.toEntry(): SpaceFileEntry = SpaceFileEntry(
+    name = name,
+    mimeType = mimeType,
+    sizeBytes = bytes,
+    lastModifiedMillis = null,
+    isDirectory = false,
+    isVirtual = isVirtual,
+    ref = ref,
+    canWrite = true,
+    canRename = true,
+    canDelete = true,
+    canCopy = true,
+    canMove = true,
+    canCreateChildren = false,
+)
+
+// ---------------------------------------------------------------------------
 // Preview
 // ---------------------------------------------------------------------------
 
@@ -1594,6 +1843,7 @@ private fun SpaceFilesPreviewSheet(
     loading: Boolean,
     onDismiss: () -> Unit,
     onOpenWith: (SpaceFilesPreview) -> Unit,
+    onEdit: (SpaceFilesPreview) -> Unit,
 ) {
     FloeActionSheet(
         visible = preview != null || loading,
@@ -1725,6 +1975,22 @@ private fun SpaceFilesPreviewSheet(
                             modifier = Modifier.weight(1f),
                             enabled = !preview.isVirtual,
                         )
+                        // The exact write capability is re-probed live by the
+                        // controller before the working copy is prepared.
+                        if (SpaceFilesEditPolicy.supportsEdit(
+                                isDirectory = false,
+                                isVirtual = preview.isVirtual,
+                                canWrite = true,
+                                sizeBytes = preview.bytes,
+                            )
+                        ) {
+                            FloeCapsuleButton(
+                                label = stringResource(R.string.space_files_edit),
+                                onClick = { onEdit(preview) },
+                                modifier = Modifier.weight(1f),
+                                prominent = true,
+                            )
+                        }
                         FloeCapsuleButton(
                             label = stringResource(R.string.close),
                             onClick = onDismiss,
@@ -1804,6 +2070,7 @@ private fun busyText(operation: SpaceFilesOperation): String = stringResource(
         SpaceFilesOperation.COPY -> R.string.space_files_busy_copy
         SpaceFilesOperation.MOVE -> R.string.space_files_busy_move
         SpaceFilesOperation.PREVIEW -> R.string.space_files_busy_preview
+        SpaceFilesOperation.EDIT -> R.string.space_files_busy_edit
         else -> R.string.space_files_loading
     },
 )

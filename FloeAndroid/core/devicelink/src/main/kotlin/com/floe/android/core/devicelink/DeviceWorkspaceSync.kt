@@ -22,6 +22,15 @@ data class DeviceWorkspaceEntry(
 /** The host owns both the permission and the live identity of the managed root. */
 interface DeviceWorkspaceSource {
     suspend fun available(peer: String, task: UUID): Boolean
+
+    /**
+     * The live scope string for [task]'s currently bound managed root, or a
+     * typed [DeviceHistorySyncError.NOT_SHARED] refusal. The frozen v2
+     * history and convergence paths re-prove this scope against the durable
+     * per-peer share on every segment.
+     */
+    suspend fun shareScope(peer: String, task: UUID): String
+
     suspend fun prepare(peer: String, task: UUID): DeviceWorkspaceSnapshot
 }
 
@@ -30,7 +39,20 @@ interface DeviceWorkspaceSnapshot : AutoCloseable {
     val entries: List<DeviceWorkspaceEntry>
     suspend fun checkPermission()
     suspend fun read(index: Int, offset: Long, length: Int): ByteArray
-    suspend fun confirm(indexes: List<Int>)
+
+    /**
+     * Confirms [indexes] against the prepared snapshot and applies the
+     * convergence receipt ([removals] baseline keys dropped, [renames]
+     * baseline keys relocated to their confirmed destination) atomically.
+     * The sender never applies peer file mutations here; receipts only move
+     * or retire the durable sync baseline. An all-empty receipt is invalid;
+     * non-empty receipts were already gated behind the v2 wire consent check.
+     */
+    suspend fun confirm(
+        indexes: List<Int>,
+        removals: List<String> = emptyList(),
+        renames: List<DeviceWorkspaceMove> = emptyList(),
+    )
 }
 
 fun interface DeviceWorkspaceDownload {
@@ -38,15 +60,73 @@ fun interface DeviceWorkspaceDownload {
     suspend fun to(write: (ByteArray) -> Unit)
 }
 
+/** One confirmed baseline entry: the verified digest plus the exact on-disk
+ * spelling recorded when both sides confirmed it (absent for pre-v2 rows,
+ * which fall back to a comparison-key tree walk). */
+data class DeviceWorkspaceBaseline(val digest: String, val path: String?)
+
+/** A rename the receiver converged locally, reported to the sender so both
+ * confirmed baselines keep the same spelling. [key] is the NFC,
+ * en_US_POSIX-lowercased comparison key of the retired path; [path] is the
+ * destination's exact relative spelling; [digest] is the verified content digest. */
+data class DeviceWorkspaceMove(val key: String, val path: String, val digest: String)
+
+/**
+ * Baseline entries no longer present in the peer manifest must never be
+ * touched by default ([V1], the original keep-local behavior). [V2] is
+ * negotiated per peer and converges renames and deletions only when the
+ * local copy is still the exactly confirmed shared baseline.
+ */
+enum class DeviceWorkspaceConvergence {
+    V1, V2
+}
+
+/** What the receiver converged before content transfer, reported to the sender. */
+data class DeviceWorkspaceConvergenceReceipt(
+    val removals: List<String> = emptyList(),
+    val renames: List<DeviceWorkspaceMove> = emptyList(),
+)
+
 interface DeviceWorkspaceReceiver {
     enum class Result { AGREED, CONFLICT, DIRECTORY, RETAINED }
 
     /** Existing identical files need not invoke [download]. A directory has no download. */
     suspend fun accept(entry: DeviceWorkspaceEntry, download: DeviceWorkspaceDownload?): Result
     suspend fun confirmed(entries: List<DeviceWorkspaceEntry>)
+
+    /**
+     * The durable confirmed baseline for this peer/task/scope. Only consulted
+     * for [DeviceWorkspaceConvergence.V2] receives; the default keeps the
+     * copy-only behavior for hosts without a ledger.
+     */
+    suspend fun baseline(): Map<String, DeviceWorkspaceBaseline> = emptyMap()
+
+    /**
+     * Moves an exact confirmed-baseline file to [destination] without
+     * re-transferring bytes. Returns true when the verified file was
+     * relocated (or the destination already held the identical confirmed
+     * bytes and the source spelling was retired); false keeps everything
+     * untouched and counts as preserved.
+     */
+    suspend fun convergeMove(key: String, digest: String, pathHint: String?, destination: String): Boolean = false
+
+    /**
+     * Moves an exact confirmed-baseline file into the workspace-visible
+     * recovery folder (`Floe Sync Conflicts/Removed/<id>/<path>`). Returns
+     * true when the bytes were recovered; false preserves the local file.
+     */
+    suspend fun convergeTrash(key: String, digest: String, pathHint: String?): Boolean = false
 }
 
-data class DeviceWorkspaceReceipt(val files: Int, val directories: Int, val conflicts: Int)
+data class DeviceWorkspaceReceipt(
+    val files: Int,
+    val directories: Int,
+    val conflicts: Int,
+    /** v2 convergence outcomes for one receive pass. */
+    val moved: Int = 0,
+    val deleted: Int = 0,
+    val preserved: Int = 0,
+)
 
 /** Shared limits for the v1 device-link workspace extension. */
 object DeviceWorkspaceManifest {
@@ -56,6 +136,8 @@ object DeviceWorkspaceManifest {
     const val MAX_FILE_BYTES = 1L shl 30
     const val MAX_TOTAL_BYTES = 8L shl 30
     const val MAX_CONFIRM = 128
+    /** One confirm receipt carries at most this many baseline removals. */
+    const val MAX_CONVERGENCE_RECEIPT = 1_024
     private val sha256 = Regex("[0-9a-f]{64}")
     private val hexDigits = "0123456789abcdef"
 
@@ -158,6 +240,8 @@ object DeviceWorkspaceManifest {
 internal class PreparedDeviceWorkspace(
     val task: UUID,
     val snapshot: DeviceWorkspaceSnapshot,
+    /** The workspace revision this transfer was prepared at; every segment re-fences. */
+    val revision: Long,
 ) : AutoCloseable {
     val entries = snapshot.entries.toList()
     val manifest = DeviceWorkspaceManifest.encode(entries)
@@ -173,6 +257,7 @@ internal object DeviceWorkspaceTransfer {
     suspend fun receive(
         task: UUID,
         receiver: DeviceWorkspaceReceiver,
+        convergence: DeviceWorkspaceConvergence,
         request: suspend (DeviceHistorySync.SyncRequest) -> DeviceHistorySync.SyncReply,
     ): DeviceWorkspaceReceipt {
         val meta = request(DeviceHistorySync.SyncRequest(DeviceHistorySync.Operation.PREPARE_WORKSPACE, task))
@@ -187,16 +272,47 @@ internal object DeviceWorkspaceTransfer {
         } finally {
             manifest.fill(0)
         }
+        // v2 convergence runs before any content transfer so a peer rename
+        // reuses the already-confirmed local bytes instead of downloading
+        // them again. Every decision requires the exact confirmed baseline
+        // identity; anything else is kept locally and reported preserved.
+        var receipt = DeviceWorkspaceConvergenceReceipt()
+        var moved = 0
+        var deleted = 0
+        var preserved = 0
+        if (convergence == DeviceWorkspaceConvergence.V2) {
+            val report = converge(receiver, entries)
+            receipt = DeviceWorkspaceConvergenceReceipt(report.removals, report.renames)
+            moved = report.moved
+            deleted = report.deleted
+            preserved = report.preserved
+        }
         val pending = ArrayList<Int>(DeviceWorkspaceManifest.MAX_CONFIRM)
         var files = 0
         var directories = 0
         var conflicts = 0
+        var receiptSent = false
         suspend fun confirm() {
-            if (pending.isEmpty()) return
+            // Never send an all-empty confirmation: it is only meaningful when
+            // something was accepted or a convergence receipt is owed.
+            if (pending.isEmpty() &&
+                (receiptSent || (receipt.removals.isEmpty() && receipt.renames.isEmpty()))
+            ) {
+                return
+            }
             val indexes = pending.toList()
-            request(DeviceHistorySync.SyncRequest(DeviceHistorySync.Operation.CONFIRM_WORKSPACE, task, indexes = indexes))
-            receiver.confirmed(indexes.map(entries::get))
+            request(
+                DeviceHistorySync.SyncRequest(
+                    DeviceHistorySync.Operation.CONFIRM_WORKSPACE,
+                    task,
+                    indexes = indexes,
+                    removals = receipt.removals.takeIf { !receiptSent }?.takeIf { it.isNotEmpty() },
+                    renames = receipt.renames.takeIf { !receiptSent }?.takeIf { it.isNotEmpty() },
+                ),
+            )
+            if (indexes.isNotEmpty()) receiver.confirmed(indexes.map(entries::get))
             pending.clear()
+            receiptSent = true
         }
         // Create the parent directories before reading any children even
         // when the sender sorted its manifest using another locale or order.
@@ -224,7 +340,94 @@ internal object DeviceWorkspaceTransfer {
             }
         }
         confirm()
-        return DeviceWorkspaceReceipt(files, directories, conflicts)
+        return DeviceWorkspaceReceipt(files, directories, conflicts, moved, deleted, preserved)
+    }
+
+    private data class ConvergenceReport(
+        val removals: List<String> = emptyList(),
+        val renames: List<DeviceWorkspaceMove> = emptyList(),
+        val moved: Int = 0,
+        val deleted: Int = 0,
+        val preserved: Int = 0,
+    )
+
+    /**
+     * Manifest-absent baseline entries converge locally: a baseline path that
+     * disappeared while a new manifest path carries the identical confirmed
+     * digest is renamed in place; anything else with exact baseline identity
+     * is recovered into the workspace-visible Removed folder; everything else
+     * is preserved and counted. Mirrors the frozen Apple host's `converge`.
+     */
+    private suspend fun converge(
+        receiver: DeviceWorkspaceReceiver,
+        entries: List<DeviceWorkspaceEntry>,
+    ): ConvergenceReport {
+        val baseline = receiver.baseline()
+        if (baseline.isEmpty()) return ConvergenceReport()
+        val manifestKeys = entries.filter { it.kind == DeviceWorkspaceEntry.Kind.FILE }
+            .mapTo(HashSet()) { DeviceWorkspacePath.collisionKey(it.path) ?: invalid() }
+        val removedKeys = baseline.keys.filter { it !in manifestKeys }.sorted()
+        if (removedKeys.isEmpty()) return ConvergenceReport()
+        // A rename shows up as a baseline path disappearing while a new
+        // manifest path carries the identical confirmed digest. Only paths
+        // that are themselves new can be rename destinations.
+        val candidates = HashMap<String, MutableList<DeviceWorkspaceEntry>>()
+        for (entry in entries) {
+            if (entry.kind != DeviceWorkspaceEntry.Kind.FILE) continue
+            val key = DeviceWorkspacePath.collisionKey(entry.path) ?: invalid()
+            if (key in baseline) continue
+            val digest = entry.digest ?: continue
+            candidates.getOrPut(digest) { mutableListOf() }.add(entry)
+        }
+        for (list in candidates.values) {
+            list.sortWith { first, second -> compareUtf8(first.path, second.path) }
+        }
+        val consumed = HashSet<String>()
+        val removals = ArrayList<String>()
+        val renames = ArrayList<DeviceWorkspaceMove>()
+        var moved = 0
+        var deleted = 0
+        var preserved = 0
+        for ((offset, key) in removedKeys.withIndex()) {
+            if (renames.size == DeviceWorkspaceManifest.MAX_CONFIRM ||
+                removals.size == DeviceWorkspaceManifest.MAX_CONVERGENCE_RECEIPT
+            ) {
+                preserved += removedKeys.size - offset
+                break
+            }
+            currentCoroutineContext().ensureActive()
+            val recorded = baseline[key] ?: continue
+            val destination = candidates[recorded.digest]
+                ?.firstOrNull { DeviceWorkspacePath.collisionKey(it.path) !in consumed }
+            if (destination != null) {
+                val destinationKey = DeviceWorkspacePath.collisionKey(destination.path) ?: invalid()
+                if (receiver.convergeMove(key, recorded.digest, recorded.path, destination.path)) {
+                    consumed.add(destinationKey)
+                    renames.add(DeviceWorkspaceMove(key, destination.path, recorded.digest))
+                    moved++
+                } else {
+                    preserved++
+                }
+            } else if (receiver.convergeTrash(key, recorded.digest, recorded.path)) {
+                removals.add(key)
+                deleted++
+            } else {
+                preserved++
+            }
+        }
+        return ConvergenceReport(removals, renames, moved, deleted, preserved)
+    }
+
+    /** UTF-8 lexicographic order, matching the frozen Apple manifest sort. */
+    private fun compareUtf8(first: String, second: String): Int {
+        val left = first.encodeToByteArray()
+        val right = second.encodeToByteArray()
+        val length = minOf(left.size, right.size)
+        for (index in 0 until length) {
+            val difference = (left[index].toInt() and 255) - (right[index].toInt() and 255)
+            if (difference != 0) return difference
+        }
+        return left.size - right.size
     }
 
     private suspend fun stream(

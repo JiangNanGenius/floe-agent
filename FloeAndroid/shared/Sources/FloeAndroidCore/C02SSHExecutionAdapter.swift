@@ -888,6 +888,69 @@ public actor C02SSHExecutionAdapter: C02RemoteTargetProbing {
         )
     }
 
+    // MARK: Run-bound typed SFTP (resource staging)
+
+    /// Runs ONE typed SFTP operation on a dedicated connection that this
+    /// authorization owns end to end (the Skill Hub resource-staging lane).
+    /// The run-bound grant is validated exactly like a remote command (fresh
+    /// pin readback, expiry, root-epoch fence); the host key is decided
+    /// against the authorization's approved fingerprint, so a first-use or
+    /// changed key is the existing typed refusal and is never silently
+    /// trusted; nothing enters the exec session table; the channel and the
+    /// connection are closed before this call returns. No remote command is
+    /// ever started and no receipt is written — there is no dispatch.
+    public func withExclusiveSFTPChannel<T: Sendable>(
+        authorization: C02SSHExecutionAuthorization,
+        operation: @escaping @Sendable (any SSHSFTPChannel) async throws -> T
+    ) async throws -> T {
+        let started = now()
+        let pin = try await pins.runPin(runID: authorization.runID)
+        do {
+            try authorization.validate(now: started, pin: pin)
+        } catch let error as C02SSHAdapterError {
+            throw error
+        }
+        guard let remote = authorization.target.remote else {
+            throw C02SSHAdapterError.targetMismatch
+        }
+        if let liveEpoch, liveEpoch() != authorization.rootEpoch {
+            throw C02SSHAdapterError.authorizationExpired
+        }
+        let profile = try await profile(hostID: remote.hostID)
+        guard profile.isRemoteExecutionEnvironment else {
+            throw C02SSHAdapterError.hostNotExecutionEnvironment
+        }
+        guard profile.auth != .none else {
+            throw C02SSHAdapterError.sshNotConfigured
+        }
+        let transport = try await connect(
+            profile: profile,
+            authorization: authorization,
+            expectedFingerprint: authorization.approvedHostKeyFingerprint
+        )
+        guard let provider = transport as? SSHSFTPTransportProviding else {
+            await transport.close()
+            throw C02SSHAdapterError.connectionFailed("sftpUnsupportedByTransport")
+        }
+        let channel: any SSHSFTPChannel
+        do {
+            channel = try await provider.openSFTPChannel()
+        } catch {
+            await transport.close()
+            throw error
+        }
+        do {
+            let value = try await operation(channel)
+            await channel.close()
+            await transport.close()
+            return value
+        } catch {
+            await channel.close()
+            await transport.close()
+            throw error
+        }
+    }
+
     public func closeSession(id: String) async {
         guard let session = sessions.removeValue(forKey: id) else { return }
         await session.transport.close()

@@ -26,6 +26,20 @@ data class DeviceHistoryOffer(
     val id: UUID,
     val title: String,
     val workspaceFiles: Boolean = false,
+    /**
+     * Sender-side workspace convergence protocol (frozen wire contract):
+     * absent keeps the original v1 keep-local behavior; `2` converges
+     * renames and deletions against the confirmed baseline. Only `2` may
+     * appear on the wire — any other value fails reply validation.
+     */
+    val workspaceSyncVersion: Int? = null,
+    /**
+     * The sender can serve verified attachment bytes for this conversation
+     * under the same workspace authorization. Absent on older peers; an
+     * explicit `false` is rejected by reply validation, so this is either
+     * absent or `true`.
+     */
+    val attachmentTransfer: Boolean? = null,
 )
 
 /**
@@ -37,15 +51,38 @@ interface DeviceHistorySource {
     /** Return the offers the app is willing to share for [allowed] task IDs. */
     suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer>
 
-    /** Opaque native canonical bytes for one previously offered task. */
-    suspend fun export(taskId: UUID): ByteArray
+    /**
+     * Opaque native canonical bytes for one previously offered task. [version]
+     * is the archive format the receiver understands (1 or 2); producers
+     * that predate versioned archives ignore it and emit v1.
+     */
+    suspend fun export(taskId: UUID, version: Int = 1): ByteArray
 }
 
-/** Shared catalog result: the offers for one peer plus the pages capability. */
+/** Shared catalog result: the offers for one peer plus negotiated capabilities. */
 data class DeviceHistoryCatalog(
     val offers: List<DeviceHistoryOffer>,
     val historyPages: Boolean,
+    /**
+     * The peer serves verified attachment bytes for shared conversations.
+     * Absent on older peers (an explicit `false` on the wire fails reply
+     * validation, so this is only ever absent or `true`).
+     */
+    val attachmentTransfer: Boolean = false,
 )
+
+/**
+ * App-owned verified attachment byte provider for one native conversation
+ * store (the frozen wire contract's `source.attachment`). Offset/count reads
+ * must return exactly [count] bytes or throw. The wire only calls this after
+ * the per-conversation workspace share and the live scope were both
+ * re-authorized for the requesting peer; implementations must re-validate
+ * that [attachmentId] belongs to [taskId] and a user message before reading.
+ */
+interface DeviceHistoryAttachmentSource {
+    /** Exactly [count] bytes at [offset] of one authorized attachment. */
+    suspend fun attachment(taskId: UUID, attachmentId: UUID, offset: Long, count: Int): ByteArray
+}
 
 /** One validated page of the canonical v1 history archive. [through] is the
  * sender's fixed sequence upper bound (the scan bound of the whole
@@ -77,9 +114,10 @@ interface DeviceHistoryPagedSource : DeviceHistorySource {
      * provides its last cursor; a page with nothing new echoes [after]; only
      * the first page of a completely empty conversation omits the cursor. A
      * non-terminal page must carry a fresh cursor. The canonical archive JSON
-     * is non-empty even for an empty page.
+     * is non-empty even for an empty page. [version] selects the archive
+     * format (1 or 2), exactly like [DeviceHistorySource.export].
      */
-    suspend fun historyPage(taskId: UUID, after: String?, through: Long?): DeviceHistoryPage
+    suspend fun historyPage(taskId: UUID, after: String?, through: Long?, version: Int = 1): DeviceHistoryPage
 }
 
 /** Typed v1 wire failures. The wire value matches Swift's rawValue exactly. */
@@ -243,14 +281,29 @@ private const val WIRE_VERSION = 1
  * prepare / chunk operations, SHA-256 of the actual bytes, and typed failures.
  * The v1 paging extension adds the optional `historyPages` offers flag and the
  * preparePage operation, negotiated per connection; legacy peers keep the
- * whole-archive exchange unchanged. The host owns settings and identity
- * storage; this class owns session lifetime.
+ * whole-archive exchange unchanged. The frozen v2 extension adds verified
+ * attachment transfer (`attachmentFile`, `attachmentTransfer`) and opt-in
+ * workspace rename/delete convergence (`workspaceSyncVersion:2` with
+ * `removals`/`renames` receipts on `confirmWorkspace`); every new capability
+ * is advertised only when the local source/reception authority behind it is
+ * real, and unknown-capability keys stay omitted. The host owns settings and
+ * identity storage; this class owns session lifetime.
  */
 class DeviceHistorySync(
     private val link: FloeDeviceLink,
     initialShares: Map<String, Set<UUID>>,
     private val source: DeviceHistorySource,
     private val workspaceSource: DeviceWorkspaceSource? = null,
+    private val attachmentSource: DeviceHistoryAttachmentSource? = null,
+    initialWorkspaceShares: Map<String, Map<UUID, String>> = emptyMap(),
+    initialWorkspaceVersions: Map<String, Map<UUID, Int>> = emptyMap(),
+    /**
+     * Workspace convergence protocol this endpoint advertises to peers.
+     * Tests pin 1 to emulate an unupgraded peer; production uses 2. A peer
+     * only ever sees `workspaceSyncVersion:2` when this is 2 AND the receiver
+     * explicitly consented per conversation AND the workspace share is live.
+     */
+    private val workspaceProtocolVersion: Int = 2,
 ) {
     val address: FloeDeviceLinkAddress get() = link.address()
 
@@ -260,6 +313,21 @@ class DeviceHistorySync(
 
     private val state = Mutex()
     private var shares: Map<String, Set<UUID>> = initialShares
+    private var workspaceShares: Map<String, Map<UUID, String>> = initialWorkspaceShares
+    /**
+     * Per-peer conversation convergence consent (`2` = explicitly granted
+     * after delete/rename propagation existed). Absent entries keep the
+     * original copy-only semantics and refuse convergence receipts.
+     */
+    private var workspaceVersions: Map<String, Map<UUID, Int>> = initialWorkspaceVersions
+    /**
+     * Bumped whenever [workspaceShares]/[workspaceVersions] change. A prepared
+     * workspace or a v2-scoped archive pins the revision it was authorized at;
+     * every subsequent segment re-fences against it, so revoking the share
+     * invalidates the open transfer with `notShared` (previously committed
+     * data stays committed).
+     */
+    private var workspaceRevision: Long = 0
     private val sessions = ConcurrentHashMap<UUID, FloeDeviceLinkConnection>()
     private val serveJobs = ConcurrentHashMap<UUID, Job>()
 
@@ -269,10 +337,25 @@ class DeviceHistorySync(
         listenerJob = scope.launch { listenerLoop() }
     }
 
-    /** Swap the share map and trusted set; sessions of removed peers are closed. */
-    suspend fun replaceShares(next: Map<String, Set<UUID>>) {
+    /**
+     * Swap the share map and trusted set; sessions of removed peers are
+     * closed. Workspace share/consent changes bump [workspaceRevision], which
+     * fences every open prepared workspace and v2-scoped archive segment.
+     */
+    suspend fun replaceShares(
+        next: Map<String, Set<UUID>>,
+        workspaces: Map<String, Map<UUID, String>> = emptyMap(),
+        versions: Map<String, Map<UUID, Int>> = emptyMap(),
+    ) {
         link.replaceTrustedEndpointIDs(next.keys.toSet())
-        state.withLock { shares = next }
+        state.withLock {
+            if (workspaceShares != workspaces || workspaceVersions != versions) {
+                workspaceRevision += 1
+                workspaceShares = workspaces
+                workspaceVersions = versions
+            }
+            shares = next
+        }
         sessions.values.filter { it.peerEndpointId !in next.keys }.forEach { connection ->
             runCatching { connection.close() }
         }
@@ -281,13 +364,14 @@ class DeviceHistorySync(
     /** Explicitly approved remote offers for [peer]. One short-lived connection. */
     suspend fun offers(peer: FloeDeviceLinkAddress): List<DeviceHistoryOffer> = catalog(peer).offers
 
-    /** Remote offers for [peer] plus whether the peer serves history pages. */
+    /** Remote offers for [peer] plus the negotiated page/attachment capabilities. */
     suspend fun catalog(peer: FloeDeviceLinkAddress): DeviceHistoryCatalog =
         withConnection(peer) { connection ->
             val reply = request(SyncRequest(Operation.OFFERS), connection)
             DeviceHistoryCatalog(
                 offers = validatedOffers(reply.offers),
                 historyPages = reply.historyPages == true,
+                attachmentTransfer = validatedAttachmentTransfer(reply.attachmentTransfer),
             )
         }
 
@@ -296,16 +380,55 @@ class DeviceHistorySync(
         private val client: DeviceHistorySync,
         private val connection: FloeDeviceLinkConnection,
     ) {
-        suspend fun history(taskID: UUID): ByteArray = client.readHistory(connection, taskID)
+        /**
+         * Pull one shared conversation as a whole archive. [version] is the
+         * archive format the receiver understands (1 or 2); v2 additionally
+         * carries restorable attachment metadata and a display-only tool
+         * projection, and requires the selected conversation's workspace
+         * share to be live on this connection.
+         */
+        suspend fun history(taskID: UUID, version: Int = 1): ByteArray =
+            client.readHistory(connection, taskID, version)
 
         suspend fun historyPages(
             taskID: UUID,
             after: String?,
             consume: suspend (DeviceHistoryPage) -> Unit,
-        ): Boolean = client.readHistoryPages(connection, taskID, after, consume)
+            version: Int = 1,
+        ): Boolean = client.readHistoryPages(connection, taskID, after, consume, version)
 
-        suspend fun workspace(taskID: UUID, receiver: DeviceWorkspaceReceiver): DeviceWorkspaceReceipt =
-            client.readWorkspace(connection, taskID, receiver)
+        suspend fun workspace(
+            taskID: UUID,
+            receiver: DeviceWorkspaceReceiver,
+            convergence: DeviceWorkspaceConvergence = DeviceWorkspaceConvergence.V1,
+        ): DeviceWorkspaceReceipt = client.readWorkspace(connection, taskID, receiver, convergence)
+
+        /**
+         * One verified chunk of an attachment under the workspace share
+         * authorization. Callers assemble, size-check, and digest-check the
+         * full byte stream before presenting it to users.
+         */
+        suspend fun attachmentChunk(taskID: UUID, attachmentID: UUID, offset: Int, count: Int): ByteArray {
+            if (count <= 0) throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            val reply = request(
+                SyncRequest(
+                    Operation.ATTACHMENT_FILE,
+                    taskID = taskID,
+                    offset = offset.toLong(),
+                    attachmentID = attachmentID,
+                    count = count,
+                ),
+                connection,
+            )
+            val bytes = reply.bytes ?: throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            if (bytes.size != count) throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            return bytes
+        }
+
+        private suspend fun request(value: SyncRequest, connection: FloeDeviceLinkConnection): SyncReply =
+            DeviceHistorySync.decodeReply(
+                client.transport { connection.request(DeviceHistorySync.encodeRequest(value)) },
+            )
     }
 
     suspend fun <T> receiveFrom(peer: FloeDeviceLinkAddress, receive: suspend (ReceiveSession) -> T): T =
@@ -313,12 +436,12 @@ class DeviceHistorySync(
             receive(ReceiveSession(this, connection))
         }
 
-    /** Pull one shared conversation and verify its digest. */
+    /** Pull one shared conversation and verify its digest (v1 archive). */
     suspend fun history(taskID: UUID, peer: FloeDeviceLinkAddress): ByteArray =
-        withConnection(peer) { readHistory(it, taskID) }
+        withConnection(peer) { readHistory(it, taskID, 1) }
 
-    private suspend fun readHistory(connection: FloeDeviceLinkConnection, taskID: UUID): ByteArray {
-        val manifest = request(SyncRequest(Operation.PREPARE, taskID = taskID), connection)
+    private suspend fun readHistory(connection: FloeDeviceLinkConnection, taskID: UUID, version: Int): ByteArray {
+        val manifest = request(SyncRequest(Operation.PREPARE, taskID = taskID, historyVersion = version), connection)
         val size = manifest.size ?: throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
         if (size <= 0 || size > MAXIMUM_ARCHIVE_BYTES) {
             throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
@@ -334,12 +457,14 @@ class DeviceHistorySync(
         taskID: UUID,
         peer: FloeDeviceLinkAddress,
         receiver: DeviceWorkspaceReceiver,
-    ): DeviceWorkspaceReceipt = receiveFrom(peer) { it.workspace(taskID, receiver) }
+        convergence: DeviceWorkspaceConvergence = DeviceWorkspaceConvergence.V1,
+    ): DeviceWorkspaceReceipt = receiveFrom(peer) { it.workspace(taskID, receiver, convergence) }
 
     private suspend fun readWorkspace(
         connection: FloeDeviceLinkConnection,
         taskID: UUID,
         receiver: DeviceWorkspaceReceiver,
+        convergence: DeviceWorkspaceConvergence,
     ): DeviceWorkspaceReceipt {
         suspend fun exchange(input: SyncRequest): SyncReply = withTimeout(
             if (input.operation == Operation.PREPARE_WORKSPACE) WORKSPACE_PREPARE_TIMEOUT_MILLIS
@@ -350,7 +475,7 @@ class DeviceHistorySync(
         if (validatedOffers(exchange(SyncRequest(Operation.OFFERS)).offers).none {
                 it.id == taskID && it.workspaceFiles
             }) throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
-        return DeviceWorkspaceTransfer.receive(taskID, receiver, ::exchange)
+        return DeviceWorkspaceTransfer.receive(taskID, receiver, convergence, ::exchange)
     }
 
     /**
@@ -372,9 +497,10 @@ class DeviceHistorySync(
         peer: FloeDeviceLinkAddress,
         after: String?,
         consume: suspend (DeviceHistoryPage) -> Unit,
+        version: Int = 1,
     ): Boolean {
         if (source !is DeviceHistoryPagedSource) return false
-        return receiveFrom(peer) { it.historyPages(taskID, after, consume) }
+        return receiveFrom(peer) { it.historyPages(taskID, after, consume, version) }
     }
 
     private suspend fun readHistoryPages(
@@ -382,6 +508,7 @@ class DeviceHistorySync(
         taskID: UUID,
         after: String?,
         consume: suspend (DeviceHistoryPage) -> Unit,
+        version: Int,
     ): Boolean {
         if (source !is DeviceHistoryPagedSource) return false
         if (!validCursor(after)) throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
@@ -410,6 +537,7 @@ class DeviceHistorySync(
                             taskID = taskID,
                             after = cursor,
                             through = through,
+                            historyVersion = version,
                         ),
                         connection,
                     )
@@ -497,18 +625,6 @@ class DeviceHistorySync(
     /** Bounds one network suspension when [timeoutMillis] is set; null keeps the caller's timing. */
     private suspend fun <T> withRequestTimeout(timeoutMillis: Long?, block: suspend () -> T): T =
         if (timeoutMillis == null) block() else withTimeout(timeoutMillis) { block() }
-
-    private fun validatedOffers(raw: List<DeviceHistoryOffer>?): List<DeviceHistoryOffer> {
-        val offers = raw ?: throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
-        if (offers.size > MAXIMUM_SHARED_TASKS) throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
-        if (offers.mapTo(HashSet()) { it.id }.size != offers.size) {
-            throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
-        }
-        if (offers.any { it.title.isEmpty() || it.title.encodeToByteArray().size > MAXIMUM_TITLE_BYTES }) {
-            throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
-        }
-        return offers
-    }
 
     private fun validCursor(value: String?): Boolean =
         value == null || value.isNotEmpty() && value.encodeToByteArray().size <= MAXIMUM_CURSOR_BYTES
@@ -646,6 +762,31 @@ class DeviceHistorySync(
     private suspend fun currentShares(peer: String): Set<UUID> =
         state.withLock { shares[peer] }.orEmpty()
 
+    private suspend fun currentWorkspaceShare(peer: String, task: UUID): String? =
+        state.withLock { workspaceShares[peer]?.get(task) }
+
+    private suspend fun currentWorkspaceVersion(peer: String, task: UUID): Int? =
+        state.withLock { workspaceVersions[peer]?.get(task) }
+
+    private suspend fun currentWorkspaceRevision(): Long = state.withLock { workspaceRevision }
+
+    /**
+     * The frozen per-request authorization fence: an open prepared workspace
+     * or v2-scoped archive pins the revision it was authorized at; a share
+     * change or consent revocation bumps the revision, invalidating every
+     * subsequent segment with `notShared` (committed data is never rewound).
+     */
+    private suspend fun checkWorkspaceAuthorization(peer: String, task: UUID, scope: String, revision: Long) {
+        if (stopped) throw DeviceHistorySyncException(DeviceHistorySyncError.DISCONNECTED)
+        state.withLock {
+            if (workspaceRevision != revision || shares[peer]?.contains(task) != true ||
+                workspaceShares[peer]?.get(task) != scope
+            ) {
+                throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+            }
+        }
+    }
+
     private suspend fun respond(
         request: SyncRequest,
         peer: String,
@@ -663,28 +804,74 @@ class DeviceHistorySync(
             val current = currentShares(peer)
             val projected = offers.filter { it.id in current }.take(MAXIMUM_SHARED_TASKS)
                 .map { offer ->
-                    offer.copy(workspaceFiles = workspaceSource?.available(peer, offer.id) == true)
+                    val includesFiles = workspaceSource?.available(peer, offer.id) == true
+                    // Copy-only consents (pre-existing or never re-granted)
+                    // keep v1 semantics and never advertise propagation; the
+                    // capability appears only when the local convergence
+                    // authority (protocol 2 + explicit per-conversation
+                    // consent + a live share) is real.
+                    val convergenceVersion = if (includesFiles &&
+                        currentWorkspaceVersion(peer, offer.id) == 2 && workspaceProtocolVersion == 2
+                    ) 2 else null
+                    offer.copy(
+                        workspaceFiles = includesFiles,
+                        workspaceSyncVersion = convergenceVersion,
+                        attachmentTransfer = if (includesFiles && attachmentSource != null) true else null,
+                    )
                 }
             val latest = currentShares(peer)
             val safe = projected.filter { it.id in latest }
-            // Announce pages only when the local source actually supports them.
+            // Announce pages/attachments only when the local source actually
+            // supports them; false stays omitted on the wire.
             val historyPages = (source as? DeviceHistoryPagedSource)?.let { true }
-            return SyncReply(offers = safe, historyPages = historyPages) to null
+            val attachmentTransfer = attachmentSource?.let { true }
+            return SyncReply(
+                offers = safe,
+                historyPages = historyPages,
+                attachmentTransfer = attachmentTransfer,
+            ) to null
         }
         val taskID = request.taskID ?: throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
         if (taskID !in allowed) throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+        // A v2 history request additionally requires the local attachment
+        // authority and the same per-conversation workspace share, and pins
+        // the current revision so a later revocation fails every remaining
+        // segment with `notShared`.
+        val archiveScope: String?
+        val archiveRevision: Long
+        if (request.historyVersion == 2 &&
+            (request.operation == Operation.PREPARE || request.operation == Operation.PREPARE_PAGE)
+        ) {
+            if (attachmentSource == null) throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+            val scope = currentWorkspaceShare(peer, taskID)
+                ?: throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+            archiveRevision = currentWorkspaceRevision()
+            if (workspaceSource?.shareScope(peer, taskID) != scope) {
+                throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+            }
+            checkWorkspaceAuthorization(peer, taskID, scope, archiveRevision)
+            archiveScope = scope
+        } else {
+            archiveScope = null
+            archiveRevision = 0
+        }
         return when (request.operation) {
             Operation.OFFERS -> throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
             Operation.PREPARE -> {
-                val data = source.export(taskID)
+                // Any historyVersion other than 2 keeps the legacy v1 shape,
+                // matching old producers that never saw the version field.
+                val data = source.export(taskID, if (request.historyVersion == 2) 2 else 1)
                 if (stopped || taskID !in currentShares(peer)) {
                     throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
                 }
                 if (data.isEmpty() || data.size > MAXIMUM_ARCHIVE_BYTES) {
                     throw DeviceHistorySyncException(DeviceHistorySyncError.TOO_LARGE)
                 }
+                if (archiveScope != null) {
+                    checkWorkspaceAuthorization(peer, taskID, archiveScope, archiveRevision)
+                }
                 SyncReply(size = data.size, digest = ContentDigest.compute(data).toString()) to
-                    Archive(taskID, data)
+                    Archive(taskID, data, archiveScope, archiveRevision)
             }
             Operation.PREPARE_PAGE -> {
                 // preparePage only arrives after both sides negotiated pages;
@@ -699,7 +886,12 @@ class DeviceHistorySync(
                 if (request.through != null && (request.through < 0 || request.after == null)) {
                     throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
                 }
-                val page = paged.historyPage(taskID, request.after, request.through)
+                if (request.historyVersion != null && request.historyVersion != 1 &&
+                    request.historyVersion != 2
+                ) {
+                    throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+                }
+                val page = paged.historyPage(taskID, request.after, request.through, request.historyVersion ?: 1)
                 // Re-check authorization after suspending to the source.
                 if (stopped || taskID !in currentShares(peer)) {
                     throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
@@ -716,6 +908,9 @@ class DeviceHistorySync(
                 if (page.bytes.isEmpty() || page.bytes.size > MAXIMUM_ARCHIVE_BYTES) {
                     throw DeviceHistorySyncException(DeviceHistorySyncError.TOO_LARGE)
                 }
+                if (archiveScope != null) {
+                    checkWorkspaceAuthorization(peer, taskID, archiveScope, archiveRevision)
+                }
                 // The reply echoes the page's own sequence upper bound; the
                 // client sends it back unchanged from the next request on.
                 // Body chunks reuse the legacy arm, so each new prepare /
@@ -727,7 +922,7 @@ class DeviceHistorySync(
                     nextCursor = page.nextCursor,
                     through = page.through,
                     hasMore = page.hasMore,
-                ) to Archive(taskID, page.bytes)
+                ) to Archive(taskID, page.bytes, archiveScope, archiveRevision)
             }
             Operation.CHUNK -> {
                 val offset = request.offset
@@ -735,6 +930,15 @@ class DeviceHistorySync(
                 if (active == null || active.taskID != taskID || offset == null ||
                     offset < 0 || offset >= active.data.size) {
                     throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+                }
+                if (active.workspaceScope != null) {
+                    // Per-segment revocation: the v2 archive bytes ride the
+                    // workspace authorization, so every chunk re-proves the
+                    // share and consent before answering.
+                    if (workspaceSource?.shareScope(peer, taskID) != active.workspaceScope) {
+                        throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+                    }
+                    checkWorkspaceAuthorization(peer, taskID, active.workspaceScope, active.workspaceRevision)
                 }
                 val start = offset.toInt()
                 val end = minOf(start + CHUNK_SIZE, active.data.size)
@@ -747,13 +951,16 @@ class DeviceHistorySync(
 
     private suspend fun prepareWorkspace(request: SyncRequest, peer: String): PreparedDeviceWorkspace {
         val task = checkWorkspaceRequest(request, peer)
-        if (request.offset != null || request.index != null || request.indexes != null) invalidWorkspace()
+        if (request.offset != null || request.index != null || request.indexes != null ||
+            request.historyVersion != null || request.attachmentID != null || request.count != null ||
+            request.removals != null || request.renames != null
+        ) invalidWorkspace()
         val source = workspaceSource ?: throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
         val snapshot = source.prepare(peer, task)
         return try {
             checkWorkspaceRequest(request, peer)
             snapshot.checkPermission()
-            PreparedDeviceWorkspace(task, snapshot)
+            PreparedDeviceWorkspace(task, snapshot, currentWorkspaceRevision())
         } catch (failure: Throwable) {
             runCatching { snapshot.close() }
             throw failure
@@ -766,17 +973,34 @@ class DeviceHistorySync(
         prepared: PreparedDeviceWorkspace?,
     ): SyncReply {
         val task = checkWorkspaceRequest(request, peer)
+        if (request.historyVersion != null) invalidWorkspace()
+        // Attachment bytes are content-addressed by the history archive the
+        // receiver already imported, so they read live under the same
+        // per-request authorization and do not require a prepared file
+        // snapshot (the receiver pulls them before the workspace phase).
+        if (request.operation == Operation.ATTACHMENT_FILE) {
+            return respondAttachmentFile(request, peer, task)
+        }
         if (prepared == null || prepared.task != task) invalidWorkspace()
+        // An open transfer pins the revision it was prepared at; a share or
+        // consent change bumps the revision and fails every subsequent
+        // segment with `notShared` (committed data is never rewound).
+        if (prepared.revision != currentWorkspaceRevision()) {
+            throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+        }
         prepared.snapshot.checkPermission()
         val reply = when (request.operation) {
             Operation.WORKSPACE_MANIFEST -> {
-                if (request.index != null || request.indexes != null) invalidWorkspace()
+                if (request.index != null || request.indexes != null ||
+                    request.attachmentID != null || request.count != null ||
+                    request.removals != null || request.renames != null) invalidWorkspace()
                 val offset = validWorkspaceOffset(request.offset, prepared.manifest.size.toLong()).toInt()
                 val end = minOf(offset + DeviceWorkspaceManifest.CHUNK_SIZE, prepared.manifest.size)
                 SyncReply(bytes = prepared.manifest.copyOfRange(offset, end))
             }
             Operation.WORKSPACE_FILE -> {
-                if (request.indexes != null) invalidWorkspace()
+                if (request.indexes != null || request.attachmentID != null || request.count != null ||
+                    request.removals != null || request.renames != null) invalidWorkspace()
                 val index = request.index ?: invalidWorkspace()
                 val entry = prepared.entries.getOrNull(index)?.takeIf { it.kind == DeviceWorkspaceEntry.Kind.FILE }
                     ?: invalidWorkspace()
@@ -788,13 +1012,20 @@ class DeviceHistorySync(
                 SyncReply(bytes = bytes)
             }
             Operation.CONFIRM_WORKSPACE -> {
-                if (request.offset != null || request.index != null) invalidWorkspace()
+                if (request.offset != null || request.index != null ||
+                    request.attachmentID != null || request.count != null) invalidWorkspace()
                 val indexes = request.indexes ?: invalidWorkspace()
-                if (indexes.isEmpty() || indexes.size > DeviceWorkspaceManifest.MAX_CONFIRM ||
-                    indexes.toSet().size != indexes.size || indexes.any {
-                        prepared.entries.getOrNull(it)?.kind != DeviceWorkspaceEntry.Kind.FILE
-                    }) invalidWorkspace()
-                prepared.snapshot.confirm(indexes)
+                val removals = request.removals.orEmpty()
+                val renames = request.renames.orEmpty()
+                // Convergence receipts are only accepted for consented v2
+                // shares; copy-only authorizations must never apply peer
+                // deletions or relocations (the frozen old-peer rule).
+                if ((removals.isNotEmpty() || renames.isNotEmpty()) &&
+                    currentWorkspaceVersion(peer, task) != 2
+                ) {
+                    throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+                }
+                prepared.snapshot.confirm(indexes, removals, renames)
                 SyncReply()
             }
             else -> invalidWorkspace()
@@ -802,6 +1033,38 @@ class DeviceHistorySync(
         checkWorkspaceRequest(request, peer)
         prepared.snapshot.checkPermission()
         return reply
+    }
+
+    /**
+     * One attachment byte segment under the live workspace authorization.
+     * The scope and revision are re-proven both before and after the provider
+     * read so a revocation can never leak a segment.
+     */
+    private suspend fun respondAttachmentFile(request: SyncRequest, peer: String, task: UUID): SyncReply {
+        val provider = attachmentSource
+            ?: throw DeviceHistorySyncException(DeviceHistorySyncError.UNSUPPORTED_VERSION)
+        if (request.index != null || request.indexes != null ||
+            request.removals != null || request.renames != null ||
+            request.after != null || request.through != null
+        ) invalidWorkspace()
+        val attachmentID = request.attachmentID ?: invalidWorkspace()
+        val offset = request.offset ?: invalidWorkspace()
+        val count = request.count ?: invalidWorkspace()
+        if (offset < 0 || count <= 0 || count > CHUNK_SIZE) invalidWorkspace()
+        val scope = currentWorkspaceShare(peer, task) ?: invalidWorkspace()
+        var revision = currentWorkspaceRevision()
+        checkWorkspaceAuthorization(peer, task, scope, revision)
+        if (workspaceSource?.shareScope(peer, task) != scope) {
+            throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+        }
+        val bytes = provider.attachment(task, attachmentID, offset, count)
+        revision = currentWorkspaceRevision()
+        checkWorkspaceAuthorization(peer, task, scope, revision)
+        if (workspaceSource?.shareScope(peer, task) != scope) {
+            throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+        }
+        if (bytes.size != count) throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+        return SyncReply(bytes = bytes)
     }
 
     private fun validWorkspaceOffset(value: Long?, size: Long): Long =
@@ -818,9 +1081,16 @@ class DeviceHistorySync(
 
     private fun invalidWorkspace(): Nothing = throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
 
-    private class Archive(val taskID: UUID, val data: ByteArray)
+    private class Archive(
+        val taskID: UUID,
+        val data: ByteArray,
+        /** v2 archives ride the workspace authorization; every chunk re-fences. */
+        val workspaceScope: String? = null,
+        val workspaceRevision: Long = 0,
+    )
 
-    internal enum class Operation(val wire: String) {
+    /** Wire operations. The frozen v2 extension adds `attachmentFile`. */
+    enum class Operation(val wire: String) {
         OFFERS("offers"),
         PREPARE("prepare"),
         PREPARE_PAGE("preparePage"),
@@ -829,10 +1099,11 @@ class DeviceHistorySync(
         WORKSPACE_MANIFEST("workspaceManifest"),
         WORKSPACE_FILE("workspaceFile"),
         CONFIRM_WORKSPACE("confirmWorkspace"),
+        ATTACHMENT_FILE("attachmentFile"),
         ;
 
         val isWorkspace: Boolean get() = when (this) {
-            PREPARE_WORKSPACE, WORKSPACE_MANIFEST, WORKSPACE_FILE, CONFIRM_WORKSPACE -> true
+            PREPARE_WORKSPACE, WORKSPACE_MANIFEST, WORKSPACE_FILE, CONFIRM_WORKSPACE, ATTACHMENT_FILE -> true
             else -> false
         }
 
@@ -842,9 +1113,15 @@ class DeviceHistorySync(
     }
 
     /** A malformed request ends the serve loop without a failure reply. */
-    internal class RequestDecodeException : Exception()
+    class RequestDecodeException : Exception()
 
-    internal class SyncRequest(
+    /**
+     * One decoded wire request. Optional keys absent on the wire stay null
+     * (Swift's synthesized Codable omits nil optionals; the decoder still
+     * tolerates explicit nulls). Public so exact cross-language vector tests
+     * can drive the codec without a network.
+     */
+    class SyncRequest(
         val operation: Operation,
         val taskID: UUID? = null,
         val offset: Long? = null,
@@ -853,15 +1130,25 @@ class DeviceHistorySync(
         val version: Int = WIRE_VERSION,
         val index: Int? = null,
         val indexes: List<Int>? = null,
+        /** Archive version the receiver can import (1 or 2). Absent keeps v1. */
+        val historyVersion: Int? = null,
+        /** Attachment byte reads, authorized like workspace files. */
+        val attachmentID: UUID? = null,
+        val count: Int? = null,
+        /** Baseline removals/renames the receiver converged locally. */
+        val removals: List<String>? = null,
+        val renames: List<DeviceWorkspaceMove>? = null,
     )
 
-    internal class SyncReply(
+    /** One decoded wire reply; see [SyncRequest] for the omission rules. */
+    class SyncReply(
         val failure: DeviceHistorySyncError? = null,
         val offers: List<DeviceHistoryOffer>? = null,
         val size: Int? = null,
         val digest: String? = null,
         val bytes: ByteArray? = null,
         val historyPages: Boolean? = null,
+        val attachmentTransfer: Boolean? = null,
         val nextCursor: String? = null,
         val through: Long? = null,
         val hasMore: Boolean? = null,
@@ -883,14 +1170,54 @@ class DeviceHistorySync(
         private const val REQUEST_TIMEOUT_MILLIS = 30_000L
         private const val WORKSPACE_PREPARE_TIMEOUT_MILLIS = 300_000L
 
+        /**
+         * Shared catalog offer validation (frozen contract): bounded count,
+         * unique ids, non-empty titles within the byte cap, and convergence
+         * versions restricted to absent or `2`. Public so hosts and
+         * cross-language vector tests apply the identical rules without a
+         * live connection.
+         */
+        fun validatedOffers(raw: List<DeviceHistoryOffer>?): List<DeviceHistoryOffer> {
+            val offers = raw ?: throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            if (offers.size > MAXIMUM_SHARED_TASKS) {
+                throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            }
+            if (offers.mapTo(HashSet()) { it.id }.size != offers.size) {
+                throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            }
+            if (offers.any { it.title.isEmpty() || it.title.encodeToByteArray().size > MAXIMUM_TITLE_BYTES }) {
+                throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            }
+            // Only protocol 2 exists; an unknown convergence version is an
+            // invalid reply (frozen contract: nil or 2, never 3+).
+            if (offers.any { it.workspaceSyncVersion != null && it.workspaceSyncVersion != 2 }) {
+                throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            }
+            return offers
+        }
+
+        /**
+         * The top-level attachment capability is announced only when real; an
+         * explicit `false` on the wire is rejected by the current protocol
+         * (frozen contract), unlike the per-offer flag which decodes as absent.
+         */
+        fun validatedAttachmentTransfer(value: Boolean?): Boolean {
+            if (value == false) throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+            return value == true
+        }
+
         // The exact Swift v1 JSON shapes. Swift's synthesized Codable omits nil
         // optionals, so optional keys are absent (not null) on the wire; the
         // decoder below still tolerates explicit nulls for robustness. The v1
         // paging extension adds optional boolean historyPages to the offers
         // reply and, for preparePage, optional string after, integer through,
         // optional string nextCursor and boolean hasMore. through is a
-        // non-negative Int64, never a string.
-        internal fun encodeRequest(request: SyncRequest): ByteArray =
+        // non-negative Int64, never a string. The frozen v2 extension adds
+        // integer historyVersion to prepare/preparePage, the attachmentFile
+        // operation with attachmentID/count, boolean attachmentTransfer on the
+        // offers reply and each offer, integer workspaceSyncVersion on each
+        // offer, and removals/renames receipts on confirmWorkspace.
+        fun encodeRequest(request: SyncRequest): ByteArray =
             JSONObject()
                 .put("version", WIRE_VERSION)
                 .put("operation", request.operation.wire)
@@ -900,10 +1227,25 @@ class DeviceHistorySync(
                 .putOptional("through", request.through)
                 .putOptional("index", request.index)
                 .putOptional("indexes", request.indexes?.let(::JSONArray))
+                .putOptional("historyVersion", request.historyVersion)
+                .putOptional("attachmentID", request.attachmentID?.toString())
+                .putOptional("count", request.count)
+                .putOptional("removals", request.removals?.let(::JSONArray))
+                .putOptional(
+                    "renames",
+                    request.renames?.let { moves ->
+                        JSONArray(moves.map { move ->
+                            JSONObject()
+                                .put("from", move.key)
+                                .put("to", move.path)
+                                .put("digest", move.digest)
+                        })
+                    },
+                )
                 .toString()
                 .encodeToByteArray()
 
-        internal fun encodeReply(reply: SyncReply): ByteArray =
+        fun encodeReply(reply: SyncReply): ByteArray =
             JSONObject()
                 .put("version", WIRE_VERSION)
                 .putOptional("failure", reply.failure?.wire)
@@ -915,26 +1257,29 @@ class DeviceHistorySync(
                                 .put("id", offer.id.toString())
                                 .put("title", offer.title)
                                 .putOptional("workspaceFiles", true.takeIf { offer.workspaceFiles })
+                                .putOptional("workspaceSyncVersion", offer.workspaceSyncVersion?.takeIf { it == 2 })
+                                .putOptional("attachmentTransfer", offer.attachmentTransfer?.takeIf { it })
                         })
                     },
                 )
                 .putOptional("size", reply.size)
                 .putOptional("digest", reply.digest)
                 .putOptional("bytes", reply.bytes?.let { Base64.getEncoder().encodeToString(it) })
-                // Pages are announced only when supported; false stays omitted.
+                // Pages/attachments are announced only when supported; false stays omitted.
                 .putOptional("historyPages", reply.historyPages?.takeIf { it })
+                .putOptional("attachmentTransfer", reply.attachmentTransfer?.takeIf { it })
                 .putOptional("nextCursor", reply.nextCursor)
                 .putOptional("through", reply.through)
                 .putOptional("hasMore", reply.hasMore)
                 .toString()
                 .encodeToByteArray()
 
-        internal fun JSONObject.putOptional(name: String, value: Any?): JSONObject {
+        fun JSONObject.putOptional(name: String, value: Any?): JSONObject {
             if (value != null) put(name, value)
             return this
         }
 
-        internal fun decodeRequest(payload: ByteArray): SyncRequest {
+        fun decodeRequest(payload: ByteArray): SyncRequest {
             val json = try {
                 JSONObject(payload.decodeToString(throwOnInvalidSequence = true))
             } catch (failure: Exception) {
@@ -944,7 +1289,7 @@ class DeviceHistorySync(
                 throw RequestDecodeException()
             }
             val version = json.getInt("version")
-            val rawOperation = json.get("operation") as? String ?: throw RequestDecodeException()
+            val rawOperation = json.opt("operation") as? String ?: throw RequestDecodeException()
             val operation = Operation.fromWire(rawOperation) ?: throw RequestDecodeException()
             val taskID: UUID? = when (val raw = if (json.isNull("taskID")) null else json.get("taskID")) {
                 null -> null
@@ -982,10 +1327,46 @@ class DeviceHistorySync(
                 if (list.length() > DeviceWorkspaceManifest.MAX_CONFIRM) emptyList()
                 else List(list.length()) { i -> list.get(i) as? Int ?: throw RequestDecodeException() }
             }
-            return SyncRequest(operation, taskID, offset, after, through, version, index, indexes)
+            // Archive version the receiver can import: an integer, validated
+            // against 1|2 by the operation handler (prepare treats any other
+            // value as v1 for old-producer compatibility; preparePage is strict).
+            val historyVersion: Int? = if (json.isNull("historyVersion")) null
+                else json.get("historyVersion") as? Int ?: throw RequestDecodeException()
+            val attachmentID: UUID? = when (val raw = if (json.isNull("attachmentID")) null else json.get("attachmentID")) {
+                null -> null
+                is String -> try {
+                    UUID.fromString(raw)
+                } catch (failure: IllegalArgumentException) {
+                    throw RequestDecodeException()
+                }
+                else -> throw RequestDecodeException()
+            }
+            // Chunk byte count: an Int on the wire; the range check happens
+            // at the operation handler (1...384 KiB for attachmentFile).
+            val count: Int? = if (json.isNull("count")) null
+                else json.get("count") as? Int ?: throw RequestDecodeException()
+            val removals: List<String>? = if (json.isNull("removals")) null else {
+                val list = json.get("removals") as? JSONArray ?: throw RequestDecodeException()
+                List(list.length()) { i -> list.get(i) as? String ?: throw RequestDecodeException() }
+            }
+            val renames: List<DeviceWorkspaceMove>? = if (json.isNull("renames")) null else {
+                val list = json.get("renames") as? JSONArray ?: throw RequestDecodeException()
+                List(list.length()) { i ->
+                    val item = list.get(i) as? JSONObject ?: throw RequestDecodeException()
+                    DeviceWorkspaceMove(
+                        key = item.opt("from") as? String ?: throw RequestDecodeException(),
+                        path = item.opt("to") as? String ?: throw RequestDecodeException(),
+                        digest = item.opt("digest") as? String ?: throw RequestDecodeException(),
+                    )
+                }
+            }
+            return SyncRequest(
+                operation, taskID, offset, after, through, version, index, indexes,
+                historyVersion, attachmentID, count, removals, renames,
+            )
         }
 
-        internal fun decodeReply(payload: ByteArray): SyncReply {
+        fun decodeReply(payload: ByteArray): SyncReply {
             val invalid = { DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE) }
             val json = try {
                 JSONObject(payload.decodeToString(throwOnInvalidSequence = true))
@@ -1006,7 +1387,7 @@ class DeviceHistorySync(
                 val array = json.get("offers") as? JSONArray ?: throw invalid()
                 (0 until array.length()).map { index ->
                     val item = array.get(index) as? JSONObject ?: throw invalid()
-                    val id = when (val raw = item.get("id")) {
+                    val id = when (val raw = item.opt("id")) {
                         is String -> try {
                             UUID.fromString(raw)
                         } catch (failure: IllegalArgumentException) {
@@ -1014,10 +1395,14 @@ class DeviceHistorySync(
                         }
                         else -> throw invalid()
                     }
-                    val title = item.get("title") as? String ?: throw invalid()
+                    val title = item.opt("title") as? String ?: throw invalid()
                     val workspaceFiles = if (item.isNull("workspaceFiles")) false
                         else item.get("workspaceFiles") as? Boolean ?: throw invalid()
-                    DeviceHistoryOffer(id, title, workspaceFiles)
+                    val workspaceSyncVersion: Int? = if (item.isNull("workspaceSyncVersion")) null
+                        else item.get("workspaceSyncVersion") as? Int ?: throw invalid()
+                    val offerAttachmentTransfer = if (item.isNull("attachmentTransfer")) null
+                        else item.get("attachmentTransfer") as? Boolean ?: throw invalid()
+                    DeviceHistoryOffer(id, title, workspaceFiles, workspaceSyncVersion, offerAttachmentTransfer)
                 }
             } else {
                 null
@@ -1060,6 +1445,7 @@ class DeviceHistorySync(
                 digest = digest,
                 bytes = bytes,
                 historyPages = optionalBoolean("historyPages"),
+                attachmentTransfer = optionalBoolean("attachmentTransfer"),
                 nextCursor = nextCursor,
                 through = through,
                 hasMore = optionalBoolean("hasMore"),

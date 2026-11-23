@@ -343,7 +343,8 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
         ToolCatalog.register(JobsStatusTool.self)
         ToolCatalog.register(JobsResultTool.self)
         ToolCatalog.register(JobsCancelTool.self)
-        registry.register(JobsSubmitTool(service: service, admittedTargets: admitted))
+        registry.register(JobsSubmitTool(service: service, admittedTargets: admitted,
+                                        serviceHost: plan.serviceHost))
         registry.register(JobsStatusTool(service: service))
         registry.register(JobsResultTool(service: service, outputRoot: plan.outputRootURL))
         registry.register(JobsCancelTool(service: service))
@@ -523,11 +524,25 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             throw FloeError.invalidConfiguration("background jobs are not composed in this build")
         }
         let owned = try await service.ownedJob(id: id, runID: runID)
-        guard owned.conversationID == conversationID else {
+        guard owned.runID == runID, owned.conversationID == conversationID else {
             throw FloeError.validationFailed(
                 "No background job is available to this task with that ID")
         }
         return try await service.cancel(id: id)
+    }
+
+    func restartOwnedLocalService(id: UUID, runID: UUID, conversationID: UUID,
+                                  epoch: UInt64) async throws {
+        guard let service = withState({ serviceStorage }) else {
+            throw FloeError.invalidConfiguration("Background jobs are unavailable")
+        }
+        let job = try await service.ownedJob(id: id, runID: runID)
+        guard job.runID == runID, job.conversationID == conversationID,
+              G02NativeRootEpoch.readback() == epoch,
+              withState({ serviceStorage === service }) else {
+            throw FloeError.validationFailed("This task no longer owns the local service")
+        }
+        _ = try await service.restartLocalService(id: job.id)
     }
 
     /// Cooperative cancellation of the EXACT pending dependency jobs of one

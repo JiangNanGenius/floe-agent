@@ -84,6 +84,8 @@
     <string name="tool_status_unknown">未知</string>
     <string name="tool_input">输入</string>
     <string name="tool_result">实际输出</string>
+    <string name="shared_tool_results">同步的工具结果</string>
+    <string name="shared_tool_results_shown">已显示 %2$d 条结果中的 %1$d 条</string>
     <string name="tool_approval">授权</string>
     <string name="tool_decision">决定</string>
     <string name="artifact_unverified">字节未验证</string>
@@ -143,6 +145,7 @@
     <string name="approval_terminal_handoff_refused">终端未能释放 Linux 引擎，本次未执行任何命令。可重试，或保留终端稍后再运行。</string>
     <string name="approval_device_back">返回上一屏幕</string>
     <string name="approval_device_home">返回主屏幕</string>
+    <string name="approval_start_local_linux">启动此任务的本机 Linux 环境</string>
     <string name="approval_device_launch">打开应用</string>
     <string name="approval_device_package">应用包名</string>
     <string name="approval_requested_scope_note">这里显示的是请求的操作，不会授权访问其他文件或应用。</string>
@@ -194,6 +197,13 @@
     <string name="composer_mode">模式</string>
     <string name="composer_mode_agent">智能体</string>
     <string name="composer_mode_chat">对话</string>
+    <string name="composer_chat_reasoning">对话思考强度</string>
+    <string name="composer_chat_reasoning_fast">快速</string>
+    <string name="composer_chat_reasoning_automatic">自动</string>
+    <string name="composer_chat_reasoning_low">低</string>
+    <string name="composer_chat_reasoning_medium">中</string>
+    <string name="composer_chat_reasoning_high">高</string>
+    <string name="composer_chat_reasoning_maximum">最高</string>
     <string name="composer_mode_plan">计划</string>
     <string name="composer_mode_goal">目标</string>
     <string name="composer_project">工作区</string>
@@ -398,6 +408,9 @@
     <string name="run_output_saved">已保存到你的文件</string>
     <string name="run_output_save_cancelled">已取消保存</string>
     <string name="run_output_save_failed">保存失败</string>
+    <string name="run_output_edit_copy">编辑副本</string>
+    <string name="run_output_preparing_edit">正在准备可编辑副本…</string>
+    <string name="run_output_edit_failed">暂时无法准备可编辑副本。可再次点按编辑副本。</string>
     <string name="run_output_open_blocked">请先关闭当前打开的文档，再重新点按打开</string>
     <string name="run_output_missing">文件已不可用</string>
     <string name="run_output_changed">文件内容已变化</string>
@@ -456,7 +469,9 @@
     <string name="jobs_truncated">仅显示最近的后台作业。</string>
     <string name="jobs_cancel">取消作业</string>
     <string name="jobs_cancelling">正在取消…</string>
-    <string name="jobs_cancel_failed">无法取消此作业，上方状态未改变。</string>
+    <string name="jobs_cancel_failed">作业操作未完成，请刷新后重试。</string>
+    <string name="jobs_service_open_preview">打开服务预览</string>
+    <string name="jobs_service_restart">重启服务</string>
     <string name="jobs_result_available">结果可用</string>
     <string name="jobs_result_unavailable">暂无结果</string>
     <string name="jobs_dependency_pending">任务正在等待此作业。</string>
@@ -507,6 +522,13 @@
     <string name="approval_workspace_move">移动文件或文件夹</string>
     <string name="approval_workspace_copy">复制文件或文件夹</string>
     <string name="approval_workspace_delete">删除文件或文件夹</string>
+    <string name="approval_workspace_publish">保存副本为任务成果</string>
+    <string name="approval_workspace_output_name">成果名称 %1$s</string>
+    <string name="approval_service_start">启动本地 Linux 服务</string>
+    <string name="approval_service_details">%1$s · 工作目录 %2$s · 本机端口 %3$d</string>
+    <string name="approval_service_wait">服务就绪后继续当前任务。</string>
+    <string name="approval_service_detach">任务回复后，服务仍可在后台运行。</string>
+    <string name="approval_service_arguments">启动参数 %1$s</string>
     <string name="approval_precondition_exists">目标必须存在。</string>
     <string name="approval_precondition_exists_sha">目标必须存在且符合提供的 SHA-256 摘要。</string>
     <string name="approval_precondition_occurrences">必须符合预期匹配次数。</string>

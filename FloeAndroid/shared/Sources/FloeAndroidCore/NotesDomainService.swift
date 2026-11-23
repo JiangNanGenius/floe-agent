@@ -18,7 +18,7 @@ public final class NotesDomainService: @unchecked Sendable {
         "document.list", "document.recent", "document.get", "document.summary",
         "document.create", "document.duplicate", "document.saveMessage",
         "document.createLinkedMindMap", "document.apply", "document.undo",
-        "document.setTrashed", "document.permanentlyDelete", "document.history",
+        "document.setTrashed", "document.trashBatch", "document.permanentlyDelete", "document.history",
         "document.markOpened", "document.setFavorite", "document.setTags",
         "document.coverRead", "document.coverApply", "document.cacheOfficePreview",
         "document.editingSnapshot", "document.pageOCRState",

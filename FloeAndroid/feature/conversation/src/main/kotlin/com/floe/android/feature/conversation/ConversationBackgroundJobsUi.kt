@@ -284,12 +284,23 @@ private fun BackgroundJobRow(
                 FloeCapsuleAction(
                     label = stringResource(
                         if (cancelling) R.string.jobs_cancelling else R.string.jobs_cancel),
-                    enabled = FloeBackgroundJobPresentation.cancelEnabled(
-                        job, holder.cancellingBackgroundJobIds),
+                    enabled = job.jobId !in holder.pendingServiceJobIds &&
+                        FloeBackgroundJobPresentation.cancelEnabled(job, holder.cancellingBackgroundJobIds),
                     tint = Floe.colors.destructive,
                     onClick = { holder.cancelBackgroundJob(job) },
                 )
             }
+        }
+        if (job.canOpenServicePreview || job.canRestartService) {
+            val action = if (job.canOpenServicePreview) BackgroundServiceAction.OPEN_PREVIEW
+                else BackgroundServiceAction.RESTART
+            FloeCapsuleAction(
+                label = stringResource(if (job.canOpenServicePreview) R.string.jobs_service_open_preview
+                    else R.string.jobs_service_restart),
+                enabled = job.jobId !in holder.pendingServiceJobIds &&
+                    job.jobId !in holder.cancellingBackgroundJobIds,
+                onClick = { holder.performBackgroundServiceAction(job, action) },
+            )
         }
         FloeBackgroundJobPresentation.dependencyKey(job)?.let { key ->
             FloeText(

@@ -32,6 +32,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeActivityIndicator
@@ -93,6 +94,22 @@ internal fun ConversationArtifactPreviewDestination(
     }
     if (!ownerCurrent()) {
         LaunchedEffect(request.token) { onCleared() }
+        return
+    }
+    if (request.editWithExternalApp) {
+        var linuxPath by rememberSaveable(request.token) { mutableStateOf<String?>(null) }
+        val path = linuxPath
+        if (path == null) {
+            ExternalEditorSheet(
+                host, request.taskID, request.workspaceID, request.relativePath,
+                visible = true, onOpenLinux = { linuxPath = it }, onDismiss = onCleared,
+                requestIsCurrent = {
+                    ownerCurrent() && host.conversations.currentVisibleConversationId() == request.taskID
+                },
+            )
+        } else {
+            LinuxDesktopSheet(host, request.taskID, request.workspaceID, path, onDismiss = onCleared)
+        }
         return
     }
     val documentRequest = remember(

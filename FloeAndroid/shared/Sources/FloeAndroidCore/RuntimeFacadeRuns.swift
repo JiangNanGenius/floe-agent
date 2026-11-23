@@ -1815,6 +1815,10 @@ public actor FacadeRunDomain {
             explicitExecutionMode: query.explicitExecutionMode)
         request.activatesEmptyOrdinaryHeader = bundle.identity == .ordinary
         request.explicitInitialApprovalMode = query.explicitInitialApprovalMode
+        if bundle.identity == .ordinary, query.explicitExecutionMode == ExplicitExecutionMode.chat.rawValue {
+            request.chatReasoning = ChatReasoningSupport.decision(
+                query.chatReasoning ?? .defaultValue, provider: launch.provider, model: launch.model)
+        }
         let prepared: PreparedRun
         do {
             if bundle.identity == .ordinary || bundle.identity == .notes,
@@ -1998,7 +2002,8 @@ public actor FacadeRunDomain {
                 explicitExecutionMode: prepared.run.explicitExecutionMode
                     .flatMap(ExplicitExecutionMode.init(rawValue:)),
                 reasoningIngress: .freshRound,
-                reasoningAttachments: launchAttachments)
+                reasoningAttachments: launchAttachments,
+                chatReasoning: request.chatReasoning?.preference)
             assemblyPhase = nil
         } catch let error as RunDomainError {
             await abandonPreparedLaunch(current, reason: "serviceAssemblyFailed")
@@ -4160,8 +4165,13 @@ public actor FacadeRunDomain {
               G02NativeRootEpoch.readback() == epoch, latest == waiting,
               let currentWorkspace, currentWorkspace.conversationID == taskID,
               currentWorkspace.workspaceID == proof.workspaceID,
-              currentWorkspace.rootURL.standardizedFileURL == proof.rootURL.standardizedFileURL,
-              let shell = RuntimeFacadeLinuxBindings.shared.components?.service,
+              currentWorkspace.rootURL.standardizedFileURL == proof.rootURL.standardizedFileURL else { return nil }
+        if WorkspaceApprovalPresentation.isManagedService(waiting.toolCall) {
+            guard let details = WorkspaceApprovalPresentation.details(waiting: waiting, launch: proof,
+                current: currentWorkspace, conversationID: taskID) else { return nil }
+            return (details, frozen)
+        }
+        guard let shell = RuntimeFacadeLinuxBindings.shared.components?.service,
               let details = LocalShellApprovalPresentation.details(waiting: waiting, target: frozen,
                                                                    workspace: proof, shell: shell) else { return nil }
         return (details, frozen)
@@ -4296,6 +4306,7 @@ public actor FacadeRunDomain {
         guard let waiting = await service.snapshot().pendingApproval,
               waiting.toolCall.id == callID, waiting.generation == generation,
               (WorkspaceApprovalPresentation.toolNames.contains(waiting.toolCall.toolName) ||
+               WorkspaceApprovalPresentation.isManagedService(waiting.toolCall) ||
                waiting.toolCall.toolName == "exec.shell" || waiting.toolCall.toolName == "device.act" ||
                waiting.toolCall.toolName == "task.schedule" || waiting.toolCall.toolName == "browser.tab" ||
                G04BrowserInteractionApprovalPresentation.names.contains(waiting.toolCall.toolName)),
@@ -4346,7 +4357,7 @@ public actor FacadeRunDomain {
             projected["canonicalTargetDigest"] = deviceTargetDigest.map { .string($0) } ?? .null
             details = projected
             shellTarget = nil
-        } else if waiting.toolCall.toolName == "exec.shell" {
+        } else if waiting.toolCall.toolName == "exec.shell" || WorkspaceApprovalPresentation.isManagedService(waiting.toolCall) {
             guard let proof, deviceTargetDigest == nil else {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
             }
@@ -4483,13 +4494,15 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
         let fileTools = WorkspaceApprovalPresentation.toolNames
+        let managedService = WorkspaceApprovalPresentation.isManagedService(waiting.toolCall)
         // A positively pinned SSH target keeps its existing remote approval
         // path. An unknown target cannot be relabelled as local or remote.
         let localShell: Bool
-        if case .allow = query.branch, waiting.toolCall.toolName == "exec.shell" {
+        if case .allow = query.branch, waiting.toolCall.toolName == "exec.shell" || managedService {
             guard let pinned = owners[query.runID]?.shellApprovalTarget,
                   pinned.target.taskID == query.conversationID,
-                  pinned.pin.runID == query.runID, pinned.pin.rootEpoch == epoch else {
+                  pinned.pin.runID == query.runID, pinned.pin.rootEpoch == epoch,
+                  !managedService || pinned.target.kind == .localLinux else {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
             }
             localShell = pinned.target.kind == .localLinux
@@ -4585,7 +4598,7 @@ public actor FacadeRunDomain {
                 projected["canonicalTargetDigest"] = .string(targetDigest)
                 details = projected
                 shellTarget = nil
-            } else if waiting.toolCall.toolName == "exec.shell" {
+            } else if waiting.toolCall.toolName == "exec.shell" || managedService {
                 guard let proof, query.canonicalTargetDigest == nil else {
                     return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
                 }

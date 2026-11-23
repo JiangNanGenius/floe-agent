@@ -400,6 +400,7 @@ public actor FloeAgentRuntime {
         public var conversationID: UUID
         public var provider: ProviderProfile
         public var model: ModelProfile
+        public var reasoningPolicy: ProviderReasoningPolicy = .modelDefault
         /// Determines the hard capability contract for this run. Plan mode
         /// exposes and executes read-only tools only.
         public var conversationMode: ConversationMode
@@ -2858,6 +2859,7 @@ public actor FloeAgentRuntime {
             // always callable, so they belong to that ceiling too.
             allToolNames: discoverableDescriptors.map(\.name)
                 + [ToolDiscovery.name, ToolDiscovery.listName],
+            reasoningPolicy: configuration.reasoningPolicy,
             ephemeralTransport: configuration.ephemeralTransport
         )
         // A retry must replay the exact safe dispatch boundary. In particular,

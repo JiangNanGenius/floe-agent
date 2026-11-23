@@ -227,4 +227,68 @@ class MeetingTranscriptionBridgeParsingTest {
         assertTrue(request.contains("\"offset\":0"))
         assertTrue(request.contains("\"limit\":2"))
     }
+
+    @Test
+    fun `speaker label is preserved when the provider supplies it`() {
+        val page = parse(
+            """
+            {"ok":true,"segments":[
+              {"start":0.5,"end":1.5,"text":"Hello","speaker":"Alice"},
+              {"start":1.5,"end":2.5,"text":"Hi","speaker":"  Bob  "},
+              {"start":2.5,"end":3.5,"text":"No speaker here"}
+            ],"nextOffset":3,"total":3}
+            """.trimIndent(),
+        )
+        assertEquals(3, page.segments.size)
+        assertEquals("Alice", page.segments[0].speaker)
+        assertEquals("Bob", page.segments[1].speaker)
+        assertEquals(null, page.segments[2].speaker)
+    }
+
+    @Test
+    fun `overlong speaker label is bounded and empty becomes absent`() {
+        val longSpeaker = "s".repeat(200)
+        val page = parse(
+            """
+            {"ok":true,"segments":[
+              {"start":0.5,"end":1.5,"text":"Hello","speaker":"$longSpeaker"},
+              {"start":1.5,"end":2.5,"text":"Hi","speaker":"   "}
+            ],"nextOffset":2,"total":2}
+            """.trimIndent(),
+        )
+        assertEquals(120, page.segments[0].speaker!!.length)
+        assertEquals(null, page.segments[1].speaker)
+    }
+
+    @Test
+    fun `malformed optional speaker label is dropped but the segment is kept`() {
+        // Numeric / object / bool speaker labels come from providers that
+        // half-diarize; the optional label must never cost the segment its
+        // required timing and text, and must never be coerced into a string.
+        val page = parse(
+            """
+            {"ok":true,"segments":[
+              {"start":0.0,"end":1.0,"text":"one","speaker":7},
+              {"start":1.0,"end":2.0,"text":"two","speaker":{"name":"A"}},
+              {"start":2.0,"end":3.0,"text":"three","speaker":true},
+              {"start":3.0,"end":4.0,"text":"four","speaker":"Ada"}
+            ],"nextOffset":4,"total":4}
+            """.trimIndent(),
+        )
+        assertEquals(4, page.segments.size)
+        assertEquals(listOf("one", "two", "three", "four"), page.segments.map { it.text })
+        assertEquals(null, page.segments[0].speaker)
+        assertEquals(null, page.segments[1].speaker)
+        assertEquals(null, page.segments[2].speaker)
+        assertEquals("Ada", page.segments[3].speaker)
+    }
+
+    @Test
+    fun `json null speaker is treated as not supplied`() {
+        val page = parse(
+            """{"ok":true,"segments":[{"start":0.0,"end":1.0,"text":"one","speaker":null}],"total":1,"nextOffset":1}""",
+        )
+        assertEquals(1, page.segments.size)
+        assertEquals(null, page.segments[0].speaker)
+    }
 }

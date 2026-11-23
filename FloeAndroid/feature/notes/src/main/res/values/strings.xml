@@ -5,6 +5,10 @@
 <resources>
     <string name="notes_title">Notes</string>
     <string name="notes_search_placeholder">Search notes</string>
+    <string name="notes_search_trash">Search Trash</string>
+    <string name="notes_select_multiple">Select notes</string>
+    <string name="notes_trash_selection_title">Move %1$d to Trash?</string>
+    <string name="notes_trash_selection_body">You can restore these notes from Trash.</string>
     <string name="notes_filter_recent">Recent</string>
     <string name="notes_filter_all">All</string>
     <string name="notes_filter_mind_maps">Mind Maps</string>

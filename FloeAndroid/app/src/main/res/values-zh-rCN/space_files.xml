@@ -61,6 +61,28 @@
     <string name="space_files_busy_copy">正在复制…</string>
     <string name="space_files_busy_move">正在移动…</string>
     <string name="space_files_busy_preview">正在载入预览…</string>
+    <string name="space_files_busy_edit">正在保存修改…</string>
+
+    <!-- 原生编辑：每次只把一个已授权文档复制到私有的可编辑工作副本；
+         校验后的字节写回原文件或显式的新文件，并始终保留原始版本。 -->
+    <string name="space_files_edit">编辑</string>
+    <string name="space_files_edit_open_editor">打开编辑器</string>
+    <string name="space_files_edit_preparing">正在准备可编辑副本…</string>
+    <string name="space_files_edit_sessions">正在编辑</string>
+    <string name="space_files_edit_waiting">等待编辑…</string>
+    <string name="space_files_edit_saving">正在保存修改…</string>
+    <string name="space_files_edit_saved_same">已把修改保存到此文件。</string>
+    <string name="space_files_edit_saved_sibling">已把修改保存为 %1$s，原文件未改动。</string>
+    <string name="space_files_edit_conflict">你编辑期间这个文件被其他应用更改。没有覆盖任何内容，请选择如何保留你的修改。</string>
+    <string name="space_files_edit_save_as_new">把修改后的副本保存为新文件</string>
+    <string name="space_files_edit_keep_provider">保留文件当前版本</string>
+    <string name="space_files_edit_finish">完成</string>
+    <string name="space_files_edit_retry">重新检查</string>
+    <string name="space_files_edit_failed">无法保存修改，原文件未改动。</string>
+    <string name="space_files_edit_finished_kept">已结束。可编辑副本仍保留在应用存储中以备恢复。</string>
+    <string name="space_files_edit_retain_hint">修改后的副本和保留的原始文件会一直在应用存储中，直到你点按「完成」。</string>
+    <string name="space_files_notice_edited">已把修改保存到 %1$s。</string>
+
 
     <string name="space_files_transfer_copy_title">复制 %1$s</string>
     <string name="space_files_transfer_move_title">移动 %1$s</string>

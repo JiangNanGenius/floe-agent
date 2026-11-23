@@ -69,6 +69,8 @@
     <string name="meeting_ui_record_other_unknown">A recording is active in another meeting.</string>
     <string name="meeting_ui_record_open_other">Open that meeting</string>
     <string name="meeting_ui_record_service_note">Recording runs in a background service and continues if you leave this page.</string>
+    <string name="meeting_ui_record_auto_transcribe">Transcribe new recordings</string>
+    <string name="meeting_ui_record_auto_transcribe_note">When recording stops, its cloud transcript is requested automatically using your configured transcription service.</string>
     <string name="meeting_ui_record_permission_needed">Microphone access is needed to record a meeting.</string>
     <string name="meeting_ui_record_grant">Allow microphone</string>
     <string name="meeting_ui_notifications_off">Notifications are off. Recording controls may not stay visible while the app is in the background.</string>
@@ -173,7 +175,12 @@
     <string name="meeting_ui_transcription_other_meeting">A transcription is running for “%1$s”.</string>
     <string name="meeting_ui_transcription_other_meeting_unknown">A transcription is running for another meeting.</string>
     <string name="meeting_ui_transcription_open_other">Open that meeting</string>
-    <string name="meeting_ui_transcription_service_note">Transcription keeps running while you leave this page. Android may stop it if the app is removed from recent apps, and an interrupted attempt is not resumed after the app closes.</string>
+    <string name="meeting_ui_transcription_service_note">Transcription keeps running while you leave this page. Android may stop it if the app is removed from recent apps; an interrupted attempt is never resumed on its own — reopen this meeting and use Retry transcription to run it again from the beginning.</string>
+    <string name="meeting_ui_transcription_interrupted">The last transcription was interrupted before it finished.</string>
+    <string name="meeting_ui_transcription_attempt_failed">The last transcription attempt did not finish.</string>
+    <string name="meeting_ui_transcription_attempt_cancelled">The last transcription attempt was cancelled.</string>
+    <string name="meeting_ui_transcription_retry_start">Retry transcription</string>
+    <string name="meeting_ui_transcription_retry_note">Retrying runs a new cloud transcription from the beginning for the same recording. Previous partial cloud work is not resumed.</string>
     <string name="meeting_ui_transcription_cancel_title">Cancel transcription?</string>
     <string name="meeting_ui_transcription_cancel_body">The cloud request will be asked to stop. If the transcript is already being saved, it may still finish. The recording and notes stay unchanged.</string>
     <string name="meeting_ui_transcription_keep_running">Keep transcribing</string>
@@ -202,6 +209,7 @@
     <string name="meeting_ui_assistant_working">Working…</string>
     <string name="meeting_ui_assistant_preparing">Preparing…</string>
     <string name="meeting_ui_assistant_cancelling">Cancelling…</string>
+    <string name="meeting_ui_assistant_awaiting_transcription">Waiting for the transcript to finish…</string>
     <string name="meeting_ui_assistant_cancel">Cancel</string>
     <string name="meeting_ui_assistant_check_status">Check status</string>
     <string name="meeting_ui_assistant_check_again">Check again</string>
@@ -241,6 +249,8 @@
     <string name="meeting_ui_export_body">Save this meeting’s details, notes and transcript as a file, or share them as plain text.</string>
     <string name="meeting_ui_export_save_txt">Save TXT</string>
     <string name="meeting_ui_export_save_markdown">Save Markdown</string>
+    <string name="meeting_ui_export_save_docx">Save Word</string>
+    <string name="meeting_ui_export_save_pdf">Save PDF</string>
     <string name="meeting_ui_export_share">Share text</string>
     <string name="meeting_ui_export_working">Exporting…</string>
     <string name="meeting_ui_export_unsaved_notes">Unsaved notes are not included. Save them before exporting.</string>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="message_attachment_title">Attachment</string>
+    <string name="message_attachment_unavailable">This attachment could not be opened.</string>
+    <string name="message_attachment_preview_truncated">Showing the first 32 KiB.</string>
+    <string name="message_attachment_open_with">Open with another app</string>
+    <string name="message_attachment_external_unavailable">Android could not open this file.</string>
+</resources>

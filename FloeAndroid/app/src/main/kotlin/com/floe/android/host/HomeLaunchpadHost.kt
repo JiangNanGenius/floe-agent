@@ -7,6 +7,7 @@ import com.floe.android.HomeDraftTransfer
 import com.floe.android.design.ComposerAvailability
 import com.floe.android.design.SidebarSelection
 import com.floe.android.feature.conversation.AgentExecutionModeUi
+import com.floe.android.feature.conversation.ChatReasoningUi
 import com.floe.android.feature.conversation.ComposerDraftSeedUi
 import com.floe.android.feature.conversation.ConversationFlowResult
 import com.floe.android.feature.conversation.ConversationFlowHolder
@@ -488,6 +489,7 @@ class HomeLaunchpadHost internal constructor(
         temporary: Boolean,
         originHomeGeneration: Long? = null,
         onAdmitted: ((HomeSendToken, draftTransferred: Boolean) -> Unit)? = null,
+        chatReasoning: ChatReasoningUi? = null,
         onFailure: (String) -> Unit,
     ) {
         // An ordinary send still requires text (unchanged). A temporary
@@ -587,6 +589,9 @@ class HomeLaunchpadHost internal constructor(
                         return@createConversationForLaunch
                     }
                     holder.selectAgentMode(parseMode(mode))
+                    if (mode == "chat" && chatReasoning != null) {
+                        host.conversations.recordChatReasoning(holder.session, chatReasoning)
+                    }
                     holder.setDraftTaskApprovalMode(draftApproval)
                     fun publishAndLaunch() {
                         host.conversations.rootWorkspace.clearHandedOff(draftNonce)

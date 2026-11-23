@@ -45,6 +45,8 @@ internal object RunOutputCardPresentation {
     const val UNAVAILABLE = "unavailable"
 
     const val ACTION_SAVING = "saving"
+    const val ACTION_PREPARING_EDIT = RunOutputEditPresentation.PREPARING_ACTION
+    const val ACTION_EDIT_FAILED = RunOutputEditPresentation.FAILED_ACTION
     const val ACTION_SAVED = "saved"
     const val ACTION_CANCELLED = "cancelled"
     const val ACTION_FAILED = "failed"
@@ -134,18 +136,20 @@ internal object RunOutputCardPresentation {
     private const val PDF_MIME = "application/pdf"
 
     fun showsBusy(actionStateRaw: String?): Boolean =
-        actionStateRaw == ACTION_SAVING
+        actionStateRaw == ACTION_SAVING || actionStateRaw == ACTION_PREPARING_EDIT
 
     /** Completed save outcomes are status captions, not live operations.
      * Saving and unknown states still refuse a second action. */
     fun permitsAction(actionStateRaw: String?): Boolean =
         actionStateRaw == null || actionStateRaw in setOf(
-            ACTION_SAVED, ACTION_CANCELLED, ACTION_FAILED, ACTION_OPEN_BLOCKED,
+            ACTION_SAVED, ACTION_CANCELLED, ACTION_FAILED, ACTION_OPEN_BLOCKED, ACTION_EDIT_FAILED,
         )
 
     /** Label resource for a transient action state (null = idle). */
     fun actionStateLabelRes(actionStateRaw: String?): Int? = when (actionStateRaw) {
         ACTION_SAVING -> R.string.run_output_saving
+        ACTION_PREPARING_EDIT -> R.string.run_output_preparing_edit
+        ACTION_EDIT_FAILED -> R.string.run_output_edit_failed
         ACTION_SAVED -> R.string.run_output_saved
         ACTION_CANCELLED -> R.string.run_output_save_cancelled
         ACTION_FAILED -> R.string.run_output_save_failed
@@ -361,7 +365,7 @@ private fun RunOutputCardRow(card: RunOutputCardUi, holder: ConversationFlowHold
         }
         if (actionable) {
             if (busy) {
-                RunOutputActionButton(
+                if (card.actionStateRaw == RunOutputCardPresentation.ACTION_SAVING) RunOutputActionButton(
                     label = stringResource(R.string.action_cancel),
                     enabled = true,
                     onClick = { holder.cancelRunOutputSave(card) },
@@ -372,6 +376,13 @@ private fun RunOutputCardRow(card: RunOutputCardUi, holder: ConversationFlowHold
                         label = stringResource(R.string.run_output_open),
                         enabled = RunOutputCardPresentation.permitsAction(card.actionStateRaw),
                         onClick = { holder.openRunOutput(card) },
+                    )
+                }
+                if (holder.canEditRunOutput(card)) {
+                    RunOutputActionButton(
+                        label = stringResource(R.string.run_output_edit_copy),
+                        enabled = RunOutputCardPresentation.permitsAction(card.actionStateRaw),
+                        onClick = { holder.editRunOutput(card) },
                     )
                 }
                 RunOutputActionButton(

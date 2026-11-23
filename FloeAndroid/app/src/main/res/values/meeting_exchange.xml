@@ -4,6 +4,8 @@
          recording defaults stay in meeting_strings.xml. -->
     <string name="meeting_exchange_format_txt">Plain text (.txt)</string>
     <string name="meeting_exchange_format_markdown">Markdown (.md)</string>
+    <string name="meeting_exchange_format_docx">Word document (.docx)</string>
+    <string name="meeting_exchange_format_pdf">PDF document (.pdf)</string>
     <string name="meeting_exchange_share_chooser">Share meeting</string>
     <string name="meeting_exchange_share_opened">Share sheet opened. Nothing is shared until you choose an app.</string>
     <string name="meeting_exchange_saved">Meeting exported.</string>

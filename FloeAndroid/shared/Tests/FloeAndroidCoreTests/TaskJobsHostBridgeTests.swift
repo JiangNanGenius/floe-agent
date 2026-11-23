@@ -5,6 +5,8 @@
 // BEFORE any store read for every malformed/foreign request.
 import XCTest
 import Foundation
+import FloeAndroidJobTools
+import FloePersistence
 @testable import FloeAndroidCore
 
 final class TaskJobsHostBridgeTests: XCTestCase {
@@ -46,9 +48,14 @@ final class TaskJobsHostBridgeTests: XCTestCase {
                        "unsupportedVersion")
         XCTAssertEqual(request(valid(action: "jobs.submit"))["error"] as? String,
                        "unsupportedAction")
-        // cancel requires both runID and jobID before any store access.
-        XCTAssertEqual(request(valid(action: "jobs.cancel"))["error"] as? String,
-                       "invalidRequest")
+        for action in [BridgeV30.cancelAction, BridgeV30.restartServiceAction,
+                       BridgeV30.openServicePreviewAction] {
+            XCTAssertEqual(request(valid(action: action))["error"] as? String, "invalidRequest")
+            let fields: [String: Any] = ["conversationID": conversationID.uuidString,
+                                        "runID": UUID().uuidString, "jobID": UUID().uuidString]
+            XCTAssertEqual(request(valid(action: action, payload: fields, epoch: 1_000_000))["error"] as? String,
+                           "staleEpoch")
+        }
     }
 
     func testMalformedIdentityAndEpochFailBeforeAnyStoreAccess() {
@@ -67,6 +74,25 @@ final class TaskJobsHostBridgeTests: XCTestCase {
         let code = validRequest["error"] as? String
         XCTAssertTrue(code == "staleEpoch" || code == "runtimeUnavailable",
                       "unexpected valid-request outcome: \(String(describing: code))")
+    }
+
+    func testRestartIsLimitedToSettledAndroidManagedServices() {
+        let declaration = Data(#"{"service":{"runtime":"python","entry":"server.py","port":49152}}"#.utf8)
+        var job = BackgroundJob(conversationID: conversationID, runID: UUID(),
+                                kind: .tool, targetTool: "exec.shell", payloadJSON: declaration,
+                                state: .interrupted, workspaceRootPath: "/workspace", environmentID: "project")
+        XCTAssertTrue(BackgroundJobService.canRestartLocalService(job))
+        job.state = .running
+        XCTAssertFalse(BackgroundJobService.canRestartLocalService(job))
+        job.state = .failed
+        job.environmentID = nil
+        XCTAssertFalse(BackgroundJobService.canRestartLocalService(job))
+        job.environmentID = "project"
+        job.targetTool = "exec.localService"
+        XCTAssertFalse(BackgroundJobService.canRestartLocalService(job))
+        job.targetTool = "exec.shell"
+        job.payloadJSON = Data(#"{"command":"true"}"#.utf8)
+        XCTAssertFalse(BackgroundJobService.canRestartLocalService(job))
     }
 
     func testClosedTargetClassification() {

@@ -31,6 +31,8 @@ object MeetingExportText {
     fun formatLabelRes(format: MeetingExportFormat): Int = when (format) {
         MeetingExportFormat.TXT -> R.string.meeting_exchange_format_txt
         MeetingExportFormat.MARKDOWN -> R.string.meeting_exchange_format_markdown
+        MeetingExportFormat.DOCX -> R.string.meeting_exchange_format_docx
+        MeetingExportFormat.PDF -> R.string.meeting_exchange_format_pdf
     }
 
     fun message(context: Context, code: MeetingExportFailureCode): String =

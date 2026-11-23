@@ -63,6 +63,7 @@ import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeConfirmDialog
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
+import com.floe.android.design.FloeInlineSwitch
 import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloePrimaryAction
 import com.floe.android.design.FloeSettingsSectionCard
@@ -88,6 +89,8 @@ import com.floe.android.host.meeting.MeetingPlayerStatus
 import com.floe.android.host.meeting.MeetingRecordingPhase
 import com.floe.android.host.meeting.MeetingRecordingState
 import com.floe.android.host.meeting.MeetingSummary
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttempt
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttemptPhase
 import com.floe.android.host.meetingexchange.MeetingDocumentDestinationResult
 import com.floe.android.host.meetingexchange.MeetingDocumentRequest
 import com.floe.android.host.meetingexchange.MeetingDocumentWriteResult
@@ -188,6 +191,15 @@ internal fun MeetingDestination(
     }
     val transcriptionState by transcriptionManager.state.collectAsState()
     val transcriptionCleanupFailure by transcriptionManager.cleanupFailure.collectAsState()
+    val recordingPreferences = remember(applicationContext) {
+        applicationContext.getSharedPreferences("meeting-recording", android.content.Context.MODE_PRIVATE)
+    }
+    var autoTranscribe by remember { mutableStateOf(recordingPreferences.getBoolean("auto-transcribe", false)) }
+    val setAutoTranscription: (Boolean) -> Unit = { enabled ->
+        autoTranscribe = enabled
+        recordingPreferences.edit().putBoolean("auto-transcribe", enabled).apply()
+        if (!enabled) transcriptionManager.clearRecordingFollowups()
+    }
     // The meeting assistant is ONE process-owned adapter over the existing
     // text-only task/run surface. It never creates a provider client or a
     // second conversation store; a missing runtime simply hides the section
@@ -213,6 +225,7 @@ internal fun MeetingDestination(
     val assistantState = if (assistantHost != null) assistantRawState else null
 
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var assistantDrainPending by remember(selectedId) { mutableStateOf(false) }
     var transcriptionMaterialId by rememberSaveable(selectedId) { mutableStateOf<String?>(null) }
     var assistantQuestion by rememberSaveable(selectedId) { mutableStateOf("") }
     var assistantAskOpen by rememberSaveable(selectedId) { mutableStateOf(false) }
@@ -680,6 +693,7 @@ internal fun MeetingDestination(
         scope.launch {
             try {
                 val material = manager.recorder.stop()
+                if (autoTranscribe) transcriptionManager.recordingStopped(material)
                 if (selectedId == id) {
                     if (meetingStopSucceeded(material.status, material.isPlayable)) {
                         recordNoticeRes = R.string.meeting_ui_record_stopped
@@ -749,6 +763,40 @@ internal fun MeetingDestination(
     fun grantMicrophone() {
         permissionStartMeetingId = null
         permissionLauncher.launch(manager.requiredPermissions().toTypedArray())
+    }
+
+    /**
+     * Runs one assistant action for the selected meeting. Minutes and to-dos
+     * are final material: while this meeting's transcription is still running
+     * they wait for the terminal receipt and then read the refreshed detail,
+     * so a late transcript is folded into the next minutes instead of being
+     * suppressed by an earlier interim summary.
+     */
+    fun sendAssistantAction(action: MeetingAssistantAction, question: String) {
+        val id = selectedId ?: return
+        val host = assistantHost ?: return
+        if (action == MeetingAssistantAction.ASK ||
+            !transcriptionManager.awaitingFinalTranscript(id)
+        ) {
+            host.send(id, action, question) { meetingId -> manager.meeting(meetingId) }
+            return
+        }
+        if (assistantDrainPending) return
+        assistantDrainPending = true
+        val initialRevision = detail?.transcription?.revision ?: 0L
+        scope.launch {
+            try {
+                transcriptionManager.awaitFinalTranscript(id)
+                if (selectedId != id) return@launch
+                loadDetail(id)
+                if ((detail?.transcription?.revision ?: 0L) <= initialRevision) return@launch
+                host.send(id, action, question) { meetingId -> manager.meeting(meetingId) }
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) assistantDrainPending = false
+            }
+        }
     }
 
     fun importMedia(id: String, uri: Uri) {
@@ -821,6 +869,8 @@ internal fun MeetingDestination(
                 val assistantCleared = runCatching {
                     assistantHost?.onMeetingDeleted(id) ?: true
                 }.getOrDefault(false)
+                // A deleted meeting can never be rebuilt by a late follow-up.
+                transcriptionManager.dropRecordingFollowup(id)
                 if (selectedId == id) selectedId = null
                 listRetainedTake = null
                 // A failed assistant cleanup is reported instead of a plain
@@ -916,6 +966,7 @@ internal fun MeetingDestination(
                 stoppingToLeave = false
                 refreshCatalogQuietly()
                 if (meetingStopSucceeded(material.status, material.isPlayable)) {
+                    if (autoTranscribe) transcriptionManager.recordingStopped(material)
                     finishNavigation(target)
                 } else if (selectedId == null) {
                     // The stop left retained bytes. Stay on the list so the
@@ -1081,6 +1132,8 @@ internal fun MeetingDestination(
                             recordError = recordError,
                             recordNoticeRes = recordNoticeRes,
                             recordRetainedTake = recordRetainedTake,
+                            autoTranscribe = autoTranscribe,
+                            onAutoTranscribeChange = setAutoTranscription,
                             importBusy = importBusy,
                             importError = importError,
                             importNotice = importNotice,
@@ -1101,14 +1154,11 @@ internal fun MeetingDestination(
                                 notesBusy = notesBusy,
                             ),
                             assistantNotesUnsaved = notesState.dirty,
+                            assistantAwaitingTranscription = assistantDrainPending,
                             onAssistantQuestionChange = { assistantQuestion = it },
                             onAssistantAskOpenChange = { assistantAskOpen = it },
                             onAssistantSend = { action, question ->
-                                selectedId?.let { id ->
-                                    assistantHost?.send(id, action, question) { meetingId ->
-                                        manager.meeting(meetingId)
-                                    }
-                                }
+                                sendAssistantAction(action, question)
                             },
                             onAssistantCancel = { selectedId?.let { assistantHost?.cancel(it) } },
                             onAssistantCheckActive = {
@@ -1248,6 +1298,8 @@ internal fun MeetingDestination(
                 recordError = recordError,
                 recordNoticeRes = recordNoticeRes,
                 recordRetainedTake = recordRetainedTake,
+                autoTranscribe = autoTranscribe,
+                onAutoTranscribeChange = setAutoTranscription,
                 importBusy = importBusy,
                 importError = importError,
                 importNotice = importNotice,
@@ -1268,14 +1320,11 @@ internal fun MeetingDestination(
                     notesBusy = notesBusy,
                 ),
                 assistantNotesUnsaved = notesState.dirty,
+                assistantAwaitingTranscription = assistantDrainPending,
                 onAssistantQuestionChange = { assistantQuestion = it },
                 onAssistantAskOpenChange = { assistantAskOpen = it },
                 onAssistantSend = { action, question ->
-                    selectedId?.let { id ->
-                        assistantHost?.send(id, action, question) { meetingId ->
-                            manager.meeting(meetingId)
-                        }
-                    }
+                    sendAssistantAction(action, question)
                 },
                 onAssistantCancel = { selectedId?.let { assistantHost?.cancel(it) } },
                 onAssistantCheckActive = {
@@ -1776,6 +1825,8 @@ private fun MeetingDetailHost(
     recordError: MeetingError?,
     recordNoticeRes: Int?,
     recordRetainedTake: MeetingMaterial?,
+    autoTranscribe: Boolean,
+    onAutoTranscribeChange: (Boolean) -> Unit,
     importBusy: Boolean,
     importError: MeetingError?,
     importNotice: String?,
@@ -1792,6 +1843,7 @@ private fun MeetingDetailHost(
     assistantAskOpen: Boolean,
     assistantCanInsertNotes: Boolean,
     assistantNotesUnsaved: Boolean,
+    assistantAwaitingTranscription: Boolean,
     onAssistantQuestionChange: (String) -> Unit,
     onAssistantAskOpenChange: (Boolean) -> Unit,
     onAssistantSend: (MeetingAssistantAction, String) -> Unit,
@@ -1918,6 +1970,7 @@ private fun MeetingDetailHost(
                                 askOpen = assistantAskOpen,
                                 canInsertNotes = assistantCanInsertNotes,
                                 notesUnsaved = assistantNotesUnsaved,
+                                awaitingTranscription = assistantAwaitingTranscription,
                                 onQuestionChange = onAssistantQuestionChange,
                                 onAskOpenChange = onAssistantAskOpenChange,
                                 onSend = onAssistantSend,
@@ -1941,6 +1994,8 @@ private fun MeetingDetailHost(
                             error = recordError,
                             noticeRes = recordNoticeRes,
                             retainedTake = recordRetainedTake,
+                            autoTranscribe = autoTranscribe,
+                            onAutoTranscribeChange = onAutoTranscribeChange,
                             onStart = onStartRecording,
                             onPause = onPauseRecording,
                             onResume = onResumeRecording,
@@ -2066,7 +2121,10 @@ private fun MeetingExportSection(
                     )
                 }
             } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     FloeCapsuleAction(
                         label = stringResource(R.string.meeting_ui_export_save_txt),
                         onClick = { onExportFormat(MeetingExportFormat.TXT) },
@@ -2074,6 +2132,19 @@ private fun MeetingExportSection(
                     FloeCapsuleAction(
                         label = stringResource(R.string.meeting_ui_export_save_markdown),
                         onClick = { onExportFormat(MeetingExportFormat.MARKDOWN) },
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_export_save_docx),
+                        onClick = { onExportFormat(MeetingExportFormat.DOCX) },
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_export_save_pdf),
+                        onClick = { onExportFormat(MeetingExportFormat.PDF) },
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2217,6 +2288,7 @@ private fun MeetingAssistantSection(
     askOpen: Boolean,
     canInsertNotes: Boolean,
     notesUnsaved: Boolean,
+    awaitingTranscription: Boolean,
     onQuestionChange: (String) -> Unit,
     onAskOpenChange: (Boolean) -> Unit,
     onSend: (MeetingAssistantAction, String) -> Unit,
@@ -2323,6 +2395,20 @@ private fun MeetingAssistantSection(
                     title = stringResource(R.string.meeting_ui_assistant_context_empty_title),
                     body = stringResource(R.string.meeting_ui_assistant_context_empty_body),
                 )
+            } else if (awaitingTranscription && active == null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val waiting = stringResource(R.string.meeting_ui_assistant_awaiting_transcription)
+                    FloeActivityIndicator(description = waiting)
+                    FloeText(
+                        text = waiting,
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             } else if (canStartTurn) {
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -2599,6 +2685,8 @@ private fun MeetingRecordingSection(
     error: MeetingError?,
     noticeRes: Int?,
     retainedTake: MeetingMaterial?,
+    autoTranscribe: Boolean,
+    onAutoTranscribeChange: (Boolean) -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -2746,6 +2834,34 @@ private fun MeetingRecordingSection(
                             )
                         }
                     }
+                }
+            }
+
+            if (!ownedByOtherMeeting) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeText(
+                        text = stringResource(R.string.meeting_ui_record_auto_transcribe),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.label,
+                        modifier = Modifier.weight(1f),
+                    )
+                    FloeInlineSwitch(
+                        checked = autoTranscribe,
+                        onCheckedChange = onAutoTranscribeChange,
+                        description = stringResource(R.string.meeting_ui_record_auto_transcribe),
+                        enabled = !busy,
+                    )
+                }
+                if (autoTranscribe) {
+                    FloeText(
+                        text = stringResource(R.string.meeting_ui_record_auto_transcribe_note),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.tertiaryLabel,
+                    )
                 }
             }
 
@@ -3552,6 +3668,55 @@ private fun MeetingTranscriptionSection(
                         }
                         else -> Unit
                     }
+
+                    // Durable recovery for attempts that never produced a
+                    // transcript (interruption, failure or cancellation —
+                    // including across a process restart). The retry carries
+                    // the exact meeting/material/checkpoint the attempt
+                    // started with; it never resumes a provider operation.
+                    meetingTranscriptionRetryTarget(detail, state)?.let { attempt ->
+                        FloeStatusLine(
+                            icon = FloeIcons.WarningTriangle,
+                            text = stringResource(
+                                when (attempt.phase) {
+                                    MeetingTranscriptionLastAttemptPhase.RUNNING ->
+                                        R.string.meeting_ui_transcription_interrupted
+                                    MeetingTranscriptionLastAttemptPhase.CANCELLED ->
+                                        R.string.meeting_ui_transcription_attempt_cancelled
+                                    MeetingTranscriptionLastAttemptPhase.FAILED ->
+                                        R.string.meeting_ui_transcription_attempt_failed
+                                },
+                            ),
+                            color = Floe.colors.pending,
+                        )
+                        FloeText(
+                            text = stringResource(R.string.meeting_ui_transcription_retry_note),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.meeting_ui_transcription_retry_start),
+                            onClick = {
+                                startFailure = null
+                                cancelTooLate = false
+                                when (
+                                    val result = manager.start(
+                                        meetingId = meetingId,
+                                        materialId = attempt.materialId,
+                                        expectedTranscriptionRevision =
+                                            attempt.expectedTranscriptionRevision,
+                                    )
+                                ) {
+                                    is MeetingTranscriptionStart.Started -> Unit
+                                    is MeetingTranscriptionStart.Busy ->
+                                        startFailure = result.failure
+                                    is MeetingTranscriptionStart.Rejected ->
+                                        startFailure = result.failure
+                                }
+                            },
+                            enabled = !checking,
+                        )
+                    }
                 }
             }
 
@@ -4280,6 +4445,31 @@ internal fun meetingTranscriptionCanStart(
         return false
     }
     return ready.transcriptionRevision >= 0L
+}
+
+/**
+ * The durable retry target for this meeting, if one is actionable.
+ *
+ * A recorded attempt is offered again only while it produced no transcript:
+ * the moment a transcript is committed for its exact material the record is
+ * cleared by the repository, and a transcript bound to another material is
+ * protected from replacement rather than "retried". The attempt's material
+ * must also still exist and be playable, and no attempt may be running.
+ * A RUNNING phase here always means "live when last persisted", i.e. an
+ * interruption such as process death — the provider operation behind it is
+ * gone and the retry is a fresh full transcription.
+ */
+internal fun meetingTranscriptionRetryTarget(
+    detail: MeetingDetail,
+    state: MeetingTranscriptionState,
+): MeetingTranscriptionLastAttempt? {
+    if (meetingTranscriptionIsRunning(state.phase)) return null
+    val transcription = detail.transcription
+    val attempt = transcription.lastAttempt ?: return null
+    if (transcription.revision != attempt.expectedTranscriptionRevision) return null
+    if (transcription.segments.isNotEmpty()) return null
+    if (detail.materials.none { it.id == attempt.materialId && it.isPlayable }) return null
+    return attempt
 }
 
 /**

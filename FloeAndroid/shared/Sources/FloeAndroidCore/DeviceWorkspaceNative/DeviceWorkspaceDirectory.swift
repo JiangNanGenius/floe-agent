@@ -399,6 +399,126 @@ final class DeviceWorkspaceDirectory {
         staged.markConsumed()
     }
 
+    /// Applies a v2 rename or recoverable removal using the confirmed
+    /// digest, and never replaces a path that already exists.
+    func relocateConfirmedFile(
+        key: String, digest: String, pathHint: String?, destination: String?,
+        guardCurrent: () throws -> Void
+    ) throws -> Bool {
+        guard DeviceWorkspacePath.isSyncable(key), DeviceWorkspacePath.comparisonKey(key) == key,
+              DeviceWorkspaceDigest.isValid(digest),
+              pathHint.map({ DeviceWorkspacePath.isSyncable($0) && DeviceWorkspacePath.comparisonKey($0) == key }) ?? true,
+              destination.map({ DeviceWorkspacePath.isSyncable($0) && DeviceWorkspacePath.comparisonKey($0) != key }) ?? true
+        else { throw DeviceWorkspaceLaneError.invalidArguments }
+        try validateVisibleRoot()
+        do {
+            // The old ledger may lack the original spelling. Walk only the
+            // matching path components and hash only the confirmed file.
+            guard let source = try matchingPath(key: key),
+                  let verified = try version(at: source), verified.digest == digest else { return false }
+            let target = destination ?? "\(DeviceWorkspacePath.conflicts)/Removed/\(UUID().uuidString)/\(source)"
+            try guardCurrent()
+            ManagedFileMutationLock.shared.lock()
+            defer { ManagedFileMutationLock.shared.unlock() }
+            try validateVisibleRoot()
+            guard let (oldParent, oldName) = try parent(of: source, create: false),
+                  let opened = try openFile(oldName, in: oldParent),
+                  DeviceWorkspaceFileStamp(try opened.info()).matches(verified.stamp),
+                  let onDisk = try info(in: oldParent, name: oldName),
+                  DeviceWorkspaceFileStamp(onDisk).matches(verified.stamp) else { return false }
+            if let destination, try hasAlternateSpelling(destination) { return false }
+            guard let (newParent, newName) = try parent(of: target, create: true),
+                  try info(in: newParent, name: newName) == nil else { return false }
+            try validateVisibleRoot()
+            guard let latest = try info(in: oldParent, name: oldName),
+                  DeviceWorkspaceFileStamp(latest).matches(verified.stamp) else { return false }
+            return try renameExclusively(from: oldParent, name: oldName, to: newParent, name: newName)
+        } catch DeviceWorkspaceLaneError.conflict {
+            return false
+        }
+    }
+
+    private func matchingPath(key: String) throws -> String? {
+        let parts = key.split(separator: "/").map(String.init)
+        var current = descriptor
+        var resolved: [String] = []
+        for (index, component) in parts.enumerated() {
+            guard let name = try matchingName(component, in: current) else { return nil }
+            resolved.append(name)
+            if index < parts.count - 1 { current = try openDirectory(name, in: current) }
+        }
+        let path = resolved.joined(separator: "/")
+        return DeviceWorkspacePath.isSyncable(path) ? path : nil
+    }
+
+    private func hasAlternateSpelling(_ path: String) throws -> Bool {
+        let parts = path.split(separator: "/").map(String.init)
+        var current = descriptor
+        for (index, component) in parts.enumerated() {
+            let key = DeviceWorkspacePath.comparisonKey(component)
+            guard let name = try matchingName(key, in: current) else { return false }
+            if !name.utf8.elementsEqual(component.utf8) { return true }
+            if index < parts.count - 1 { current = try openDirectory(name, in: current) }
+        }
+        return false
+    }
+
+    private func matchingName(_ key: String, in directory: WorkspaceDescriptor) throws -> String? {
+        let number = openat(directory.number, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard number >= 0 else { throw DeviceWorkspaceLaneError.ioFailure }
+        guard let stream = fdopendir(number) else {
+            close(number)
+            throw DeviceWorkspaceLaneError.ioFailure
+        }
+        defer { closedir(stream) }
+        var match: String?
+        var scanned = 0
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw DeviceWorkspaceLaneError.ioFailure }
+                return match
+            }
+            scanned += 1
+            guard scanned <= DeviceWorkspaceManifest.maximumEntries + 2 else { throw DeviceWorkspaceLaneError.oversized }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 256) { String(validatingCString: $0) }
+            }
+            guard let name, DeviceWorkspacePath.comparisonKey(name) == key else { continue }
+            guard match == nil else { throw DeviceWorkspaceLaneError.conflict }
+            match = name
+        }
+    }
+
+    private func renameExclusively(from source: WorkspaceDescriptor, name oldName: String,
+                                   to target: WorkspaceDescriptor, name newName: String) throws -> Bool {
+        let status = oldName.withCString { old in
+            newName.withCString { new in
+                #if canImport(Darwin)
+                renameatx_np(source.number, old, target.number, new, UInt32(RENAME_EXCL))
+                #elseif canImport(Android)
+                floe_workspace_rename_no_replace(source.number, old, target.number, new)
+                #else
+                linkat(source.number, old, target.number, new, 0)
+                #endif
+            }
+        }
+        guard status == 0 else {
+            if errno == EEXIST { return false }
+            throw DeviceWorkspaceLaneError.ioFailure
+        }
+        #if !canImport(Darwin) && !canImport(Android)
+        if oldName.withCString({ unlinkat(source.number, $0, 0) }) != 0 {
+            _ = newName.withCString { unlinkat(target.number, $0, 0) }
+            throw DeviceWorkspaceLaneError.ioFailure
+        }
+        #endif
+        _ = fsync(source.number)
+        _ = fsync(target.number)
+        return true
+    }
+
     // MARK: - Descriptor-relative plumbing
 
     private func file(at path: String) throws -> WorkspaceDescriptor? {

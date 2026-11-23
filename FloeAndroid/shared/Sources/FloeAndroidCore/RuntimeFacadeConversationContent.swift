@@ -54,6 +54,7 @@
 
 import Foundation
 import GRDB
+import FloeCore
 import FloePersistence
 
 // MARK: - Publishing port (RB-1 FacadeContentReader binding target)
@@ -600,18 +601,8 @@ enum ConversationMessageReplyBuilder {
                       reencodedEarlierCursor: String?,
                       forceHasEarlier: Bool) -> ConversationMessagePageReply {
         let rows = messages.map { message -> ConversationMessageRowWire in
-            let entry = staged[message.id]
-            return ConversationMessageRowWire(
-                messageID: message.id,
-                role: message.role,
-                createdAtRaw: ConversationWireDate.encode(message.createdAt),
-                runID: message.runID,
-                content: entry == nil ? message.content : nil,
-                contentHandle: entry?.handle,
-                totalBytes: entry?.totalBytes ?? message.content.utf8.count,
-                contentInlineComplete: entry == nil,
-                partCount: message.parts.count
-            )
+            row(message: message, staged: staged[message.id],
+                content: staged[message.id] == nil ? message.content : nil)
         }
         return ConversationMessagePageReply(
             rows: rows,
@@ -629,18 +620,43 @@ enum ConversationMessageReplyBuilder {
     /// `encodedInlineResponseBytes(metadataEncodedBytesWithEmptyContent:content:)`
     /// is defined for (no arbitrary constant, no 16 KiB rule).
     static func rowObjectWithEmptyContent(message: PersistedMessage) -> [String: Any] {
-        var object: [String: Any] = [
-            "id": message.id.uuidString,
-            "role": message.role,
-            "createdAt": ConversationWireDate.encode(message.createdAt),
-            "totalBytes": message.content.utf8.count,
-            "partCount": message.parts.count,
-            "content": "",
-            "contentHandle": NSNull(),
-            "contentInlineComplete": true,
-        ]
-        object["runID"] = message.runID?.uuidString as Any
-        return object
+        row(message: message, staged: nil, content: "").wireObject
+    }
+
+    private static func row(message: PersistedMessage, staged: (handle: String, totalBytes: Int)?,
+                            content: String?) -> ConversationMessageRowWire {
+        let attachments = message.parts.lazy.compactMap { part -> [String: String]? in
+            guard let attachment = part.attachmentID,
+                  part.kind == .image || part.kind == .file else { return nil }
+            return ["id": part.id.uuidString, "attachmentId": attachment.uuidString,
+                    "displayName": String(decoding: (part.metadata["name"] ?? attachment.uuidString).utf8.prefix(256),
+                                          as: UTF8.self),
+                    "kind": part.kind == .image ? "image" : "file"]
+        }
+        let tools = message.parts.compactMap { part -> [String: String]? in
+            guard part.kind == .text, let name = part.metadata["deviceHistory.tool"],
+                  !name.isEmpty, let summary = part.text, !summary.isEmpty else { return nil }
+            return ["name": String(decoding: SecretRedactor.redact(name).utf8.prefix(256), as: UTF8.self),
+                    "status": String(decoding: SecretRedactor.redact(part.metadata["deviceHistory.toolStatus"] ?? "")
+                        .utf8.prefix(32), as: UTF8.self),
+                    "summary": String(decoding: SecretRedactor.redact(summary).utf8.prefix(512), as: UTF8.self)]
+        }
+        // Leave room in the bridge row for the primary message, its content
+        // handle and cursor. Count kept summaries explicitly.
+        var toolBudget = 8 * 1024
+        let previews = tools.prefix { item in
+            toolBudget -= ConversationWireBudget.encodedObjectBytes(item) + 1
+            return toolBudget >= 0
+        }
+        return ConversationMessageRowWire(
+            messageID: message.id, role: message.role,
+            createdAtRaw: ConversationWireDate.encode(message.createdAt), runID: message.runID,
+            content: content, contentHandle: staged?.handle,
+            totalBytes: staged?.totalBytes ?? message.content.utf8.count,
+            contentInlineComplete: staged == nil, partCount: message.parts.count,
+            attachments: Array(attachments.prefix(12)), sharedToolResults: Array(previews),
+            sharedToolResultCount: tools.count
+        )
     }
 
     /// True exactly when the FULL inline content of this single row would

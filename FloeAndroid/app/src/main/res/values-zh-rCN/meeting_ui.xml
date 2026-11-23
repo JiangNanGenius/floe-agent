@@ -68,6 +68,8 @@
     <string name="meeting_ui_record_other_unknown">另一个会议正在录音。</string>
     <string name="meeting_ui_record_open_other">打开该会议</string>
     <string name="meeting_ui_record_service_note">录音由后台服务托管，离开此页面后会继续。</string>
+    <string name="meeting_ui_record_auto_transcribe">转写新录音</string>
+    <string name="meeting_ui_record_auto_transcribe_note">录音停止后，会使用你已配置的转写服务自动请求云端转录。</string>
     <string name="meeting_ui_record_permission_needed">录制会议需要麦克风权限。</string>
     <string name="meeting_ui_record_grant">允许麦克风</string>
     <string name="meeting_ui_notifications_off">通知已关闭。应用在后台时，录音控制可能不会保持可见。</string>
@@ -172,7 +174,12 @@
     <string name="meeting_ui_transcription_other_meeting">“%1$s”正在转写。</string>
     <string name="meeting_ui_transcription_other_meeting_unknown">另一个会议正在转写。</string>
     <string name="meeting_ui_transcription_open_other">打开该会议</string>
-    <string name="meeting_ui_transcription_service_note">离开此页面后转写会继续。若应用被从最近任务中移除，Android 可能会停止它；应用关闭后，中断的转写不会自动恢复。</string>
+    <string name="meeting_ui_transcription_service_note">离开此页面后转写会继续。若应用被从最近任务中移除，Android 可能会停止它；中断的转写不会自动恢复——回到本会议并点「重新转写」，即可对同一段录音从头开始一次新的转写。</string>
+    <string name="meeting_ui_transcription_interrupted">上次转写在完成前被中断。</string>
+    <string name="meeting_ui_transcription_attempt_failed">上次转写未完成。</string>
+    <string name="meeting_ui_transcription_attempt_cancelled">上次转写已取消。</string>
+    <string name="meeting_ui_transcription_retry_start">重新转写</string>
+    <string name="meeting_ui_transcription_retry_note">重新转写会对同一段录音从头开始一次新的云端转写，不会接续此前未完成的云端工作。</string>
     <string name="meeting_ui_transcription_cancel_title">取消转写？</string>
     <string name="meeting_ui_transcription_cancel_body">将请求云端停止转写。若逐字稿已在保存，仍可能完成。录音和笔记保持不变。</string>
     <string name="meeting_ui_transcription_keep_running">继续转写</string>
@@ -201,6 +208,7 @@
     <string name="meeting_ui_assistant_working">正在处理…</string>
     <string name="meeting_ui_assistant_preparing">正在准备…</string>
     <string name="meeting_ui_assistant_cancelling">正在取消…</string>
+    <string name="meeting_ui_assistant_awaiting_transcription">正在等待转录完成…</string>
     <string name="meeting_ui_assistant_cancel">取消</string>
     <string name="meeting_ui_assistant_check_status">检查状态</string>
     <string name="meeting_ui_assistant_check_again">再次检查</string>
@@ -240,6 +248,8 @@
     <string name="meeting_ui_export_body">将此会议的详情、笔记和转录保存为文件，或以纯文本分享。</string>
     <string name="meeting_ui_export_save_txt">保存 TXT</string>
     <string name="meeting_ui_export_save_markdown">保存 Markdown</string>
+    <string name="meeting_ui_export_save_docx">保存 Word</string>
+    <string name="meeting_ui_export_save_pdf">保存 PDF</string>
     <string name="meeting_ui_export_share">分享文本</string>
     <string name="meeting_ui_export_working">正在导出…</string>
     <string name="meeting_ui_export_unsaved_notes">未保存的笔记不会包含在内，导出前请先保存。</string>

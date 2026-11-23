@@ -85,12 +85,42 @@ data class MeetingTranscription(
     /** Exact app-owned material this transcript was produced from. */
     val materialId: String? = null,
     val segments: List<MeetingTranscriptSegment> = emptyList(),
+    /**
+     * Durable trace of the most recent attempt that has not (yet) produced a
+     * committed transcript. Present after an interruption, failure or
+     * cancellation so the page can offer a truthful retry for the exact
+     * meeting/material/checkpoint; cleared by a successful transcript commit.
+     */
+    val lastAttempt: MeetingTranscriptionLastAttempt? = null,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
         val EMPTY = MeetingTranscription()
     }
 }
+
+/**
+ * One recorded transcription attempt checkpoint.
+ *
+ * [expectedTranscriptionRevision] is the transcript revision the attempt was
+ * started against; retrying with it restores the exact compare-and-swap
+ * checkpoint. [phase] RUNNING marks an attempt that was live when the record
+ * was written; after a process restart it reads as an interruption. The
+ * provider operation itself is never stored and never resumed — a retry is
+ * always a fresh full transcription of the same source.
+ */
+data class MeetingTranscriptionLastAttempt(
+    val materialId: String,
+    val expectedTranscriptionRevision: Long,
+    val phase: MeetingTranscriptionLastAttemptPhase,
+    /** Bounded lane failure vocabulary name; null when not yet settled. */
+    val failureCode: String?,
+    val failureReason: String?,
+    val retryable: Boolean,
+    val updatedAtMillis: Long,
+)
+
+enum class MeetingTranscriptionLastAttemptPhase { RUNNING, FAILED, CANCELLED }
 
 /**
  * Durable receipt for one committed meeting transcription.

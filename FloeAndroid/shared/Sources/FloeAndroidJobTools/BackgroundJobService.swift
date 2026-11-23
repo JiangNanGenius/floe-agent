@@ -614,22 +614,32 @@ public actor BackgroundJobService {
         return job
     }
 
-    /// Native UI action; explicit restart creates a fresh durable attempt.
-    /// Tools resubmit with their current approved context instead.
+    public static func canRestartLocalService(_ job: BackgroundJob) -> Bool {
+        job.kind == .tool && job.state.isTerminal && job.targetTool == "exec.shell"
+            && C01ManagedServiceDeclaration.isServicePayload(job.payloadJSON)
+            && job.workspaceRootPath?.isEmpty == false && job.environmentID?.isEmpty == false
+    }
+
+    /// Explicit native UI restart. Reuse the saved Android service
+    /// declaration and let service admission revalidate the workspace.
     public func restartLocalService(id: UUID) async throws -> BackgroundJob {
-        guard restartingIDs.insert(id).inserted else { throw FloeError.validationFailed("Restart is already in progress") }
+        guard restartingIDs.insert(id).inserted else {
+            throw FloeError.validationFailed("Restart is already in progress")
+        }
         defer { restartingIDs.remove(id) }
-        guard let job = try await store.job(id: id), job.targetTool == "exec.localService",
-              job.state.isTerminal, let path = job.workspaceRootPath, job.environmentID != nil else {
-            throw FloeError.validationFailed("Stop the local service before restarting it")
+        guard let job = try await store.job(id: id), Self.canRestartLocalService(job),
+              let path = job.workspaceRootPath else {
+            throw FloeError.validationFailed("This local service is not ready to restart")
         }
         if let existing = try await store.jobs(conversationID: job.conversationID, limit: 100).first(where: {
-            !$0.state.isTerminal && $0.targetTool == job.targetTool && $0.environmentID == job.environmentID && $0.payloadJSON == job.payloadJSON
+            !$0.state.isTerminal && $0.runID == job.runID
+                && $0.targetTool == job.targetTool && $0.environmentID == job.environmentID
+                && $0.workspaceRootPath == path && $0.payloadJSON == job.payloadJSON
         }) { return existing }
         return try await submit(runID: job.runID, toolCallID: nil, targetTool: job.targetTool,
             payloadJSON: job.payloadJSON, scope: .local, workspaceRootURL: URL(fileURLWithPath: path),
             allowedWorkspacePaths: [], environmentID: job.environmentID,
-            submissionSource: .nativeService)
+            submissionSource: .nativeService, waitForCompletion: false)
     }
 
     /// Marks every non-terminal in-process job interrupted. Called once at

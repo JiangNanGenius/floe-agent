@@ -99,6 +99,7 @@ class MeetingSharePlannerTest {
             format = MeetingExportFormat.TXT,
             suggestedFileName = "Inconsistent.txt",
             text = text,
+            binary = null,
             byteCount = 1L,
             hasNotes = true,
             hasTranscript = false,

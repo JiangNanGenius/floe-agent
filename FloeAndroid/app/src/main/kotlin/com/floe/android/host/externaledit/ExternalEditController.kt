@@ -313,9 +313,9 @@ internal class ExternalEditController(private val context: Context, private val 
 
     /** Android first. No external handler is an actionable result, not a fake Linux launch. */
     fun openAndroid(activity: Activity, owner: ExternalEditOwner, path: String, existingID: String? = null,
-        forceChooser: Boolean = false) {
+        forceChooser: Boolean = false, allowed: () -> Boolean = { true }) {
         host.scope.launch(host.ioDispatcher) {
-            try { openAndroidOwned(activity, owner, path, existingID, forceChooser) }
+            try { openAndroidOwned(activity, owner, path, existingID, forceChooser, allowed = allowed) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* Durable record/state already carries the failure. */ }
         }
@@ -494,7 +494,14 @@ internal class ExternalEditController(private val context: Context, private val 
                 }
             }
         }
-        if (observers.putIfAbsent(row.id, observer) == null) observer.startWatching()
+        // Register only a watcher that actually started: a failed start must
+        // not leave a registered observer whose stopWatching() would later
+        // throw past the session teardown.
+        if (observers.putIfAbsent(row.id, observer) == null) {
+            runCatching { observer.startWatching() }.onFailure {
+                observers.remove(row.id, observer)
+            }
+        }
     }
 
     fun onForeground() {
@@ -645,8 +652,10 @@ internal class ExternalEditController(private val context: Context, private val 
     private fun finishLocked(row: ExternalEditRecord) {
         // Keep the working copy, original versions and any unconfirmed commit for recovery.
         context.revokeUriPermission(uri(row), Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        observers.remove(row.id)?.stopWatching()
+        // Teardown must never throw past the durable finish below: the
+        // debounce is cancelled and a dead observer is inert.
         debounce.remove(row.id)?.cancel()
+        runCatching { observers.remove(row.id)?.stopWatching() }
         save(row.copy(phase = ExternalEditPhase.FINISHED,
             errorCode = if (row.pendingSHA256 != null) "commitUnconfirmed" else row.errorCode,
             updatedAt = System.currentTimeMillis()))

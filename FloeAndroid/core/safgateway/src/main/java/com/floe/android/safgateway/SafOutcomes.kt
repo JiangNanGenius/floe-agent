@@ -165,6 +165,11 @@ data class SavePolicy(
     val allowSaveAsSibling: Boolean = true,
     /** Hard cap for preserving the original into recovery storage before a destructive write. */
     val recoveryByteLimit: Long = 512L shl 20,
+    /** Optional caller-preferred display name for the save-as sibling. The
+     * provider remains free to adjust it (e.g. on collision), so callers
+     * must still read the created document back for the name they surface;
+     * when null the gateway falls back to its own collision-safe name. */
+    val siblingName: String? = null,
 )
 
 sealed class SaveReceipt {

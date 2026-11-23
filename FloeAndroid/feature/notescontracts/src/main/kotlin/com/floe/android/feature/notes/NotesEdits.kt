@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.feature.notes
 
+data class NotesTrashTarget(val documentID: String, val expectedRevision: Int)
+
 /**
  * Closed, value-only edit vocabulary shared by the Android editor and the
  * native Notes authority. Every action maps one-to-one to the original

@@ -882,12 +882,21 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // N07: bind run-pinned Skill resource staging for this generation.
         // The resolver reads the REAL execution-target domain created above
         // (never a first-project/UI/model-path root); the guest-visibility
-        // probe rides the SAME mailbox transport as shell.start. No new
+        // probe rides the SAME mailbox transport as shell.start. The remote
+        // lane binds the SAME domain + the SAME SSH adapter as the explicit
+        // run-bound remote workspace write authority (one fresh C02
+        // authorization per publish, one exclusive typed SFTP channel per
+        // publish; no remote command, no model-facing SFTP change). No new
         // wire surface, no execution grant; an uninstalled/retired binding
-        // answers the honest stagingTransportUnavailable refusal.
+        // answers the honest stagingTransportUnavailable refusal and a
+        // remote target without the authority keeps the honest
+        // remoteResourceStagingUnavailable boundary.
         C02SkillResourceStagingIntegration.install(
             epoch: epoch,
-            executionTargets: executionTargets.domain)
+            executionTargets: executionTargets.domain,
+            remoteAuthority: C02SkillResourceStagingRemoteAuthority(
+                domain: executionTargets.domain,
+                adapter: executionTargets.adapter))
 
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.

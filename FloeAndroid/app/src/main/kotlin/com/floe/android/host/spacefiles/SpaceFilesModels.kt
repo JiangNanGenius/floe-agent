@@ -157,6 +157,7 @@ internal enum class SpaceFilesOperation {
     MOVE,
     PREVIEW,
     OPEN,
+    EDIT,
 }
 
 /** Closed, user-actionable problems. Every one maps to one concise line. */
@@ -311,6 +312,10 @@ internal data class SpaceFilesUiState(
     val preview: SpaceFilesPreview? = null,
     val previewLoading: Boolean = false,
     val openRequest: SpaceFilesOpenRequest? = null,
+    /** Live + restored native-edit sessions (durable destination/reopen). */
+    val editSessions: List<SpaceFilesEditSession> = emptyList(),
+    /** Pending ACTION_EDIT launch the composition must perform + report. */
+    val editLaunch: SpaceFilesEditLaunch? = null,
 ) {
     val idle: Boolean get() = busy == null
 }

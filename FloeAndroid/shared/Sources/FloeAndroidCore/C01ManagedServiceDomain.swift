@@ -871,7 +871,8 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
     @discardableResult
     public func openPreview(jobID: UUID,
                             cancellation: CancellationToken? = nil) async -> Bool {
-        guard let current = snapshot(jobID: jobID),
+        guard let current = snapshot(jobID: jobID), current.state == .ready,
+              G02NativeRootEpoch.readback() == current.epoch,
               let preview = current.previewURL,
               let url = URL(string: preview) else { return false }
         return await G04ManagedServicePreview.open(

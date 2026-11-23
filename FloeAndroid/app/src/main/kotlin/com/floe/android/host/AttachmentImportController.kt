@@ -10,7 +10,6 @@ import com.floe.android.bridge.AttachmentStagingNative
 import com.floe.android.bridge.AttachmentStagingNativeException
 import com.floe.android.feature.conversation.AttachmentImportUi
 import com.floe.android.feature.conversation.AttachmentKindUi
-import com.floe.android.feature.conversation.AttachmentOpenRequest
 import com.floe.android.feature.conversation.ConversationSessionToken
 import com.floe.android.feature.conversation.StagedAttachmentUi
 import java.security.MessageDigest
@@ -1082,23 +1081,7 @@ class AttachmentImportController internal constructor(
         return true
     }
 
-    /** Open a message attachment for viewing. */
-    fun open(request: AttachmentOpenRequest) {
-        host.trackOperation(
-            HostCommandRequest(
-                command = "attachment.read",
-                scope = HostScope.ConversationLifecycle(request.conversationId),
-                stateful = false,
-                correlationID = host.commandClient.correlationID("aread"),
-                payload = JsonObject(
-                    mapOf(
-                        "messageID" to JsonPrimitive(request.messageId),
-                        "attachmentID" to JsonPrimitive(request.attachmentId),
-                    ),
-                ),
-            ),
-        ) { }
-    }
+    internal val messagePreview = MessageAttachmentPreviewController(host)
 
     private fun releaseScopedReadIfUnused(uri: Uri) = launchCleanup {
         SharedUriGrantAuthority.withExclusiveAuthority {

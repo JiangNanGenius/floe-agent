@@ -655,6 +655,8 @@ class ConversationFlowHolder(
     /** Per-job Cancel latches (the durable row stays authoritative). */
     var cancellingBackgroundJobIds: Set<String> by mutableStateOf(emptySet())
         private set
+    var pendingServiceJobIds: Set<String> by mutableStateOf(emptySet())
+        private set
     /** True when the host refused to dispatch the bounded job read. */
     var backgroundJobsUnavailable: Boolean by mutableStateOf(false)
         private set
@@ -1296,6 +1298,7 @@ class ConversationFlowHolder(
                 launchGeneration = commit.launchGeneration,
                 providerId = model.providerId,
                 approvalMode = launchApprovalMode,
+                chatReasoning = state.chatReasoning.takeIf { effectiveMode == AgentExecutionModeUi.CHAT && !isTemporary },
             ),
             onLaunchOutcome,
         )
@@ -1533,7 +1536,7 @@ class ConversationFlowHolder(
         if (card.toolName == "device.act" &&
             (deviceApprovalStopFor(card) != null || host.deviceApprovalRevoked(card))) return
         if (retired || card.key in approvalDispatched || !card.identityVerified || card.scopeVerified ||
-            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint") ||
+            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "workspace.publishOutput", "jobs.submit", "exec.shell", "device.act", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint") ||
             state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
             state.pendingApprovals.none { it == card }) return
         if (card.toolName == "device.act" || card.toolName in setOf("browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) {
@@ -1984,7 +1987,7 @@ class ConversationFlowHolder(
             approvalChecks[card.key]?.invoke()
         } else if (approvalDispatchStates.value[card.key] != ApprovalDispatchState.PROCESSING &&
             approvalDispatchStates.value[card.key] != ApprovalDispatchState.CHECKING) {
-            if (!card.scopeVerified && card.toolName in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act")) {
+            if (!card.scopeVerified && card.toolName in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "workspace.publishOutput", "jobs.submit", "exec.shell", "device.act")) {
                 privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
                 refreshPrivateApproval(card.key)
             }
@@ -2190,6 +2193,12 @@ class ConversationFlowHolder(
         hasResolvedPreferredMode = true
         lastAcknowledgedPlanRevision = ack
         host.recordExecutionModePreference(session, mode.swiftRaw, ack)
+    }
+
+    fun selectChatReasoning(preference: ChatReasoningUi) {
+        if (!retired && snapshot.value?.isTemporary == false && agentMode == AgentExecutionModeUi.CHAT) {
+            host.recordChatReasoning(session, preference)
+        }
     }
 
     /** One presentation reconciliation per host snapshot. */
@@ -2597,10 +2606,32 @@ class ConversationFlowHolder(
         return ConversationFlowResult.Accepted
     }
 
-    /** Host echo after the cancel exchange settled (accepted OR refused). The
-     * job's durable state comes only from the refreshed projection. */
+    fun performBackgroundServiceAction(job: BackgroundJobUi, action: BackgroundServiceAction): ConversationFlowResult {
+        if (retired) return rejected(ConversationRejectedReason.NO_SESSION)
+        val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
+        if (state.isTemporary) return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        val current = state.backgroundJobs.firstOrNull { it.jobId == job.jobId && it.runId == job.runId }
+            ?: return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        val available = when (action) {
+            BackgroundServiceAction.RESTART -> current.canRestartService
+            BackgroundServiceAction.OPEN_PREVIEW -> current.canOpenServicePreview
+        }
+        if (!available) return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        if (job.jobId in pendingServiceJobIds || job.jobId in cancellingBackgroundJobIds) {
+            return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        }
+        pendingServiceJobIds += job.jobId
+        if (!host.dispatchBackgroundServiceAction(session, job.jobId, job.runId, action)) {
+            pendingServiceJobIds -= job.jobId
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+        return ConversationFlowResult.Accepted
+    }
+
+    /** Host echo settles the tap; a fresh projection supplies the job state. */
     fun applyBackgroundJobActionSettled(jobId: String) {
-        cancellingBackgroundJobIds = cancellingBackgroundJobIds - jobId
+        cancellingBackgroundJobIds -= jobId
+        pendingServiceJobIds -= jobId
     }
 
     fun openPermissions() { host.openTaskPermissions(session) }
@@ -2850,6 +2881,21 @@ class ConversationFlowHolder(
             return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
         }
         return if (host.openRunOutputFile(session, card.runId, card.outputId))
+            ConversationFlowResult.Accepted
+        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+    }
+
+    internal fun canEditRunOutput(card: RunOutputCardUi): Boolean =
+        host.supportsRunOutputEditableCopy && RunOutputEditPresentation.editableExtension(
+            card.mimeType, card.displayName, card.byteCount,
+        ) != null
+
+    internal fun editRunOutput(card: RunOutputCardUi): ConversationFlowResult {
+        val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
+        if (!state.rows.runOutputIsActionable(card) || !canEditRunOutput(card)) {
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+        return if (host.editRunOutputCopy(session, card.runId, card.outputId))
             ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
     }

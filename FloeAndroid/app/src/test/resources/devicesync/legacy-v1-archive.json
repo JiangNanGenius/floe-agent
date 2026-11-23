@@ -1,0 +1,1 @@
+{"createdAt":0,"id":"10000000-0000-0000-0000-000000000001","messages":[{"content":"Original message","createdAt":1,"id":"20000000-0000-0000-0000-000000000001","parts":[{"createdAt":1,"id":"30000000-0000-0000-0000-000000000001","index":0,"text":"Original message"}],"role":"user"}],"title":"Legacy fixture","updatedAt":1,"version":1}

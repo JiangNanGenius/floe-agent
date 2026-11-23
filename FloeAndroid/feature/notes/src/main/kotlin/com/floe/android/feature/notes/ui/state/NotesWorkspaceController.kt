@@ -7,12 +7,14 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.floe.android.feature.notes.NoteDocument
+import com.floe.android.feature.notes.NoteDocumentSummary
 import com.floe.android.feature.notes.NoteElementKind
 import com.floe.android.feature.notes.NoteSourceSpace
 import com.floe.android.feature.notes.NoteSourceReference
 import com.floe.android.feature.notes.NotesEventBatch
 import com.floe.android.feature.notes.NotesException
 import com.floe.android.feature.notes.NotesService
+import com.floe.android.feature.notes.NotesTrashTarget
 import com.floe.android.feature.notes.MindMapAttachment
 import com.floe.android.feature.notes.MindMapAttachmentKind
 import com.floe.android.feature.notes.ui.api.NotesDocxExportRequest
@@ -237,6 +239,18 @@ internal class NotesWorkspaceController(
         }
         persist()
         return true
+    }
+
+    suspend fun trashSelection(summaries: List<NoteDocumentSummary>): Boolean {
+        val targets = mutableListOf<NotesTrashTarget>()
+        for (summary in summaries) {
+            val session = sessions[summary.id]
+            val wasCurrent = session?.document?.revision == summary.revision
+            if (!closeTab(summary.id)) return false
+            val revision = if (wasCurrent) session?.document?.revision ?: summary.revision else summary.revision
+            targets += NotesTrashTarget(summary.id, revision)
+        }
+        return library.trashBatch(targets)
     }
 
     fun clearActiveDocument() {

@@ -323,7 +323,13 @@ internal class SwiftMeetingTranscriptionBackend(
                 ?: throw C03VoiceFailure(C03VoiceErrorCode.INVALID_RESPONSE, "invalidSegmentTiming")
             val text = item.strictString("text")
                 ?: throw C03VoiceFailure(C03VoiceErrorCode.INVALID_RESPONSE, "invalidSegmentText")
-            val normalized = C03TimedSegment(start, end, text).normalized()
+            // Speaker labels are optional on the wire: the native core only
+            // emits them when the provider really supplied diarization. A
+            // malformed label (number, bool, object) never invalidates the
+            // segment — the label is dropped, the timed text is kept. The
+            // required fields above stay strict.
+            val speaker = item.lenientOptionalString("speaker")
+            val normalized = C03TimedSegment(start, end, text, speaker).normalized()
                 ?: throw C03VoiceFailure(C03VoiceErrorCode.INVALID_RESPONSE, "invalidSegment")
             segments.add(normalized)
         }
@@ -435,6 +441,20 @@ internal class SwiftMeetingTranscriptionBackend(
         val primitive = this[key] as? JsonPrimitive ?: return null
         if (primitive is JsonNull || !primitive.isString) return null
         return primitive.content
+    }
+
+    /**
+     * Reads an optional bounded string. Absent, JSON null and any non-string
+     * value all mean "not supplied" and return null: this is used only for
+     * optional provider embellishments whose malformed form must never
+     * invalidate real segment content.
+     */
+    private fun JsonObject.lenientOptionalString(key: String): String? {
+        val element = this[key] ?: return null
+        if (element is JsonNull) return null
+        val primitive = element as? JsonPrimitive ?: return null
+        if (!primitive.isString) return null
+        return primitive.content.take(120)
     }
 
     private fun JsonObject.strictInt(key: String): Int? {

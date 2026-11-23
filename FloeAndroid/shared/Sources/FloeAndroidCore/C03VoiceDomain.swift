@@ -135,11 +135,16 @@ public struct C03TimedSegment: Codable, Sendable, Equatable, Hashable {
     public var start: Double
     public var end: Double
     public var text: String
+    /// Optional provider-supplied speaker label for this segment. Absent when
+    /// the configured provider does not diarize; it is never synthesized by a
+    /// local model here and never blocks timing/text acceptance.
+    public var speaker: String?
 
-    public init(start: Double, end: Double, text: String) {
+    public init(start: Double, end: Double, text: String, speaker: String? = nil) {
         self.start = start
         self.end = end
         self.text = text
+        self.speaker = speaker
     }
 
     public func normalized() -> C03TimedSegment? {
@@ -149,7 +154,10 @@ public struct C03TimedSegment: Codable, Sendable, Equatable, Hashable {
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean.utf8.count <= 2_000 else { return nil }
-        return C03TimedSegment(start: start, end: end, text: clean)
+        let cleanSpeaker = speaker.map {
+            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        }?.nilIfEmpty
+        return C03TimedSegment(start: start, end: end, text: clean, speaker: cleanSpeaker)
     }
 }
 
@@ -583,6 +591,27 @@ struct C03CloudASRClient: Sendable {
             let start: Double?
             let end: Double?
             let text: String?
+            /// Optional provider diarization label. OpenAI-compatible
+            /// responses usually omit it; some providers supply it per
+            /// segment. It is carried through verbatim when present.
+            let speaker: String?
+
+            private enum CodingKeys: String, CodingKey {
+                case start, end, text, speaker
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                start = try container.decodeIfPresent(Double.self, forKey: .start)
+                end = try container.decodeIfPresent(Double.self, forKey: .end)
+                text = try container.decodeIfPresent(String.self, forKey: .text)
+                // Diarization is optional provider output. A malformed label
+                // (number, bool, object) must never cost the segment its real
+                // timing and text: the label is dropped, the utterance stays.
+                // The required fields above keep their strict decoding.
+                speaker = (try? container.decodeIfPresent(
+                    String.self, forKey: .speaker)) ?? nil
+            }
         }
         let text: String?
         let language: String?
@@ -609,7 +638,9 @@ struct C03CloudASRClient: Sendable {
         for item in decoded.segments ?? [] {
             guard let start = item.start, let end = item.end,
                   let text = item.text else { continue }
-            if let normalized = C03TimedSegment(start: start, end: end, text: text).normalized() {
+            if let normalized = C03TimedSegment(
+                start: start, end: end, text: text, speaker: item.speaker
+            ).normalized() {
                 segments.append(normalized)
             }
             if segments.count > C03VoiceDomain.maxSegments {
@@ -1035,7 +1066,8 @@ enum C03ChunkTimeline {
             if let shifted = C03TimedSegment(
                 start: start,
                 end: end,
-                text: clean.text
+                text: clean.text,
+                speaker: clean.speaker
             ).normalized() {
                 result.append(shifted)
             }
@@ -1048,6 +1080,10 @@ enum C03ChunkTimeline {
 
     /// Merge already-shifted chunk segments, drop exact duplicates produced by
     /// a provider repeating boundary text, and keep the existing segment cap.
+    /// The duplicate key includes the speaker label: the same time and text
+    /// with different speaker attribution is ambiguous provider output, and
+    /// dropping it could silence a confirmed utterance, so only a fully
+    /// identical row is merged away.
     static func merge(
         _ existing: [C03TimedSegment],
         _ appended: [C03TimedSegment],
@@ -1058,7 +1094,8 @@ enum C03ChunkTimeline {
         for segment in (existing + appended) {
             guard let clean = segment.normalized() else { continue }
             let key = "\(Int((clean.start * 1_000).rounded()))|" +
-                "\(Int((clean.end * 1_000).rounded()))|\(clean.text)"
+                "\(Int((clean.end * 1_000).rounded()))|\(clean.text)|" +
+                "\(clean.speaker ?? "")"
             if !seen.insert(key).inserted { continue }
             result.append(clean)
         }

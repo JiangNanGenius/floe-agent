@@ -53,6 +53,10 @@ internal object MeetingExportFormatter {
                 appendTxt(builder, snapshot, title, notes, hasNotes, segments, labels, zoneId)
             MeetingExportFormat.MARKDOWN ->
                 appendMarkdown(builder, snapshot, title, notes, hasNotes, segments, labels, zoneId)
+            else ->
+                // Document formats render through MeetingDocumentExport; this
+                // text path never sees them.
+                throw MeetingExportSizeException()
         }
 
         val text = builder.build()
@@ -67,6 +71,7 @@ internal object MeetingExportFormatter {
             format = format,
             suggestedFileName = fileName(title, snapshot.createdAtMillis, format, labels, zoneId),
             text = text,
+            binary = null,
             byteCount = byteCount,
             hasNotes = hasNotes,
             hasTranscript = hasTranscript,
@@ -181,7 +186,7 @@ internal object MeetingExportFormatter {
         }
     }
 
-    private fun displayTitle(raw: String, fallback: String): String {
+    internal fun displayTitle(raw: String, fallback: String): String {
         val cleaned = raw
             .map { if (it.isDisplayControl()) ' ' else it }
             .joinToString("")
@@ -192,7 +197,7 @@ internal object MeetingExportFormatter {
         return cleaned.ifBlank { fallback }
     }
 
-    private fun speakerLabel(raw: String?, fallback: String): String {
+    internal fun speakerLabel(raw: String?, fallback: String): String {
         val cleaned = raw
             ?.map { if (it.isDisplayControl()) ' ' else it }
             ?.joinToString("")

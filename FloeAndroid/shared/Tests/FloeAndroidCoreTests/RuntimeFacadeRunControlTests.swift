@@ -120,6 +120,21 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
                     conversationID: current.conversationID, rootURL: current.rootURL), conversationID: conversationID)
         }
         let create = try XCTUnwrap(details("workspace.createFile", #"{"path":"notes/a.txt","content":"synthetic-secret","overwrite":false}"#))
+        let publish = try XCTUnwrap(details("workspace.publishOutput", #"{"path":"notes/a.txt","displayName":"成果.txt"}"#))
+        XCTAssertEqual(publish["target"], .string("notes/a.txt"))
+        XCTAssertEqual(publish["displayName"], .string("成果.txt"))
+        XCTAssertEqual(publish["precondition"], .string("fileExists"))
+        XCTAssertEqual(try details("workspace.publishOutput", #"{"path":"notes/a.txt"}"#)?["displayName"], .string("a.txt"))
+        XCTAssertNil(try details("workspace.publishOutput", #"{"path":"notes/a.txt","displayName":"../a.txt"}"#))
+        XCTAssertNil(try details("workspace.publishOutput", #"{"path":"notes/a.txt","displayName":"a\u202Etxt"}"#))
+        let managed = try XCTUnwrap(details("jobs.submit", #"{"tool":"exec.shell","arguments":"{}","wait":false,"service":{"runtime":"shell","entry":"notes/server.sh","port":18765,"arguments":["","a b"]}}"#))
+        XCTAssertEqual(managed["operation"], .string("startService"))
+        XCTAssertEqual(managed["target"], .string("notes/server.sh"))
+        XCTAssertEqual(managed["service"], .object([
+            "runtime": .string("shell"), "port": .integer(18765), "cwd": .string("."),
+            "arguments": .array([.string(""), .string("a b")]), "wait": .boolean(false),
+        ]))
+        XCTAssertNil(try details("jobs.submit", #"{"tool":"exec.shell","arguments":"{\"command\":\"pwd\"}","service":{"runtime":"shell","entry":"notes/server.sh","port":18765}}"#))
         XCTAssertEqual(create["target"], .string("notes/a.txt"))
         XCTAssertEqual(create["overwrite"], .string("forbidden"))
         XCTAssertFalse(String(describing: create).contains("synthetic-secret"))

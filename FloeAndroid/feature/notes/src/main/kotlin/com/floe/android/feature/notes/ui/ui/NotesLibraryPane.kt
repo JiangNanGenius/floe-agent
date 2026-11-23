@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -44,6 +45,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,6 +96,14 @@ internal fun NotesLibraryPane(
     var deleteTarget by remember { mutableStateOf<NoteDocumentSummary?>(null) }
     var newNotebookName by remember { mutableStateOf<String?>(null) }
     var renameNotebookID by remember { mutableStateOf<String?>(null) }
+    var selecting by remember(library.filter, library.selectedNotebookID, library.query) { mutableStateOf(false) }
+    var selectedIDs by remember(library.filter, library.selectedNotebookID, library.query) {
+        mutableStateOf(emptySet<String>())
+    }
+    var trashSelection by remember { mutableStateOf<List<NoteDocumentSummary>?>(null) }
+    var movingToTrash by remember { mutableStateOf(false) }
+    val visible = library.visibleDocuments()
+    val selectedNotes = if (selecting) visible.filter { it.id in selectedIDs } else emptyList()
 
     LaunchedEffect(pendingCreate) {
         val request = pendingCreate ?: return@LaunchedEffect
@@ -124,7 +134,11 @@ internal fun NotesLibraryPane(
     Column(modifiers.fillMaxSize().background(Floe.colors.groupedSurface)) {
         NotesToolbar(
             title = stringResource(R.string.notes_title),
-            subtitle = stringResource(R.string.notes_document_count, library.counts.documents),
+            subtitle = if (selecting) {
+                stringResource(R.string.notes_selection_count, selectedNotes.size)
+            } else {
+                stringResource(R.string.notes_document_count, library.counts.documents)
+            },
             navigation = {
                 if (onRequestSidebar != null) {
                     NotesIconAction(
@@ -135,30 +149,56 @@ internal fun NotesLibraryPane(
                 }
             },
             actions = {
-                if (library.busy) FloeActivityIndicator(Modifier.padding(horizontal = 6.dp))
-                NotesIconAction(
-                    NotesIcons.Sort,
-                    stringResource(R.string.notes_sort),
-                    { sortOpen = true },
-                )
-                NotesIconAction(
-                    if (library.grid) NotesIcons.List else NotesIcons.Grid,
-                    stringResource(if (library.grid) R.string.notes_layout_list else R.string.notes_layout_grid),
-                    { library.toggleGrid() },
-                )
-                NotesIconAction(
-                    FloeIcons.Plus,
-                    stringResource(R.string.notes_new),
-                    { createStage = NotesCreateStage.Menu },
-                    enabled = !library.busy && pendingCreate == null,
-                )
+                if (library.busy || movingToTrash) FloeActivityIndicator(Modifier.padding(horizontal = 6.dp))
+                if (selecting) {
+                    NotesIconAction(
+                        FloeIcons.Xmark,
+                        stringResource(R.string.notes_cancel),
+                        { selecting = false; selectedIDs = emptySet() },
+                        enabled = !movingToTrash,
+                    )
+                    NotesIconAction(
+                        FloeIcons.Trash,
+                        stringResource(R.string.notes_move_to_trash),
+                        { trashSelection = selectedNotes },
+                        enabled = selectedNotes.isNotEmpty() && !movingToTrash && !library.busy,
+                    )
+                } else {
+                    if (library.filter != NotesLibraryFilter.TRASH && visible.isNotEmpty()) {
+                        NotesIconAction(
+                            FloeIcons.Checklist,
+                            stringResource(R.string.notes_select_multiple),
+                            { selecting = true },
+                            enabled = !library.busy,
+                        )
+                    }
+                    NotesIconAction(
+                        NotesIcons.Sort,
+                        stringResource(R.string.notes_sort),
+                        { sortOpen = true },
+                    )
+                    NotesIconAction(
+                        if (library.grid) NotesIcons.List else NotesIcons.Grid,
+                        stringResource(if (library.grid) R.string.notes_layout_list else R.string.notes_layout_grid),
+                        { library.toggleGrid() },
+                    )
+                    NotesIconAction(
+                        FloeIcons.Plus,
+                        stringResource(R.string.notes_new),
+                        { createStage = NotesCreateStage.Menu },
+                        enabled = !library.busy && pendingCreate == null,
+                    )
+                }
             },
         )
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
             FloeSearchField(
                 value = library.query,
                 onValueChange = library::applySearch,
-                placeholder = stringResource(R.string.notes_search_placeholder),
+                placeholder = stringResource(
+                    if (library.filter == NotesLibraryFilter.TRASH) R.string.notes_search_trash
+                    else R.string.notes_search_placeholder,
+                ),
             )
         }
         NotesChipRow {
@@ -233,10 +273,9 @@ internal fun NotesLibraryPane(
             )
         }
 
-        val visible = library.visibleDocuments()
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                library.loading && library.documents.isEmpty() -> {
+                (library.loading && library.documents.isEmpty()) || (library.searching && visible.isEmpty()) -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         FloeActivityIndicator()
                     }
@@ -306,6 +345,8 @@ internal fun NotesLibraryPane(
                                 summary = summary,
                                 library = library,
                                 grid = true,
+                                selected = if (selecting) summary.id in selectedIDs else null,
+                                onSelect = { selectedIDs = toggleNoteSelection(selectedIDs, summary.id) },
                                 onOpen = { controller.openDocument(summary.id, null) },
                                 onMenu = { actionsTarget = summary },
                             )
@@ -323,6 +364,8 @@ internal fun NotesLibraryPane(
                                 summary = summary,
                                 library = library,
                                 grid = false,
+                                selected = if (selecting) summary.id in selectedIDs else null,
+                                onSelect = { selectedIDs = toggleNoteSelection(selectedIDs, summary.id) },
                                 onOpen = { controller.openDocument(summary.id, null) },
                                 onMenu = { actionsTarget = summary },
                             )
@@ -444,6 +487,29 @@ internal fun NotesLibraryPane(
             onDismiss = { coverTarget = null },
         )
     }
+    trashSelection?.let { targets ->
+        FloeConfirmDialog(
+            title = stringResource(R.string.notes_trash_selection_title, targets.size),
+            message = stringResource(R.string.notes_trash_selection_body),
+            confirmLabel = stringResource(R.string.notes_move_to_trash),
+            dismissLabel = stringResource(R.string.notes_cancel),
+            onConfirm = {
+                trashSelection = null
+                movingToTrash = true
+                scope.launch {
+                    try {
+                        if (controller.trashSelection(targets)) {
+                            selecting = false
+                            selectedIDs = emptySet()
+                        }
+                    } finally {
+                        movingToTrash = false
+                    }
+                }
+            },
+            onDismiss = { trashSelection = null },
+        )
+    }
     deleteTarget?.let { target ->
         FloeConfirmDialog(
             title = stringResource(R.string.notes_delete_document_title, target.title),
@@ -520,11 +586,16 @@ private fun FilterChipFor(
     )
 }
 
+private fun toggleNoteSelection(selectedIDs: Set<String>, id: String): Set<String> =
+    if (id in selectedIDs) selectedIDs - id else selectedIDs + id
+
 @Composable
 private fun NotesLibraryCard(
     summary: NoteDocumentSummary,
     library: NotesLibraryController,
     grid: Boolean,
+    selected: Boolean?,
+    onSelect: () -> Unit,
     onOpen: () -> Unit,
     onMenu: () -> Unit,
 ) {
@@ -537,11 +608,16 @@ private fun NotesLibraryCard(
         .fillMaxWidth()
         .clip(shape)
         .background(Floe.colors.readingSurface)
-        .border(0.5.dp, Floe.colors.chromeHairline, shape)
+        .border(
+            if (selected == true) 1.dp else 0.5.dp,
+            if (selected == true) Floe.colors.accent else Floe.colors.chromeHairline,
+            shape,
+        )
+        .semantics { selected?.let { this.selected = it } }
         .combinedClickable(
             role = Role.Button,
-            onClick = onOpen,
-            onLongClick = onMenu,
+            onClick = if (selected == null) onOpen else onSelect,
+            onLongClick = onMenu.takeIf { selected == null },
         )
         .padding(if (grid) 10.dp else 8.dp)
     if (grid) {
@@ -564,12 +640,7 @@ private fun NotesLibraryCard(
                 if (summary.isFavorite) {
                     IconGlyph(NotesIcons.StarFilled, Floe.colors.pending, 15.dp)
                 }
-                NotesIconAction(
-                    FloeIcons.Ellipsis,
-                    stringResource(R.string.notes_document_actions),
-                    onMenu,
-                    visualSize = 28.dp,
-                )
+                NotesLibraryCardAction(selected, onMenu)
             }
             FloeText(
                 NotesSummaryLine(summary),
@@ -608,12 +679,7 @@ private fun NotesLibraryCard(
                     if (summary.isFavorite) {
                         IconGlyph(NotesIcons.StarFilled, Floe.colors.pending, 15.dp)
                     }
-                    NotesIconAction(
-                        FloeIcons.Ellipsis,
-                        stringResource(R.string.notes_document_actions),
-                        onMenu,
-                        visualSize = 28.dp,
-                    )
+                    NotesLibraryCardAction(selected, onMenu)
                 }
                 FloeText(
                     NotesSummaryLine(summary),
@@ -632,6 +698,20 @@ private fun NotesLibraryCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NotesLibraryCardAction(selected: Boolean?, onMenu: () -> Unit) {
+    when (selected) {
+        true -> IconGlyph(FloeIcons.CheckCircle, Floe.colors.accent, 20.dp)
+        false -> Box(Modifier.width(20.dp).height(20.dp).border(1.dp, Floe.colors.tertiaryLabel, CircleShape))
+        null -> NotesIconAction(
+            FloeIcons.Ellipsis,
+            stringResource(R.string.notes_document_actions),
+            onMenu,
+            visualSize = 28.dp,
+        )
     }
 }
 

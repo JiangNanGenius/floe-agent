@@ -376,6 +376,30 @@ private fun RowScope.ConversationContextChips(
             }
         }
 
+        if (holder.agentMode == AgentExecutionModeUi.CHAT) {
+            var reasoningMenuExpanded by remember(state.session) { mutableStateOf(false) }
+            Box {
+                this@ConversationContextChips.FloeComposerChip(
+                    icon = FloeIcons.Gauge,
+                    text = stringResource(chatReasoningLabel(state.chatReasoning)),
+                    onClick = { reasoningMenuExpanded = true },
+                    description = stringResource(R.string.composer_chat_reasoning),
+                )
+                FloeChipMenu(expanded = reasoningMenuExpanded, onDismiss = { reasoningMenuExpanded = false }) {
+                    ChatReasoningUi.entries.forEach { preference ->
+                        CupertinoMenuEntry(
+                            title = stringResource(chatReasoningLabel(preference)),
+                            selected = preference == state.chatReasoning,
+                            onClick = {
+                                reasoningMenuExpanded = false
+                                holder.selectChatReasoning(preference)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
         // Open existing scoped surfaces; tapping a chip never reassigns the task.
         val projectName = state.projects.firstOrNull { it.id == holder.selectedProjectId.value }?.name
             ?: stringResource(R.string.composer_project_none)
@@ -453,6 +477,15 @@ private fun RowScope.ConversationContextChips(
             description = chip.label,
         )
     }
+}
+
+fun chatReasoningLabel(preference: ChatReasoningUi): Int = when (preference) {
+    ChatReasoningUi.FAST -> R.string.composer_chat_reasoning_fast
+    ChatReasoningUi.AUTOMATIC -> R.string.composer_chat_reasoning_automatic
+    ChatReasoningUi.LOW -> R.string.composer_chat_reasoning_low
+    ChatReasoningUi.MEDIUM -> R.string.composer_chat_reasoning_medium
+    ChatReasoningUi.HIGH -> R.string.composer_chat_reasoning_high
+    ChatReasoningUi.MAXIMUM -> R.string.composer_chat_reasoning_maximum
 }
 
 private fun modeIcon(mode: AgentExecutionModeUi): ImageVector = when (mode) {

@@ -16,6 +16,17 @@ enum class MeetingExportFormat(
 ) {
     TXT("txt", "text/plain"),
     MARKDOWN("md", "text/markdown"),
+
+    /**
+     * Lightweight document forms. Both stay a one-way document output of the
+     * existing carrier: the SAME meeting snapshot is rendered into a real,
+     * readable .docx (Word) or .pdf file, not a professional editor project.
+     */
+    DOCX("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    PDF("pdf", "application/pdf"),
+    ;
+
+    val isText: Boolean get() = this == TXT || this == MARKDOWN
 }
 
 /**
@@ -41,10 +52,12 @@ internal data class MeetingExportLabels(
 /**
  * A rendered, immutable export bound to one exact meeting revision.
  *
- * The object intentionally does not expose a path or URI. [text] is the only
- * content payload and is written only to the destination selected for this
- * request. Its `toString` never includes the title, notes or transcript, so an
- * accidental log statement cannot copy private meeting material.
+ * The object intentionally does not expose a path or URI. For the two text
+ * formats [text] is the only content payload; for DOCX/PDF [binary] carries the
+ * rendered document bytes. The payload is written only to the destination
+ * selected for this request. Its `toString` never includes the title, notes or
+ * transcript, so an accidental log statement cannot copy private meeting
+ * material.
  */
 class MeetingExportDocument internal constructor(
     val meetingId: String,
@@ -53,10 +66,23 @@ class MeetingExportDocument internal constructor(
     val format: MeetingExportFormat,
     val suggestedFileName: String,
     val text: String,
+    val binary: ByteArray?,
     val byteCount: Long,
     val hasNotes: Boolean,
     val hasTranscript: Boolean,
 ) {
+    init {
+        if (format.isText) {
+            require(binary == null) { "textFormatWithBinaryPayload" }
+        } else {
+            require(binary != null && binary.isNotEmpty()) { "documentFormatWithoutBinaryPayload" }
+        }
+    }
+
+    /** The exact payload bytes written to the user-selected destination. */
+    fun payloadBytes(): ByteArray =
+        binary ?: text.toByteArray(Charsets.UTF_8)
+
     override fun toString(): String =
         "MeetingExportDocument(meeting=$meetingId, format=$format, bytes=$byteCount)"
 }

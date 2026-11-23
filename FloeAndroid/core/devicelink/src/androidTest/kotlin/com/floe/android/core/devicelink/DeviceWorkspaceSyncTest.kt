@@ -99,7 +99,15 @@ class DeviceWorkspaceSyncTest {
             val clientLink = FloeDeviceLink.bind(context, left, setOf(right.endpointId),
                 FloeDeviceLinkRelay.DISABLED, "127.0.0.1:0")
             val source = Source()
-            val server = DeviceHistorySync(serverLink, mapOf(left.endpointId to setOf(task)), source, source)
+            // The serving side authorizes by the connecting peer's endpoint ID
+            // and advertises convergence only with explicit consent (2).
+            val server = DeviceHistorySync(
+                serverLink, mapOf(left.endpointId to setOf(task)), source, source,
+                initialWorkspaceShares = mapOf(left.endpointId to mapOf(task to source.scope)),
+                initialWorkspaceVersions = source.workspaceVersion?.let {
+                    mapOf(left.endpointId to mapOf(task to it))
+                } ?: emptyMap(),
+            )
             val client = DeviceHistorySync(clientLink, mapOf(right.endpointId to emptySet()), source)
             try {
                 server.start(this)
@@ -117,11 +125,20 @@ class DeviceWorkspaceSyncTest {
         val shared = AtomicBoolean(true)
         val offsets = mutableListOf<Long>()
         val confirmed = mutableSetOf<Int>()
+        val receipts = mutableListOf<Pair<List<String>, List<DeviceWorkspaceMove>>>()
         var corrupt = false
+        /** Convergence consent this sender advertises/accepts (2 = granted). */
+        var workspaceVersion: Int? = 2
+        val scope = "floe.workspace.v1.${"0a".repeat(32)}"
         override suspend fun offers(allowed: Set<UUID>) = listOf(DeviceHistoryOffer(task, "Synthetic"))
         val history = "Synthetic history".encodeToByteArray()
-        override suspend fun export(taskId: UUID): ByteArray = history.copyOf()
+        override suspend fun export(taskId: UUID, version: Int): ByteArray = history.copyOf()
         override suspend fun available(peer: String, task: UUID) = shared.get()
+        override suspend fun shareScope(peer: String, task: UUID): String {
+            if (!shared.get()) throw DeviceHistorySyncException(DeviceHistorySyncError.NOT_SHARED)
+            return scope
+        }
+
         override suspend fun prepare(peer: String, task: UUID) = object : DeviceWorkspaceSnapshot {
             override val entries = listOf(
                 DeviceWorkspaceEntry("docs/file.bin", DeviceWorkspaceEntry.Kind.FILE, payload.size.toLong(),
@@ -140,7 +157,15 @@ class DeviceWorkspaceSyncTest {
                     if (corrupt && offset > 0) it[0] = (it[0].toInt() xor 1).toByte()
                 }
             }
-            override suspend fun confirm(indexes: List<Int>) { confirmed.addAll(indexes) }
+            override suspend fun confirm(
+                indexes: List<Int>, removals: List<String>, renames: List<DeviceWorkspaceMove>,
+            ) {
+                confirmed.addAll(indexes)
+                if (removals.isNotEmpty() || renames.isNotEmpty()) {
+                    if (workspaceVersion != 2) throw DeviceHistorySyncException(DeviceHistorySyncError.INVALID_RESPONSE)
+                    receipts.add(removals to renames)
+                }
+            }
             override fun close() = Unit
         }
     }

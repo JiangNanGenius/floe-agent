@@ -587,7 +587,18 @@ public enum C03VoiceBridge {
                 [
                     "ok": true,
                     "segments": page.segments.map { segment in
-                        ["start": segment.start, "end": segment.end, "text": segment.text]
+                        var value: [String: Any] = [
+                            "start": segment.start,
+                            "end": segment.end,
+                            "text": segment.text,
+                        ]
+                        // Speaker labels are emitted only when the provider
+                        // really supplied them; the host treats a missing
+                        // key as "unavailable", never as an error.
+                        if let speaker = segment.speaker {
+                            value["speaker"] = speaker
+                        }
+                        return value
                     },
                     "nextOffset": page.nextOffset,
                     "total": page.total,

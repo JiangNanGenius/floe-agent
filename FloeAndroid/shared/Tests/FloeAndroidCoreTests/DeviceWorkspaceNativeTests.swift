@@ -137,6 +137,52 @@ final class DeviceWorkspaceNativeTests: XCTestCase {
 
     // MARK: - Tests
 
+    func testTargetConvergencePreservesEditsAndMovesUnchangedFilesToRecovery() async throws {
+        let boot = try await bootInstalledGeneration()
+        let taskID = try await makeOrdinaryConversation(epoch: boot.epoch)
+        let installed = try XCTUnwrap(G02RuntimeComposition.shared.installedComposition)
+        _ = try await installed.cluster.workspaceStore.ensureWorkspace(conversationID: taskID, title: "rename fixture")
+        let root = try workspaceRoot(epoch: boot.epoch, taskID: taskID)
+        let baseline = Data("hello".utf8)
+        let localEdit = Data("local edit".utf8)
+        try writeFixtureFile(root, "Notes/Old.txt", bytes: baseline)
+        try writeFixtureFile(root, "Notes/Edited.txt", bytes: localEdit)
+        try writeFixtureFile(root, "Notes/Occupied.txt", bytes: localEdit)
+        let (_, binding) = try command("targetBinding", ["epoch": boot.epoch, "taskID": taskID.uuidString])
+        let scope = try XCTUnwrap(binding?["scope"] as? String)
+        let (_, opened) = try command("targetOpen", ["epoch": boot.epoch, "taskID": taskID.uuidString, "scope": scope])
+        let ticket = try XCTUnwrap((opened?["ticket"] as? NSNumber)?.int64Value)
+
+        let (_, collision) = try command("targetMove", [
+            "ticket": ticket, "key": "notes/old.txt", "digest": helloDigest, "to": "Notes/Occupied.txt",
+        ])
+        XCTAssertEqual(collision?["outcome"] as? String, "preserved")
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Notes/Occupied.txt")), localEdit)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Notes/Old.txt")), baseline)
+
+        let (_, moved) = try command("targetMove", [
+            "ticket": ticket, "key": "notes/old.txt", "digest": helloDigest, "to": "Notes/New.txt",
+        ])
+        XCTAssertEqual(moved?["outcome"] as? String, "moved")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Notes/Old.txt").path))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Notes/New.txt")), baseline)
+
+        let (_, edited) = try command("targetTrash", [
+            "ticket": ticket, "key": "notes/edited.txt", "digest": helloDigest, "pathHint": "Notes/Edited.txt",
+        ])
+        XCTAssertEqual(edited?["outcome"] as? String, "preserved")
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Notes/Edited.txt")), localEdit)
+        let (_, removed) = try command("targetTrash", ["ticket": ticket, "key": "notes/new.txt", "digest": helloDigest])
+        XCTAssertEqual(removed?["outcome"] as? String, "removed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Notes/New.txt").path))
+        let recovery = root.appendingPathComponent("Floe Sync Conflicts/Removed")
+        let copies = try FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: nil)
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(copies.first).appendingPathComponent("Notes/New.txt")), baseline)
+        let (_, replay) = try command("targetTrash", ["ticket": ticket, "key": "notes/new.txt", "digest": helloDigest])
+        XCTAssertEqual(replay?["outcome"] as? String, "preserved")
+    }
+
     func testReceiveBindingMaterializesMissingWorkspaceAndSourceStaysReadOnly() async throws {
         let boot = try await bootInstalledGeneration()
         let taskID = try await makeOrdinaryConversation(epoch: boot.epoch)

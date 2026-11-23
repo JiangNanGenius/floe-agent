@@ -29,6 +29,7 @@ class MeetingDocumentWriterTest {
             format = MeetingExportFormat.TXT,
             suggestedFileName = "Writer test-20231114.txt",
             text = text,
+            binary = null,
             byteCount = text.toByteArray(Charsets.UTF_8).size.toLong(),
             hasNotes = false,
             hasTranscript = false,

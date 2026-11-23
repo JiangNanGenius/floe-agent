@@ -2,6 +2,7 @@
 <resources>
     <!-- N10 task continuity: concise, actionable copy only. -->
     <string name="n113_mode_not_saved">Couldn\'t save the composer mode.</string>
+    <string name="chat_reasoning_not_saved">Couldn\'t save the chat reasoning setting.</string>
     <string name="n113_plan_handoff_busy">The plan is preparing to run. Try again shortly.</string>
     <string name="n113_plan_finish_current">Finish or stop the current operation before running the plan.</string>
 

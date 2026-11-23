@@ -223,6 +223,49 @@ class TaskContinuityHostControllerTest {
         assertEquals("runtime_unavailable", controller.state.value.errorCode)
     }
 
+    @Test
+    fun replyArrivingAfterReleaseIsDroppedByTheRetirementFence() {
+        val env = FakeEnv()
+        lateinit var controller: TaskContinuityHostController
+        // The snapshot reply lands after the surface was released (root
+        // retirement / navigation): the in-flight token no longer matches.
+        val api = FakeApi(wire(state()), onSnapshot = { controller.release() })
+        controller = TaskContinuityHostController(env, api)
+        controller.load(TASK, RUN)
+        assertNull(controller.state.value.pause)
+        assertNull(controller.state.value.taskID)
+        assertFalse(controller.state.value.loaded)
+        // A later refresh without a task id never reaches the bridge.
+        controller.refresh()
+        assertEquals(1, api.snapshotCalls)
+    }
+
+    @Test
+    fun recreatedControllerSeesTheSettledMarkerAndNeverResumesAgain() {
+        val env = FakeEnv()
+        val api = FakeApi(wire(state()))
+        val first = TaskContinuityHostController(env, api)
+        first.load(TASK, RUN)
+        first.resume()
+        assertEquals(TaskContinuityPauseStateUi.RESUMED, first.state.value.pause?.state)
+        assertEquals(1, api.resumeCalls)
+
+        // Process/Activity recreation: a fresh controller over the SAME
+        // durable marker settles on it; the settled pause is not actionable,
+        // so a stray second tap (or a recreated sheet) never dispatches.
+        api.snapshot = wire(state(pause(TaskContinuityPauseStateUi.RESUMED)))
+        val recreated = TaskContinuityHostController(env, api)
+        recreated.load(TASK, RUN)
+        assertEquals("m-1", recreated.state.value.pause?.markerID)
+        assertEquals(TaskContinuityPauseStateUi.RESUMED, recreated.state.value.pause?.state)
+        recreated.resume()
+        assertEquals(1, api.resumeCalls)
+        assertEquals(
+            TaskContinuityPauseStateUi.RESUMED,
+            recreated.state.value.pause?.state,
+        )
+    }
+
     private companion object {
         const val TASK = "11111111-1111-1111-1111-111111111111"
         const val RUN = "22222222-2222-2222-2222-222222222222"

@@ -146,6 +146,20 @@ final class JobAdmissionAuthorityTests: XCTestCase {
         let fullObject = try JSONSerialization.jsonObject(with: full) as? [String: Any]
         XCTAssertEqual(fullObject?["purpose"] as? String, "p")
         XCTAssertEqual(fullObject?["wait"] as? Bool, false)
+
+        // The runtime signs exactly what the user reviewed, before the
+        // service host fills in execution defaults.
+        for raw in [
+            #"{"tool":"exec.shell","arguments":"{}","wait":false,"service":{"runtime":"shell","entry":"serve.sh","port":18765}}"#,
+            #"{"tool":"exec.shell","arguments":"{}","wait":false,"service":{"runtime":"shell","entry":"serve.sh","port":18765,"arguments":[],"cwd":"."}}"#,
+        ] {
+            let approved = Data(raw.utf8)
+            let decoded = try JSONDecoder().decode(JobsSubmitTool.Arguments.self, from: approved)
+            XCTAssertEqual(
+                RuntimeAuthorityDigest.payloadDigest(try JobsSubmitTool.canonicalApprovedPayload(decoded)),
+                RuntimeAuthorityDigest.payloadDigest(approved)
+            )
+        }
     }
 
     func testCanonicalTargetResolvesWorkspaceOrWildcard() throws {

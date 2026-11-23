@@ -26,9 +26,13 @@ import com.floe.android.host.meeting.MediaProbe
 import com.floe.android.host.meeting.MeetingErrorCode
 import com.floe.android.host.meeting.MeetingException
 import com.floe.android.host.meeting.MeetingIds
+import com.floe.android.host.meeting.MeetingMaterial
+import com.floe.android.host.meeting.MeetingMaterialStatus
 import com.floe.android.host.meeting.MeetingMediaProbe
 import com.floe.android.host.meeting.MeetingRepository
 import com.floe.android.host.meeting.MeetingStoreRegistry
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttempt
+import com.floe.android.host.meeting.MeetingTranscriptionLastAttemptPhase
 import com.floe.android.host.meeting.MeetingTranscriptionReceipt
 import com.floe.android.host.meeting.MeetingTranscriptionSnapshot
 import com.floe.android.host.meeting.StoredTranscriptSegment
@@ -49,6 +53,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -137,9 +143,15 @@ data class MeetingTranscriptionCleanupFailure(
  *
  * [close] intentionally does not cancel. Page disposal is not a cancellation
  * signal; only [cancel] is. A process restart loses the live attempt and its
- * observable state. This owner never presents a leftover snapshot or a stale
- * receipt as resumed work; the repository's own stale-snapshot recovery is the
- * only cleanup path.
+ * observable state; this owner never presents a leftover snapshot or a stale
+ * receipt as resumed work. What survives a restart is the repository's own
+ * stale-snapshot recovery plus a durable, bounded attempt checkpoint
+ * (meeting/material/revision, written before any provider work and updated at
+ * every terminal settle that produced no transcript). Reopening the meeting
+ * turns that checkpoint into a truthful, user-confirmed retry that carries
+ * the original identifiers. The provider operation is never persisted and
+ * never resumed: an interrupted attempt is always restarted from the
+ * beginning, never claimed as continued cloud work.
  */
 class MeetingTranscriptionManager internal constructor(
     private val owner: MeetingTranscriptionOwner,
@@ -198,6 +210,12 @@ class MeetingTranscriptionManager internal constructor(
     )
 
     val state: StateFlow<MeetingTranscriptionState> = owner.state
+
+    internal fun recordingStopped(material: MeetingMaterial) = owner.recordingStopped(material)
+    internal fun dropRecordingFollowup(meetingId: String) = owner.dropRecordingFollowup(meetingId)
+    internal fun clearRecordingFollowups() = owner.clearRecordingFollowups()
+    internal fun awaitingFinalTranscript(meetingId: String) = owner.awaitingFinalTranscript(meetingId)
+    internal suspend fun awaitFinalTranscript(meetingId: String) = owner.awaitFinalTranscript(meetingId)
 
     /** Observable non-fatal snapshot cleanup failure; never silently dropped. */
     val cleanupFailure: StateFlow<MeetingTranscriptionCleanupFailure?> = owner.cleanupFailure
@@ -317,6 +335,59 @@ internal class MeetingTranscriptionOwner(
 
     private var active: MeetingTranscriptionAttempt? = null
     private var lastSettled: MeetingTranscriptionAttempt? = null
+
+    private val followup = MeetingTranscriptionFollowup()
+    private val followupDrain = Mutex()
+
+    fun recordingStopped(material: MeetingMaterial) {
+        if (material.status != MeetingMaterialStatus.COMPLETED || !material.isPlayable) return
+        synchronized(stateLock) {
+            if (active?.materialId == material.id && active?.meetingId == material.meetingId) return
+            followup.enqueue(MeetingTranscriptionFollowupRequest(material.meetingId, material.id, null))
+        }
+        scheduleFollowupDrain()
+    }
+
+    fun dropRecordingFollowup(meetingId: String) = followup.dropMeeting(meetingId)
+    fun clearRecordingFollowups() = followup.clear()
+
+    fun awaitingFinalTranscript(meetingId: String): Boolean =
+        meetingId in followup.pending.value || followup.shouldAwaitMinutes(meetingId, state.value)
+
+    suspend fun awaitFinalTranscript(meetingId: String) {
+        combine(state, followup.pending) { current, pending -> current to pending }
+            .first { (current, pending) ->
+                meetingId !in pending && !followup.shouldAwaitMinutes(meetingId, current)
+            }
+    }
+
+    private fun scheduleFollowupDrain() {
+        processScope.launch {
+            followupDrain.withLock {
+                while (synchronized(stateLock) { active == null }) {
+                    val request = followup.beginNext() ?: break
+                    var busy = false
+                    try {
+                        // Refresh the durable revision after any previous take settles.
+                        val detail = repositoryProvider().detail(request.meetingId)
+                        val material = detail.materials.firstOrNull { it.id == request.materialId } ?: continue
+                        val fresh = followup.onStoppedMaterial(detail, material, autoTranscribe = true) ?: continue
+                        synchronized(stateLock) {
+                            if (followup.isStarting(request)) {
+                                busy = start(fresh.meetingId, fresh.materialId, fresh.expectedTranscriptionRevision) is
+                                    MeetingTranscriptionOwnedStart.Busy
+                            }
+                        }
+                    } catch (_: MeetingException) {
+                        // The meeting or material is no longer readable.
+                    } finally {
+                        followup.finishStarting(request, busy)
+                    }
+                    if (busy) break
+                }
+            }
+        }
+    }
 
     fun updateEpochProvider(provider: () -> Long?) {
         epochProvider = provider
@@ -523,6 +594,21 @@ internal class MeetingTranscriptionOwner(
                     ),
                 )
             }
+            throwIfCancelled(attempt)
+            // Durable checkpoint BEFORE any provider work: meeting, material
+            // and the exact revision this attempt starts from. If the process
+            // dies mid-attempt, reopening the meeting can offer a truthful
+            // retry for exactly this source. The provider operation itself is
+            // never persisted and never resumed.
+            attempt.checkpointRevision = source.transcriptionRevision
+            repositoryProvider().recordTranscriptionAttempt(
+                meetingId = attempt.meetingId,
+                attempt = attempt.checkpoint(
+                    phase = MeetingTranscriptionLastAttemptPhase.RUNNING,
+                    failure = null,
+                    retryable = false,
+                ),
+            )
             throwIfCancelled(attempt)
             val configuration = backend.configuration(epoch)
             throwIfCancelled(attempt)
@@ -982,12 +1068,54 @@ internal class MeetingTranscriptionOwner(
         state: MeetingTranscriptionState,
     ): Boolean {
         attempt.fence.finish()
-        synchronized(stateLock) {
+        val settledNow = synchronized(stateLock) {
             if (active !== attempt) return false
             _state.value = state
             active = null
             lastSettled = attempt
-            return true
+            true
+        }
+        if (!settledNow) return false
+        // Terminal states that produced no transcript leave a durable,
+        // bounded trace (meeting/material/checkpoint + typed outcome) so a
+        // page reopen after an interruption, failure or cancellation can
+        // offer an honest retry instead of a vanished attempt. A COMPLETED
+        // settle already cleared the trace inside the commit fence.
+        when (state.phase) {
+            MeetingTranscriptionPhase.FAILED,
+            MeetingTranscriptionPhase.CANCELLED,
+            -> recordAttemptTerminal(attempt, state.phase, state.failure)
+            else -> Unit
+        }
+        scheduleFollowupDrain()
+        return true
+    }
+
+    private fun recordAttemptTerminal(
+        attempt: MeetingTranscriptionAttempt,
+        phase: MeetingTranscriptionPhase,
+        failure: MeetingTranscriptionFailure?,
+    ) {
+        val checkpoint = attempt.checkpointRevision ?: attempt.expectedTranscriptionRevision ?: return
+        processScope.launch {
+            runCatching {
+                repositoryProvider().recordTranscriptionAttempt(
+                    meetingId = attempt.meetingId,
+                    attempt = MeetingTranscriptionLastAttempt(
+                        materialId = attempt.materialId,
+                        expectedTranscriptionRevision = checkpoint,
+                        phase = if (phase == MeetingTranscriptionPhase.CANCELLED) {
+                            MeetingTranscriptionLastAttemptPhase.CANCELLED
+                        } else {
+                            MeetingTranscriptionLastAttemptPhase.FAILED
+                        },
+                        failureCode = failure?.code?.name,
+                        failureReason = failure?.reason,
+                        retryable = failure?.retryable ?: true,
+                        updatedAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+            }
         }
     }
 
@@ -1065,8 +1193,12 @@ internal class MeetingTranscriptionOwner(
             id = "mt-$materialId-${index.toString().padStart(5, '0')}",
             startMillis = (segment.start * 1_000.0).roundToLong(),
             endMillis = (segment.end * 1_000.0).roundToLong(),
+            // Provider-supplied diarization is preserved verbatim; segments
+            // from providers that do not diarize stay null and every consumer
+            // (page, exports, assistant prompt) already falls back to a
+            // neutral label instead of inventing a name.
             text = segment.text,
-            speaker = null,
+            speaker = segment.speaker,
         )
     }
 
@@ -1101,6 +1233,28 @@ internal class MeetingTranscriptionAttempt(
 
     @Volatile
     var operationId: String? = null
+
+    /**
+     * Transcript revision observed by the snapshot that fed this attempt; the
+     * durable retry checkpoint recorded before any provider work starts.
+     */
+    @Volatile
+    var checkpointRevision: Long? = null
+
+    /** Builds the durable checkpoint record for this attempt. */
+    fun checkpoint(
+        phase: MeetingTranscriptionLastAttemptPhase,
+        failure: MeetingTranscriptionFailure?,
+        retryable: Boolean,
+    ): MeetingTranscriptionLastAttempt = MeetingTranscriptionLastAttempt(
+        materialId = materialId,
+        expectedTranscriptionRevision = checkpointRevision ?: expectedTranscriptionRevision ?: 0L,
+        phase = phase,
+        failureCode = failure?.code?.name,
+        failureReason = failure?.reason,
+        retryable = retryable,
+        updatedAtMillis = System.currentTimeMillis(),
+    )
 
     @Volatile
     var extractor: MeetingAudioExtractor? = null

@@ -900,7 +900,8 @@ internal class DeviceAccessHost(
         onDiscoverPairingPort = ::discoverPairingPort,
         onExportUsbBootstrap = ::exportUsbBootstrap,
         onCancelPairing = ::cancelPairing,
-        onStartAdbService = ::startAdbService,
+        onStartAdbService = { startAdbService() },
+        onStartAdbServiceAtPort = ::startAdbService,
         onStopAdbService = ::stopAdbService,
         onForgetAdbPairing = ::forgetPairing,
         onOpenDeveloperOptions = ::openDeveloperOptions,
@@ -2837,7 +2838,7 @@ internal class DeviceAccessHost(
             AdbStatus.Disabled -> DeviceAccessAdbUi.Off
             AdbStatus.PairRequired -> DeviceAccessAdbUi.PairRequired(pairingSessionOpen)
             AdbStatus.Pairing -> DeviceAccessAdbUi.Pairing
-            is AdbStatus.Paired -> DeviceAccessAdbUi.Paired()
+            is AdbStatus.Paired -> DeviceAccessAdbUi.Paired(pairingSessionOpen = pairingSessionOpen)
             is AdbStatus.ServiceAlive ->
                 DeviceAccessAdbUi.ServiceAlive(status.effectiveUid)
             is AdbStatus.ServiceDied -> DeviceAccessAdbUi.ServiceDied(status.code)
@@ -4228,7 +4229,7 @@ internal class DeviceAccessHost(
         }
     }
 
-    private fun startAdbService() {
+    private fun startAdbService(connectPort: Int? = null) {
         if (busy != DeviceAccessBusyUi.NONE) return
         busy = DeviceAccessBusyUi.STARTING
         error = null
@@ -4246,7 +4247,7 @@ internal class DeviceAccessHost(
         ) {
             scope.launch(io) {
                 try {
-                    val result = rootController?.startAdbService()
+                    val result = rootController?.startAdbService(connectPort)
                         ?: AccessActionResult.Unavailable("controller_unbound")
                     applyAccessResult(result, DeviceAccessErrorSectionUi.ADB)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {

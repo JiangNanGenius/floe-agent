@@ -43,6 +43,7 @@ import com.floe.android.feature.notes.NotesProposalOutboxPage
 import com.floe.android.feature.notes.NotesProposalPreview
 import com.floe.android.feature.notes.NotesProposalRequest
 import com.floe.android.feature.notes.NotesProposalResolveRequest
+import com.floe.android.feature.notes.NotesTrashTarget
 import com.floe.android.feature.notes.NotesProposalSummary
 import com.floe.android.feature.notes.NotesResourceImport
 import com.floe.android.feature.notes.NotesSaveMessage
@@ -468,10 +469,29 @@ class NotesHostService(
             if (response.bool("found") != true) null else NotesWireCodec.decodeDocument(response["document"])
         }
 
-    override suspend fun search(query: String, limit: Int): List<NoteDocumentSummary> =
+    override suspend fun trashDocuments(targets: List<NotesTrashTarget>) {
+        require(targets.isNotEmpty())
+        withContext(ioDispatcher) {
+            val receipt = perform("document.trashBatch", buildJsonObject {
+                putJsonArray("documents") {
+                    targets.forEach { target ->
+                        add(buildJsonObject {
+                            put("documentID", target.documentID)
+                            put("expectedRevision", target.expectedRevision)
+                        })
+                    }
+                }
+            })
+            require(receipt.int("count") == targets.size)
+        }
+    }
+
+    override suspend fun search(query: String, limit: Int, trashOnly: Boolean): List<NoteDocumentSummary> =
         withContext(ioDispatcher) {
             val response = perform("search.query", buildJsonObject {
-                put("query", query); put("limit", limit)
+                put("query", query)
+                put("limit", limit)
+                if (trashOnly) put("trashOnly", true)
             })
             response.array("documents")?.map { NotesWireCodec.decodeSummary(it) }.orEmpty()
         }

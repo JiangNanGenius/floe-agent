@@ -2,6 +2,7 @@
 package com.floe.android.host.notification
 
 import android.content.Context
+import com.floe.android.feature.conversation.ChatReasoningUi
 import java.util.UUID
 
 /**
@@ -22,6 +23,7 @@ import java.util.UUID
 internal data class StoredTaskContinuityPreference(
     val modeRaw: String?,
     val lastPresentedPlanRevision: String?,
+    val chatReasoning: ChatReasoningUi = ChatReasoningUi.FAST,
 )
 
 internal class TaskContinuityPreferences(
@@ -40,6 +42,7 @@ internal class TaskContinuityPreferences(
 
     private fun modeKey(id: String) = "mode.$id"
     private fun ackKey(id: String) = "planAck.$id"
+    private fun reasoningKey(id: String) = "chatReasoning.$id"
     private fun noticeKey(id: String) = "lastNotice.$id"
 
     fun read(conversationID: String): StoredTaskContinuityPreference {
@@ -49,9 +52,18 @@ internal class TaskContinuityPreferences(
                 ?.takeIf { it in VALID_MODES }
             val ack = prefs.getString(ackKey(id), null)
                 ?.takeIf(::isValidPlanMarker)
-            StoredTaskContinuityPreference(mode, ack)
+            val storedReasoning = prefs.getString(reasoningKey(id), null)
+            val reasoning = ChatReasoningUi.entries.firstOrNull { it.swiftRaw == storedReasoning }
+            StoredTaskContinuityPreference(mode, ack, reasoning ?: ChatReasoningUi.FAST)
         }
     }
+
+    fun writeChatReasoning(conversationID: String, preference: ChatReasoningUi): Boolean =
+        synchronized(lock) {
+            pruneLocked()
+            val id = canonicalConversationID(conversationID)
+            runCatching { prefs.edit().putString(reasoningKey(id), preference.swiftRaw).commit() }.getOrDefault(false)
+        }
 
     /** Atomic mode + acknowledgement write. A failure returns false and the
      * RAM selection stays visible for this session; the next snapshot keeps
@@ -117,6 +129,7 @@ internal class TaskContinuityPreferences(
             if (removed >= drop) break
             editor.remove(modeKey(id))
             editor.remove(ackKey(id))
+            editor.remove(reasoningKey(id))
             editor.remove(noticeKey(id))
             removed++
         }
