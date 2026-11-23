@@ -44,6 +44,18 @@ struct RunLaunchStoreTests {
         let lower = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
         let legacy = UUID()
         let modelID = UUID()
+        let configurations = ModelConfigurationStore(database: db)
+        let provider = ProviderProfile(
+            id: UUID(), kind: .local, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "http://127.0.0.1")!,
+            displayName: "Fixture provider", isEnabled: true, allowsPlainHTTP: true
+        )
+        try await configurations.saveProvider(provider)
+        try await configurations.saveModel(.init(
+            id: modelID, providerID: provider.id, remoteModelID: "fixture-model",
+            displayName: "Fixture model", limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text]
+        ))
         try await store.saveRun(.init(id: higher, conversationID: first, state: "running", goal: "Latest", startedAt: time, modelID: modelID))
         try await store.saveRun(.init(id: lower, conversationID: first, state: "failed", goal: "Older tie", startedAt: time))
         try await store.saveRun(.init(id: legacy, conversationID: second, state: "completed", goal: "Legacy", startedAt: time))
