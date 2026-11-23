@@ -7252,12 +7252,14 @@ final class ConversationCenter: ObservableObject {
         content: String,
         attachments: [AttachmentRef],
         preparationID: UUID,
-        acceptedInput: PendingUserInput
+        acceptedInput: PendingUserInput? = nil
     ) async throws -> StartedConversationRun {
-        guard acceptedInput.conversationID == record.conversationID,
-              acceptedInput.targetRunID == record.id,
-              acceptedInput.mode == .steer,
-              acceptedInput.content == content else { throw FloeError.unauthorized }
+        if let acceptedInput {
+            guard acceptedInput.conversationID == record.conversationID,
+                  acceptedInput.targetRunID == record.id,
+                  acceptedInput.mode == .steer,
+                  acceptedInput.content == content else { throw FloeError.unauthorized }
+        }
         let resolvedPair: (ProviderProfile, ModelProfile)
         if let modelID = record.modelID, let resolved = providerAndModel(modelID: modelID) {
             resolvedPair = resolved
@@ -7268,9 +7270,9 @@ final class ConversationCenter: ObservableObject {
         try await captureIngressSecrets(ingress.captures, owner: .conversation(record.conversationID))
         guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         let safeContent = ingress.sanitizedText
-        let messageID = acceptedInput.id
+        let messageID = acceptedInput?.id ?? UUID()
         try modelInputProjection(for: record.id, conversationID: record.conversationID).register(id: messageID, safe: safeContent, live: content, captures: ingress.captures)
-        let createdAt = acceptedInput.createdAt
+        let createdAt = acceptedInput?.createdAt ?? Date()
         try await conversationStore(for: record.conversationID).appendMessage(PersistedMessage(
             id: messageID,
             conversationID: record.conversationID,

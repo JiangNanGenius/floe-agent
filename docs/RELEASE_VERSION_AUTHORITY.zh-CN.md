@@ -13,7 +13,9 @@
 
 ## 本轮版本记录
 
-1.8.75（396）用于内部 Floe QA 和公开 TestFlight。冻结前已核对 Apple 构建号及版本标签未被占用。交付状态以 Apple 回读为准。
+1.8.76（397）补齐任务恢复调用后用于内部 Floe QA 和公开 TestFlight。冻结前已核对 Apple 构建号及版本标签未被占用。交付状态以 Apple 回读为准。
+
+1.8.75（396）保留冻结源码及首次编译记录。设备编译发现两个任务恢复入口缺少参数，因此此候选未上传。
 
 1.8.74（395）固定于 `221db11f160a3c3efa2d075896dc8974bdb3b3dd`／`v1.8.74`。Floe QA 已可安装，公开 TestFlight 已送审。 [395 交付记录](releases/builds/FLOE_1.8.74_BUILD395_DELIVERY.md)
 
