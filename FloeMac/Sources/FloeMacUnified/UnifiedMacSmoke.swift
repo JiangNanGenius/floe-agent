@@ -799,7 +799,8 @@ final class UnifiedMacSmoke {
         }
         func invoke(_ action: MacDesktopControl.Action, snapshot: String? = nil, index: Int? = nil,
                     value: String? = nil, keys: String? = nil,
-                    from: CGPoint? = nil, to: CGPoint? = nil, targetWindow: Int? = nil) async throws -> ToolExecutionOutput {
+                    from: CGPoint? = nil, to: CGPoint? = nil, targetWindow: Int? = nil,
+                    steps: Int? = nil) async throws -> ToolExecutionOutput {
             var input: [String: Any] = ["action": action.rawValue, "app": app, "pid": fixturePID,
                                         "windowID": targetWindow ?? window]
             input["snapshotID"] = snapshot
@@ -810,6 +811,7 @@ final class UnifiedMacSmoke {
             input["fromY"] = from.map { Double($0.y) }
             input["toX"] = to.map { Double($0.x) }
             input["toY"] = to.map { Double($0.y) }
+            input["steps"] = steps
             let data = try JSONSerialization.data(withJSONObject: input)
             let arguments = try JSONDecoder().decode(MacDesktopControl.Arguments.self, from: data)
             return try await desktop.execute(arguments, context: context)
@@ -859,7 +861,7 @@ final class UnifiedMacSmoke {
                 guard let dragWindow, dragWindow != window else { throw MacKimiError.invalidTarget }
                 let canvas = try await invoke(.screenshot, targetWindow: dragWindow)
                 let moved = try await invoke(.drag, snapshot: snapshotID(canvas.summary),
-                    from: CGPoint(x: 120, y: 220), to: CGPoint(x: 320, y: 220), targetWindow: dragWindow)
+                    from: CGPoint(x: 100, y: 140), to: CGPoint(x: 300, y: 140), targetWindow: dragWindow, steps: 2)
                 result["dragDelivered"] = moved.exitStatus != 1 && moved.summary.contains("Window after action:")
                 result["dragReceipt"] = String(moved.summary.prefix(1200))
             }

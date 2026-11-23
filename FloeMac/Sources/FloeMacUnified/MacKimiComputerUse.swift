@@ -32,12 +32,21 @@ final class MacKimiComputerUse: @unchecked Sendable {
     /// Drag coordinates are only accepted in this screenshot's pixel space.
     private var screenshot: (id: String, snapshotID: String, width: Double, height: Double)?
     private var serverTools: Set<String> = []
+    private var companionVersion: String?
 
     static func isInstalled() -> Bool {
         installedURL() != nil
     }
 
     static func installedURL() -> URL? {
+        #if FLOE_MAC_HOST_SMOKE
+        if CommandLine.arguments.contains("--background-input-gestures"),
+           let path = ProcessInfo.processInfo.environment["FLOE_MAC_SMOKE_KIMI_BUNDLE"],
+           path.hasPrefix("/") {
+            let candidate = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+            if hasExpectedSignature(candidate) { return candidate }
+        }
+        #endif
         let standard = URL(fileURLWithPath: "/Applications/KimiCU.app", isDirectory: true)
         if hasExpectedSignature(standard) { return standard }
         guard let located = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ai.kimi.cu"),
@@ -67,6 +76,7 @@ final class MacKimiComputerUse: @unchecked Sendable {
         responses = nil
         buffered.removeAll()
         serverTools.removeAll()
+        companionVersion = nil
         snapshot = nil
         screenshot = nil
     }
@@ -112,7 +122,9 @@ final class MacKimiComputerUse: @unchecked Sendable {
         do {
             let info = try request("initialize", ["protocolVersion": "2024-11-05", "capabilities": [:],
                                                    "clientInfo": ["name": "Floe Agent", "version": "1"]], context)
-            guard (info["serverInfo"] as? [String: Any])?["name"] as? String == "kimi-cu" else { throw MacKimiError.unavailable }
+            guard let server = info["serverInfo"] as? [String: Any],
+                  server["name"] as? String == "kimi-cu" else { throw MacKimiError.unavailable }
+            companionVersion = server["version"] as? String
             try send(["jsonrpc": "2.0", "method": "notifications/initialized"], context)
             let catalog = try request("tools/list", [:], context)
             let tools = catalog["tools"] as? [[String: Any]] ?? []
@@ -193,7 +205,12 @@ final class MacKimiComputerUse: @unchecked Sendable {
                     throw MacKimiError.invalidTarget
                 }
                 name = "drag"
-                args["screenshot_id"] = anchoredScreenshot.id
+                // 0.6.8 misinterprets this argument for native windows.
+                // The serialized session still owns the immediately preceding
+                // capture, with the target window and pixel bounds checked above.
+                if companionVersion != "0.6.8" && companionVersion != "v0.6.8" {
+                    args["screenshot_id"] = anchoredScreenshot.id
+                }
                 args["from_x"] = fromX
                 args["from_y"] = fromY
                 args["to_x"] = toX

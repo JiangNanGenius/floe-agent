@@ -17,6 +17,8 @@ final class DragSurfaceView: NSView {
     var onStroke: (([String: Double]) -> Void)?
     private var start: NSPoint?
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         start = convert(event.locationInWindow, from: nil)
     }
