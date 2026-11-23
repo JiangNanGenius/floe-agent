@@ -22,6 +22,9 @@ struct NotesRootView: View {
     @State private var pendingWorkspaceImport: [NoteDocument]?
     @EnvironmentObject private var environment: AppEnvironment
     @State private var deleting: NoteDocument?
+    @State private var selectedNoteIDs: Set<UUID>?
+    @State private var notesToTrash: [NoteDocument]?
+    @State private var isTrashingSelection = false
     @State private var renaming: RenameTarget?
     @State private var selectedBook: UUID?
     @State private var meetings: [PersonalContentRecord] = []
@@ -38,6 +41,8 @@ struct NotesRootView: View {
     /// The document whose cover dialog is presented (from the context menu).
     @State private var coverTarget: NoteDocument?
     @Environment(\.horizontalSizeClass) private var sizeClass
+
+    private var isSelecting: Bool { selectedNoteIDs != nil }
 
     private enum SectionFilter: String, CaseIterable {
         case recent, all, maps, favorites, trash
@@ -96,25 +101,24 @@ struct NotesRootView: View {
             .navigationTitle("notes.notes_root_view.notes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("notes.notes_root_view.blank_note", systemImage: "doc.badge.plus") { creation = .note }
-                        Button(IDELanguageRunText.t("会议笔记", "Meeting notes"), systemImage: "waveform.and.mic") { creation = .meeting }
-                            .accessibilityIdentifier("notes.create.meeting")
-                        Button("notes.notes_office_view.mind_map", systemImage: "point.3.connected.trianglepath.dotted") { creation = .map }
-                        Button("notes.notes_root_view.notebook", systemImage: "folder.badge.plus") { creation = .notebook }
-                        Menu("Office", systemImage: "doc.richtext") {
-                            Button("notes.notes_root_view.word_document") { creation = .word }.accessibilityIdentifier("notes.create.word")
-                            Button("notes.notes_root_view.excel_spreadsheet") { creation = .sheet }
-                            Button("notes.notes_root_view.powerpoint_presentation") { creation = .slides }
+                if isSelecting {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("workspace.workspace_canvas_view.done") { selectedNoteIDs = nil }
+                            .disabled(isTrashingSelection)
+                            .accessibilityIdentifier("notes.selection.done")
+                    }
+                } else {
+                    if section != .trash {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("workspace.file_tree_view.select") {
+                                searchFocused = false
+                                selectedNoteIDs = []
+                            }
+                            .disabled(session.store == nil || !session.documents.contains { $0.deletedAt == nil })
+                            .accessibilityIdentifier("notes.library.select")
                         }
-                        Button("notes.notes_root_view.import_from_floe_workspace", systemImage: "folder") { importingWorkspace = true }
-                            .accessibilityIdentifier("notes.import.workspace")
-                        Button("notes.import.all", systemImage: "square.and.arrow.down") { importing = true }
-                    } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
-                    .accessibilityLabel("notes.notes_root_view.new_or_import")
-                    .accessibilityIdentifier("notes.create")
-                    .disabled(session.store == nil)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) { creationMenu }
                 }
             }
             .sheet(item: $renaming) { target in
@@ -163,6 +167,7 @@ struct NotesRootView: View {
             .sheet(isPresented: $importingWorkspace, onDismiss: {
                 if let value = pendingWorkspaceImport {
                     pendingWorkspaceImport = nil
+                    showAllImportedNotes()
                     session.importDocuments(value)
                 }
             }) {
@@ -184,11 +189,13 @@ struct NotesRootView: View {
                     do {
                         let url = try result.get()
                         if url.pathExtension.lowercased() == "floenote" {
+                            showAllImportedNotes()
                             session.importArchive(url, notebookID: selectedBook)
                             return
                         }
                         guard let store = session.store else { return }
                         let document = try await NoteFileImporter.importFile(url, notebookID: selectedBook, store: store)
+                        showAllImportedNotes()
                         session.importDocument(document)
                     } catch { session.errorMessage = error.localizedDescription }
                 }
@@ -232,6 +239,32 @@ struct NotesRootView: View {
         .documentAssistantLeavePresentation(assistantLeave, enabled: session.document == nil)
     }
 
+    private var creationMenu: some View {
+        Menu {
+            Button("notes.notes_root_view.blank_note", systemImage: "doc.badge.plus") { creation = .note }
+            Button(IDELanguageRunText.t("会议笔记", "Meeting notes"), systemImage: "waveform.and.mic") { creation = .meeting }
+                .accessibilityIdentifier("notes.create.meeting")
+            Button("notes.notes_office_view.mind_map", systemImage: "point.3.connected.trianglepath.dotted") { creation = .map }
+            Button("notes.notes_root_view.notebook", systemImage: "folder.badge.plus") { creation = .notebook }
+            Menu("Office", systemImage: "doc.richtext") {
+                Button("notes.notes_root_view.word_document") { creation = .word }.accessibilityIdentifier("notes.create.word")
+                Button("notes.notes_root_view.excel_spreadsheet") { creation = .sheet }
+                Button("notes.notes_root_view.powerpoint_presentation") { creation = .slides }
+            }
+            Button("notes.notes_root_view.import_from_floe_workspace", systemImage: "folder") { importingWorkspace = true }
+                .accessibilityIdentifier("notes.import.workspace")
+            Button("notes.import.all", systemImage: "square.and.arrow.down") { importing = true }
+        } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
+        .accessibilityLabel("notes.notes_root_view.new_or_import")
+        .accessibilityIdentifier("notes.create")
+        .disabled(session.store == nil)
+    }
+
+    private func showAllImportedNotes() {
+        query = ""
+        section = .all
+    }
+
     private func adoptPendingDocument() {
         // Let the existing session-open task finish before claiming a replay.
         guard session.store != nil,
@@ -240,6 +273,11 @@ struct NotesRootView: View {
               environment.documentIntakeCenter.claimNoteOpen(request) else { return }
         Task { @MainActor in
             let opened = await session.adoptImportedDocument(request.documentID)
+            if opened {
+                selectedNoteIDs = nil
+                selectedBook = session.document?.notebookID
+                showAllImportedNotes()
+            }
             environment.documentIntakeCenter.completeNoteOpen(request, opened: opened)
         }
     }
@@ -264,7 +302,18 @@ struct NotesRootView: View {
         // Body-search results keep title and excerpt beside the preview, even
         // with the landscape iPad keyboard taking most of the vertical space.
         let showsCovers = grid && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return libraryContent(showsCovers: showsCovers)
+        let documents = filtered
+        return libraryContent(showsCovers: showsCovers, documents: documents)
+            .disabled(isTrashingSelection)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if isSelecting { selectionBar(documents: documents) }
+            }
+            .onChange(of: isSelecting ? documents.map(\.id) : []) { _, visibleIDs in
+                selectedNoteIDs?.formIntersection(visibleIDs)
+            }
+            .onChange(of: section) { _, filter in
+                if filter == .trash { selectedNoteIDs = nil }
+            }
             .notesCoverPicker(target: $coverTarget, store: session.store) { _ in
                 Task { try? await session.reload() }
             } onError: { message in
@@ -272,8 +321,71 @@ struct NotesRootView: View {
             }
     }
 
-    private func libraryContent(showsCovers: Bool) -> some View {
-        VStack(spacing: 0) {
+    private func selectionBar(documents: [NoteDocument]) -> some View {
+        let selected = documents.filter { selectedNoteIDs?.contains($0.id) == true }
+        let allSelected = !documents.isEmpty && selected.count == documents.count
+        return HStack {
+            Button {
+                selectedNoteIDs = allSelected ? [] : Set(documents.map(\.id))
+            } label: {
+                Text(LocalizedStringKey(allSelected ? "chat.conversation_batch_management_view.deselect_all" : "composer.editor.select_all"))
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .disabled(documents.isEmpty)
+            .accessibilityIdentifier("notes.selection.selectAll")
+            Spacer()
+            Text(FloeL10n.l("chat.conversation_batch_management_view.selected", selected.count))
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("notes.selection.count")
+            Spacer()
+            if isTrashingSelection {
+                ProgressView().frame(width: 44, height: 44)
+            } else {
+                Button(role: .destructive) {
+                    searchFocused = false
+                    notesToTrash = selected
+                } label: {
+                    Image(systemName: "trash").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("notes.notes_root_view.move_to_trash")
+                .accessibilityIdentifier("notes.selection.trash")
+                .disabled(selected.isEmpty)
+                .confirmationDialog(
+                    "notes.notes_root_view.trash_selection",
+                    isPresented: Binding(get: { notesToTrash != nil }, set: { if !$0 { notesToTrash = nil } }),
+                    titleVisibility: .visible,
+                    presenting: notesToTrash
+                ) { notes in
+                    Button("notes.notes_root_view.move_to_trash", role: .destructive) {
+                        notesToTrash = nil
+                        isTrashingSelection = true
+                        session.trash(notes) { committed in
+                            isTrashingSelection = false
+                            if committed { selectedNoteIDs = nil }
+                        }
+                    }
+                    Button("workspace.workspace_canvas_view.cancel", role: .cancel) { notesToTrash = nil }
+                } message: { notes in
+                    Text(FloeL10n.l("chat.conversation_batch_management_view.selected", notes.count))
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .background(.bar)
+        .disabled(isTrashingSelection)
+    }
+
+    private func selectionMark(_ isSelected: Bool) -> some View {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .font(.title3)
+            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .accessibilityHidden(true)
+    }
+
+    private func libraryContent(showsCovers: Bool, documents: [NoteDocument]) -> some View {
+        let visibleMeetings = isSelecting ? [] : matchingMeetings
+        return VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("notes.notes_root_view.search_document_names_and_content", text: $query)
@@ -308,7 +420,7 @@ struct NotesRootView: View {
             }
             ScrollView {
               LazyVGrid(columns: showsCovers ? [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 20)] : [GridItem(.flexible())], spacing: 24) {
-                ForEach(matchingMeetings) { meeting in
+                ForEach(visibleMeetings) { meeting in
                     Button { openingMeeting = meeting } label: {
                         VStack(alignment: .leading, spacing: 12) {
                             Image(systemName: "waveform.and.mic").font(.system(size: 36)).foregroundStyle(.tint)
@@ -318,7 +430,7 @@ struct NotesRootView: View {
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain).accessibilityIdentifier("notes.meeting.\(meeting.id)")
                 }
-                if selectedBook == nil && section != .trash && query.isEmpty {
+                if !isSelecting && selectedBook == nil && section != .trash && query.isEmpty {
                     ForEach(session.notebooks) { book in
                         Button { selectedBook = book.id } label: {
                             VStack(alignment: .leading, spacing: 12) {
@@ -329,8 +441,14 @@ struct NotesRootView: View {
                         }.buttonStyle(.plain)
                     }
                 }
-                ForEach(filtered) { document in
+                ForEach(documents) { document in
+                    let isSelected = selectedNoteIDs?.contains(document.id) == true
                     Button {
+                        if var selection = selectedNoteIDs {
+                            if !selection.insert(document.id).inserted { selection.remove(document.id) }
+                            selectedNoteIDs = selection
+                            return
+                        }
                         Task {
                             await session.select(document)
                             let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -352,6 +470,14 @@ struct NotesRootView: View {
                             }
                                 .frame(width: showsCovers ? nil : 64, height: showsCovers ? 190 : 80)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(alignment: .topTrailing) {
+                                    if isSelecting && showsCovers {
+                                        selectionMark(isSelected)
+                                            .padding(5)
+                                            .background(.regularMaterial, in: Circle())
+                                            .padding(6)
+                                    }
+                                }
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(document.title).font(.headline).foregroundStyle(.primary)
                                 Text(document.kind == .mindMap ? FloeL10n.plural("notes.notes_root_view.topics", count: document.nodes.count) : document.kind == .office ? (document.officeFileName ?? "notes.notes_root_view.office_document") : document.kind == .engineering ? (document.engineeringFileName ?? String(localized: "notes.kind.engineering")) : FloeL10n.plural("notes.notes_knowledge_picker.pages", count: document.pages.count))
@@ -370,22 +496,28 @@ struct NotesRootView: View {
                                 Text(document.updatedAt, style: .relative).font(.caption2).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if document.isFavorite { Image(systemName: "star.fill").foregroundStyle(.yellow) }
+                            if isSelecting {
+                                if !showsCovers { selectionMark(isSelected) }
+                            } else if document.isFavorite {
+                                Image(systemName: "star.fill").foregroundStyle(.yellow)
+                            }
                         }.padding(.vertical, 6)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     // Keep the native Button and its text/snippet semantics;
                     // the decorative thumbnail does not create a second AX
                     // identity. Report its actual render state on this button.
                     .accessibilityIdentifier("notes.card.\(document.kind.rawValue).\(document.title).\(coverSources[document.id]?.identity ?? "none")")
-                    .accessibilityValue(coverSources[document.id]?.value ?? "none")
+                    .accessibilityValue(isSelecting ? "" : coverSources[document.id]?.value ?? "none")
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                     .multilineTextAlignment(.leading)
                     .disabled(document.deletedAt != nil)
                     .contextMenu {
                         if document.deletedAt != nil {
                             Button("canvas.drawingHistory.restore", systemImage: "arrow.uturn.backward") { session.trash(document, restore: true) }
                             Button("notes.notes_root_view.delete_permanently", systemImage: "trash", role: .destructive) { deleting = document }
-                        } else {
+                        } else if !isSelecting {
                             Button("notes.notes_root_view.re_index_body_text", systemImage: "text.magnifyingglass") { session.rebuildSearchIndex(documentID: document.id) }
                             Button(document.coverResourceID == nil ? "notes.cover.menu.set" : "notes.cover.menu.change", systemImage: "photo") { coverTarget = document }
                             Button("workspace.file_tree_view.rename", systemImage: "pencil") { renaming = .init(id: document.id, title: document.title, notebook: false, document: document) }
@@ -415,7 +547,7 @@ struct NotesRootView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .overlay {
                     if session.store == nil { ProgressView("notes.notes_root_view.opening_note") }
-                    else if filtered.isEmpty && matchingMeetings.isEmpty {
+                    else if documents.isEmpty && visibleMeetings.isEmpty {
                         ContentUnavailableView(query.isEmpty ? "notes.notes_root_view.nothing_here_yet" : "notes.notes_root_view.no_matching_content_found",
                             systemImage: query.isEmpty ? "book.closed" : "magnifyingglass",
                             description: Text(query.isEmpty ? "notes.notes_root_view.create_a_note_import_slides_or" : "notes.notes_root_view.try_other_keywords_scans_and_handwriting"))

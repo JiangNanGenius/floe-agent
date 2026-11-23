@@ -394,13 +394,31 @@ public actor NotesStore {
     @discardableResult public func setTrashed(_ id: UUID, expectedRevision: Int, trashed: Bool) throws -> NoteDocument {
         defer { publishChange() }
         return try database.write { db in
-            var value = try read(id, db: db)
-            guard value.revision == expectedRevision else { throw NoteError.conflict }
-            value.deletedAt = trashed ? Date() : nil; value.updatedAt = Date(); value.revision += 1
-            let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [id.uuidString]) ?? 0
-            try persist(value, cursor: cursor, db: db)
-            return value
+            try setTrashed(id, expectedRevision: expectedRevision, trashed: trashed, db: db)
         }
+    }
+
+    /// Commit the selection together so a stale document revision cannot leave a partial deletion.
+    public func trashDocuments(_ documents: [(id: UUID, expectedRevision: Int)]) throws {
+        guard !documents.isEmpty else { return }
+        try database.write { db in
+            for (id, expectedRevision) in documents {
+                _ = try setTrashed(id, expectedRevision: expectedRevision, trashed: true, db: db)
+            }
+        }
+        publishChange()
+    }
+
+    private func setTrashed(_ id: UUID, expectedRevision: Int, trashed: Bool, db: Database) throws -> NoteDocument {
+        var value = try read(id, db: db)
+        guard value.revision == expectedRevision else { throw NoteError.conflict }
+        let now = Date()
+        value.deletedAt = trashed ? now : nil
+        value.updatedAt = now
+        value.revision += 1
+        let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [id.uuidString]) ?? 0
+        try persist(value, cursor: cursor, db: db)
+        return value
     }
 
     /// Deterministic custom-cover mutation. Not a content edit: the content

@@ -238520,6 +238520,65 @@
         }
       }
     },
+    "notes.notes_root_view.trash_selection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move the selected notes to Trash?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将所选手记移到回收站？"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將所選手記移到回收站？"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選択したノートをゴミ箱に移動しますか？"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택한 노트를 휴지통으로 이동하시겠습니까?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Placer les notes sélectionnées dans la corbeille ?"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ausgewählte Notizen in den Papierkorb legen?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Mover las notas seleccionadas a la papelera?"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mover as notas selecionadas para a lixeira?"
+          }
+        }
+      }
+    },
     "notes.notes_root_view.try_other_keywords_scans_and_handwriting": {
       "extractionState": "manual",
       "localizations": {

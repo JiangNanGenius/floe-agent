@@ -37,6 +37,41 @@ struct NotesStoreTests {
         #expect(remaining.first?.openedAt == firstVisit)
     }
 
+    @Test func batchTrashChecksAllRevisionsAndLeavesNotesRecoverable() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let first = try await store.create(NoteDocument(title: "Selected first"))
+        let second = try await store.create(NoteDocument(title: "Selected second"))
+        let other = try await store.create(NoteDocument(title: "Unselected"))
+        let assistantID = UUID()
+        try await store.bindAssistant(conversationID: assistantID, documentID: first.id, canEdit: true)
+        let currentSecond = try await store.apply(.init(
+            documentID: second.id, expectedRevision: second.revision,
+            title: "Edit while confirming", edits: [.rename("New second")]
+        ))
+
+        await #expect(throws: NoteError.self) {
+            try await store.trashDocuments([(first.id, first.revision), (second.id, second.revision)])
+        }
+        #expect(try await store.document(first.id) == first)
+        #expect(try await store.document(second.id) == currentSecond)
+        #expect(try await store.assistantOriginalIsAvailable(conversationID: assistantID) == true)
+
+        try await store.trashDocuments([(first.id, first.revision), (second.id, currentSecond.revision)])
+        let reopened = try NotesStore(root: root)
+        #expect(try await reopened.documents().map(\.id) == [other.id])
+        let trash = try await reopened.documents(includeTrash: true).filter { $0.deletedAt != nil }
+        #expect(Set(trash.map(\.id)) == [first.id, second.id])
+        #expect(try await reopened.assistantOriginalIsAvailable(conversationID: assistantID) == false)
+        for note in trash {
+            let restored = try await reopened.setTrashed(note.id, expectedRevision: note.revision, trashed: false)
+            #expect(restored.title == note.title && restored.pages == note.pages)
+        }
+        #expect(try await reopened.documents().count == 3)
+        #expect(try await reopened.assistantOriginalIsAvailable(conversationID: assistantID) == true)
+    }
+
     @Test func inkRecoveryEnvelopeRetainsOriginalBaselineAndBytes() throws {
         let base = NoteDocument(title: "Opened page")
         let bytes = Data([0, 1, 2, 255])

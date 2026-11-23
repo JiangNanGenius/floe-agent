@@ -792,6 +792,25 @@ final class NotesSession {
         }
     }
 
+    func trash(_ values: [NoteDocument], didFinish: @escaping @MainActor (Bool) -> Void) {
+        enqueue { [self] in
+            var leases: [PersonalFileAssistantStopLease] = []
+            var committed = false
+            defer {
+                for lease in leases { lease.finish() }
+                didFinish(committed)
+            }
+            guard let store else { throw NoteError.resourceUnavailable }
+            for value in values {
+                leases.append(try await NotesRepository.shared.stopAssistantHistory(documentID: value.id, in: store))
+            }
+            try await store.trashDocuments(values.map { ($0.id, $0.revision) })
+            committed = true
+            if let id = document?.id, values.contains(where: { $0.id == id }) { document = nil }
+            try await reload()
+        }
+    }
+
     func permanentlyDelete(_ value: NoteDocument) {
         enqueue { [self] in
             guard let store else { return }
