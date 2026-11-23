@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.19</title>
+      <pubDate>Mon, 23 Nov 2026 10:12:50 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.19</link>
+      <sparkle:version>49</sparkle:version>
+      <sparkle:shortVersionString>1.11.19</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>排队、插入和目标操作与 iPad 对齐。 Align queueing, steering, and Goals with iPad.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.19/Floe-Agent-1.11.19.dmg" length="64417611" type="application/octet-stream" sparkle:edSignature="QLQD4YW06ZNZiNT0KidWk3ruZsjs+ARplGNtxlkU+5NiRWxtFSivPkDADAiXWgnrX1ZtLsKg0f9cJW+hseuFAw==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.18</title>
       <pubDate>Mon, 23 Nov 2026 09:37:45 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.18</link>
