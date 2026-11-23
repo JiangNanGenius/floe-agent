@@ -13,6 +13,10 @@ public enum SkillHubTransportBudget {
     }
     public static func maximumBytes(owner: String, repository: String, path: String?) -> Int {
         guard let path else { return 2_097_152 }
+        if owner == OfficialContentHub.owner, repository == OfficialContentHub.repository,
+           isOfficialContentArchive(path) {
+            return SignedContentArchiveLimits.content.maximumTotalBytes
+        }
         if path.hasPrefix("skill-hub/packages/") { return 8_388_608 }
         guard owner == "JiangNanGenius", repository == "floe-skill-hub",
               !path.hasPrefix("/"), !path.contains("\\"),
@@ -52,5 +56,13 @@ public enum SkillHubTransportBudget {
             }
         }
         return 2_097_152
+    }
+
+    private static func isOfficialContentArchive(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 5, parts[0] == "content-hub", parts[1] == "packages",
+              SignedContentFeedVerifier.isValidContentID(String(parts[2])),
+              (try? SignedContentVersion(String(parts[3]))) != nil else { return false }
+        return parts[4] == "\(parts[2]).zip"
     }
 }

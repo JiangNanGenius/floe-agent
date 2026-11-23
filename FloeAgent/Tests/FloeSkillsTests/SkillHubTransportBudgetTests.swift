@@ -54,4 +54,26 @@ struct SkillHubTransportBudgetTests {
         #expect(SkillHubTransportBudget.maximumBytes(owner: "JiangNanGenius", repository: "floe-skill-hub", path: nil) == 2_097_152)
         #expect(SkillHubTransportBudget.maximumBytes(owner: "JiangNanGenius", repository: "floe-agent", path: "skill-hub/packages/example.zip") == 8_388_608)
     }
+
+    @Test func officialContentArchiveUsesTheSignedArchiveBudget() {
+        let path = "content-hub/packages/floe.help.quickstart/1.4.0/floe.help.quickstart.zip"
+        #expect(SkillHubTransportBudget.maximumBytes(owner: OfficialContentHub.owner,
+            repository: OfficialContentHub.repository, path: path) == SignedContentArchiveLimits.content.maximumTotalBytes)
+        #expect(SkillHubTransportBudget.maximumBytes(owner: "other",
+            repository: OfficialContentHub.repository, path: path) == 2_097_152)
+        #expect(SkillHubTransportBudget.maximumBytes(owner: OfficialContentHub.owner,
+            repository: "other", path: path) == 2_097_152)
+
+        for path in [
+            "content-hub/index.json",
+            "content-hub/sources/help/floe.help.quickstart/content.json",
+            "content-hub/packages/floe.help.quickstart//floe.help.quickstart.zip",
+            "content-hub/packages/floe.help.quickstart/01.4.0/floe.help.quickstart.zip",
+            "content-hub/packages/floe.help.quickstart/1.4.0/other.zip",
+            "content-hub/packages/floe.help.quickstart/1.4.0/floe.help.quickstart.zip/extra",
+        ] {
+            #expect(SkillHubTransportBudget.maximumBytes(owner: OfficialContentHub.owner,
+                repository: OfficialContentHub.repository, path: path) == 2_097_152)
+        }
+    }
 }
