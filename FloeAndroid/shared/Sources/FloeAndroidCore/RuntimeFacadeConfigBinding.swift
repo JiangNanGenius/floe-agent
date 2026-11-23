@@ -195,7 +195,8 @@ public actor ModelConfigurationCommandRouter {
                                           context: "providersList")
                     providersCursor = try ModelConfigurationFacade.pageCursor(from: payload)
                 }
-                value = try await facade.listProviders(cursor: providersCursor)
+                value = try await facade.listProviders(cursor: providersCursor,
+                                                       itemBudget: ConfigPageBudget.maximumEffectPageItemsBytes)
                 return Self.completed(value)
             case .modelsList:
                 var providerID: UUID?
@@ -228,7 +229,8 @@ public actor ModelConfigurationCommandRouter {
                 }
                 value = try await facade.listModels(providerID: providerID,
                                                     cursor: modelsCursor,
-                                                    modelRead: modelRead)
+                                                    modelRead: modelRead,
+                                                    itemBudget: ConfigPageBudget.maximumEffectPageItemsBytes)
                 return Self.completed(value)
             case .catalogSearch:
                 guard let payload = view.payload,
@@ -247,7 +249,8 @@ public actor ModelConfigurationCommandRouter {
                 value = try await facade.catalogSearch(query: query,
                                                        filter: filter,
                                                        cursor: catalogCursor,
-                                                       pickerProjection: payload["projection"] != nil)
+                                                       pickerProjection: payload["projection"] != nil,
+                                                       itemBudget: ConfigPageBudget.maximumEffectPageItemsBytes)
                 return Self.completed(value)
             case .preferencesGet:
                 let reply = try await facade.getPreferences()

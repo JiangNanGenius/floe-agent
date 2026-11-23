@@ -13,6 +13,7 @@ import XCTest
 import Foundation
 @testable import FloeAndroidCore
 import FloeCore
+import FloeModels
 import FloePersistence
 import FloeProviders
 import FloeAndroidWebTools
@@ -343,6 +344,49 @@ final class RuntimeFacadeConfigBindingTests: XCTestCase {
     }
 
     // MARK: - Cursor grammar on list reads
+
+    func testLargeSavedModelListFitsEveryEffectFrame() async throws {
+        let provider = ProviderProfile(kind: .openAI, wireProtocol: .openAIChatCompletions,
+                                       baseURL: URL(string: "https://api.example.invalid/v1")!)
+        let models = (0..<400).map { index in
+            ModelProfile(providerID: provider.id, remoteModelID: "fixture/model-\(index)",
+                         displayName: "Fixture model \(index)",
+                         limits: ModelLimits(contextTokens: 8_192, maxOutputTokens: 2_048),
+                         capabilities: [.text, .tools])
+        }
+        let store = ModelConfigurationStore(database: database)
+        try await store.saveProviderBundle(provider: provider, models: models,
+                                           managedCapabilities: [.text, .tools])
+        let router = makeRouter()
+        let pump = FacadeEffectPump(generation: 1)
+        var cursor: String?
+        var seen = Set<String>()
+        for page in 0..<10 {
+            var payload: [String: Any] = ["providerID": provider.id.uuidString,
+                                          "modelRead": [String: Any]()]
+            if let cursor { payload["cursor"] = cursor }
+            let result = try decode(await router.handle(
+                command: "config.models.list", envelope: ["payload": payload]))
+            XCTAssertEqual(result["state"] as? String, "completed")
+            let value = try XCTUnwrap(result["value"] as? [String: Any])
+            let data = try JSONSerialization.data(withJSONObject: value)
+            let document = try JSONDecoder().decode(DesignJSONValue.self, from: data)
+            let receipt = try XCTUnwrap(pump.register(correlationID: "test-model-page-\(page)"))
+            XCTAssertTrue(pump.append(receipt: receipt, kind: .accepted, page: nil,
+                                      value: document).isAppended)
+            let rows = try XCTUnwrap(value["rows"] as? [[String: Any]])
+            for row in rows {
+                XCTAssertTrue(seen.insert(try XCTUnwrap(row["remoteModelID"] as? String)).inserted)
+            }
+            if value["hasMore"] as? Bool != true {
+                XCTAssertGreaterThan(page, 0)
+                XCTAssertEqual(seen, Set(models.map(\.remoteModelID)))
+                return
+            }
+            cursor = try XCTUnwrap(value["nextCursor"] as? String)
+        }
+        XCTFail("The bounded model list must terminate")
+    }
 
     func testPayloadCursorBeyondEndAndMalformedRefuseWithoutPageZeroFallback() async throws {
         let router = makeRouter()

@@ -345,7 +345,8 @@ public actor ModelConfigurationFacade {
     /// config.providers.list); paged with ACTUAL serialized-byte budgeting.
     /// Secret bodies are NEVER read here: the projection carries presence +
     /// the deterministic opaque reference + persisted sync status only.
-    public func listProviders(cursor: Int? = nil) async throws -> Data {
+    public func listProviders(cursor: Int? = nil,
+                              itemBudget: Int = ConfigPageBudget.maximumPageItemsBytes) async throws -> Data {
         let providers: [ProviderProfile]
         // The COMPLETE persisted model rows for the page, read ONCE (the
         // same `models(providerID: nil)` binding the config.models.list
@@ -383,7 +384,7 @@ public actor ModelConfigurationFacade {
         }
         return try Self.projectPage(ConfigPageComposer.compose(objects,
                                                                cursor: cursor,
-                                                               itemBudget: ConfigPageBudget.maximumPageItemsBytes))
+                                                               itemBudget: itemBudget))
     }
 
     // MARK: - config.models.list
@@ -410,55 +411,54 @@ public actor ModelConfigurationFacade {
     /// CAS revision survive byte-exactly inside the carrier.
     public func listModels(providerID: UUID? = nil,
                            cursor: Int? = nil,
-                           modelRead: ConfigModelReadRequest? = nil) async throws -> Data {
+                           modelRead: ConfigModelReadRequest? = nil,
+                           itemBudget: Int = ConfigPageBudget.maximumPageItemsBytes) async throws -> Data {
         let models: [ModelProfile]
         do {
             models = try await store.models(providerID: providerID)
         } catch {
             throw ConfigDomainError(code: .persistenceUnavailable, reason: "modelsQuery")
         }
-        var objects: [[String: Any]] = []
-        objects.reserveCapacity(models.count)
-        for model in models {
+        func object(at index: Int) throws -> [String: Any] {
+            let model = models[index]
             var object = try ConfigModelSnapshot.jsonObject(model)
             object["revision"] = ["resourceID": "model.\(model.id.uuidString)",
                                   "version": try ConfigModelSnapshot.digest(model)]
-            objects.append(object)
+            return object
         }
+
+        let start = cursor ?? 0
+        var first: [String: Any]?
         switch modelRead {
         case .continuation(let modelID, let digest, let offset):
-            // Continuation rides the SAME provider filter and the SAME
-            // row-index payload cursor (existing semantics; the GLOBAL
-            // envelope cursor is not reinterpreted).
-            guard let index = cursor else {
-                throw ConfigDomainError(code: .invalidEnvelope,
-                                        reason: "modelReadCursorRequired")
+            guard let cursor else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "modelReadCursorRequired")
             }
-            return try Self.modelReadDetailPage(objects: objects,
-                                                index: index,
-                                                providerID: providerID,
-                                                offset: offset,
+            guard models.indices.contains(cursor) else {
+                throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowMissing")
+            }
+            return try Self.modelReadDetailPage(object: object(at: cursor),
+                                                index: cursor, count: models.count,
+                                                providerID: providerID, offset: offset,
                                                 identity: (modelID, digest))
         case .begin:
-            // The chunk path fires ONLY under the exact legacy throw
-            // condition: the first unreturned row ALONE exceeds the page
-            // item budget. Everything else composes the unchanged page.
-            let start = cursor ?? 0
-            if start >= 0, start < objects.count,
-               let canonical = ConfigJSON.canonicalData(objects[start]),
-               canonical.count + 2 > ConfigPageBudget.maximumPageItemsBytes {
-                return try Self.modelReadDetailPage(objects: objects,
-                                                    index: start,
-                                                    providerID: providerID,
-                                                    offset: 0,
-                                                    identity: nil)
+            if models.indices.contains(start) {
+                let row = try object(at: start)
+                if let bytes = ConfigJSON.canonicalData(row), bytes.count + 2 > itemBudget {
+                    return try Self.modelReadDetailPage(object: row, index: start, count: models.count,
+                                                        providerID: providerID, offset: 0, identity: nil)
+                }
+                first = row
             }
         case nil:
             break
         }
-        return try Self.projectPage(ConfigPageComposer.compose(objects,
-                                                               cursor: cursor,
-                                                               itemBudget: ConfigPageBudget.maximumPageItemsBytes))
+        let page = try ConfigPageComposer.compose(count: models.count, cursor: cursor,
+                                                  itemBudget: itemBudget) { index in
+            if index == start, let first { return first }
+            return try object(at: index)
+        }
+        return try Self.projectPage(page)
     }
 
     // MARK: config.models.list full-row detail chunk page
@@ -470,16 +470,12 @@ public actor ModelConfigurationFacade {
     /// upgraded reader) must match BEFORE any chunk text is produced.
     /// A changed/deleted/reordered row is a typed `staleRevision` refusal
     /// — never a mixed snapshot, never a silent effect.
-    private static func modelReadDetailPage(objects: [[String: Any]],
-                                            index: Int,
+    private static func modelReadDetailPage(object: [String: Any],
+                                            index: Int, count: Int,
                                             providerID: UUID?,
                                             offset: Int,
                                             identity: (modelID: UUID,
                                                         digest: String)?) throws -> Data {
-        guard index >= 0, index < objects.count else {
-            throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowMissing")
-        }
-        let object = objects[index]
         guard let rowID = object["id"] as? String,
               UUID(uuidString: rowID) != nil else {
             throw ConfigDomainError(code: .persistenceUnavailable, reason: "modelReadRowShape")
@@ -531,8 +527,8 @@ public actor ModelConfigurationFacade {
             hasMore = true
         } else {
             let advance = index + 1
-            nextCursor = advance < objects.count ? String(advance) : nil
-            hasMore = advance < objects.count
+            nextCursor = advance < count ? String(advance) : nil
+            hasMore = advance < count
         }
         return try Self.projectPage(ConfigPageComposer.Composed(data: body,
                                                                 nextCursor: nextCursor,
@@ -1126,7 +1122,8 @@ public actor ModelConfigurationFacade {
     public func catalogSearch(query: String,
                               filter: ProviderCatalogFilter,
                               cursor: Int? = nil,
-                              pickerProjection: Bool = false) async throws -> Data {
+                              pickerProjection: Bool = false,
+                              itemBudget: Int = ConfigPageBudget.maximumPageItemsBytes) async throws -> Data {
         guard case .ready(let index, _) = catalog else {
             if case .unavailable(let reason) = catalog {
                 throw ConfigDomainError(code: .needsConfiguration, reason: reason)
@@ -1145,7 +1142,7 @@ public actor ModelConfigurationFacade {
         encoder.outputFormatting = [.sortedKeys]
         let composed = try ConfigPageComposer.compose(
             count: results.count, cursor: cursor,
-            itemBudget: ConfigPageBudget.maximumPageItemsBytes,
+            itemBudget: itemBudget,
             maximumItems: ConfigPageBudget.maximumCatalogResultsPerPage
         ) { offset in
             var entry = results[offset]

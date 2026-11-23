@@ -907,6 +907,18 @@ public enum ConfigPageBudget {
     /// BridgeProtocol.MAX_REQUEST_BYTES). Budget is measured on serialized
     /// bytes, NEVER `.count`.
     public static let maximumPageItemsBytes = 49_152
+
+    // The App receives the rows inside an effect item and its poll frame.
+    // Leave room inside the pump's 48 KiB budget for both wrappers,
+    // including the page cursor, completion metadata and effect item.
+    static let maximumEffectPageItemsBytes = min(
+        FacadeEffectPump.Limits.maximumItemEncodedBytes,
+        FacadeFrameBudget.effectBodyBudgetBytes(
+            correlationID: String(repeating: "c", count: 256),
+            receipt: RuntimeOperationReceipt.prefix + String(repeating: "0", count: 32),
+            sequenceDigits: 19
+        )
+    ) - 512
     /// Command payload bound: strictly below the frame bound (the envelope
     /// itself, the receipt and the effect wrapper must also fit).
     public static let maximumCommandPayloadBytes = 61_440
