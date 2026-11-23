@@ -232,10 +232,12 @@ private func databaseSmokeJSON(cacheDirectory: String) -> String {
             if version != DatabaseManager.currentSchemaVersion { failures.append("user_version mismatch") }
             report["coreSchemaVersion"] = FloeAndroidCore.schemaVersion
             let applied = try await manager.appliedMigrations()
+            let registered = await manager.registeredMigrations()
             report["appliedMigrationCount"] = applied.count
+            report["registeredMigrationCount"] = registered.count
             report["appliedContainsV1"] = applied.contains("v1")
             report["appliedContainsV46"] = applied.contains("v46_task_lifecycle")
-            if applied.count != DatabaseManager.currentSchemaVersion { failures.append("applied \(applied.count) != \(DatabaseManager.currentSchemaVersion)") }
+            if applied.sorted() != registered.sorted() { failures.append("registered migration identifiers differ from applied migrations") }
             report["appliedContainsV47"] = applied.contains("v47_android_workspace_sources")
             if !applied.contains("v47_android_workspace_sources") { failures.append("missing Android workspace source migration") }
 

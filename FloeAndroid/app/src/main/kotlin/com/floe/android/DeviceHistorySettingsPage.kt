@@ -246,6 +246,11 @@ private fun PeerSheet(host: DeviceHistorySyncHost, state: DeviceHistorySyncState
     LaunchedEffect(peer.id) { host.showLocalOffers(peer.id) }
     DeviceSyncSheet(peer.name, onDismiss) {
         SyncStatus(state)
+        if (state.receivingWorkspace) {
+            FloeSettingsSectionCard(null) {
+                FloeActionRow(stringResource(R.string.device_history_workspace_stop), host::cancelWorkspaceTransfer)
+            }
+        }
         FloeSettingsSectionCard(stringResource(R.string.device_history_receive_section)) {
             FloeActionRow(stringResource(R.string.device_history_list_remote), { host.fetch(peer.id) }, enabled = canReceive)
             if (projected) {
@@ -257,14 +262,26 @@ private fun PeerSheet(host: DeviceHistorySyncHost, state: DeviceHistorySyncState
                     FloeSectionRow(title = { FloeText(offer.title) },
                         trailing = { SyncCaption(stringResource(R.string.device_history_receive)) },
                         onClick = { host.receive(peer.id, offer.id) }, enabled = canReceive)
+                    if (offer.workspaceFiles) {
+                        FloeActionRow(stringResource(R.string.device_history_workspace_receive),
+                            { host.receive(peer.id, offer.id, includeWorkspace = true) }, enabled = canReceive)
+                    }
                 }
             }
         }
         FloeSettingsSectionCard(stringResource(R.string.device_history_share_section)) {
             if (projected) {
                 state.localOffers.forEach { task ->
-                    SyncToggleRow(task.title, task.id in peer.sharedConversations, canManage) {
+                    val shared = task.id in peer.sharedConversations
+                    SyncToggleRow(task.title, shared, canManage) {
                         host.share(peer.id, task.id, it)
+                    }
+                    if (shared) {
+                        SyncToggleRow(
+                            stringResource(R.string.device_history_workspace_share),
+                            task.id in peer.workspaceShares,
+                            canManage,
+                        ) { host.shareWorkspace(peer.id, task.id, it) }
                     }
                 }
             }
@@ -327,6 +344,11 @@ private fun Fingerprint(value: String) {
 private fun SyncStatus(state: DeviceHistorySyncState) {
     if (state.busy) {
         FloeActivityIndicator()
+        if (state.receivingWorkspace && state.status == DeviceHistoryStatus.RECEIVED) {
+            SyncCaption(stringResource(R.string.device_history_workspace_transferring))
+        } else if (state.importedPages > 0) {
+            SyncCaption(stringResource(R.string.device_history_received_pages, state.importedPages))
+        }
         return
     }
     val text = when (state.status) {
@@ -336,14 +358,32 @@ private fun SyncStatus(state: DeviceHistorySyncState) {
         DeviceHistoryStatus.READY -> return
         DeviceHistoryStatus.START_FAILED -> stringResource(R.string.device_history_start_failed)
         DeviceHistoryStatus.SETTINGS_FAILED -> stringResource(R.string.device_history_settings_failed)
-        DeviceHistoryStatus.TRANSFER_FAILED -> stringResource(R.string.device_history_transfer_failed)
+        DeviceHistoryStatus.TRANSFER_FAILED -> if (state.importedPages > 0) {
+            stringResource(R.string.device_history_receive_interrupted, state.importedPages)
+        } else stringResource(R.string.device_history_transfer_failed)
         DeviceHistoryStatus.CONFLICT -> stringResource(R.string.device_history_conflict)
         DeviceHistoryStatus.BUSY_TASK -> stringResource(R.string.device_history_task_busy)
         DeviceHistoryStatus.INCOMPATIBLE -> stringResource(R.string.device_history_incompatible)
         DeviceHistoryStatus.INVALID_RELAY -> stringResource(R.string.device_history_bad_relay)
         DeviceHistoryStatus.RELAY_PENDING -> stringResource(R.string.device_history_relay_pending)
         DeviceHistoryStatus.IMPORT_UNCONFIRMED -> stringResource(R.string.device_history_import_unconfirmed)
+        DeviceHistoryStatus.CURSOR_EXPIRED -> stringResource(R.string.device_history_cursor_expired)
+        DeviceHistoryStatus.NO_LONGER_SHARED -> stringResource(R.string.device_history_no_longer_shared)
         DeviceHistoryStatus.RECEIVED -> stringResource(R.string.device_history_received, state.importedMessages)
+        DeviceHistoryStatus.WORKSPACE_UNAVAILABLE -> stringResource(R.string.device_history_workspace_unavailable)
+        DeviceHistoryStatus.WORKSPACE_TOO_LARGE -> stringResource(R.string.device_history_workspace_too_large)
+        DeviceHistoryStatus.WORKSPACE_PAUSED -> stringResource(R.string.device_history_workspace_paused)
+        DeviceHistoryStatus.WORKSPACE_RECEIVED -> {
+            val receipt = state.workspaceReceipt ?: return
+            if (receipt.conflicts > 0) {
+                stringResource(R.string.device_history_workspace_received_conflicts, receipt.files, receipt.conflicts)
+            } else {
+                stringResource(R.string.device_history_workspace_received, receipt.files, receipt.directories)
+            }
+        }
+    }
+    if (state.workspaceHistoryReceived && state.status != DeviceHistoryStatus.WORKSPACE_RECEIVED) {
+        SyncCaption(stringResource(R.string.device_history_workspace_partial))
     }
     SyncCaption(text)
 }

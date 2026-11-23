@@ -114,7 +114,18 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # in FloeAndroidCore (DeviceHistoryBridgeFacade + the native conversation
 # store). Not a V3 command, never model-reachable. Additive TU only; all
 # prior wrappers byte-identical.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp floe_platform_tools_jni.cpp floe_media_render_jni.cpp floe_media_foundation_jni.cpp floe_generation_foreground_jni.cpp floe_design_authority_jni.cpp floe_mail_transport_jni.cpp floe_vnc_jni.cpp floe_rdp_jni.cpp floe_calendar_host_jni.cpp floe_system_host_jni.cpp floe_device_history_jni.cpp
+# DEVICE-WORKSPACE SYNC (2026-11-23, job-0ddaa7a5be3745a1):
+# floe_device_workspace_jni.cpp appended the same way — the trusted-host
+# managed-workspace file-sync lane over the SAME imported
+# FloeAndroidCore.so (cross-endpoint v1 workspace extension). Source bytes
+# leave ONLY as <= 64 KiB pages from a snapshot-validated descriptor read;
+# target bytes arrive as <= 64 KiB staged appends and commit through a
+# sealed length+SHA check with a no-overwrite linkat/unlinkat rename under
+# the original ManagedFileMutationLock. Every epoch/binding/scope/digest
+# decision lives in FloeAndroidCore (DeviceWorkspaceBridgeFacade); the JSON
+# command surface is closed and bounded on this side. Not a V3 command,
+# never model-reachable. Additive TU only; all prior wrappers byte-identical.
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp floe_platform_tools_jni.cpp floe_media_render_jni.cpp floe_media_foundation_jni.cpp floe_generation_foreground_jni.cpp floe_design_authority_jni.cpp floe_mail_transport_jni.cpp floe_vnc_jni.cpp floe_rdp_jni.cpp floe_calendar_host_jni.cpp floe_system_host_jni.cpp floe_device_history_jni.cpp floe_device_workspace_jni.cpp
     ../../../../devicecommunication/src/main/cpp/floe_device_communication_jni.cpp
     floe_system_management_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)

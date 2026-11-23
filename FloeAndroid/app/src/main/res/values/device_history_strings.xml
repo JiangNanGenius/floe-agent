@@ -38,7 +38,21 @@
     <string name="device_history_task_busy">This conversation is running. Try again after it finishes.</string>
     <string name="device_history_incompatible">These devices use incompatible sync versions.</string>
     <string name="device_history_import_unconfirmed">Import hasn’t been confirmed. Check the conversation in Tasks before trying again.</string>
+    <string name="device_history_received_pages">Saved %1$d pages of history.</string>
+    <string name="device_history_receive_interrupted">Saved %1$d pages of history. Select this conversation again to resume.</string>
+    <string name="device_history_cursor_expired">The other device changed its history. Select the conversation again to sync.</string>
+    <string name="device_history_no_longer_shared">The other device stopped sharing this conversation.</string>
     <string name="device_history_bad_relay">Enter a valid HTTPS relay address.</string>
     <string name="device_history_relay_pending">The relay is still connecting. Refresh the pairing address before sharing it across networks.</string>
     <string name="device_history_received">%1$d new messages received. Open the conversation in Tasks.</string>
+    <string name="device_history_workspace_share">Share workspace files</string>
+    <string name="device_history_workspace_receive">Receive conversation and files</string>
+    <string name="device_history_workspace_stop">Stop receiving</string>
+    <string name="device_history_workspace_transferring">Syncing workspace files…</string>
+    <string name="device_history_workspace_unavailable">Open the conversation and set up its workspace before sharing files.</string>
+    <string name="device_history_workspace_too_large">The workspace exceeds the file sync limits.</string>
+    <string name="device_history_workspace_partial">Conversation received. Workspace files may be incomplete.</string>
+    <string name="device_history_workspace_paused">Receiving stopped. Saved files are kept. Select the conversation to continue.</string>
+    <string name="device_history_workspace_received">Workspace updated · %1$d files · %2$d folders</string>
+    <string name="device_history_workspace_received_conflicts">%1$d files synced. Check %2$d conflicts in the workspace’s Floe Sync Conflicts folder.</string>
 </resources>

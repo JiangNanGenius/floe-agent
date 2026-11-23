@@ -23,7 +23,8 @@ import org.json.JSONObject
  *   -807 invalidArchive; -808 tooLarge; -809 identityMismatch; -810 busy;
  *   -811 hopTimeout; -812 storeUnavailable; -813 saturated;
  *   -814 outcomeUnknown (admitted writer unresolved — reconcile by reading,
- *       NEVER auto-retry on this status alone); -899 internal.
+ *       NEVER auto-retry on this status alone); -815 cursorExpired;
+ *   -899 internal.
  */
 class DeviceHistoryNativeException(val status: Int) :
     IllegalStateException("device_history_status_$status")
@@ -65,8 +66,20 @@ object DeviceHistoryNative {
     /** Idempotent close; MUST be called on every terminal export path. */
     external fun exportClose(ticket: Long): Int
 
+    external fun receiveCursor(epoch: Long, peerID: String, conversationID: String, reply: ByteArray): Int
+
+    /** Uses the existing bounded export ticket, with extra page metadata. */
+    external fun exportPageOpen(epoch: Long, conversationID: String, after: ByteArray?, through: Long): Long
+
+    external fun exportPageInfo(ticket: Long, reply: ByteArray): Int
+
     /** Positive opaque ticket, <0 typed status. */
     external fun importBegin(epoch: Long, expectedConversationID: String): Long
+
+    /** Cursor and archive are committed together through the existing import ticket. */
+    external fun importPageBegin(
+        epoch: Long, conversationID: String, peerID: String, nextCursor: ByteArray?,
+    ): Long
 
     /** Append one <= 64 KiB chunk; 0 ok, <0 typed status. */
     external fun importWrite(ticket: Long, data: ByteArray, offset: Int, length: Int): Int
@@ -92,6 +105,8 @@ object DeviceHistoryNative {
         val createdConversation: Boolean,
     )
 
+    data class ArchivePage(val bytes: ByteArray, val nextCursor: String?, val through: Long, val hasMore: Boolean)
+
     /**
      * Displayable, data-free result taxonomy. `Unavailable` keeps the typed
      * status and whether an immediate retry is meaningful; it never carries
@@ -99,24 +114,28 @@ object DeviceHistoryNative {
      */
     sealed interface DeviceHistoryResult<out T> {
         data class Success<T>(val value: T) : DeviceHistoryResult<T>
+        sealed interface Failure : DeviceHistoryResult<Nothing>
         /** Same-id message exists with different content; nothing imported. */
-        data object Conflict : DeviceHistoryResult<Nothing>
+        data object Conflict : Failure
         /** The conversation has an active durable run; retry later. */
-        data object Busy : DeviceHistoryResult<Nothing>
+        data object Busy : Failure
         /**
          * The import was admitted into the durable writer but its outcome
          * did not resolve in time. The writer is UNRESOLVED: reconcile by
          * reading (offers/exports are idempotent; re-import is
          * append-if-absent). NEVER auto-retry on this status alone.
          */
-        data object OutcomeUnknown : DeviceHistoryResult<Nothing>
+        data object OutcomeUnknown : Failure
+        data object CursorExpired : Failure
         data class Unavailable(val status: Int, val retryable: Boolean) :
-            DeviceHistoryResult<Nothing>
+            Failure
     }
 
     private const val CHUNK = 64 * 1024
     private const val MAX_ARCHIVE = 32 * 1024 * 1024
     private const val OFFERS_REPLY_BYTES = 256 * 1024
+    private const val CURSOR_BYTES = 160
+    private const val PAGE_REPLY_BYTES = 4096
 
     /**
      * Shareable ordinary conversations for the fenced [epoch]. The native
@@ -143,26 +162,75 @@ object DeviceHistoryNative {
     ): DeviceHistoryResult<ByteArray> = withContext(Dispatchers.IO) {
         coroutineContext.ensureActive()
         val ticket = exportOpen(epoch, taskID)
-        if (ticket < 0) return@withContext mapFailure(ticket.toInt())
+        if (ticket <= 0) return@withContext mapFailure(ticket.toInt())
         try {
-            val out = ByteArrayOutputStream()
-            val page = ByteArray(CHUNK)
-            var offset = 0L
-            while (true) {
-                coroutineContext.ensureActive()
-                val read = exportRead(ticket, offset, page)
-                if (read < 0) return@withContext mapFailure(read)
-                if (read == 0) break
-                out.write(page, 0, read)
-                offset += read
-                if (out.size() > MAX_ARCHIVE) {
-                    return@withContext DeviceHistoryResult.Unavailable(-808, retryable = false)
-                }
-            }
-            DeviceHistoryResult.Success(out.toByteArray())
+            readArchive(ticket)
         } finally {
             exportClose(ticket)
         }
+    }
+
+    suspend fun storedCursor(
+        epoch: Long, peerID: String, taskID: String,
+    ): DeviceHistoryResult<String?> = withContext(Dispatchers.IO) {
+        coroutineContext.ensureActive()
+        val reply = ByteArray(PAGE_REPLY_BYTES)
+        val copied = receiveCursor(epoch, peerID, taskID, reply)
+        readPageReply(reply, copied, "floe.device-history.cursor.v1") { optionalCursor(it, "cursor") }
+    }
+
+    suspend fun exportPage(
+        epoch: Long, taskID: String, after: String?, through: Long?,
+    ): DeviceHistoryResult<ArchivePage> = withContext(Dispatchers.IO) {
+        coroutineContext.ensureActive()
+        val ticket = exportPageOpen(epoch, taskID, cursorBytes(after), through ?: -1L)
+        if (ticket <= 0) return@withContext mapFailure(ticket.toInt())
+        try {
+            val reply = ByteArray(PAGE_REPLY_BYTES)
+            val copied = exportPageInfo(ticket, reply)
+            val metadata = when (val info = readPageReply(
+                reply, copied, "floe.device-history.page.v1", ::decodePageMetadata,
+            )) {
+                is DeviceHistoryResult.Success -> info.value
+                is DeviceHistoryResult.Failure -> return@withContext info
+            }
+            when (val archive = readArchive(ticket)) {
+                is DeviceHistoryResult.Success -> DeviceHistoryResult.Success(
+                    ArchivePage(archive.value, metadata.nextCursor, metadata.through, metadata.hasMore),
+                )
+                is DeviceHistoryResult.Failure -> archive
+            }
+        } finally {
+            exportClose(ticket)
+        }
+    }
+
+    private data class PageMetadata(val nextCursor: String?, val through: Long, val hasMore: Boolean)
+
+    private fun decodePageMetadata(root: JSONObject): PageMetadata {
+        val through = when (val value = root.get("through")) {
+            is Int -> value.toLong()
+            is Long -> value
+            else -> error("Invalid sequence")
+        }
+        require(through >= 0)
+        return PageMetadata(optionalCursor(root, "nextCursor"), through, root.get("hasMore") as Boolean)
+    }
+
+    private suspend fun readArchive(ticket: Long): DeviceHistoryResult<ByteArray> {
+        val out = ByteArrayOutputStream()
+        val page = ByteArray(CHUNK)
+        var offset = 0L
+        while (true) {
+            coroutineContext.ensureActive()
+            val read = exportRead(ticket, offset, page)
+            if (read < 0) return mapFailure(read)
+            if (read == 0) break
+            out.write(page, 0, read)
+            offset += read
+            if (out.size() > MAX_ARCHIVE) return DeviceHistoryResult.Unavailable(-808, retryable = false)
+        }
+        return DeviceHistoryResult.Success(out.toByteArray())
     }
 
     /**
@@ -178,13 +246,23 @@ object DeviceHistoryNative {
         epoch: Long,
         expectedTaskID: String,
         bytes: ByteArray,
+    ): DeviceHistoryResult<DeviceHistoryImportReceipt> =
+        importWithTicket(bytes) { importBegin(epoch, expectedTaskID) }
+
+    suspend fun importPage(
+        epoch: Long, sourcePeerID: String, taskID: String, bytes: ByteArray, nextCursor: String?,
+    ): DeviceHistoryResult<DeviceHistoryImportReceipt> =
+        importWithTicket(bytes) { importPageBegin(epoch, taskID, sourcePeerID, cursorBytes(nextCursor)) }
+
+    private suspend fun importWithTicket(
+        bytes: ByteArray, openTicket: () -> Long,
     ): DeviceHistoryResult<DeviceHistoryImportReceipt> = withContext(Dispatchers.IO) {
         if (bytes.size > MAX_ARCHIVE) {
             return@withContext DeviceHistoryResult.Unavailable(-808, retryable = false)
         }
         coroutineContext.ensureActive()
-        val ticket = importBegin(epoch, expectedTaskID)
-        if (ticket < 0) return@withContext mapFailure(ticket.toInt())
+        val ticket = openTicket()
+        if (ticket <= 0) return@withContext mapFailure(ticket.toInt())
         try {
             var offset = 0
             while (offset < bytes.size) {
@@ -210,12 +288,38 @@ object DeviceHistoryNative {
     // Mapping helpers (status -> typed result; JSON -> typed values)
     // ------------------------------------------------------------------
 
-    private fun mapFailure(status: Int): DeviceHistoryResult<Nothing> = when (status) {
+    private fun mapFailure(status: Int): DeviceHistoryResult.Failure = when (status) {
         -806 -> DeviceHistoryResult.Conflict
         -810 -> DeviceHistoryResult.Busy
         -814 -> DeviceHistoryResult.OutcomeUnknown
+        -815 -> DeviceHistoryResult.CursorExpired
+        0 -> DeviceHistoryResult.Unavailable(-899, retryable = false)
         -802, -811, -812, -813 -> DeviceHistoryResult.Unavailable(status, retryable = true)
         else -> DeviceHistoryResult.Unavailable(status, retryable = false)
+    }
+
+    private fun cursorBytes(value: String?): ByteArray? = value?.encodeToByteArray(throwOnInvalidSequence = true)?.also {
+        require(it.size in 1..CURSOR_BYTES)
+    }
+
+    private fun optionalCursor(root: JSONObject, field: String): String? {
+        if (root.isNull(field)) return null
+        val cursor = root.get(field) as String
+        cursorBytes(cursor)
+        return cursor
+    }
+
+    private fun <T> readPageReply(
+        reply: ByteArray, copied: Int, schema: String, decode: (JSONObject) -> T,
+    ): DeviceHistoryResult<T> {
+        if (copied < 0) return mapFailure(copied)
+        return try {
+            val root = JSONObject(reply.decodeToString(endIndex = copied, throwOnInvalidSequence = true))
+            require(root.getInt("ok") == 1 && root.getString("schema") == schema)
+            DeviceHistoryResult.Success(decode(root))
+        } catch (_: Exception) {
+            DeviceHistoryResult.Unavailable(-899, retryable = false)
+        }
     }
 
     private fun parseOffers(body: ByteArray): DeviceHistoryResult<List<DeviceHistoryOffer>> {

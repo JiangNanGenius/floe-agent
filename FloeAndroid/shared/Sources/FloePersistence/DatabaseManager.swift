@@ -21,13 +21,10 @@ public actor DatabaseManager {
     private let queue: DatabaseQueue?
     private var migrator = DatabaseMigrator()
 
-    /// Pinned shipped schema marker (`user_version`). Historical bumps paired
-    /// this constant with a migration that set the same value. The additive
-    /// v53/v54 migrations apply by identifier WITHOUT moving this marker (the
-    /// same mechanism v53 already uses), so `user_version` stays 52 until the
-    /// integration owner performs the coordinated bump together with the
-    /// version-pinned tests.
-    public static let currentSchemaVersion = 52
+    /// Pinned shipped schema marker (`user_version`). Migrations v53–v55
+    /// apply by identifier while preserving the v52 marker. The device
+    /// history migration advances it to 68 after those migrations apply.
+    public static let currentSchemaVersion = 68
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -99,6 +96,7 @@ public actor DatabaseManager {
         V53AndroidSystemConditions.register(into: &migrator)
         V54ExplicitExecutionMode.register(into: &migrator)
         V55ConversationContinuity.register(into: &migrator)
+        V68DeviceHistoryPaging.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {
@@ -160,6 +158,10 @@ public actor DatabaseManager {
         try await reader { db in
             try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
         }
+    }
+
+    public func registeredMigrations() -> [String] {
+        migrator.migrations
     }
 
     /// Closes the underlying pool/queue so the database file can be removed

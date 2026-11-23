@@ -38,7 +38,21 @@
     <string name="device_history_task_busy">此会话正在执行，请在任务结束后重试。</string>
     <string name="device_history_incompatible">两台设备的同步版本不兼容。</string>
     <string name="device_history_import_unconfirmed">暂时无法确认导入结果。请先到任务中查看原会话，再决定是否重试。</string>
+    <string name="device_history_received_pages">已保存 %1$d 页会话记录</string>
+    <string name="device_history_receive_interrupted">已保存 %1$d 页会话记录。再次选择此会话可继续接收。</string>
+    <string name="device_history_cursor_expired">对方设备的会话记录已变化，请重新选择此会话同步。</string>
+    <string name="device_history_no_longer_shared">对方已停止共享此会话。</string>
     <string name="device_history_bad_relay">请输入有效的 HTTPS 中继地址。</string>
     <string name="device_history_relay_pending">中继正在连接。跨网络配对前，请先刷新配对地址。</string>
     <string name="device_history_received">已接收 %1$d 条新消息，可在任务列表中打开会话。</string>
+    <string name="device_history_workspace_share">共享工作区文件</string>
+    <string name="device_history_workspace_receive">接收会话和文件</string>
+    <string name="device_history_workspace_stop">停止接收</string>
+    <string name="device_history_workspace_transferring">正在同步工作区文件…</string>
+    <string name="device_history_workspace_unavailable">请先打开这个会话并设置工作区，再共享文件。</string>
+    <string name="device_history_workspace_too_large">工作区超出文件同步容量限制。</string>
+    <string name="device_history_workspace_partial">会话已接收，工作区文件还未同步完成。</string>
+    <string name="device_history_workspace_paused">已停止接收。已保存的文件会保留，再次选择会话可继续。</string>
+    <string name="device_history_workspace_received">工作区已更新 · %1$d 个文件 · %2$d 个文件夹</string>
+    <string name="device_history_workspace_received_conflicts">已同步 %1$d 个文件。有 %2$d 处冲突，请查看工作区内的 Floe Sync Conflicts 文件夹。</string>
 </resources>

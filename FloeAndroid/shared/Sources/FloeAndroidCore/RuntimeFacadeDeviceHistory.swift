@@ -61,6 +61,7 @@ public enum DeviceHistoryLaneError: Error, Sendable, Equatable {
     case identityMismatch
     /// Archive exceeds the 32 MiB portable ceiling.
     case tooLarge
+    case cursorExpired
     /// A store read/write hop failed (never reported as empty/success).
     case storeUnavailable
 }
@@ -100,6 +101,36 @@ enum DeviceHistoryStoreLane {
             throw DeviceHistoryLaneError.tooLarge
         } catch DeviceConversationHistoryError.invalidHistory {
             throw DeviceHistoryLaneError.invalidArchive
+        } catch {
+            throw DeviceHistoryLaneError.storeUnavailable
+        }
+    }
+
+    static func exportPage(
+        store: any ConversationStore, conversationID: UUID, after: String?, through: Int64?
+    ) async throws -> DeviceConversationHistoryPage {
+        guard let durable = store as? SQLiteConversationStore else { throw DeviceHistoryLaneError.storeUnavailable }
+        do {
+            return try await durable.deviceHistoryPage(conversationID: conversationID, after: after, through: through)
+        } catch DeviceConversationHistoryError.cursorExpired {
+            throw DeviceHistoryLaneError.cursorExpired
+        } catch DeviceConversationHistoryError.conversationUnavailable {
+            throw DeviceHistoryLaneError.conversationUnavailable
+        } catch DeviceConversationHistoryError.sizeLimit {
+            throw DeviceHistoryLaneError.tooLarge
+        } catch DeviceConversationHistoryError.invalidHistory {
+            throw DeviceHistoryLaneError.invalidArchive
+        } catch {
+            throw DeviceHistoryLaneError.storeUnavailable
+        }
+    }
+
+    static func receiveCursor(
+        store: any ConversationStore, peerID: String, conversationID: UUID
+    ) async throws -> String? {
+        guard let durable = store as? SQLiteConversationStore else { throw DeviceHistoryLaneError.storeUnavailable }
+        do {
+            return try await durable.deviceHistoryCursor(from: peerID, conversationID: conversationID)
         } catch {
             throw DeviceHistoryLaneError.storeUnavailable
         }
@@ -156,9 +187,18 @@ enum DeviceHistoryStoreLane {
     static func importHistory(
         store: any ConversationStore,
         history: DeviceConversationHistory,
+        sourcePeerID: String? = nil,
+        nextCursor: String? = nil,
         hasLiveRun: @escaping @Sendable (Database) throws -> Bool
     ) async throws -> DeviceConversationImport {
         do {
+            if let sourcePeerID {
+                guard let durable = store as? SQLiteConversationStore else {
+                    throw DeviceHistoryLaneError.storeUnavailable
+                }
+                return try await durable.importDeviceHistory(
+                    history, sourcePeerID: sourcePeerID, nextCursor: nextCursor, hasLiveRun: hasLiveRun)
+            }
             return try await store.importDeviceHistory(history, hasLiveRun: hasLiveRun)
         } catch DeviceConversationHistoryError.messageConflict {
             throw DeviceHistoryLaneError.conflict

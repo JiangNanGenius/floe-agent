@@ -15,6 +15,7 @@ internal data class DeviceHistoryPeer(
     val name: String,
     val address: FloeDeviceLinkAddress,
     val sharedConversations: Set<UUID> = emptySet(),
+    val workspaceShares: Map<UUID, String> = emptyMap(),
 ) {
     val id: String get() = address.endpointId
 }
@@ -53,12 +54,23 @@ internal class DeviceHistoryPreferenceStore(context: Context) {
             val row = rows.getJSONObject(index)
             val shared = row.getJSONArray("sharedConversations")
             require(shared.length() <= MAX_SHARED_CONVERSATIONS)
+            val sharedIds = (0 until shared.length()).mapTo(mutableSetOf()) {
+                UUID.fromString(shared.getString(it))
+            }
+            val workspace = row.optJSONObject("workspaceShares")
+            require((workspace?.length() ?: 0) <= MAX_SHARED_CONVERSATIONS)
+            val workspaceShares = workspace?.let { values ->
+                values.keys().asSequence().associate { key ->
+                    val task = UUID.fromString(key)
+                    require(task in sharedIds)
+                    task to values.getString(key).also { require(validScope(it)) }
+                }
+            }.orEmpty()
             DeviceHistoryPeer(
                 name = row.getString("name").also { require(it.isNotBlank() && it.length <= 100) },
                 address = FloeDeviceLinkAddress.fromJson(row.getJSONObject("address").toString()),
-                sharedConversations = (0 until shared.length()).mapTo(mutableSetOf()) {
-                    UUID.fromString(shared.getString(it))
-                },
+                sharedConversations = sharedIds,
+                workspaceShares = workspaceShares,
             )
         }
         require(peers.distinctBy { it.id }.size == peers.size)
@@ -76,10 +88,16 @@ internal class DeviceHistoryPreferenceStore(context: Context) {
 
     fun write(value: DeviceHistoryPreferences) {
         val peers = value.peers.map { peer ->
+            require(peer.workspaceShares.all { (task, scope) -> task in peer.sharedConversations && validScope(scope) })
             JSONObject()
                 .put("name", peer.name)
                 .put("address", JSONObject(peer.address.toJson()))
                 .put("sharedConversations", JSONArray(peer.sharedConversations.map(UUID::toString)))
+                .apply {
+                    if (peer.workspaceShares.isNotEmpty()) {
+                        put("workspaceShares", JSONObject(peer.workspaceShares.mapKeys { it.key.toString() }))
+                    }
+                }
         }
         val bytes = JSONObject().put("version", 1)
             .put("enabled", value.enabled)
@@ -102,6 +120,11 @@ internal class DeviceHistoryPreferenceStore(context: Context) {
     companion object {
         const val MAX_SHARED_CONVERSATIONS = 200
         private const val MAX_SETTINGS_BYTES = 1024 * 1024
+
+        private val nativeWorkspaceScope = Regex("floe[.]workspace[.]v1[.][0-9a-f]{64}")
+
+        fun validScope(text: String): Boolean = nativeWorkspaceScope.matches(text) ||
+            (text.length in 1..160 && text.all { it in '0'..'9' || it in 'a'..'z' || it in 'A'..'Z' || it in "-_:" })
 
         fun validatedRelay(text: String): String? {
             val trimmed = text.trim()

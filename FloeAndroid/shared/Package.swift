@@ -746,6 +746,7 @@ let package = Package(
         ], swiftSettings: strictSettings),
         // Product bridge: v1 frozen operations + append-only v2 envelope
         // seam + fail-closed credential backend + real dependency anchors.
+        .target(name: "CFloeAndroidWorkspaceCommit", publicHeadersPath: "include"),
         .target(name: "FloeAndroidCore", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeSecurity",
             "FloeTools", "FloeSkills", "FloePersistence", "FloeAgentRuntime",
@@ -766,6 +767,7 @@ let package = Package(
             // qualified original tools/service link before the facade
             // registers them (dependency only; NO service registration here).
             "FloeAndroidWebTools", "FloeAndroidShellTools", "FloeAndroidJobTools", "FloeAndroidWorkspaceTools",
+            .target(name: "CFloeAndroidWorkspaceCommit", condition: .when(platforms: [.android])),
             // G07.1 network tools + typed observation over the frozen phone
             // service API; the epoch mailbox/executor in this module owns the
             // only model-to-host route and registers the runners at bind.

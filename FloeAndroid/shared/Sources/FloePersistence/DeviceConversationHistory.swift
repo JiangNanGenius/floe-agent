@@ -106,12 +106,21 @@ public enum DeviceConversationHistoryError: Error, Equatable, Sendable {
     case invalidHistory
     case conversationUnavailable
     case messageConflict(UUID)
+    case cursorExpired
     /// The conversation has an active durable run (the existing
     /// `FacadeRunDomain.activeRunStates` vocabulary), proven INSIDE the
     /// import writer transaction. Android additive case: the fixed iOS
     /// donor refuses this on the Mac host's in-memory `liveRuns` instead;
     /// the wire shape is unaffected.
     case busy
+}
+
+/// One independently importable text archive and its sender position.
+public struct DeviceConversationHistoryPage: Sendable {
+    public let archive: Data
+    public let nextCursor: String?
+    public let through: Int64
+    public let hasMore: Bool
 }
 
 public struct DeviceConversationImport: Sendable, Equatable {

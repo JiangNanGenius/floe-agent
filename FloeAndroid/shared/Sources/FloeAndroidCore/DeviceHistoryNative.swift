@@ -56,6 +56,7 @@ public enum DeviceHistoryBridgeStatus {
     /// reading (offers are idempotent; a re-import is append-if-absent) and
     /// must NEVER auto-retry on this status alone.
     public static let outcomeUnknown: Int32 = -814
+    public static let cursorExpired: Int32 = -815
     public static let `internal`: Int32 = -899
 }
 
@@ -63,6 +64,7 @@ public enum DeviceHistoryBridgeLimits {
     /// The frozen JNI chunk bound (identical to the source-host/gateway
     /// 64 KiB contract; JNI enforces it before Swift is ever called).
     public static let maximumChunkBytes = 65_536
+    public static let maximumCursorBytes = 160
     /// The portable archive ceiling (fixed iOS donor contract).
     public static let maximumArchiveBytes = DeviceConversationHistory.maximumBytes
     /// One interactive surface at a time per direction; bytes are bounded
@@ -87,6 +89,23 @@ public enum DeviceHistoryBridgeLimits {
 private struct DeviceHistoryExportOutcome: Sendable {
     var status: Int32 = DeviceHistoryBridgeStatus.internal
     var data: Data?
+    var page: DeviceHistoryPageMetadata?
+}
+
+private struct DeviceHistoryPageMetadata: Sendable {
+    let nextCursor: String?
+    let through: Int64
+    let hasMore: Bool
+}
+
+private struct DeviceHistoryPageRequest: Sendable {
+    let after: String?
+    let through: Int64?
+}
+
+private struct DeviceHistoryImportProgress: Sendable {
+    let sourcePeerID: String
+    let nextCursor: String?
 }
 
 private struct DeviceHistoryImportOutcome: Sendable {
@@ -171,14 +190,17 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
         let createdEpoch: UInt64
         let conversationID: UUID
         let data: Data
+        let page: DeviceHistoryPageMetadata?
         let createdAt: Date
         var closed = false
 
-        init(ticket: Int64, epoch: UInt64, conversationID: UUID, data: Data) {
+        init(ticket: Int64, epoch: UInt64, conversationID: UUID, data: Data,
+             page: DeviceHistoryPageMetadata?) {
             self.ticket = ticket
             self.createdEpoch = epoch
             self.conversationID = conversationID
             self.data = data
+            self.page = page
             self.createdAt = Date()
         }
     }
@@ -189,14 +211,16 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
         let ticket: Int64
         let createdEpoch: UInt64
         let expectedID: UUID
+        let progress: DeviceHistoryImportProgress?
         var buffer: Data
         let createdAt: Date
         var closed = false
 
-        init(ticket: Int64, epoch: UInt64, expectedID: UUID) {
+        init(ticket: Int64, epoch: UInt64, expectedID: UUID, progress: DeviceHistoryImportProgress?) {
             self.ticket = ticket
             self.createdEpoch = epoch
             self.expectedID = expectedID
+            self.progress = progress
             self.buffer = Data()
             self.buffer.reserveCapacity(64 * 1024)
             self.createdAt = Date()
@@ -340,10 +364,60 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
 
     // MARK: - Export
 
+    func receiveCursor(
+        epoch: UInt64, peerID: String, conversationID: UUID,
+        buffer: UnsafeMutablePointer<CChar>?, capacity: Int32
+    ) -> Int32 {
+        guard capacity > 0, capacity <= DeviceHistoryBridgeLimits.maximumOffersReplyBytes else {
+            return DeviceHistoryBridgeStatus.invalidArguments
+        }
+        guard liveEpoch() == epoch else {
+            return epoch == 0 ? DeviceHistoryBridgeStatus.notInstalled : DeviceHistoryBridgeStatus.generationFenced
+        }
+        guard let store = durableConversationStore(epoch: epoch) else {
+            return DeviceHistoryBridgeStatus.notInstalled
+        }
+        let box = DeviceHistoryHopBox<Result<String?, DeviceHistoryLaneError>>()
+        let gate = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            let result = await DeviceHistoryStoreLane.result {
+                try await DeviceHistoryStoreLane.receiveCursor(
+                    store: store, peerID: peerID, conversationID: conversationID)
+            }
+            box.publish(result)
+            gate.signal()
+        }
+        let deadline = DispatchTime.now() + .milliseconds(Int(DeviceHistoryBridgeLimits.offersHopSeconds * 1000))
+        _ = gate.wait(timeout: deadline)
+        guard let result = box.value else {
+            recordHopTimeout()
+            return DeviceHistoryBridgeStatus.hopTimeout
+        }
+        guard liveEpoch() == epoch else { return DeviceHistoryBridgeStatus.generationFenced }
+        switch result {
+        case .success(let cursor):
+            var reply: [String: Any] = ["ok": 1, "schema": "floe.device-history.cursor.v1"]
+            if let cursor { reply["cursor"] = cursor }
+            return Self.copy(Self.json(reply), buffer: buffer, capacity: capacity)
+        case .failure(let error):
+            return Self.status(for: error)
+        }
+    }
+
     /// Opens one owned export session: the FULL portable archive is produced
     /// inside ONE bounded store hop BEFORE the ticket is advertised.
     /// Positive = opaque ticket; negative = typed status.
     func exportOpen(epoch: UInt64, conversationID: UUID) -> Int64 {
+        exportOpen(epoch: epoch, conversationID: conversationID, pageRequest: nil)
+    }
+
+    func exportPageOpen(epoch: UInt64, conversationID: UUID, after: String?, through: Int64?) -> Int64 {
+        exportOpen(epoch: epoch, conversationID: conversationID, pageRequest: .init(after: after, through: through))
+    }
+
+    private func exportOpen(
+        epoch: UInt64, conversationID: UUID, pageRequest: DeviceHistoryPageRequest?
+    ) -> Int64 {
         guard liveEpoch() == epoch else {
             lock.lock(); counters.fenced += 1; sweepStaleLocked(live: liveEpoch()); lock.unlock()
             return Int64(epoch == 0 ? DeviceHistoryBridgeStatus.notInstalled
@@ -368,8 +442,16 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
             var outcome = DeviceHistoryExportOutcome()
             if let store = storeRef {
                 do {
-                    outcome.data = try await DeviceHistoryStoreLane.exportHistory(
-                        store: store, conversationID: conversationID)
+                    if let pageRequest {
+                        let page = try await DeviceHistoryStoreLane.exportPage(
+                            store: store, conversationID: conversationID, after: pageRequest.after,
+                            through: pageRequest.through)
+                        outcome.data = page.archive
+                        outcome.page = .init(nextCursor: page.nextCursor, through: page.through, hasMore: page.hasMore)
+                    } else {
+                        outcome.data = try await DeviceHistoryStoreLane.exportHistory(
+                            store: store, conversationID: conversationID)
+                    }
                     outcome.status = DeviceHistoryBridgeStatus.ok
                 } catch let error as DeviceHistoryLaneError {
                     outcome.status = Self.status(for: error)
@@ -404,12 +486,38 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
                          : outcome.status)
         }
         lock.lock()
+        sweepStaleLocked(live: epoch)
+        guard liveSessionCountLocked() < DeviceHistoryBridgeLimits.maximumLiveSessions else {
+            counters.refused += 1
+            lock.unlock()
+            return Int64(DeviceHistoryBridgeStatus.saturated)
+        }
         let ticket = newTicketLocked()
         exports[ticket] = ExportSession(ticket: ticket, epoch: epoch,
-                                        conversationID: conversationID, data: data)
+                                        conversationID: conversationID, data: data, page: outcome.page)
         counters.exportOpens += 1
         lock.unlock()
         return ticket
+    }
+
+    func exportPageInfo(_ ticket: Int64, buffer: UnsafeMutablePointer<CChar>?, capacity: Int32) -> Int32 {
+        guard ticket > 0, capacity > 0, capacity <= DeviceHistoryBridgeLimits.maximumOffersReplyBytes else {
+            return DeviceHistoryBridgeStatus.invalidArguments
+        }
+        let epoch = liveEpoch()
+        lock.lock()
+        defer { lock.unlock() }
+        sweepStaleLocked(live: epoch)
+        guard let session = exports[ticket] else { return statusForMissingSessionLocked(ticket) }
+        guard session.createdEpoch == epoch, !session.closed, let page = session.page else {
+            return DeviceHistoryBridgeStatus.stateConflict
+        }
+        var reply: [String: Any] = [
+            "ok": 1, "schema": "floe.device-history.page.v1",
+            "through": page.through, "hasMore": page.hasMore,
+        ]
+        if let nextCursor = page.nextCursor { reply["nextCursor"] = nextCursor }
+        return Self.copy(Self.json(reply), buffer: buffer, capacity: capacity)
     }
 
     /// Copies up to `capacity` (<= 64 KiB) archive bytes at `offset` into the
@@ -477,6 +585,15 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
     /// Opens one bounded import session bound to the App-supplied task id.
     /// Positive = opaque ticket; negative = typed status.
     func importBegin(epoch: UInt64, expectedID: UUID) -> Int64 {
+        importBegin(epoch: epoch, expectedID: expectedID, progress: nil)
+    }
+
+    func importPageBegin(epoch: UInt64, expectedID: UUID, sourcePeerID: String, nextCursor: String?) -> Int64 {
+        importBegin(epoch: epoch, expectedID: expectedID,
+                    progress: .init(sourcePeerID: sourcePeerID, nextCursor: nextCursor))
+    }
+
+    private func importBegin(epoch: UInt64, expectedID: UUID, progress: DeviceHistoryImportProgress?) -> Int64 {
         guard liveEpoch() == epoch else {
             lock.lock(); counters.fenced += 1; sweepStaleLocked(live: liveEpoch()); lock.unlock()
             return Int64(epoch == 0 ? DeviceHistoryBridgeStatus.notInstalled
@@ -493,7 +610,7 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
             return Int64(DeviceHistoryBridgeStatus.saturated)
         }
         let ticket = newTicketLocked()
-        imports[ticket] = ImportSession(ticket: ticket, epoch: epoch, expectedID: expectedID)
+        imports[ticket] = ImportSession(ticket: ticket, epoch: epoch, expectedID: expectedID, progress: progress)
         counters.importBegins += 1
         lock.unlock()
         return ticket
@@ -551,6 +668,7 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
         let bytes = session.buffer
         let expectedID = session.expectedID
         let createdEpoch = session.createdEpoch
+        let progress = session.progress
         counters.importCommits += 1
         lock.unlock()
 
@@ -576,7 +694,8 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
                         return facade.finishImportHop(outcome: outcome, state: hopState, gate: gate)
                     }
                     let receipt = try await DeviceHistoryStoreLane.importHistory(
-                        store: store, history: history, hasLiveRun: { database in
+                        store: store, history: history, sourcePeerID: progress?.sourcePeerID,
+                        nextCursor: progress?.nextCursor, hasLiveRun: { database in
                             guard facade.liveEpoch() == createdEpoch else { throw DeviceHistoryLaneError.fenced }
                             return try hasLiveRun(database)
                         })
@@ -702,6 +821,7 @@ public final class DeviceHistoryBridgeFacade: @unchecked Sendable {
         case .invalidArchive: return DeviceHistoryBridgeStatus.invalidArchive
         case .identityMismatch: return DeviceHistoryBridgeStatus.identityMismatch
         case .tooLarge: return DeviceHistoryBridgeStatus.tooLarge
+        case .cursorExpired: return DeviceHistoryBridgeStatus.cursorExpired
         case .storeUnavailable: return DeviceHistoryBridgeStatus.storeUnavailable
         }
     }
@@ -774,6 +894,20 @@ private func deviceHistoryReadCString(_ pointer: UnsafePointer<CChar>?, limit: I
     return String(decoding: UnsafeRawBufferPointer(start: pointer, count: length), as: UTF8.self)
 }
 
+private func deviceHistoryReadPeer(_ pointer: UnsafePointer<CChar>?) -> String? {
+    guard let peer = deviceHistoryReadCString(pointer, limit: 129),
+          peer.utf8.allSatisfy({ (0x21...0x7e).contains($0) }) else { return nil }
+    return peer
+}
+
+private func deviceHistoryReadCursor(_ bytes: UnsafePointer<UInt8>?, _ length: Int32) throws -> String? {
+    if length == 0 && bytes == nil { return nil }
+    guard let bytes, length > 0, length <= DeviceHistoryBridgeLimits.maximumCursorBytes,
+          let value = String(bytes: UnsafeBufferPointer(start: bytes, count: Int(length)), encoding: .utf8)
+    else { throw DeviceHistoryLaneError.invalidArchive }
+    return value
+}
+
 /// Bounded shareable-conversation page. Positive/zero return = copied JSON
 /// length into the caller buffer; negative = typed status. Never
 /// model-reachable; JNI host only.
@@ -795,6 +929,42 @@ public func floeDeviceHistoryExportOpen(_ epoch: UInt64,
         return Int64(DeviceHistoryBridgeStatus.invalidArguments)
     }
     return DeviceHistoryBridgeFacade.shared.exportOpen(epoch: epoch, conversationID: conversation)
+}
+
+@_cdecl("floe_device_history_receive_cursor")
+public func floeDeviceHistoryReceiveCursor(
+    _ epoch: UInt64, _ peer: UnsafePointer<CChar>?, _ task: UnsafePointer<CChar>?,
+    _ buffer: UnsafeMutablePointer<CChar>?, _ capacity: Int32
+) -> Int32 {
+    guard let peerID = deviceHistoryReadPeer(peer),
+          let conversationID = DeviceHistoryBridgeFacade.canonicalUUID(
+            deviceHistoryReadCString(task, limit: 64)) else { return DeviceHistoryBridgeStatus.invalidArguments }
+    return DeviceHistoryBridgeFacade.shared.receiveCursor(
+        epoch: epoch, peerID: peerID, conversationID: conversationID, buffer: buffer, capacity: capacity)
+}
+
+@_cdecl("floe_device_history_export_page_open")
+public func floeDeviceHistoryExportPageOpen(
+    _ epoch: UInt64, _ task: UnsafePointer<CChar>?, _ after: UnsafePointer<UInt8>?,
+    _ afterLength: Int32, _ through: Int64
+) -> Int64 {
+    guard through >= -1,
+          let conversationID = DeviceHistoryBridgeFacade.canonicalUUID(
+            deviceHistoryReadCString(task, limit: 64)) else { return Int64(DeviceHistoryBridgeStatus.invalidArguments) }
+    do {
+        return DeviceHistoryBridgeFacade.shared.exportPageOpen(
+            epoch: epoch, conversationID: conversationID, after: try deviceHistoryReadCursor(after, afterLength),
+            through: through == -1 ? nil : through)
+    } catch {
+        return Int64(DeviceHistoryBridgeStatus.invalidArguments)
+    }
+}
+
+@_cdecl("floe_device_history_export_page_info")
+public func floeDeviceHistoryExportPageInfo(
+    _ ticket: Int64, _ buffer: UnsafeMutablePointer<CChar>?, _ capacity: Int32
+) -> Int32 {
+    DeviceHistoryBridgeFacade.shared.exportPageInfo(ticket, buffer: buffer, capacity: capacity)
 }
 
 /// Copies up to `capacity` (<= 64 KiB) archive bytes at `offset` from the
@@ -825,6 +995,23 @@ public func floeDeviceHistoryImportBegin(_ epoch: UInt64,
         return Int64(DeviceHistoryBridgeStatus.invalidArguments)
     }
     return DeviceHistoryBridgeFacade.shared.importBegin(epoch: epoch, expectedID: expectedID)
+}
+
+@_cdecl("floe_device_history_import_page_begin")
+public func floeDeviceHistoryImportPageBegin(
+    _ epoch: UInt64, _ task: UnsafePointer<CChar>?, _ peer: UnsafePointer<CChar>?,
+    _ nextCursor: UnsafePointer<UInt8>?, _ cursorLength: Int32
+) -> Int64 {
+    guard let sourcePeerID = deviceHistoryReadPeer(peer),
+          let conversationID = DeviceHistoryBridgeFacade.canonicalUUID(
+            deviceHistoryReadCString(task, limit: 64)) else { return Int64(DeviceHistoryBridgeStatus.invalidArguments) }
+    do {
+        return DeviceHistoryBridgeFacade.shared.importPageBegin(
+            epoch: epoch, expectedID: conversationID, sourcePeerID: sourcePeerID,
+            nextCursor: try deviceHistoryReadCursor(nextCursor, cursorLength))
+    } catch {
+        return Int64(DeviceHistoryBridgeStatus.invalidArguments)
+    }
 }
 
 /// Appends one bounded chunk (<= 64 KiB) to the session accumulator. The

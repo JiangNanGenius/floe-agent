@@ -3,11 +3,13 @@ package com.floe.android.host.devicesync
 
 import android.content.Context
 import com.floe.android.core.devicelink.DeviceHistoryOffer
+import com.floe.android.core.devicelink.DeviceHistoryPage
+import com.floe.android.core.devicelink.DeviceHistoryPagedSource
 import com.floe.android.core.devicelink.DeviceHistoryPairingTicket
-import com.floe.android.core.devicelink.DeviceHistorySource
 import com.floe.android.core.devicelink.DeviceHistorySync
 import com.floe.android.core.devicelink.DeviceHistorySyncError
 import com.floe.android.core.devicelink.DeviceHistorySyncException
+import com.floe.android.core.devicelink.DeviceWorkspaceReceipt
 import com.floe.android.core.devicelink.FloeDeviceLink
 import com.floe.android.core.devicelink.FloeDeviceLinkIdentity
 import com.floe.android.core.devicelink.FloeDeviceLinkRelay
@@ -37,11 +39,16 @@ internal interface DeviceHistoryLocalStore {
     suspend fun localOffers(epoch: Long): List<DeviceHistoryOffer>
     suspend fun exportHistory(epoch: Long, taskId: UUID): ByteArray
     suspend fun importHistory(epoch: Long, taskId: UUID, bytes: ByteArray): Int
+    suspend fun storedCursor(epoch: Long, peerId: String, taskId: UUID): String?
+    suspend fun exportPage(epoch: Long, taskId: UUID, after: String?, through: Long?): DeviceHistoryPage
+    suspend fun importPage(epoch: Long, peerId: String, taskId: UUID, page: DeviceHistoryPage): Int
 }
 
 internal enum class DeviceHistoryStatus {
     IDLE, READY, START_FAILED, SETTINGS_FAILED, TRANSFER_FAILED, CONFLICT,
-    BUSY_TASK, INCOMPATIBLE, INVALID_RELAY, RELAY_PENDING, IMPORT_UNCONFIRMED, RECEIVED
+    BUSY_TASK, INCOMPATIBLE, INVALID_RELAY, RELAY_PENDING, IMPORT_UNCONFIRMED,
+    CURSOR_EXPIRED, NO_LONGER_SHARED, RECEIVED, WORKSPACE_RECEIVED, WORKSPACE_PAUSED,
+    WORKSPACE_UNAVAILABLE, WORKSPACE_TOO_LARGE
 }
 
 internal class DeviceHistoryLocalFailure(val status: DeviceHistoryStatus) : IllegalStateException()
@@ -56,7 +63,12 @@ internal data class DeviceHistorySyncState(
     val viewedPeer: String? = null,
     val localOffers: List<DeviceHistoryOffer> = emptyList(),
     val remoteOffers: List<DeviceHistoryOffer>? = null,
+    val remoteHistoryPages: Boolean = false,
     val importedMessages: Int = 0,
+    val importedPages: Int = 0,
+    val receivingWorkspace: Boolean = false,
+    val workspaceHistoryReceived: Boolean = false,
+    val workspaceReceipt: DeviceWorkspaceReceipt? = null,
 )
 
 /** App-process owner. A view can close without retiring the negotiated listener. */
@@ -68,6 +80,7 @@ internal class DeviceHistorySyncHost(
 ) {
     private val context = context.applicationContext
     private val settings = DeviceHistoryPreferenceStore(this.context)
+    private val workspaces = AndroidDeviceWorkspaceStore(this.context)
     private val keys = AndroidKeystoreCredentialStore(this.context, "device-history")
     private val requestedEpoch = AtomicLong()
     private val action = AtomicReference<Job?>()
@@ -151,22 +164,27 @@ internal class DeviceHistorySyncHost(
         val label = name.trim().take(100)
         val id = ticket.address.endpointId
         require(label.isNotEmpty() && id != current.link.address().endpointId)
-        val shared = previous.peers.firstOrNull { it.id == id }?.sharedConversations.orEmpty()
+        val saved = previous.peers.firstOrNull { it.id == id }
         replacePeers(previous, previous.peers.filterNot { it.id == id } +
-            DeviceHistoryPeer(label, ticket.address, shared))
+            DeviceHistoryPeer(label, ticket.address, saved?.sharedConversations.orEmpty(), saved?.workspaceShares.orEmpty()))
     }
 
     fun remove(peerId: String) = run {
         val previous = requirePreferences()
         replacePeers(previous, previous.peers.filterNot { it.id == peerId })
+        workspaces.forget(peerId)
         if (mutable.value.viewedPeer == peerId) {
-            mutable.update { it.copy(viewedPeer = null, localOffers = emptyList(), remoteOffers = null) }
+            mutable.update {
+                it.copy(viewedPeer = null, localOffers = emptyList(), remoteOffers = null, remoteHistoryPages = false)
+            }
         }
     }
 
     fun showLocalOffers(peerId: String) {
         mutable.update {
-            if (it.viewedPeer == peerId) it else it.copy(viewedPeer = peerId, localOffers = emptyList(), remoteOffers = null)
+            if (it.viewedPeer == peerId) it else {
+                it.copy(viewedPeer = peerId, localOffers = emptyList(), remoteOffers = null, remoteHistoryPages = false)
+            }
         }
         run {
             requiredPeer(peerId)
@@ -186,23 +204,105 @@ internal class DeviceHistorySyncHost(
         }
         val shared = if (enabled) peer.sharedConversations + taskId else peer.sharedConversations - taskId
         require(shared.size <= DeviceHistoryPreferenceStore.MAX_SHARED_CONVERSATIONS)
-        replacePeers(previous, previous.peers.map { if (it.id == peerId) it.copy(sharedConversations = shared) else it })
+        val workspace = if (enabled) peer.workspaceShares else peer.workspaceShares - taskId
+        replacePeers(previous, previous.peers.map {
+            if (it.id == peerId) it.copy(sharedConversations = shared, workspaceShares = workspace) else it
+        })
+        if (!enabled && taskId in peer.workspaceShares) workspaces.forget(peerId, taskId)
+    }
+
+    fun shareWorkspace(peerId: String, taskId: UUID, enabled: Boolean) = run {
+        val previous = requirePreferences()
+        val peer = requiredPeer(peerId)
+        val grants = if (enabled) {
+            require(taskId in peer.sharedConversations && mutable.value.viewedPeer == peerId &&
+                mutable.value.localOffers.any { it.id == taskId })
+            val epoch = requestedEpoch.get()
+            ensureEpoch(epoch)
+            val bound = try {
+                workspaces.scope(epoch, taskId)
+            } catch (failure: DeviceHistorySyncException) {
+                if (failure.error != DeviceHistorySyncError.NOT_SHARED) throw failure
+                throw DeviceHistoryLocalFailure(DeviceHistoryStatus.WORKSPACE_UNAVAILABLE)
+            }
+            ensureEpoch(epoch)
+            peer.workspaceShares + (taskId to bound)
+        } else {
+            peer.workspaceShares - taskId
+        }
+        replacePeers(previous, previous.peers.map {
+            if (it.id == peerId) it.copy(workspaceShares = grants) else it
+        })
+        if (!enabled && taskId in peer.workspaceShares) workspaces.forget(peerId, taskId)
     }
 
     fun fetch(peerId: String) = run {
         val current = requireActive()
         val peer = requiredPeer(peerId)
-        mutable.update { if (it.viewedPeer == peerId) it.copy(remoteOffers = null) else it }
-        val offers = withTimeout(30_000) { current.sync.offers(peer.address) }
+        mutable.update { if (it.viewedPeer == peerId) it.copy(remoteOffers = null, remoteHistoryPages = false) else it }
+        val catalog = withTimeout(30_000) { current.sync.catalog(peer.address) }
         ensureEpoch(current.epoch)
-        mutable.update { if (it.viewedPeer == peerId) it.copy(remoteOffers = offers) else it }
+        mutable.update {
+            if (it.viewedPeer == peerId) it.copy(remoteOffers = catalog.offers, remoteHistoryPages = catalog.historyPages)
+            else it
+        }
     }
 
-    fun receive(peerId: String, taskId: UUID) = run {
+    fun receive(peerId: String, taskId: UUID, includeWorkspace: Boolean = false) = run {
         val current = requireActive()
         val peer = requiredPeer(peerId)
-        require(mutable.value.viewedPeer == peerId && mutable.value.remoteOffers.orEmpty().any { it.id == taskId })
-        val data = withTimeout(60_000) { current.sync.history(taskId, peer.address) }
+        val selection = mutable.value
+        val offer = selection.remoteOffers.orEmpty().firstOrNull { it.id == taskId }
+        require(selection.viewedPeer == peerId && offer != null && (!includeWorkspace || offer.workspaceFiles))
+        if (includeWorkspace) mutable.update { it.copy(receivingWorkspace = true) }
+        workspaceSyncStep("session") {
+            current.sync.receiveFrom(peer.address) { session ->
+                workspaceSyncStep("history") {
+                    receiveHistory(current, peer, taskId, selection.remoteHistoryPages, session)
+                }
+                if (includeWorkspace) {
+                    mutable.update { it.copy(workspaceHistoryReceived = true) }
+                    ensureEpoch(current.epoch)
+                    val receiver = workspaceSyncStep("bind") { workspaces.receiver(current.epoch, peer.id, taskId) }
+                    val receipt = receiver.use {
+                        workspaceSyncStep("transfer") { session.workspace(taskId, it) }
+                    }
+                    ensureEpoch(current.epoch)
+                    mutable.update { it.copy(workspaceReceipt = receipt, status = DeviceHistoryStatus.WORKSPACE_RECEIVED) }
+                }
+            }
+        }
+    }
+
+    private suspend fun <T> workspaceSyncStep(stage: String, operation: suspend () -> T): T {
+        try {
+            return operation()
+        } catch (timeout: TimeoutCancellationException) {
+            android.util.Log.w("FloeWorkspaceSync", "stage=$stage error=timeout")
+            throw timeout
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            val classification = (failure as? DeviceHistorySyncException)?.error?.name ?: failure.javaClass.simpleName
+            android.util.Log.w("FloeWorkspaceSync", "stage=$stage error=$classification")
+            throw failure
+        }
+    }
+
+    fun cancelWorkspaceTransfer() {
+        if (mutable.value.receivingWorkspace) action.get()?.cancel()
+    }
+
+    private suspend fun receiveHistory(
+        current: Active,
+        peer: DeviceHistoryPeer,
+        taskId: UUID,
+        pages: Boolean,
+        session: DeviceHistorySync.ReceiveSession,
+    ) {
+        if (pages && receivePages(current, peer, taskId, session)) return
+
+        val data = withTimeout(60_000) { session.history(taskId) }
         try {
             currentCoroutineContext().ensureActive()
             ensureEpoch(current.epoch)
@@ -215,17 +315,63 @@ internal class DeviceHistorySyncHost(
         }
     }
 
+    private suspend fun receivePages(
+        current: Active,
+        peer: DeviceHistoryPeer,
+        taskId: UUID,
+        session: DeviceHistorySync.ReceiveSession,
+    ): Boolean {
+        val epoch = current.epoch
+        val after = local.storedCursor(epoch, peer.id, taskId)
+        ensureEpoch(epoch)
+        var pages = 0
+        var added = 0
+        suspend fun commit(page: DeviceHistoryPage) {
+            try {
+                currentCoroutineContext().ensureActive()
+                ensureEpoch(epoch)
+                added += local.importPage(epoch, peer.id, taskId, page)
+                ensureEpoch(epoch)
+                pages += 1
+                mutable.update { it.copy(importedPages = pages, importedMessages = added) }
+            } finally {
+                page.bytes.fill(0)
+            }
+        }
+        try {
+            val paged = try {
+                session.historyPages(taskId, after, ::commit)
+            } catch (failure: DeviceHistorySyncException) {
+                if (after == null || pages != 0 || !failure.restartableCursor) throw failure
+                // The first request refused the old cursor. Replay once
+                // from the start and advance only with an actual commit.
+                session.historyPages(taskId, null, ::commit)
+            }
+            if (paged) show(DeviceHistoryStatus.RECEIVED)
+            return paged
+        } finally {
+            if (pages > 0 && requestedEpoch.get() == epoch) onImport(epoch, taskId)
+        }
+    }
+
     private fun run(operation: suspend () -> Unit) {
         scope.launch(Dispatchers.IO) {
             if (!serial.tryLock()) return@launch
             val job = currentCoroutineContext()[Job]
             action.set(job)
-            mutable.update { it.copy(busy = true, status = if (active == null) DeviceHistoryStatus.IDLE else DeviceHistoryStatus.READY) }
+            mutable.update { it.copy(
+                busy = true, importedPages = 0, importedMessages = 0, workspaceReceipt = null,
+                workspaceHistoryReceived = false,
+                status = if (active == null) DeviceHistoryStatus.IDLE else DeviceHistoryStatus.READY,
+            ) }
             try {
                 operation()
             } catch (_: TimeoutCancellationException) {
                 show(DeviceHistoryStatus.TRANSFER_FAILED)
             } catch (cancelled: CancellationException) {
+                if (mutable.value.receivingWorkspace && active?.epoch == requestedEpoch.get()) {
+                    show(DeviceHistoryStatus.WORKSPACE_PAUSED)
+                }
                 throw cancelled
             } catch (failure: DeviceHistoryLocalFailure) {
                 show(failure.status)
@@ -233,6 +379,12 @@ internal class DeviceHistorySyncHost(
                 show(when (failure.error) {
                     DeviceHistorySyncError.UNSUPPORTED_VERSION -> DeviceHistoryStatus.INCOMPATIBLE
                     DeviceHistorySyncError.CONFLICT -> DeviceHistoryStatus.CONFLICT
+                    DeviceHistorySyncError.CURSOR_EXPIRED -> DeviceHistoryStatus.CURSOR_EXPIRED
+                    DeviceHistorySyncError.NOT_SHARED -> DeviceHistoryStatus.NO_LONGER_SHARED
+                    DeviceHistorySyncError.TOO_LARGE -> if (mutable.value.receivingWorkspace) {
+                        DeviceHistoryStatus.WORKSPACE_TOO_LARGE
+                    } else DeviceHistoryStatus.TRANSFER_FAILED
+                    DeviceHistorySyncError.BUSY -> DeviceHistoryStatus.BUSY_TASK
                     else -> DeviceHistoryStatus.TRANSFER_FAILED
                 })
             } catch (_: LinkageError) {
@@ -241,7 +393,7 @@ internal class DeviceHistorySyncHost(
                 show(if (active == null) DeviceHistoryStatus.START_FAILED else DeviceHistoryStatus.TRANSFER_FAILED)
             } finally {
                 action.compareAndSet(job, null)
-                mutable.update { it.copy(busy = false) }
+                mutable.update { it.copy(busy = false, receivingWorkspace = false) }
                 serial.unlock()
             }
         }
@@ -294,7 +446,10 @@ internal class DeviceHistorySyncHost(
     private suspend fun stop() {
         val previous = active
         active = null
-        mutable.update { it.copy(fingerprint = null, pairingCode = null, localOffers = emptyList(), remoteOffers = null) }
+        mutable.update { it.copy(
+            fingerprint = null, pairingCode = null, localOffers = emptyList(),
+            remoteOffers = null, remoteHistoryPages = false,
+        ) }
         if (previous != null) withContext(NonCancellable) { previous.sync.stop() }
     }
 
@@ -322,7 +477,7 @@ internal class DeviceHistorySyncHost(
             ensureEpoch(epoch)
             val port = link.listeningPort
             if (port != null && port != config.port) save(config.copy(port = port))
-            val source = object : DeviceHistorySource {
+            val source = object : DeviceHistoryPagedSource {
                 override suspend fun offers(allowed: Set<UUID>): List<DeviceHistoryOffer> {
                     ensureEpoch(epoch)
                     val offers = local.localOffers(epoch).filter { it.id in allowed }
@@ -335,8 +490,20 @@ internal class DeviceHistorySyncHost(
                     ensureEpoch(epoch)
                     return data
                 }
+                override suspend fun historyPage(taskId: UUID, after: String?, through: Long?): DeviceHistoryPage {
+                    ensureEpoch(epoch)
+                    val page = local.exportPage(epoch, taskId, after, through)
+                    ensureEpoch(epoch)
+                    return page
+                }
             }
-            val sync = DeviceHistorySync(link, config.shares(), source)
+            val workspaceSource = workspaces.source(epoch) { peer, task ->
+                val current = mutable.value.preferences
+                if (requestedEpoch.get() != epoch || !current.enabled) null
+                else current.peers.firstOrNull { it.id == peer && task in it.sharedConversations }
+                    ?.workspaceShares?.get(task)
+            }
+            val sync = DeviceHistorySync(link, config.shares(), source, workspaceSource)
             sync.start(scope)
             val bound = Active(epoch, link, sync, relay != FloeDeviceLinkRelay.DISABLED)
             active = bound
