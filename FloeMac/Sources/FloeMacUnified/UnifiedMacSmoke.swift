@@ -848,15 +848,22 @@ final class UnifiedMacSmoke {
                 let old = MacDesktopControl.descriptor.authorizationIdentity
                 result["oldBackendApprovalDenied"] = try await invoke(.inspect, expectedIdentity: old).status == .denied
             }
-            let fieldState = try await invoke(.inspect)
+            let fieldState = try await invoke(native ? .screenshot : .inspect)
             let field = try snapshot(fieldState.outputSummary, role: "AXTextField")
             if native, let dragWindow {
                 let wrongWindow = try await invoke(.setValue, snapshot: field.0, index: field.1, value: "Wrong window",
                                                    targetWindow: dragWindow)
                 result["crossWindowInputRejected"] = wrongWindow.status == .failed
             }
-            _ = try await invoke(.setValue, snapshot: field.0, index: field.1, value: "Floe background edit")
-            var buttonState = try await invoke(.inspect)
+            let edited = try await invoke(.setValue, snapshot: field.0, index: field.1, value: "Floe background edit")
+            var buttonState = try await invoke(native ? .screenshot : .inspect)
+            if native {
+                result["editConfirmedInReceipt"] = edited.status == .ok && edited.outputSummary.contains("Floe background edit")
+                if let first = fieldState.artifacts.first, let updated = buttonState.artifacts.first {
+                    result["repeatCaptureShowsEdit"] = first.sha256 != updated.sha256
+                        && buttonState.outputSummary.contains("Floe background edit")
+                }
+            }
             result["fieldVerified"] = buttonState.outputSummary.contains("Floe background edit")
             if gestures {
                 let field = try snapshot(buttonState.outputSummary, role: "AXTextField")

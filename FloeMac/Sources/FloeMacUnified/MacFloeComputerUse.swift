@@ -37,6 +37,16 @@ actor MacFloeComputerUse: MacDesktopClient {
         var summary: String { "snapshot_id=\(id.uuidString) window_id=\(window.id)\n" + text }
     }
 
+    private struct CaptureTarget {
+        let window: Window
+        let element: AXUIElement
+        let filter: SCContentFilter
+        let configuration: SCStreamConfiguration
+        let expiresAt: ContinuousClock.Instant
+    }
+
+    private enum InputCompletion { case sent, confirmed }
+
     private enum Failure: LocalizedError {
         case accessibility, capturePermission, eventPermission, ambiguousWindow, unsupportedControl, capture, busy, key
 
@@ -78,6 +88,7 @@ actor MacFloeComputerUse: MacDesktopClient {
     }
 
     private var observation: Observation?
+    private var captureTarget: CaptureTarget?
     private var busy = false
 
     func perform(_ action: MacDesktopControl.Arguments, pid: Int32, context: ToolContext) async throws -> MacDesktopReply {
@@ -108,12 +119,13 @@ actor MacFloeComputerUse: MacDesktopClient {
             return .init(text: next.summary)
         case .screenshot:
             observation = nil
-            let image = try await capture(window)
+            let image = try await capture(window, element: element, context: context)
             try checkCancellation(context)
             // The image and positions used for mouse input must describe the
             // same window at the same size and location.
             guard let current = Self.windows(for: pid, id: id).first, window.matches(current.frame),
                   CFEqual(try Self.accessibilityWindow(for: current, in: application), element) else {
+                captureTarget = nil
                 throw MacDesktopError.invalidTarget
             }
             let pixels = CGSize(width: image.width, height: image.height)
@@ -127,27 +139,29 @@ actor MacFloeComputerUse: MacDesktopClient {
                   CFEqual(prior.element, element) else { throw MacDesktopError.invalidTarget }
             observation = nil
             try checkCancellation(context)
+            let completion: InputCompletion
             switch action.action {
             case .click, .setValue:
                 guard let index = action.index, prior.nodes.indices.contains(index) else { throw MacDesktopError.invalidTarget }
                 let target = prior.nodes[index]
                 guard Self.belongs(target, to: element), !Self.isSecure(target) else { throw Failure.unsupportedControl }
-                try Self.act(action, on: target)
+                completion = try Self.act(action, on: target)
             case .keys:
                 guard let keys = action.keys,
                       let focused = Self.attribute(application, kAXFocusedUIElementAttribute).flatMap(Self.axElement),
                       Self.belongs(focused, to: element), !Self.isSecure(focused) else { throw Failure.unsupportedControl }
-                try Self.sendKey(keys, to: focused, pid: pid)
+                completion = try Self.sendKey(keys, to: focused, pid: pid)
             case .drag:
                 guard prior.window.matches(window.frame), let pixels = prior.pixels else { throw MacDesktopError.invalidTarget }
                 try await drag(action, in: window, pixels: pixels, context: context)
+                completion = .sent
             case .windows, .inspect, .screenshot:
                 throw MacDesktopError.invalidTarget
             }
-            // An AX action or event can update the target asynchronously.
-            // Observe once and let the next inspect confirm any delayed result.
+            // Skip the settle delay when reading back the target confirms
+            // the action. Posted events and unconfirmed changes may take time.
             do {
-                try await Task.sleep(for: .milliseconds(90))
+                if completion == .sent { try await Task.sleep(for: .milliseconds(90)) }
                 let next = try inspect(window, element: element, context: context)
                 observation = next
                 return .init(text: "Action sent.\nWindow after action:\n" + next.summary)
@@ -196,6 +210,7 @@ actor MacFloeComputerUse: MacDesktopClient {
         let deadline = ContinuousClock.now + .seconds(2)
         var stack = [(element, 0)]
         var nodes: [AXUIElement] = []
+        var visited = Set<AXUIElement>()
         var lines: [String] = []
         while let (node, depth) = stack.popLast() {
             try checkCancellation(context)
@@ -203,8 +218,8 @@ actor MacFloeComputerUse: MacDesktopClient {
                 lines.append("Window tree shortened.")
                 break
             }
+            if visited.contains(node) { continue }
             AXUIElementSetMessagingTimeout(node, 0.2)
-            if nodes.contains(where: { CFEqual($0, node) }) { continue }
             let fields = Self.fields(node, [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute,
                                             kAXDescriptionAttribute, kAXFocusedAttribute])
             guard fields.count == 5, let role = fields[0] as? String else { continue }
@@ -217,6 +232,7 @@ actor MacFloeComputerUse: MacDesktopClient {
             if !value.isEmpty { line += " value=\(Self.oneLine(value))" }
             lines.append(line)
             nodes.append(node)
+            visited.insert(node)
             if depth < 12 && !secure {
                 stack.append(contentsOf: Self.elements(node, kAXChildrenAttribute, max: 100).reversed().map { ($0, depth + 1) })
             }
@@ -226,9 +242,27 @@ actor MacFloeComputerUse: MacDesktopClient {
         return Observation(window: window, element: element, nodes: nodes, text: lines.joined(separator: "\n"), pixels: pixels)
     }
 
-    private func capture(_ window: Window) async throws -> CGImage {
-        guard CGPreflightScreenCaptureAccess() else { throw Failure.capturePermission }
+    private func capture(_ window: Window, element: AXUIElement, context: ToolContext) async throws -> CGImage {
+        guard CGPreflightScreenCaptureAccess() else {
+            captureTarget = nil
+            throw Failure.capturePermission
+        }
+        // Reuse the window filter briefly within this task run. Capture a new
+        // image each time and retain the owner and geometry checks around it.
+        if let target = captureTarget, target.expiresAt > .now,
+           target.window.owner == window.owner, target.window.id == window.id,
+           target.window.frame == window.frame, CFEqual(target.element, element) {
+            do {
+                return try await SCScreenshotManager.captureImage(contentFilter: target.filter,
+                                                                   configuration: target.configuration)
+            } catch {
+                captureTarget = nil
+                try checkCancellation(context)
+            }
+        }
+        captureTarget = nil
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+        try checkCancellation(context)
         guard let target = content.windows.first(where: {
             $0.windowID == window.id && $0.owningApplication?.processID == window.owner
         }), window.matches(target.frame) else { throw Failure.capture }
@@ -241,7 +275,10 @@ actor MacFloeComputerUse: MacDesktopClient {
         configuration.showsCursor = false
         configuration.ignoreShadowsSingleWindow = true
         configuration.ignoreGlobalClipSingleWindow = true
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        captureTarget = .init(window: window, element: element, filter: filter,
+                              configuration: configuration, expiresAt: .now + .seconds(5))
+        return image
     }
 
     private static func png(_ image: CGImage) throws -> Data {
@@ -252,7 +289,7 @@ actor MacFloeComputerUse: MacDesktopClient {
         return bytes as Data
     }
 
-    private static func act(_ action: MacDesktopControl.Arguments, on node: AXUIElement) throws {
+    private static func act(_ action: MacDesktopControl.Arguments, on node: AXUIElement) throws -> InputCompletion {
         guard attribute(node, kAXEnabledAttribute) as? Bool != false else { throw Failure.unsupportedControl }
         switch action.action {
         case .click:
@@ -260,15 +297,16 @@ actor MacFloeComputerUse: MacDesktopClient {
             if AXUIElementCopyActionNames(node, &actions) == .success,
                let options = actions as? [String], options.contains(kAXPressAction) {
                 guard AXUIElementPerformAction(node, kAXPressAction as CFString) == .success else { throw Failure.unsupportedControl }
-            } else if attribute(node, kAXRoleAttribute) as? String == kAXTextFieldRole
-                        || attribute(node, kAXRoleAttribute) as? String == kAXTextAreaRole {
-                try set(node, kAXFocusedAttribute, kCFBooleanTrue)
-            } else {
-                throw Failure.unsupportedControl
+                return .sent
             }
+            let role = attribute(node, kAXRoleAttribute) as? String
+            guard role == kAXTextFieldRole || role == kAXTextAreaRole else { throw Failure.unsupportedControl }
+            try set(node, kAXFocusedAttribute, kCFBooleanTrue)
+            return attribute(node, kAXFocusedAttribute) as? Bool == true ? .confirmed : .sent
         case .setValue:
             guard let value = action.value else { throw MacDesktopError.invalidTarget }
             try set(node, kAXValueAttribute, value as CFString)
+            return attribute(node, kAXValueAttribute) as? String == value ? .confirmed : .sent
         default:
             throw MacDesktopError.invalidTarget
         }
@@ -320,11 +358,19 @@ actor MacFloeComputerUse: MacDesktopClient {
     }
 
     private static func frame(_ element: AXUIElement) -> CGRect? {
-        guard let rawPosition = attribute(element, kAXPositionAttribute), CFGetTypeID(rawPosition) == AXValueGetTypeID(),
-              let rawSize = attribute(element, kAXSizeAttribute), CFGetTypeID(rawSize) == AXValueGetTypeID() else { return nil }
+        let geometry = fields(element, [kAXPositionAttribute, kAXSizeAttribute])
+        if geometry.count == 2, let result = frame(position: geometry[0] as CFTypeRef, size: geometry[1] as CFTypeRef) {
+            return result
+        }
+        return frame(position: attribute(element, kAXPositionAttribute), size: attribute(element, kAXSizeAttribute))
+    }
+
+    private static func frame(position: CFTypeRef?, size rawSize: CFTypeRef?) -> CGRect? {
+        guard let position, CFGetTypeID(position) == AXValueGetTypeID(),
+              let rawSize, CFGetTypeID(rawSize) == AXValueGetTypeID() else { return nil }
         var origin = CGPoint.zero
         var size = CGSize.zero
-        guard AXValueGetValue(rawPosition as! AXValue, .cgPoint, &origin),
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
               AXValueGetValue(rawSize as! AXValue, .cgSize, &size) else { return nil }
         return CGRect(origin: origin, size: size)
     }
@@ -338,13 +384,10 @@ actor MacFloeComputerUse: MacDesktopClient {
         try Task.checkCancellation()
     }
 
-    private static func sendKey(_ chord: String, to focused: AXUIElement, pid: pid_t) throws {
+    private static func sendKey(_ chord: String, to focused: AXUIElement, pid: pid_t) throws -> InputCompletion {
         guard CGPreflightPostEventAccess() else { throw Failure.eventPermission }
         let parts = chord.lowercased().split(separator: "+", omittingEmptySubsequences: false)
-        guard parts.count <= 5, let name = parts.last, let key = keyCodes[String(name)],
-              let source = CGEventSource(stateID: .privateState),
-              let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(key), keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(key), keyDown: false) else { throw Failure.key }
+        guard parts.count <= 5, let name = parts.last, let key = keyCodes[String(name)] else { throw Failure.key }
         var flags: CGEventFlags = []
         for part in parts.dropLast() {
             switch part {
@@ -366,13 +409,22 @@ actor MacFloeComputerUse: MacDesktopClient {
                 guard let value = AXValueCreate(.cfRange, &range),
                       AXUIElementSetAttributeValue(focused, kAXSelectedTextRangeAttribute as CFString, value) == .success
                 else { throw Failure.unsupportedControl }
-                return
+                var selection = CFRange()
+                guard let selectedRange = attribute(focused, kAXSelectedTextRangeAttribute),
+                      CFGetTypeID(selectedRange) == AXValueGetTypeID(),
+                      AXValueGetValue(selectedRange as! AXValue, .cfRange, &selection),
+                      selection.location == range.location, selection.length == range.length else { return .sent }
+                return .confirmed
             }
         }
+        guard let source = CGEventSource(stateID: .privateState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(key), keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(key), keyDown: false) else { throw Failure.key }
         down.flags = flags
         up.flags = flags
         down.postToPid(pid)
         up.postToPid(pid)
+        return .sent
     }
 
     private func drag(_ action: MacDesktopControl.Arguments, in window: Window,
