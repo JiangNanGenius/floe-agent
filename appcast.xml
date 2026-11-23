@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.17</title>
+      <pubDate>Mon, 23 Nov 2026 08:49:12 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.17</link>
+      <sparkle:version>47</sparkle:version>
+      <sparkle:shortVersionString>1.11.17</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>改进设备会话同步。 Improved paired conversation sync.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.17/Floe-Agent-1.11.17.dmg" length="64353141" type="application/octet-stream" sparkle:edSignature="pyYuWzFzqHodlPW03JS5rScryQh6veGk6h0dxmrXd8zDX5YiyxQoqY1+wZGSr2TCbAxtUTvC2KAgvE0lF9WyBQ==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.16</title>
       <pubDate>Mon, 23 Nov 2026 07:51:49 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.16</link>
