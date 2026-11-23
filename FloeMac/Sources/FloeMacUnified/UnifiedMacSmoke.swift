@@ -133,6 +133,10 @@ final class UnifiedMacSmoke {
             await exerciseTranscriptStageOrder(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--steer-transcript-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseSteerTranscript(model, endpoint: endpoint)
+            return
+        }
         let pagedHistoryPair = CommandLine.arguments.contains("--device-history-paged-pair-only")
         if CommandLine.arguments.contains("--device-history-only") || pagedHistoryPair {
             await exerciseDeviceHistory(model, usePagedPeer: pagedHistoryPair)
@@ -1477,6 +1481,73 @@ final class UnifiedMacSmoke {
                 "settledInOrder": settled == expected,
                 "reopenedInOrder": reopened == expected,
                 "liveB": liveB ?? [], "liveC": liveC ?? [], "settled": settled, "reopened": reopened])
+    }
+
+    private func exerciseSteerTranscript(_ model: BridgeAppModel, endpoint: URL) async {
+        let prompt = "Start the steering example."
+        let first = "Initial assistant stage."
+        let queued = "Use the queued steering message."
+        let direct = "Use the direct steering message."
+        let followUp = "Assistant continued after both messages."
+        guard let agent = await readyFixtureWorkbench(model) else { finish(["ready": false]); return }
+        agent.verifyAgentAnswers = false
+        guard agent.startNamedAgentFixture(prompt, modelID: "steer-order-fixture", endpoint: endpoint, projectID: nil)
+        else { finish(["started": false]); return }
+
+        func order() -> [String] {
+            let items = ThreadTimelineBuilder.buildConversation(messages: agent.messages, runs: agent.transcriptRuns,
+                eventsByRun: agent.transcriptEventsByRun, liveRunID: agent.transcriptLiveRunID, isRunning: agent.isSending,
+                liveStreamedText: agent.streamedText, liveReasoningText: agent.liveReasoning, pendingApprovals: [])
+            return items.compactMap { item in
+                switch item {
+                case .userMessage(let message): "user:" + message.content
+                case .assistantMessage(let text, _, _): "assistant:" + text
+                case .liveAssistantTail: "live:" + agent.streamedText
+                default: nil
+                }
+            }
+        }
+        let start = ContinuousClock.now + .seconds(5)
+        while (!agent.canSteer || !agent.streamedText.contains(first)), ContinuousClock.now < start {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard let id = agent.selectedID, let runID = agent.transcriptLiveRunID,
+              agent.canSteer, agent.streamedText.contains(first) else { finish(["runReady": false]); return }
+        agent.submitRunningInput(queued, mode: .queue, attachments: []) {}
+        let queuedDeadline = ContinuousClock.now + .seconds(2)
+        while (agent.queuedInputs[id]?.first?.content != queued || !agent.canSteer), ContinuousClock.now < queuedDeadline {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard let item = agent.queuedInputs[id]?.first, item.content == queued else { finish(["queued": false]); return }
+        await agent.promoteQueuedToGuidance(item)
+        let promoted = agent.queuedInputs[id]?.contains { $0.id == item.id && $0.status == .steerPending } == true
+        var accepted = false
+        agent.submitRunningInput(direct, mode: .steer, attachments: []) { accepted = true }
+
+        let prefix = ["user:" + prompt, "assistant:" + first, "user:" + queued, "user:" + direct]
+        let liveExpected = prefix + ["live:" + followUp]
+        let finalExpected = prefix + ["assistant:" + followUp]
+        var live: [String] = []
+        let end = ContinuousClock.now + .seconds(14)
+        while agent.isTaskRunning(id), ContinuousClock.now < end {
+            if agent.streamedText == followUp, agent.queuedInputs[id]?.isEmpty == true, live != liveExpected {
+                live = order()
+                if live == liveExpected, let content = visibleWorkbench?.contentView {
+                    capture(content, extension: "live-user-steers.png")
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(35))
+        }
+        let settled = order()
+        await agent.select(nil)
+        await agent.select(id)
+        let reopened = order()
+        let saved = agent.messages.filter { $0.content == queued || $0.content == direct }
+        finish(["queueConverted": promoted, "directAccepted": accepted, "guideWasUserLive": live == liveExpected,
+                "settledInOrder": settled == finalExpected, "reopenedInOrder": reopened == finalExpected,
+                "exactUserMessages": saved.count == 2 && saved.contains { $0.id == item.id && $0.content == queued }
+                    && saved.allSatisfy { $0.role == "user" && $0.runID == runID },
+                "live": live, "settled": settled, "reopened": reopened])
     }
 
     private actor DeviceHistoryFixturePages {

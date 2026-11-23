@@ -127,9 +127,12 @@ public final class ThreadHistoryPager: ObservableObject {
                                         fence: Fence) async throws {
         let message = try await store.message(id: id, conversationID: conversationID)
         try fence.guardCurrent()
-        if let message, state.replaceMessages([message]) {
-            publishMessages()
-        }
+        if let message { presentCommittedMessage(message) }
+    }
+
+    /// Presents a committed row without moving the earlier-message cursor.
+    public func presentCommittedMessage(_ message: PersistedMessage) {
+        if state.replaceMessages([message]) { publishMessages() }
     }
 
     /// Pages one earlier message window, exactly like the iPad "Load earlier".

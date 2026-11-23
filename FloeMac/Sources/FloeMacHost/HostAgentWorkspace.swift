@@ -1653,8 +1653,15 @@ final class HostAgentWorkspace: ObservableObject {
                                                                store: stores.conversations, fence: fence)
         }
         try await transcriptPager.loadRunHeaders(conversationID: id, store: stores.runs, fence: fence)
+        let focusedRunID = runID ?? transcriptPager.runs.first?.id
+        if let focusedRunID, let cursor = transcriptPager.earlierMessageCursor,
+           let store = stores.conversations as? SQLiteConversationStore {
+            let steers = try? await store.consumedSteers(conversationID: id, runID: focusedRunID, before: cursor)
+            try fence.guardCurrent()
+            if let steers, !steers.isEmpty { transcriptPager.mergeSearchWindow(steers) }
+        }
         try await hydrateTranscriptRuns(for: id, store: stores.runs, fence: fence)
-        if let runID = runID ?? transcriptPager.runs.first?.id {
+        if let runID = focusedRunID {
             try await transcriptPager.loadLatestEvents(runID: runID, store: stores.runs, fence: fence)
         }
     }
@@ -1712,6 +1719,23 @@ final class HostAgentWorkspace: ObservableObject {
         } catch {
             // Refresh the durable tail again at the end of the run.
         }
+    }
+
+    /// A queued steer can carry a timestamp outside the latest message page.
+    /// Read the committed user turn by its receipt and keep the page cursor.
+    private func showConsumedSteer(_ receipt: SteerConsumptionReceipt, in conversationID: UUID,
+                                   runtime: FloeMacSelfRuntime) async throws -> Bool {
+        let fence = transcriptFence(for: conversationID, selection: historySelection)
+        try fence.guardCurrent()
+        let stores = try await runtime.transcriptReadStores()
+        guard let message = try await stores.conversations.message(id: receipt.inputID, conversationID: conversationID),
+              message.role == "user", message.runID == receipt.runID else { return false }
+        try fence.guardCurrent()
+        try? await transcriptPager.loadLatestEvents(runID: receipt.runID, store: stores.runs, fence: fence)
+        try fence.guardCurrent()
+        transcriptPager.presentCommittedMessage(message)
+        queuedInputs[conversationID]?.removeAll { $0.id == receipt.inputID }
+        return true
     }
 
     func searchTranscript(_ query: ConversationSearchQuery, in conversationID: UUID) async -> ThreadSearchResult {
@@ -2983,11 +3007,14 @@ final class HostAgentWorkspace: ObservableObject {
                         await refreshTranscriptEvents(runID: handle.identity.runID, conversationID: taskID, runtime: runtime)
                     case .harness(.approvalResolved):
                         await refreshTranscriptEvents(runID: handle.identity.runID, conversationID: taskID, runtime: runtime)
-                    case .harness(.userInputConsumed):
-                        await refreshQueue(taskID)
-                        if selectedID == taskID {
-                            try? await refreshTranscript(for: taskID, runtime: runtime, runID: handle.identity.runID)
+                    case .harness(.userInputConsumed(let receipt)):
+                        if selectedID == taskID, receipt.runID == handle.identity.runID {
+                            let showedMessage = (try? await showConsumedSteer(receipt, in: taskID, runtime: runtime)) == true
+                            if !showedMessage {
+                                try? await refreshTranscript(for: taskID, runtime: runtime, runID: receipt.runID)
+                            }
                         }
+                        await refreshQueue(taskID)
                     #endif
                     default:
                         break
