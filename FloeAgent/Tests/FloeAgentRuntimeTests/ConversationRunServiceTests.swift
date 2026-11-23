@@ -16,6 +16,50 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.ConversationRunService")
 struct ConversationRunServiceTests {
 
+    @Test("A consumed user steer survives a missing legacy Goal binding")
+    func consumedGoalSteerKeepsTheUserMessage() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database)
+        let runs = SQLiteRunStore(database: database)
+        let inputs = SQLiteRunningInputStore(database: database)
+        let conversationID = UUID(), runID = UUID()
+        let sent = Date(timeIntervalSince1970: 1_780_000_000)
+        try await conversations.saveConversation(.init(id: conversationID, title: "Guidance",
+                                                        createdAt: sent, updatedAt: sent))
+        try await runs.saveRun(.init(id: runID, conversationID: conversationID,
+                                     state: "streamingModel", goal: "Original request", startedAt: sent))
+        let input = try await inputs.enqueue(.init(conversationID: conversationID, targetRunID: runID,
+                                                   content: "Follow this guidance", mode: .steer,
+                                                   executionMode: "goal", createdAt: sent))
+        _ = try await inputs.beginSteerPromotion(id: input.id, expectedRunID: runID)
+        try await inputs.markSteerAccepted(id: input.id, runID: runID)
+        let provider = TestFixtures.localhostProvider()
+        let service = ConversationRunService(configuration: .init(conversationID: conversationID, provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id)), adapter: MockAdapter(), policy: HumanApprovalPolicy(),
+            executor: MockExecutor(), intelligenceStore: SQLiteIntelligenceStore(database: database),
+            conversationStore: conversations, runStore: runs, runningInputStore: inputs, runID: runID)
+
+        await service.handleConsumedSteer(.init(id: input.id, content: input.content, createdAt: sent))
+
+        let message = try #require(await conversations.message(id: input.id, conversationID: conversationID))
+        #expect(message.role == "user")
+        #expect(message.runID == runID)
+        #expect(message.content == input.content)
+        #expect(message.createdAt == sent)
+        #expect(try await inputs.input(id: input.id)?.status == .consumed)
+        #expect(try await runs.run(id: runID)?.goalID == nil)
+
+        for offset in 1...22 {
+            try await conversations.appendMessage(.init(id: UUID(), conversationID: conversationID, role: "assistant",
+                content: "Later \(offset)", createdAt: sent.addingTimeInterval(Double(offset)), runID: runID))
+        }
+        let page = try await conversations.messagePage(conversationID: conversationID, before: nil, limit: 20)
+        #expect(!page.messages.contains { $0.id == input.id })
+        let cursor = try #require(page.earlierCursor)
+        #expect(try await conversations.consumedSteers(conversationID: conversationID, runID: runID, before: cursor) == [message])
+    }
+
     @Test("A real browser ownership notice leaves runtime.wait suspended and reaches only its owner at the model boundary", .timeLimit(.minutes(1)))
     func browserControlNoticeDoesNotInterruptRuntimeWait() async throws {
         let database = try DatabaseManager.inMemory()
