@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="device_history_settings">Device Sync</string>
+    <string name="device_history_enable">Sync conversations</string>
+    <string name="device_history_summary">Confirm pairing on both devices, then choose which conversation histories to share.</string>
+    <string name="device_history_public_relay">Use public test relay</string>
+    <string name="device_history_custom_relay">Custom relay</string>
+    <string name="device_history_allow_lan">Allow local network access</string>
+    <string name="device_history_relay_hint">Enter an HTTPS relay address. Clear the field to use a direct connection.</string>
+    <string name="device_history_save_relay">Save relay</string>
+    <string name="device_history_this_device">This device</string>
+    <string name="device_history_pairing_info">Floe device pairing info</string>
+    <string name="device_history_copy_pairing">Copy pairing info</string>
+    <string name="device_history_refresh_address">Refresh pairing address</string>
+    <string name="device_history_peers">Paired devices</string>
+    <string name="device_history_add_peer">Add device</string>
+    <string name="device_history_shared_count">%1$d conversations shared</string>
+    <string name="device_history_peer_name">Device name</string>
+    <string name="device_history_paste_pairing">Paste the other device’s pairing info</string>
+    <string name="device_history_verify_peer">Verify device</string>
+    <string name="device_history_verify_fingerprint">Verify the fingerprint</string>
+    <string name="device_history_fingerprint_hint">Compare this fingerprint with the one shown on the other device.</string>
+    <string name="device_history_confirm_pair">Confirm pairing</string>
+    <string name="device_history_bad_pairing">Floe couldn’t read this pairing info. Copy it again from the other device.</string>
+    <string name="device_history_share_section">Share from this device</string>
+    <string name="device_history_load_local">Load conversations</string>
+    <string name="device_history_receive_section">Receive from this device</string>
+    <string name="device_history_list_remote">Find shared conversations</string>
+    <string name="device_history_no_remote">This device has shared no conversations with you.</string>
+    <string name="device_history_receive">Receive</string>
+    <string name="device_history_remove">Remove device</string>
+    <string name="device_history_remove_hint">Remove %1$s and revoke its access to your shared conversations?</string>
+    <string name="device_history_wait_store">Waiting for local conversations to become available.</string>
+    <string name="device_history_start_failed">Device sync couldn’t start. Check the relay setting or try again.</string>
+    <string name="device_history_settings_failed">Floe couldn’t read or save the device sync settings.</string>
+    <string name="device_history_transfer_failed">Sync failed. Check that the other device is available and still sharing this conversation.</string>
+    <string name="device_history_conflict">A message differs across devices. Both copies were preserved.</string>
+    <string name="device_history_task_busy">This conversation is running. Try again after it finishes.</string>
+    <string name="device_history_incompatible">These devices use incompatible sync versions.</string>
+    <string name="device_history_import_unconfirmed">Import hasn’t been confirmed. Check the conversation in Tasks before trying again.</string>
+    <string name="device_history_bad_relay">Enter a valid HTTPS relay address.</string>
+    <string name="device_history_relay_pending">The relay is still connecting. Refresh the pairing address before sharing it across networks.</string>
+    <string name="device_history_received">%1$d new messages received. Open the conversation in Tasks.</string>
+</resources>

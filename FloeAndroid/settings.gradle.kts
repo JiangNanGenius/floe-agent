@@ -101,6 +101,7 @@ include(":feature:desktopassist")
 // plus presentation. Main owns the App route and lockfile regeneration; the
 // App host controller and trusted model-tool pump are App-owned sources.
 include(":core:devicecommunication", ":feature:devicecommunication")
+include(":core:devicelink")
 // C06 generic mail screens (presentation only; App host owns the platform
 // TLS lane, credential gateway, journals and SAF streaming).
 include(":feature:mail")

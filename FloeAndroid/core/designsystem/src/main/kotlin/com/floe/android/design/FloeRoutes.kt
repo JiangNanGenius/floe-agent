@@ -90,6 +90,7 @@ enum class FloeSettingsSection {
     AUXILIARY,
     EXECUTION,
     REMOTE,
+    DEVICE_SYNC,
     SYSTEM_CAPABILITIES,
     ;
 
@@ -98,7 +99,7 @@ enum class FloeSettingsSection {
          * ordinary entry belongs to Remote, alongside host management. */
         val visibleCases: List<FloeSettingsSection> = listOf(
             GENERAL, MEMORY, PROVIDERS, AUXILIARY, SKILLS, WEB_SEARCH,
-            PRIVACY, EXECUTION, SYSTEM_CAPABILITIES, REMOTE, USAGE, DIAGNOSTICS,
+            PRIVACY, DEVICE_SYNC, EXECUTION, SYSTEM_CAPABILITIES, REMOTE, USAGE, DIAGNOSTICS,
         )
     }
 }

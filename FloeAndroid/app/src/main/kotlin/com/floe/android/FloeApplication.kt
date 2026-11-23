@@ -448,6 +448,14 @@ class FloeApplication : Application() {
 
     internal val fontSettings by lazy { com.floe.android.host.fonts.FontSettingsHost(this, hostScope) }
 
+    internal val deviceHistorySync by lazy {
+        com.floe.android.host.devicesync.DeviceHistorySyncHost(
+            this, hostScope, com.floe.android.host.devicesync.AndroidNativeDeviceHistoryStore(),
+        ) { epoch, taskId ->
+            runtimeHost?.conversations?.deviceHistoryCommitted(epoch, taskId.toString())
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         // Isolated PDF rendering receives only verified file descriptors;
@@ -785,6 +793,7 @@ class FloeApplication : Application() {
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     val epoch = runtimeHost?.nativeRootEpoch()
                     if (epoch != null && epoch > 0) {
+                        deviceHistorySync.storeChanged(epoch)
                         // Provider IO is independent of installed Linux. Rebind
                         // only after the previous actual provider pump drained.
                         startWorkspaceSourceLane(epoch)
@@ -844,6 +853,7 @@ class FloeApplication : Application() {
                     }
                 }
             } else if (capability is RuntimeBootstrapCapability.Stopped) {
+                deviceHistorySync.storeChanged(null)
                 cancelPendingNotesLaunches()
                 // Retirement: stop observing the retired root generation so a
                 // late owned-work wake can never schedule work against a
