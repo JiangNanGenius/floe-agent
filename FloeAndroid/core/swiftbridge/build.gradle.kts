@@ -58,6 +58,7 @@ android {
 }
 dependencies {
     implementation(project(":core:contracts"))
+    implementation(libs.kotlinx.coroutines.core)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
     // Self-target RB1 lifecycle test decodes the v3 wire with the SAME
