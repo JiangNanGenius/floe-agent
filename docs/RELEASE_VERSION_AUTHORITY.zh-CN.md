@@ -13,6 +13,8 @@
 
 ## 本轮版本记录
 
+1.8.75（396）用于内部 Floe QA 和公开 TestFlight。冻结前已核对 Apple 构建号及版本标签未被占用。交付状态以 Apple 回读为准。
+
 1.8.74（395）固定于 `221db11f160a3c3efa2d075896dc8974bdb3b3dd`／`v1.8.74`。Floe QA 已可安装，公开 TestFlight 已送审。 [395 交付记录](releases/builds/FLOE_1.8.74_BUILD395_DELIVERY.md)
 
 1.8.73（394）冻结在 `700381f1bc067fcc3b9258ca47f23f2cd76bbb2e`。已联调 Mac 会话同步；Floe QA 可安装，公开 TestFlight 状态为 `WAITING_FOR_BETA_REVIEW`。 [394 交付记录](releases/builds/FLOE_1.8.73_BUILD394_DELIVERY.md)
