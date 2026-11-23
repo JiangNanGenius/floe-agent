@@ -8,8 +8,8 @@
     "workspaces": "ios"
   },
   "id": "floe.help.quickstart",
-  "version": "1.3.0",
-  "sourceRevision": "",
+  "version": "1.4.0",
+  "sourceRevision": "de32aca14c13b555b4e8819e5b14c51cd3b55c7c",
   "title": {
     "en": "Floe Help",
     "zh-Hans": "Floe 帮助中心",
@@ -60,8 +60,8 @@
     {
       "path": "help/articles/de/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 136810,
-      "sha256": "e726d6a1bdfc5d39d36e4cd454258acc2876a3e3c43b86b2f1b5b5cdcebf319d"
+      "byteCount": 139262,
+      "sha256": "b74a1ffe813f561a78de2d3173822e66578e94b18d0a1d3d3a76c38ae8426165"
     },
     {
       "path": "help/articles/de/voice.output.html",
@@ -72,8 +72,8 @@
     {
       "path": "help/articles/de/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 20582,
-      "sha256": "0181bd8eda092e2b15142f97fd013ab02b010714732f9d78b53fc0b3b4ebe484"
+      "byteCount": 32673,
+      "sha256": "b6d02d37f3cab5ba48cb13c0dbf1afdf56ac34dbc5a0085cdd4c19d9a88955e5"
     },
     {
       "path": "help/articles/en/environment.memory.html",
@@ -102,8 +102,8 @@
     {
       "path": "help/articles/en/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 109754,
-      "sha256": "d7bc9ad5426454a328d610a35ad7ac186d11f8a0cebdd0fce527dcccd1490812"
+      "byteCount": 114519,
+      "sha256": "cedaa6ffbcae7ab3d0ebb0df04803d979978158d7b71b67419e7189159e78ba7"
     },
     {
       "path": "help/articles/en/voice.output.html",
@@ -114,8 +114,8 @@
     {
       "path": "help/articles/en/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 17384,
-      "sha256": "ab0853a549388ad3099a7b709bc764081c8a779f2a807662f69d64a5097657b7"
+      "byteCount": 29700,
+      "sha256": "48c93554fd1d1cb001ab36e696a5292696a0d177239c5e05307229627da15bf7"
     },
     {
       "path": "help/articles/es/environment.memory.html",
@@ -144,8 +144,8 @@
     {
       "path": "help/articles/es/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 132173,
-      "sha256": "98bd134d2a9e9226a730bb3912e10f3d23641a63d605870bb8d94efae091c3de"
+      "byteCount": 135146,
+      "sha256": "c3d42ee1768ca864d2b24a1681536918dfaf0666d794d072b276be62094aa81d"
     },
     {
       "path": "help/articles/es/voice.output.html",
@@ -156,8 +156,8 @@
     {
       "path": "help/articles/es/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 20440,
-      "sha256": "156798c0352d39e5e7515c0218f092964a6497d8345c0a6b769132a56aeb0cc0"
+      "byteCount": 32634,
+      "sha256": "edab25bea36a3e8312ee1e0ae1ee9db898a1d01b5efe830d01481237d01ecb02"
     },
     {
       "path": "help/articles/fr/environment.memory.html",
@@ -186,8 +186,8 @@
     {
       "path": "help/articles/fr/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 144516,
-      "sha256": "561fc654cdd1ec80e2968d5e87d1e2568ff83dfff322743c79d65ab097856caa"
+      "byteCount": 146456,
+      "sha256": "31bd87fb03da1a901a578cbecb623d0dc2823e18f33d7eb916dece494ed2f517"
     },
     {
       "path": "help/articles/fr/voice.output.html",
@@ -198,8 +198,8 @@
     {
       "path": "help/articles/fr/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 21976,
-      "sha256": "564d9fd8df9f3fe52b85ba36ae7a7caff4e4807747594612107b59be4a903ff4"
+      "byteCount": 33993,
+      "sha256": "0989dbc9bec4ca3081a3da80be5f16446973a2e7d4c31d17d006280895ca7698"
     },
     {
       "path": "help/articles/ja/environment.memory.html",
@@ -228,8 +228,8 @@
     {
       "path": "help/articles/ja/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 159871,
-      "sha256": "ee27953eeaf1e9670bb003c5f9cf30c4396653ded196de5289d6718ea4650bfb"
+      "byteCount": 160641,
+      "sha256": "56760086dcf06d727ab2c25cfa15999e69734e4c145a970cd019f802efefdebb"
     },
     {
       "path": "help/articles/ja/voice.output.html",
@@ -240,8 +240,8 @@
     {
       "path": "help/articles/ja/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 23773,
-      "sha256": "37bc42e0dec068a2d3b9094bbe17b89e9706a1b7dbb141bf7963959e670e92cd"
+      "byteCount": 35697,
+      "sha256": "18b05c4404d11d18e86d153aaf1e8010716af30d07a0181611676c31ac37dde8"
     },
     {
       "path": "help/articles/ko/environment.memory.html",
@@ -270,8 +270,8 @@
     {
       "path": "help/articles/ko/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 137717,
-      "sha256": "aae114d420f6b785bf3e44076af82fc2acf4d6be5ad475c162fc90cbd307fc23"
+      "byteCount": 140215,
+      "sha256": "e84bfbcd59478f97deb41cbc7e884c372cb995b3343614bfa5dd088a9fc256df"
     },
     {
       "path": "help/articles/ko/voice.output.html",
@@ -282,8 +282,8 @@
     {
       "path": "help/articles/ko/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 20736,
-      "sha256": "c4385bf4c50f122873faa60bfb12e89fad5e418493a6ae80fb4df8821e9786e3"
+      "byteCount": 32800,
+      "sha256": "4c45e16932e694f96b398c1eb882bdfa3a3e481f97987a92bb070637f541f471"
     },
     {
       "path": "help/articles/pt-BR/environment.memory.html",
@@ -312,8 +312,8 @@
     {
       "path": "help/articles/pt-BR/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 127905,
-      "sha256": "bea31fee15dfd0f857653f4928bf2f9e031a36cfb25cbd63d6871234d1afa6e8"
+      "byteCount": 131248,
+      "sha256": "21c10f23e3a61fe57b6bcb0df50be273875b7b70faa9fbe811749c233a63bec8"
     },
     {
       "path": "help/articles/pt-BR/voice.output.html",
@@ -324,8 +324,8 @@
     {
       "path": "help/articles/pt-BR/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 20055,
-      "sha256": "317b1739b8b92adaa46b5eb1caea9fedfba6d13fdc813d38e288dbfef571ef65"
+      "byteCount": 32223,
+      "sha256": "20b0daa05f07b83c8450adfa48af526d767746c4cd646338034e152e0c51aeec"
     },
     {
       "path": "help/articles/zh-Hans/environment.memory.html",
@@ -354,8 +354,8 @@
     {
       "path": "help/articles/zh-Hans/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 102113,
-      "sha256": "5cff6919cfb08e0da898b6998126fff58a964d505e6aa0047394eff72e34339b"
+      "byteCount": 106985,
+      "sha256": "bc2bdc6dbdfc04ac401396b80969c0eb1c34a3dfa6abe6050df8a5e5b90f9efa"
     },
     {
       "path": "help/articles/zh-Hans/voice.output.html",
@@ -366,8 +366,8 @@
     {
       "path": "help/articles/zh-Hans/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 15514,
-      "sha256": "b74548fbc4a40ce469da1fde809465c8f83b1da2e3ed7b2221a29c28fcadbd33"
+      "byteCount": 26811,
+      "sha256": "df20a8574a8ca6abcac6889b65a6dcff3a9dd0f5b25586eb1646535c4ee36226"
     },
     {
       "path": "help/articles/zh-Hant/environment.memory.html",
@@ -396,8 +396,8 @@
     {
       "path": "help/articles/zh-Hant/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 102332,
-      "sha256": "88ebc982a59b76cd8de92abacb03ad7af395b71936d0f86230730dceb5674b92"
+      "byteCount": 107222,
+      "sha256": "21a23c61b513debd0b6c8327d99d14a0dbd628d68b92cff27b582970568e9a30"
     },
     {
       "path": "help/articles/zh-Hant/voice.output.html",
@@ -408,8 +408,8 @@
     {
       "path": "help/articles/zh-Hant/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 15529,
-      "sha256": "2cce43e5b25217bfc33e712b0a4694c5c936de2a3959559a1e97c00f14018542"
+      "byteCount": 26826,
+      "sha256": "fae09998d22c2ba2919d03ce68ed71eb6e4673dc4857879dcf5c55ba0f9d54d7"
     },
     {
       "path": "help/assets/guide/canvas-current.webp",
@@ -422,6 +422,138 @@
       "mimeType": "image/webp",
       "byteCount": 605190,
       "sha256": "2463c23350211e53178bd58aa5417e4a210a411400e0fc4b82fb6f29321cf9cc"
+    },
+    {
+      "path": "help/assets/guide/ipad-cad-rectangle.webp",
+      "mimeType": "image/webp",
+      "byteCount": 309878,
+      "sha256": "5c6504da594138da10302206b529503643d9d0782839bb897c6bc64b68f469e1"
+    },
+    {
+      "path": "help/assets/guide/ipad-cad-sketch.webp",
+      "mimeType": "image/webp",
+      "byteCount": 312962,
+      "sha256": "3107ac401f0dfb72e149affc2d2c1fba35e5324dcfd542bb47e3d6d7eff85cda"
+    },
+    {
+      "path": "help/assets/guide/ipad-cad-solid.webp",
+      "mimeType": "image/webp",
+      "byteCount": 495408,
+      "sha256": "a293b7cebcc4cf3d3a17ee713dfbf878e1b432a6672d045e46a9e2f06b73b978"
+    },
+    {
+      "path": "help/assets/guide/ipad-calculator.webp",
+      "mimeType": "image/webp",
+      "byteCount": 31694,
+      "sha256": "4b009dd5276bec2e7f72ccc520ad837d623770180862fcfd93bc389afb428d9e"
+    },
+    {
+      "path": "help/assets/guide/ipad-canvas-note.webp",
+      "mimeType": "image/webp",
+      "byteCount": 196506,
+      "sha256": "a159333fd75dbd7dd518e1e104d4258016a916947c01df05f5eb114e6b8b356c"
+    },
+    {
+      "path": "help/assets/guide/ipad-excel-pdf-refresh.webp",
+      "mimeType": "image/webp",
+      "byteCount": 122842,
+      "sha256": "7c17b5500007f11e289760eb7682eb4550fa998b54a635d1791c63f9eac8bc0f"
+    },
+    {
+      "path": "help/assets/guide/ipad-help-center.webp",
+      "mimeType": "image/webp",
+      "byteCount": 119210,
+      "sha256": "8b8e2c5e29e1ae5f6845bcbc8931fef71f5c1f80f24516ea613fdf34ec33b506"
+    },
+    {
+      "path": "help/assets/guide/ipad-help-setting.webp",
+      "mimeType": "image/webp",
+      "byteCount": 165936,
+      "sha256": "366627e096080c987e47e7a8573981c376947bc9e0fc6f469f81cd83fc5a0a91"
+    },
+    {
+      "path": "help/assets/guide/ipad-image-alpha.webp",
+      "mimeType": "image/webp",
+      "byteCount": 97134,
+      "sha256": "24063911861cca1401a7a7beb1a685b6984d85b21e910e8113cb13ef9b785258"
+    },
+    {
+      "path": "help/assets/guide/ipad-image-layers.webp",
+      "mimeType": "image/webp",
+      "byteCount": 74028,
+      "sha256": "4edbf52b963ecc8f986aaa0ea2e605960bedf632675a5ed7198792fa76c51453"
+    },
+    {
+      "path": "help/assets/guide/ipad-map-attributes.webp",
+      "mimeType": "image/webp",
+      "byteCount": 44388,
+      "sha256": "708bccd4d7446b2c8aabd4f617bb98cbc992d841959ea09adb13208f88f3228b"
+    },
+    {
+      "path": "help/assets/guide/ipad-map-export.webp",
+      "mimeType": "image/webp",
+      "byteCount": 99526,
+      "sha256": "10a22f24e2e472a57647a7f73deac0ef1c9559b415b4af8c5e7b6b65bec9a71d"
+    },
+    {
+      "path": "help/assets/guide/ipad-map-fit.webp",
+      "mimeType": "image/webp",
+      "byteCount": 49042,
+      "sha256": "33a44df8d6eabfe3ede3108e17891c2cd80f0d1c64502a69af727c913c71ca53"
+    },
+    {
+      "path": "help/assets/guide/ipad-meeting-playback.webp",
+      "mimeType": "image/webp",
+      "byteCount": 85298,
+      "sha256": "2d9cbc6bdd5dc6c372d9d8605f76813af661f9a904193a5f1e985e01e1decf60"
+    },
+    {
+      "path": "help/assets/guide/ipad-meeting-workbench.webp",
+      "mimeType": "image/webp",
+      "byteCount": 62018,
+      "sha256": "a7f3456238ebcfd6a6c02b45a6a20333e204b568cfc82b517d9420e6db54b1a7"
+    },
+    {
+      "path": "help/assets/guide/ipad-model-provider.webp",
+      "mimeType": "image/webp",
+      "byteCount": 87300,
+      "sha256": "5334e251bd129ab590015e909a586e6a49667b5ac47e383d1864f37f7d293373"
+    },
+    {
+      "path": "help/assets/guide/ipad-notes-shape.webp",
+      "mimeType": "image/webp",
+      "byteCount": 35580,
+      "sha256": "7660541f6a7bb308ce262b75c0ab35fa427bd160b15c7e9730911b98cde0b2cf"
+    },
+    {
+      "path": "help/assets/guide/ipad-protractor.webp",
+      "mimeType": "image/webp",
+      "byteCount": 48176,
+      "sha256": "d87804a1ee7c55bc9c93cf50e33c7282e78a2d4dd673cef85167920494773a77"
+    },
+    {
+      "path": "help/assets/guide/ipad-skill-hub.webp",
+      "mimeType": "image/webp",
+      "byteCount": 600132,
+      "sha256": "adf9563c7f862ef2c3956d77690dabe70b9d92ca0652b68873af2ecfd5ac584e"
+    },
+    {
+      "path": "help/assets/guide/ipad-space-overview.webp",
+      "mimeType": "image/webp",
+      "byteCount": 54440,
+      "sha256": "26eaf605ca1ed782f8c900febfa51eb0ea403bab112f622312f31d675f68c08a"
+    },
+    {
+      "path": "help/assets/guide/ipad-toolbox.webp",
+      "mimeType": "image/webp",
+      "byteCount": 65424,
+      "sha256": "3bad0c6784c42e885ef73cde7e328a68c0ace9ee34b7eb5b9890e579d3be09a7"
+    },
+    {
+      "path": "help/assets/guide/ipad-video-split.webp",
+      "mimeType": "image/webp",
+      "byteCount": 162544,
+      "sha256": "9342e117269e4a4957e414568b0babed0ed12d9a13ff0dccc87580494067d085"
     },
     {
       "path": "help/assets/guide/notes-current.webp",
@@ -438,56 +570,56 @@
     {
       "path": "help/index/de.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 167226,
-      "sha256": "80deedad7be01c300aafb209be7128db4b63ffaf7dd1f382b60d93897f7e26df"
+      "byteCount": 177358,
+      "sha256": "fb7f4a33fd6e096d0fd0a8c9a68fc4b5af34db8b25f7bd162466c3d09186f9de"
     },
     {
       "path": "help/index/en.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 133050,
-      "sha256": "820e1348313a769bd905964468a4c1fed209ce42a0497365611c6e4c7cc4b06b"
+      "byteCount": 145792,
+      "sha256": "9dd39b3b8866b0800a81c7bdc2fac78786a3cb5cb3cc50670ffb9c41c6dc3807"
     },
     {
       "path": "help/index/es.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 161576,
-      "sha256": "847e8d947504fd59d43b327d32127d120419bba542f6083d71377b233fee0e8d"
+      "byteCount": 172341,
+      "sha256": "7dfca74c54de4bbb098fdc44408cf95cf3b10b2cb8c5253ce9e95361158c9571"
     },
     {
       "path": "help/index/fr.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 170172,
-      "sha256": "254744fe415da7e2f68d5aa1d2b7bb650c642c734f29cc52f884439765bc7027"
+      "byteCount": 180248,
+      "sha256": "cca75b79b5acb64a016fe60599577d5f08a24db49810e77a9a465ba8a4a637a6"
     },
     {
       "path": "help/index/ja.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 200403,
-      "sha256": "001fe90d0a3a419786139076b7a6389256437d94f4c00566310beb85e01d350b"
+      "byteCount": 207968,
+      "sha256": "091bbf4f9bd14843e59eb905d5c53bbce52ed1e31f1d8abe2f228b9e2d8ee707"
     },
     {
       "path": "help/index/ko.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 170289,
-      "sha256": "cdfa5a91af18f3eb0580f9ccdba5410b76feb0d2e3f1de6e8cbdb085c4756cd8"
+      "byteCount": 179968,
+      "sha256": "2a73c45da6c4a776b346bba9a501e4e4ac1df4c74ecc034b2360277e67e55522"
     },
     {
       "path": "help/index/pt-BR.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 156532,
-      "sha256": "f58d59d7f19a0b6924d68797dfac87bbc00b0196e1dcc7eed612b214faaecf58"
+      "byteCount": 167641,
+      "sha256": "43bedb321b3dee60d548d17e3c7312cee78b50b74316f99ee173f77255d44f2a"
     },
     {
       "path": "help/index/zh-Hans.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 123745,
-      "sha256": "c00df6342c6026e0a4e09fc75bf391a9ca316a9e740799dd49757bc739ef9b59"
+      "byteCount": 135480,
+      "sha256": "61dc324a5cdd520d263d4cd4b0575e4f1e4e3894999b6afe1d297c60852db32e"
     },
     {
       "path": "help/index/zh-Hant.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 124042,
-      "sha256": "aef33aeb44f53f2155ecd2d22340c96b42152e7f891cdc7eea0a609a049794aa"
+      "byteCount": 135792,
+      "sha256": "de3bb81d548c18835ffe0323ad87b5163776dfb163590c0420cd5eb0ddecc91e"
     },
     {
       "path": "help/styles/help.css",
@@ -498,56 +630,56 @@
     {
       "path": "index.de.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 3567,
-      "sha256": "69e03f79a78812744cc511c84fc484355ee0d1b0451e398d94d523659cf879af"
+      "byteCount": 3625,
+      "sha256": "8aae7b2f204fbae633d2f357f905e7524a5eac445bce7aeff840562ce0d313a7"
     },
     {
       "path": "index.es.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 3666,
-      "sha256": "a181e8ba794f8f8a97c53ca364b3010968ef8f9bcdbbaad4ade14f6dbbd97d14"
+      "byteCount": 3731,
+      "sha256": "7df0a904388326f79beddd2ee1edb14ef627c9d242177fabee2608e89969d7df"
     },
     {
       "path": "index.fr.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 3726,
-      "sha256": "75fce065383afe85fa5c2ff68e110864e44331ce0ac873684b4968aa6a7c8354"
+      "byteCount": 3792,
+      "sha256": "3bc01688238aa3028fe23b0b0e363f2c768f71e95280e4d1beccf030234f267e"
     },
     {
       "path": "index.ja.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 4473,
-      "sha256": "5fa83c07425859f9afa1f94efec72e0011d4ef440c6190d24c1934e595bcca23"
+      "byteCount": 4536,
+      "sha256": "7fb2cdd255631b07478a7dfc3af14a58d1781dea3ae7235c45191f5df676bdc2"
     },
     {
       "path": "index.ko.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 3681,
-      "sha256": "299acb24cae4d84d43cae661eb2eb8395fed4f514a5d766e9ff50d014775c88f"
+      "byteCount": 3737,
+      "sha256": "73152553aa0cb01d67c4038fc7af112dc6202a1085cfbbdcc6249a0e6a7162c0"
     },
     {
       "path": "index.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 3037,
-      "sha256": "4863cfa1ffc5142057edd8a68fc55f32dc62123983299927b80f163ab8f166c1"
+      "byteCount": 3095,
+      "sha256": "f77e6ca4c537cc19577a8781c1eeb2bf393e936bebfcae7aa46ae741bd2ae436"
     },
     {
       "path": "index.pt-BR.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 3472,
-      "sha256": "ddf71e23a74fc9599e1b58de2176aa7cc3872e819f08d62f653e50b1fc4b8124"
+      "byteCount": 3532,
+      "sha256": "4bc8b3c913a741203301de714b2c93f5388ddc52828d1fc764b758dba4f6041a"
     },
     {
       "path": "index.zh-Hans.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 2981,
-      "sha256": "ee2cc4c912b81b452eaf0c58c742fda421659f33c7c39c7568342c238c898d11"
+      "byteCount": 3038,
+      "sha256": "6b4af03d5c440f21ebeec9dabdbf16227cac24cc76ad97a7eca35d015ed93e83"
     },
     {
       "path": "index.zh-Hant.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 2996,
-      "sha256": "222e19d4c9548969aa7ef63b0b5441ff506d970261b9d5cd475503c1b3dc53a8"
+      "byteCount": 3053,
+      "sha256": "b2d61240daf5101b8e39d069ddda621c33a532778eb5916f94f6bf1f60e24d5b"
     }
   ]
 }

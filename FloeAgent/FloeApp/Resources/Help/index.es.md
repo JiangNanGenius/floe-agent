@@ -1,4 +1,4 @@
-# Ayuda Floe (floe.help.quickstart 1.3.0)
+# Ayuda Floe (floe.help.quickstart 1.4.0)
 
 Este es el paquete de documentos sin conexión para el centro de ayuda integrado Floe. Léalo en la aplicación en Configuración > Ayuda con contenido, búsqueda e imágenes.
 
@@ -96,3 +96,4 @@ Ajusta cuánta memoria puede usar el entorno de ejecución Linux compartido.
 
 ---
 Los enlaces externos abren el repositorio público floe-agent y necesitan una conexión de red.
+Revisión de la fuente: de32aca14c13b555b4e8819e5b14c51cd3b55c7c

@@ -1,4 +1,4 @@
-# Floe Hilfe (floe.help.quickstart 1.3.0)
+# Floe Hilfe (floe.help.quickstart 1.4.0)
 
 Dies ist das Offline-Dokumentenpaket für das integrierte Floe-Hilfezentrum. Lesen Sie es in der App unter Einstellungen > Hilfe zu Inhalten, Suche und Bildern.
 
@@ -96,3 +96,4 @@ Passen Sie an, wie viel Speicher die gemeinsam genutzte Linux-Laufzeit verbrauch
 
 ---
 Externe Links öffnen das öffentliche Floe-Agent-Repository und benötigen eine Netzwerkverbindung.
+Quellenrevision: de32aca14c13b555b4e8819e5b14c51cd3b55c7c

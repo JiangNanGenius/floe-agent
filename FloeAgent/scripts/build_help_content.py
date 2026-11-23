@@ -3,9 +3,8 @@
 """Deterministic builder for the built-in Floe help package.
 
 Compiles the explicitly selected shared + iOS bilingual guides from
-docs/DOCUMENTATION_CATALOG.json, four real local
-screenshots, and three short settings how-tos into the offline help package
-`floe.help.quickstart` version 1.2.0:
+docs/DOCUMENTATION_CATALOG.json, the reviewed screenshots, and short settings
+how-tos into the offline help package `floe.help.quickstart`.
 
   * per-locale search indexes and categories (HelpIndex JSON)
   * stable, language-independent section anchors
@@ -23,9 +22,8 @@ Usage:
   python3 FloeAgent/scripts/build_help_content.py check [--source-revision HEX]
   python3 FloeAgent/scripts/build_help_content.py --check [--source-revision HEX]
 
-The baked sourceRevision defaults to the explicitly allowed empty string so a
-build/commit/check cycle stays reproducible; pass --source-revision to pin a
-document input revision.
+The baked sourceRevision defaults to this package's document revision. Pass
+--source-revision to build from an explicitly selected document revision.
 """
 
 from __future__ import annotations
@@ -46,7 +44,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from documentation_catalog import load_catalog, select_documents
 
 PACKAGE_ID = "floe.help.quickstart"
-PACKAGE_VERSION = "1.3.0"
+PACKAGE_VERSION = "1.4.0"
+PACKAGE_SOURCE_REVISION = "de32aca14c13b555b4e8819e5b14c51cd3b55c7c"
 PLATFORM = "ios"
 MANIFEST_PATH = "help/manifest.json"
 MAX_FILE_BYTES = 1_048_576
@@ -97,7 +96,31 @@ def configure_guide_sources() -> None:
 
 PUBLIC_BLOB_BASE = "https://github.com/JiangNanGenius/floe-agent/blob/main"
 
-IMAGE_FILES = ("home-current", "workbench-current", "notes-current", "canvas-current")
+IMAGE_FILES = (
+    "home-current", "workbench-current", "notes-current", "canvas-current",
+    "ipad-cad-rectangle",
+    "ipad-cad-sketch",
+    "ipad-cad-solid",
+    "ipad-calculator",
+    "ipad-canvas-note",
+    "ipad-excel-pdf-refresh",
+    "ipad-help-center",
+    "ipad-help-setting",
+    "ipad-image-alpha",
+    "ipad-image-layers",
+    "ipad-map-attributes",
+    "ipad-map-export",
+    "ipad-map-fit",
+    "ipad-meeting-playback",
+    "ipad-meeting-workbench",
+    "ipad-model-provider",
+    "ipad-notes-shape",
+    "ipad-protractor",
+    "ipad-skill-hub",
+    "ipad-space-overview",
+    "ipad-toolbox",
+    "ipad-video-split",
+)
 IMAGE_MIME = "image/webp"
 
 # ---------------------------------------------------------------------------
@@ -1045,8 +1068,8 @@ def content_json(source_revision: str, localized_titles: Dict[str, str]) -> dict
         "requiredCapabilities": [],
         "dependencies": [],
         "releaseNotes": {
-            "en": "Separate iOS/iPadOS help from Android, and reuse one shared guide for models, tasks and files. Keeps bilingual offline search, images and settings how-tos.",
-            "zh-Hans": "分离 iOS/iPadOS 与 Android 教程，共用模型、任务与文件指南；保留双语离线搜索、图片和设置说明。",
+            "en": "Find the right workbench and follow illustrated steps for Canvas, Notes, editing, and export.",
+            "zh-Hans": "新增工作台用途对照与实测插图，补充画布、手记、编辑和导出步骤。",
         },
         "title": localized_titles,
         "documents": {locale: legacy_path(locale) for locale in LOCALES},
@@ -1406,17 +1429,15 @@ def existing_output_files(root: str) -> List[str]:
 def resolve_source_revision(explicit: Optional[str]) -> str:
     """Resolve the baked document revision.
 
-    The default is the explicitly allowed empty value so that build → commit →
-    check stays reproducible regardless of unrelated repository movement. A
-    release owner can pin a document input revision with --source-revision or
-    FLOE_HELP_SOURCE_REVISION.
+    The bundled revision keeps build and check reproducible across unrelated
+    source commits. The CLI and environment overrides support authoring checks.
     """
     if explicit is not None:
         return explicit
     env = os.environ.get("FLOE_HELP_SOURCE_REVISION")
     if env is not None:
         return env
-    return ""
+    return PACKAGE_SOURCE_REVISION
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

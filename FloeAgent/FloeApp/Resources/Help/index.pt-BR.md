@@ -1,4 +1,4 @@
-# Ajuda Floe (floe.help.quickstart 1.3.0)
+# Ajuda Floe (floe.help.quickstart 1.4.0)
 
 Este é o pacote de documentos offline para o centro de ajuda integrado Floe. Leia-o no aplicativo em Configurações > Ajuda com conteúdo, pesquisa e imagens.
 
@@ -96,3 +96,4 @@ Ajuste quanta memória o tempo de execução compartilhado do Linux pode usar.
 
 ---
 Links externos abrem o repositório público floe-agent e precisam de uma conexão de rede.
+Revisão da fonte: de32aca14c13b555b4e8819e5b14c51cd3b55c7c

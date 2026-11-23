@@ -1,4 +1,4 @@
-# Floe 幫助 (floe.help.quickstart 1.3.0)
+# Floe 幫助 (floe.help.quickstart 1.4.0)
 
 這是 Floe App 內建幫助中心的離線文件包。請在 App 的“設定 > 幫助”中閱讀，支援目錄、搜尋與圖文。
 
@@ -96,3 +96,4 @@ English · 使用手冊 · 快速開始
 
 ---
 外部連結開啟 floe-agent 公開倉庫，需要聯網。
+來源版本： de32aca14c13b555b4e8819e5b14c51cd3b55c7c

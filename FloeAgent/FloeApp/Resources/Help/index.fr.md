@@ -1,4 +1,4 @@
-# Aide de Floe (floe.help.quickstart 1.3.0)
+# Aide de Floe (floe.help.quickstart 1.4.0)
 
 Il s'agit du paquet de documents hors ligne pour le centre d'aide Floe intégré. Lisez-le dans l'application sous Paramètres > Aide avec le contenu, la recherche et les images.
 
@@ -96,3 +96,4 @@ Ajustez la quantité de mémoire que l’environnement d’exécution Linux part
 
 ---
 Les liens externes ouvrent le référentiel public floe-agent et ont besoin d'une connexion réseau.
+Révision de la source : de32aca14c13b555b4e8819e5b14c51cd3b55c7c
