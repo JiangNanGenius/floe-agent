@@ -408,6 +408,19 @@ final class MacBrowserWorkbenchController: ObservableObject {
         }, onOpen: { [weak task] in task?.userCreateTab() },
            onSelect: { [weak task] in task?.userActivateTab($0) },
            onClose: { [weak task] in task?.userCloseTab($0) })
+        // Site-memory chrome: the user-facing "Remember This Site" toggle
+        // rides in the app-owned accessory slot above the page. It is a user
+        // gesture only — model tools can never reach it — and it disappears
+        // when site memory is not wired for this workbench.
+        let accessory: AnyView
+        if let registry = taskTools.siteMemory {
+            accessory = AnyView(VStack(spacing: 2) {
+                tabStrip
+                MacRememberThisSiteToggle(registry: registry, currentURL: task.activeWebView?.url)
+            })
+        } else {
+            accessory = AnyView(tabStrip)
+        }
         return MacBrowserWorkbenchView(
             session: generalBrowser(),
             onReturn: onReturn,
@@ -433,7 +446,7 @@ final class MacBrowserWorkbenchController: ObservableObject {
             taskChrome: taskChrome(for: task),
             taskPage: task.activeWebView,
             taskActions: actions,
-            taskTabStrip: AnyView(tabStrip)
+            taskTabStrip: accessory
         )
     }
 

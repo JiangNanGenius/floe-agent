@@ -35,6 +35,11 @@ targets:
       - path: ../FloeAgent/Sources/FloeWorkspace/CanvasBackupPackage.swift
       - path: ../FloeAgent/FloeApp/CreativeCanvas/CanvasFrameworkProjection.swift
       - path: ../FloeAgent/FloeApp/CreativeCanvas/CanvasFrameworkLegacyRepository.swift
+      - path: ../FloeAgent/FloeApp/Workbench/MediaV2/MediaV2SubtitleCodec.swift
+      - path: ../FloeAgent/FloeApp/Voice/VoiceInput.swift
+      - path: ../FloeAgent/FloeApp/Voice/ConversationVoiceInterfaces.swift
+      - path: ../FloeAgent/FloeApp/Voice/VoiceConversationSemantics.swift
+      - path: ../FloeAgent/FloeApp/Voice/VoicePlaybackControls.swift
       - path: ../FloeAgent/Sources/FloeWorkspace/WorkspaceTextPolicy.swift
       - path: ../FloeAgent/Sources/FloeWorkspace/WorkspaceTextMutationContract.swift
       - path: ../FloeAgent/FloeApp/Settings/UsageStatisticsView.swift
@@ -90,6 +95,7 @@ targets:
       - path: Resources/Licenses/ZIPFoundation.txt
       - path: Resources/Licenses/Iroh-FFI-APACHE.txt
       - path: Resources/Licenses/Iroh-FFI-MIT.txt
+      - path: Resources/Licenses/LocalInference.txt
       - path: Resources/en.lproj/Localizable.strings
       - path: Resources/zh-Hans.lproj/Localizable.strings
       - path: Resources/en.lproj/InfoPlist.strings

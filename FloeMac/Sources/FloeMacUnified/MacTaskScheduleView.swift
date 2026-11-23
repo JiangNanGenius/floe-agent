@@ -232,7 +232,7 @@ private struct MacTaskScheduleEditor: View {
                 Section {
                     Picker(MacPermissionsText.t("模型", "Model"), selection: $modelID) {
                         Text(MacPermissionsText.t("使用默认模型", "Use Default Model")).tag(UUID?.none)
-                        ForEach(workspace.providers.filter { $0.profile.isEnabled && $0.model.isEnabled && $0.model.capabilities.contains(.tools) }, id: \.model.id) { provider in
+                        ForEach(workspace.taskModelChoices.filter { $0.profile.isEnabled && $0.model.isEnabled && $0.model.capabilities.contains(.tools) }, id: \.model.id) { provider in
                             Text(provider.model.displayName).tag(Optional(provider.model.id))
                         }
                     }

@@ -470,9 +470,9 @@ public final class MacWorkbenchSkillsService: ObservableObject {
             }
         }
 
-        let scratch = FileManager.default.temporaryDirectory
-            .appendingPathComponent("floe-mac-skill-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let staging = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "skills")
+        let scratch = staging.url
+        defer { staging.lease.release() }
         do {
             var fileRecords: [[String: Any]] = []
             for (index, file) in entry.files.enumerated() {

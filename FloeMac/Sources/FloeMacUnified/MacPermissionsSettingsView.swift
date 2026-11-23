@@ -258,8 +258,8 @@ struct MacPermissionsSettingsView: View {
                 Text(MacPermissionsText.t("已保存的授权", "Saved Approvals"))
             } footer: {
                 Text(MacPermissionsText.t(
-                    "授权只适用于选定文件和操作。撤销后，下次操作按任务的审批模式处理。",
-                    "Each permission applies to the selected file and operation. After revocation, the next action follows the task’s approval mode."))
+                    "授权只适用于选定的文件、工具或会话范围。撤销后，下次操作按任务的审批模式处理；会话授权在退出应用后自动失效。",
+                    "Each permission applies to the selected file, tool or session scope. After revocation, the next action follows the task’s approval mode; session approvals expire when the app quits."))
             }
             if let message = workspace.approvalSettingsError {
                 Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled)

@@ -98,6 +98,25 @@ enum MacCanvasText {
     static var addToCanvas: String { t(en: "Add to Canvas", zh: "添加到画布") }
     static var routeFailed: String { t(en: "Couldn't route the file.", zh: "无法转发该文件。") }
 
+    // Node editing beyond the original text/image/video set.
+    static var renameNode: String { t(en: "Rename…", zh: "重命名…") }
+    static var shapeMenu: String { t(en: "Shape", zh: "形状") }
+    static var editInTimeline: String { t(en: "Edit in Timeline…", zh: "在时间线中编辑…") }
+    static var newTimelineDraft: String { t(en: "New Timeline Draft", zh: "新建时间线草稿") }
+    static var openTimelineDraft: String { t(en: "Open Timeline Draft…", zh: "打开时间线草稿…") }
+    static var timelineDraftsSection: String { t(en: "Timeline Drafts", zh: "时间线草稿") }
+    static var noTimelineDrafts: String { t(en: "No timeline drafts yet", zh: "还没有时间线草稿") }
+
+    static func shapeName(_ shape: CanvasShapeKind) -> String {
+        switch shape {
+        case .rectangle: return t(en: "Rectangle", zh: "矩形")
+        case .roundedRectangle: return t(en: "Rounded", zh: "圆角矩形")
+        case .ellipse: return t(en: "Ellipse", zh: "椭圆")
+        case .diamond: return t(en: "Diamond", zh: "菱形")
+        case .triangle: return t(en: "Triangle", zh: "三角形")
+        }
+    }
+
     private static func t(en: String, zh: String) -> String {
         FloeL10n.isChinese ? zh : en
     }

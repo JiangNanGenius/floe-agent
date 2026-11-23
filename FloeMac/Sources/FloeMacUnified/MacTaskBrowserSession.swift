@@ -34,7 +34,10 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
 
     struct Tab: Identifiable {
         let id: UUID
-        let webView: MacTaskBrowserWebView
+        /// The tab's web view. Replaced (same tab id, fresh document) when a
+        /// remembered-site navigation requires a different website data store,
+        /// because WebKit fixes the data store at web-view creation.
+        var webView: MacTaskBrowserWebView
         var documentID: String
         var revision: Int
         var nextEventSequence: Int
@@ -99,6 +102,11 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
     /// commits or finishes so the safe URL-only page restore record can be
     /// persisted. Never carries cookies, forms or request bodies.
     var onPageCommit: ((URL?) -> Void)?
+    /// Remembered-site memory injected by the owning hub. Default nil keeps
+    /// every session strictly ephemeral; when set, explicit navigations to a
+    /// remembered origin use that site's dedicated persistent jar. Model runs
+    /// can never set or extend it.
+    weak var siteMemory: MacSiteMemoryRegistry?
 
     nonisolated static let protocolVersion = "floe.mactaskbrowser.v1"
     nonisolated static let maximumTabs = 6
@@ -240,6 +248,7 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
         guard !isReleased, !takeoverPending,
               let url = MacBrowserAddress.url(from: rawAddress) else { return }
         if tabs.isEmpty { createTab() }
+        prepareStore(for: url, tabID: activeTabID)
         if let index = tabs.firstIndex(where: { $0.id == activeTabID }) {
             replaceDocument(at: index)
         }
@@ -297,7 +306,93 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
     func restorePage(_ url: URL) {
         guard !isReleased, tabs.isEmpty, MacBrowserAddress.allows(url) else { return }
         createTab()
+        prepareStore(for: url, tabID: activeTabID)
         activeWebView?.load(URLRequest(url: url))
+    }
+
+    // MARK: - Site memory (explicit opt-in only)
+
+    /// The data store an explicit navigation to `url` must use: the
+    /// remembered site's own jar when the user opted in, otherwise this
+    /// session's ephemeral store. Nothing here reads or writes data.
+    private func dataStore(for url: URL) -> WKWebsiteDataStore {
+        siteMemory?.store(for: url) ?? websiteDataStore
+    }
+
+    /// Aligns a tab's web view with the jar its next explicit navigation
+    /// targets. WebKit binds the website data store at web-view creation, so a
+    /// jar change rebuilds the tab's web view: the tab id and protocol event
+    /// history stay, the document identity rotates exactly like a control
+    /// handoff (the old jar's page cannot leak into the new context), and
+    /// back/forward history does not carry across jars. No-op when the tab
+    /// already uses the right store.
+    @discardableResult
+    private func prepareStore(for url: URL, tabID: UUID?) -> Bool {
+        guard let tabID,
+              let index = tabs.firstIndex(where: { $0.id == tabID }) else { return false }
+        let desired = dataStore(for: url)
+        let current = tabs[index].webView.configuration.websiteDataStore
+        guard current !== desired else { return false }
+        replaceWebView(at: index, dataStore: desired)
+        return true
+    }
+
+    /// Detaches the tab's current web view and installs a fresh one bound to
+    /// `dataStore`, mirroring `createTab`'s wiring (probe script, delegates,
+    /// input gate, observers). The tab keeps its id and event log so model
+    /// references to the tab stay meaningful; the document rotates.
+    private func replaceWebView(at index: Int, dataStore: WKWebsiteDataStore) {
+        let tabID = tabs[index].id
+        tabObservations.removeValue(forKey: tabID)?.forEach { $0.invalidate() }
+        let old = tabs[index].webView
+        old.stopLoading()
+        old.navigationDelegate = nil
+        old.uiDelegate = nil
+        old.removeFromSuperview()
+
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = dataStore
+        let controller = configuration.userContentController
+        if !controller.userScripts.contains(where: { $0.source == Self.protocolProbeSource }) {
+            controller.addUserScript(WKUserScript(
+                source: Self.protocolProbeSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true,
+                in: contentWorld
+            ))
+        }
+        let webView = MacTaskBrowserWebView(
+            frame: CGRect(x: 0, y: 0, width: 1_024, height: 768),
+            configuration: configuration
+        )
+        webView.onFirstUserInteraction = { [weak self] reason in
+            self?.registerUserInput(reason: reason)
+        }
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        // Mirrors setTabsInteractionEnabled: only a takeover waiting for an
+        // in-flight model action freezes interaction, never user control.
+        webView.floesModelInteractionFrozen = takeoverPending
+        tabs[index].webView = webView
+        replaceDocument(at: index)
+        installObservers(for: tabID, webView: webView)
+        syncChromeState()
+    }
+
+    /// Detaches every tab from the identified jars (a remembered site was
+    /// removed, forgotten, or its data is being cleared). Affected tabs are
+    /// rebuilt onto this session's ephemeral store UNCONDITIONALLY — the
+    /// registry must not be consulted here, because during the wipe it may
+    /// still resolve (or re-resolve) the very jar being removed. Called by
+    /// the owning hub before the registry wipes the jars, so a page still
+    /// sitting on one cannot repopulate it.
+    func detachStores(_ storeIDs: Set<UUID>) {
+        guard !isReleased, !storeIDs.isEmpty else { return }
+        for index in tabs.indices {
+            let store = tabs[index].webView.configuration.websiteDataStore
+            guard let identifier = store.identifier, storeIDs.contains(identifier) else { continue }
+            replaceWebView(at: index, dataStore: websiteDataStore)
+        }
     }
 
     // MARK: - Chrome
@@ -761,8 +856,15 @@ final class MacTaskBrowserSession: NSObject, ObservableObject {
                     throw MacTaskBrowserError.policy("The address is not an allowed http(s) URL")
                 }
                 if let denied = pageAccessFailure(command, control: control) { return denied }
-                replaceDocument(at: index)
-                tab.webView.load(URLRequest(url: url))
+                // A remembered-site jar change rebuilds the tab's web view and
+                // rotates the document; the freshly loaded page is then
+                // observed under the new document identity.
+                prepareStore(for: url, tabID: tabID)
+                guard let freshIndex = tabs.firstIndex(where: { $0.id == tabID }) else {
+                    return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
+                }
+                replaceDocument(at: freshIndex)
+                tabs[freshIndex].webView.load(URLRequest(url: url))
                 return await waitResult(command, tabID: tabID, condition: .domContentLoaded)
             case .back:
                 if let denied = pageAccessFailure(command, control: control) { return denied }
@@ -1459,6 +1561,23 @@ extension MacTaskBrowserSession: WKNavigationDelegate, WKUIDelegate {
         // WebKit uses its own blank document while `loadHTMLString` commits.
         if url.absoluteString == "about:blank" { return .allow }
         guard MacBrowserAddress.allows(url) else { return .cancel }
+        // Jar enforcement for every main-frame navigation — user clicks,
+        // redirects, form submissions and a popup tab's first real load: a
+        // remembered jar must never follow the page into a different site,
+        // and an ephemeral page must never pick up a remembered jar it did
+        // not opt into. When the tab's store does not match the target
+        // origin's jar, the tab's web view is rebuilt onto the right jar and
+        // the exact request is replayed there (the replay passes this same
+        // check with the correct store and is allowed).
+        if navigationAction.targetFrame?.isMainFrame == true,
+           let tabID = tabs.first(where: { $0.webView === webView })?.id {
+            let desired = dataStore(for: url)
+            if webView.configuration.websiteDataStore !== desired {
+                prepareStore(for: url, tabID: tabID)
+                tabs.first(where: { $0.id == tabID })?.webView.load(navigationAction.request)
+                return .cancel
+            }
+        }
         return .allow
     }
 
@@ -1529,7 +1648,11 @@ extension MacTaskBrowserSession: WKNavigationDelegate, WKUIDelegate {
               url.absoluteString == "about:blank" || MacBrowserAddress.allows(url) else { return nil }
         // A target=_blank / window.open request opens a real task tab. The
         // six-tab limit is honest: at capacity the popup is refused and the
-        // user/model sees the limit notice instead of a fake success.
+        // user/model sees the limit notice instead of a fake success. The new
+        // tab inherits the opener's jar until its first main-frame policy
+        // check, which swaps the web view onto the target origin's jar when
+        // they differ — the opener's window handle is not preserved across
+        // that swap, and no request is ever committed into the wrong jar.
         guard let id = createTab(configuration: configuration),
               let created = tabs.first(where: { $0.id == id })?.webView else {
             if let activeTabID {

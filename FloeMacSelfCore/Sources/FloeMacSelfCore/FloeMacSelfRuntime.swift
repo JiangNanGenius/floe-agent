@@ -3231,6 +3231,10 @@ public actor FloeMacSelfRuntime {
         try FloeMacSelfApprovalGrants(store: requireStores().workspaces)
     }
 
+    public func workspaceApprovalRecords() throws -> SQLiteWorkspaceStore {
+        try requireStores().workspaces
+    }
+
     private func requireStores() throws -> FloeMacSelfStores {
         try ensureOpen()
         guard let stores else {

@@ -67,6 +67,7 @@ public actor ConfigSyncEngine {
     private let configuredZoneName: String
     private let expectedAccountRecordName: String?
     private let synchronizedKeychainAccessGroup: String?
+    private let checksSynchronizedSecrets: Bool
 
     private var supportedRecordTypeNames: [String] {
         ConfigSyncRecordType.allCases.filter { recordTypes.contains($0) }.map(\.rawValue)
@@ -119,7 +120,8 @@ public actor ConfigSyncEngine {
         automaticallySync: Bool = true,
         zoneName: String = ConfigSyncEngine.zoneName,
         expectedAccountRecordName: String? = nil,
-        synchronizedKeychainAccessGroup: String? = nil
+        synchronizedKeychainAccessGroup: String? = nil,
+        checksSynchronizedSecrets: Bool = true
     ) {
         let (stream, signal) = AsyncStream<UInt64>.makeStream(bufferingPolicy: .bufferingNewest(1))
         self.remoteConfigurationStream = stream
@@ -133,6 +135,7 @@ public actor ConfigSyncEngine {
         self.configuredZoneName = zoneName
         self.expectedAccountRecordName = expectedAccountRecordName
         self.synchronizedKeychainAccessGroup = synchronizedKeychainAccessGroup
+        self.checksSynchronizedSecrets = checksSynchronizedSecrets
     }
 
     /// AppEnvironment creates the v11 credential store after the sync engine.
@@ -1919,6 +1922,7 @@ public actor ConfigSyncEngine {
     /// wait without any new batch while one missing account still keeps every
     /// device waiting.
     private func credentialSyncStatus() async -> SyncStatus {
+        guard checksSynchronizedSecrets else { return .synced }
         let preferences = SyncControlPreferences.load(from: preferencesDefaults)
         if preferences.overallEnabled, let configurationStore,
            let providers = try? await configurationStore.providers() {

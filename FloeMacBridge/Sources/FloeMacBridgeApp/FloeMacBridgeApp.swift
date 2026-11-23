@@ -145,7 +145,7 @@ private struct BridgeMenuView: View {
 @MainActor
 final class BridgeAppModel: ObservableObject {
     enum SettingsPane: String, CaseIterable {
-        case general, models, auxiliary, memories, webSearch, skills, connectors, deviceSync, usage, permissions, diagnostics, bridge
+        case general, models, localModels, auxiliary, memories, webSearch, siteData, skills, connectors, deviceSync, iCloud, usage, permissions, dataStorage, diagnostics, bridge
     }
 
     @Published var error: String?
@@ -194,6 +194,10 @@ final class BridgeAppModel: ObservableObject {
     private let smoke = UnifiedMacSmoke.configured()
     var smokePort: UInt16? { server?.boundPort }
     var smokeSettingsFrames: [SettingsPane: CGRect] = [:]
+    var smokeCloudSettingsMounted = false
+    var smokeLocalModelSettingsMounted = false
+    var smokeSiteSettingsMounted = false
+    var smokeStorageSettingsMounted = false
     var smokeSettingsBackFrame: CGRect?
     var smokeDeviceSyncMounted = false
     var smokeSettingsWindow: NSWindow? { settingsWindow }
@@ -516,6 +520,7 @@ final class BridgeAppModel: ObservableObject {
         server?.stop()
         #if FLOE_UNIFIED_MAC
         macWorkspace?.browser?.flushPageHistory()
+        macWorkspace?.browser?.taskTools.siteMemory?.flush()
         #endif
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         smoke?.cleanup()
@@ -525,6 +530,7 @@ final class BridgeAppModel: ObservableObject {
         #if FLOE_UNIFIED_MAC
         Task {
             guard !isSwitchingMode else { return }
+            if macWorkspace?.agent?.voiceSession.isActive == true { macWorkspace?.agent?.voiceSession.stop() }
             if let macWorkspace, !(await macWorkspace.closeToolbox(promptForScannerDraft: true)) { return }
             if let macWorkspace, !(await macWorkspace.closeTaskTerminals()) { return }
             await service?.jobs.stopAllAndWait()
@@ -785,6 +791,14 @@ private struct UnifiedMacSettingsView: View {
                     }
                 })
             }
+        case .localModels:
+            if let host = model.macWorkspace {
+                host.localModelsSettings(for: workspace)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .onAppear { model.smokeLocalModelSettingsMounted = true }
+                    .onDisappear { model.smokeLocalModelSettingsMounted = false }
+                    #endif
+            }
         case .auxiliary:
             MacAuxiliaryModelsView(workspace: workspace)
         case .memories:
@@ -793,6 +807,14 @@ private struct UnifiedMacSettingsView: View {
             UsageStatisticsView(loadStatistics: workspace.usageStatistics)
         case .webSearch:
             MacSearchSettingsView(settings: workspace.webSearch)
+        case .siteData:
+            if let registry = model.macWorkspace?.browser?.taskTools.siteMemory {
+                MacSiteDataSettingsView(registry: registry)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .onAppear { model.smokeSiteSettingsMounted = true }
+                    .onDisappear { model.smokeSiteSettingsMounted = false }
+                    #endif
+            }
         case .skills:
             if let service = workspace.workbenchSkills {
                 MacWorkbenchSkillsView(service: service)
@@ -816,6 +838,16 @@ private struct UnifiedMacSettingsView: View {
                     #endif
             } else {
                 ContentUnavailableView("mac.settings.toolsUnavailable", systemImage: "arrow.triangle.2.circlepath")
+            }
+        case .iCloud:
+            MacICloudConfigurationView(workspace: workspace, bridge: model)
+        case .dataStorage:
+            if let service = model.macWorkspace?.managedStorage {
+                MacManagedStorageSettingsView(service: service)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .onAppear { model.smokeStorageSettingsMounted = true }
+                    .onDisappear { model.smokeStorageSettingsMounted = false }
+                    #endif
             }
         case .diagnostics:
             MacWorkbenchDiagnosticsView(workspace: workspace)
@@ -921,14 +953,18 @@ private extension BridgeAppModel.SettingsPane {
         switch self {
         case .general: "General"
         case .models: "mac.settings.providerModels"
+        case .localModels: "mac.settings.localModels"
         case .auxiliary: "mac.aux.title"
         case .memories: "mac.settings.memories"
         case .usage: "settings.section.usage"
         case .webSearch: "mac.settings.webSearch"
+        case .siteData: "mac.settings.siteData"
         case .skills: "mac.settings.skills"
         case .connectors: "mac.settings.connectors"
         case .permissions: "Permissions"
         case .deviceSync: "mac.settings.deviceSync"
+        case .iCloud: "mac.settings.iCloudConfiguration"
+        case .dataStorage: "mac.settings.dataStorage"
         case .diagnostics: "mac.settings.diagnostics"
         case .bridge: "host.role.bridge"
         }
@@ -938,14 +974,18 @@ private extension BridgeAppModel.SettingsPane {
         switch self {
         case .general: "通用 外观 默认模式 排队 引导 答案核验 自动检查更新 General appearance mode queue steer verify software updates"
         case .models: "供应商 服务商 账户 模型 模型配置 密钥 连接 生图 绘图 图片 视频生成 图像 模型 Provider Accounts Models API key endpoints image video generation"
+        case .localModels: "本地模型 下载 模型权重 离线 Apple Silicon On-device local models download offline"
         case .auxiliary: "辅助模型 通用辅助 视觉 推理 审批模型 Auxiliary Models vision reasoning reviewer"
         case .memories: "记忆 个性化 用户偏好 Memories personalization profile"
         case .usage: "用量统计 模型 供应商 任务 Usage Statistics Tokens Models Providers"
         case .webSearch: "网页 联网 搜索 供应商 浏览器 Web Search Providers Brave Tavily Volcengine DeepSeek"
+        case .siteData: "网站 浏览器 Cookie 隐私 登录状态 Browser Website Data Privacy Cookies"
         case .skills: "技能 技能库 Skills Catalog"
         case .connectors: "连接器 外部工具 MCP Connectors tools"
         case .permissions: "权限 审批 自动审批 完全访问 命令 执行 屏幕录制 辅助功能 磁盘 Kimi CU Permissions approvals command access disk screen"
         case .deviceSync: "跨设备同步 配对 会话同步 设备 Device Sync Pairing Conversation History"
+        case .iCloud: "iCloud 配置同步 密钥 钥匙串 模型 Settings Sync Keychain Credentials"
+        case .dataStorage: "数据 管理 存储 空间 缓存 清理 Data Storage Caches Cleanup"
         case .diagnostics: "诊断 版本 本地数据 Diagnostics version storage"
         case .bridge: "桥接 配对 更新 存储 Bridge pairing updates storage OTA"
         }
@@ -955,14 +995,18 @@ private extension BridgeAppModel.SettingsPane {
         switch self {
         case .general: "gearshape"
         case .models: "antenna.radiowaves.left.and.right"
+        case .localModels: "cpu"
         case .auxiliary: "photo.badge.plus"
         case .memories: "person.crop.circle.badge.checkmark"
         case .usage: "chart.bar"
         case .webSearch: "magnifyingglass"
+        case .siteData: "globe.badge.chevron.backward"
         case .skills: "shippingbox"
         case .connectors: "point.3.connected.trianglepath.dotted"
         case .permissions: "checkmark.shield"
         case .deviceSync: "arrow.triangle.2.circlepath"
+        case .iCloud: "icloud"
+        case .dataStorage: "internaldrive"
         case .diagnostics: "stethoscope"
         case .bridge: "server.rack"
         }

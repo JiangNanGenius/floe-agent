@@ -3,6 +3,7 @@
 import AppKit
 import Combine
 import FloeDeviceSync
+import FloeLocalModelCatalog
 import FloeMacSelfCore
 import FloeMacToolbox
 import FloeModels
@@ -87,6 +88,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     private(set) var images: MacImageGeneration?
     private(set) var videos: MacVideoGeneration?
     private(set) var creativeLibrary: MacCreativeLibrary?
+    private(set) var managedStorage: MacManagedStorageService?
+    private var localModelsContent: ((HostAgentWorkspace) -> AnyView)?
+    private var stopLocalModels: (() async -> Void)?
+    private var connectorRestore: Task<Void, Never>?
     private var agentWindow: NSWindow?
     struct MenuAvailability: Equatable {
         var openSpace = false
@@ -152,6 +157,19 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
             }
             agent = workspace
             let directory = try? HostAgentDatabase.prepareStorageDirectory(applicationSupport: root, namespace: namespace)
+            var storageRoots = MacManagedStorageRoots.standard(bundleIdentifier: namespace)
+            storageRoots.managed = directory
+            if let testSupport {
+                storageRoots.runtime = nil
+                storageRoots.caches = nil
+                storageRoots.webKit = nil
+                storageRoots.scratch = FloeScratch.scratchRoot(temporary: testSupport)
+                storageRoots.temporary = testSupport
+                storageRoots.allowedBases = [testSupport]
+            }
+            managedStorage = MacManagedStorageService(roots: storageRoots, hooks: .init(idleProbe: { [activity] _ in
+                activity.activityCount == 0
+            }))
             if let directory {
                 let vault = KeychainStore(service: namespace + ".device-sync", synchronizable: false,
                                           accessibility: .afterFirstUnlockThisDeviceOnly)
@@ -204,8 +222,52 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                 )
                 workspace.workbenchConnectors = MacWorkbenchConnectorsService(
                     store: MacWorkbenchFileConnectorStore(url: extensions.appendingPathComponent("Connector.json")),
-                    registry: ToolRunnerRegistry()
+                    registry: ToolRunnerRegistry(),
+                    credentials: testSupport == nil
+                        ? MacWorkbenchKeychainCredentialStore(keychain: KeychainStore(service: namespace + ".mcp",
+                            synchronizable: false, accessibility: .whenUnlockedThisDeviceOnly))
+                        : MacWorkbenchMemoryCredentialStore()
                 )
+                if testSupport == nil, let connectors = workspace.workbenchConnectors {
+                    connectorRestore = Task {
+                        guard let release = try? admitWork() else { return }
+                        defer { release() }
+                        await connectors.restore()
+                        let enabled = connectors.servers.filter(\.enabled).map(\.id)
+                        await withTaskGroup(of: Void.self) { tasks in
+                            var pending = enabled.makeIterator()
+                            for _ in 0..<min(4, enabled.count) {
+                                if let id = pending.next() { tasks.addTask { _ = await connectors.refresh(serverID: id) } }
+                            }
+                            while await tasks.next() != nil, !Task.isCancelled {
+                                if let id = pending.next() { tasks.addTask { _ = await connectors.refresh(serverID: id) } }
+                            }
+                        }
+                    }
+                }
+                if #available(macOS 15.4, *) {
+                    let models = MacLocalModelService(store: LocalModelStore(
+                        root: directory.appendingPathComponent("LocalModels", isDirectory: true)
+                    ))
+                    let settings = MacLocalModelsSettingsModel(service: models, admitWork: admitWork)
+                    localModelsContent = { workspace in
+                        AnyView(MacOnDeviceModelSettingsPane(model: settings, selectedModelID: workspace.selectedPrimaryModelID,
+                            useAsDefault: { [weak workspace] id in workspace?.selectDefaultModel(id) == true }))
+                    }
+                    stopLocalModels = {
+                        models.setHostHooks(nil)
+                        await models.unloadForTeardown()
+                    }
+                    if settings.runtimeSupport.isSupported {
+                        let adapter = models.makeAdapter()
+                        let provider = MacLocalModelService.providerProfile
+                        models.setHostHooks(.init { [weak workspace] result in
+                            guard case .success(let profiles) = result else { return }
+                            Task { @MainActor in workspace?.publishInstalledLocalModels(profiles, provider: provider, adapter: adapter) }
+                        })
+                        Task { await models.refreshInstalledModels() }
+                    }
+                }
             }
             let drafts = MacWorkspaceDraftStore(directory: directory?.appendingPathComponent("Drafts", isDirectory: true))
             draftStore = drafts
@@ -245,6 +307,11 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
                 },
                 admitWork: admitWork
             )
+            if browser.taskTools.siteMemory == nil {
+                browser.taskTools.siteMemory = MacSiteMemoryRegistry(
+                    directory: directory?.appendingPathComponent("Browser/SiteMemory", isDirectory: true)
+                )
+            }
             self.browser = browser
             workspace.makeTaskBrowserTools = { [weak browser] owner, root in
                 browser?.taskTools.makeToolBundle(conversationID: owner, workspaceRoot: root) ?? []
@@ -351,6 +418,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
 
     func windowDidBecomeKey(_ notification: Notification) { refreshMenuAvailability() }
 
+    func localModelsSettings(for workspace: HostAgentWorkspace) -> AnyView {
+        localModelsContent?(workspace) ?? AnyView(ContentUnavailableView("mac.localModels.unavailable", systemImage: "cpu"))
+    }
+
     func windowDidResignKey(_ notification: Notification) {
         // AppKit assigns the next key window after the resign callback.
         DispatchQueue.main.async { [weak self] in self?.refreshMenuAvailability() }
@@ -378,6 +449,10 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     #endif
 
     func closeForBridgeMode() async throws -> Bool {
+        connectorRestore?.cancel()
+        await connectorRestore?.value
+        connectorRestore = nil
+        if agent?.voiceSession.isActive == true { agent?.voiceSession.stop() }
         guard let agent, agentLeases.isEmpty, agent.beginTermination() else { throw CloseError.agentBusy }
         defer { if self.agent != nil { agent.cancelTermination() } }
         guard !agent.hasPendingWorkspaceFileChanges else { throw CloseError.pendingFiles }
@@ -390,6 +465,9 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         await agent.workbenchConnectors?.disconnect()
         do { try await agent.finishTermination() }
         catch { throw CloseError.runtimeCloseFailed }
+        await stopLocalModels?()
+        stopLocalModels = nil
+        localModelsContent = nil
         agent.isSettingsPresented = false
         if let sheet = agentWindow?.attachedSheet { agentWindow?.endSheet(sheet) }
         commandObservation = nil
@@ -402,9 +480,11 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         images = nil
         videos = nil
         creativeLibrary = nil
+        managedStorage = nil
         temporaryChat?.discard()
         temporaryChat = nil
         browser?.reset()
+        browser?.taskTools.siteMemory?.flush()
         browser = nil
         remoteCatalog = nil
         remoteDatabase = nil

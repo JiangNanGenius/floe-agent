@@ -1458,6 +1458,21 @@ public actor LocalModelRuntime {
         cancelIdleUnload()
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
+        await unloadResident(modelID: modelID)
+    }
+
+    /// Keep the inference slot for the entire removal so a queued generation
+    /// cannot start loading the model between unload and deletion.
+    public func removeInstalledModel(id: String) async throws {
+        cancelIdleUnload()
+        await acquireInferenceSlot()
+        defer { releaseInferenceSlot() }
+        try Task.checkCancellation()
+        await unloadResident(modelID: id)
+        try await store.remove(id: id)
+    }
+
+    private func unloadResident(modelID: String?) async {
         let previous = activeEngine
         if modelID == nil || previous?.key.modelID == modelID {
             activeEngine = nil

@@ -118,7 +118,6 @@ public struct FloeMacSelfToolBinding: Sendable, CustomStringConvertible {
 }
 
 enum FloeMacSelfCapabilityResolver {
-    static let maximumToolCount = 64
     static let maximumToolNameBytes = 128
     static let maximumAllowedPathCount = 64
     static let maximumAllowedPathBytes = 1_024
@@ -183,7 +182,7 @@ enum FloeMacSelfCapabilityResolver {
         guard !binding.allowedToolNames.isEmpty else {
             throw FloeMacSelfCoreError.toolCapabilityUnavailable("the allowed tool set is empty")
         }
-        guard binding.allowedToolNames.count <= maximumToolCount else {
+        guard binding.allowedToolNames.count <= FloeMacSelfHostGate.maximumToolCount else {
             throw FloeMacSelfCoreError.toolCapabilityUnavailable("the allowed tool set is unbounded")
         }
         var descriptors: [String: ToolCatalog.Descriptor] = [:]

@@ -298,6 +298,9 @@ public enum MacAgentWorkspaceTools {
             executor = baseExecutor
         }
         if let names = taskPolicy?.allowedToolNames { allowed.formIntersection(names) }
+        for tool in extensionTools.reversed() where allowed.count > FloeMacSelfHostGate.maximumToolCount {
+            allowed.remove(tool.descriptor.name)
+        }
         let gate = bundledApprovalGate
             ?? CatastrophicActionGate.failClosed(reason: "Mac workspace tool gate corpus unavailable")
         let boundary = FloeMacSelfTaskBoundary(
@@ -2212,6 +2215,14 @@ struct MacWorkspacePublishOutputTool: AgentTool, MacAgentWorkspaceExecutable {
         let path = arguments.path
         try macWorkspacePreflight(path: path, context: context, scopeArgument: arguments.scope)
         let (physicalRoot, relative) = try macWorkspacePinSetup(root: root, path: path)
+        let staging = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "workspace")
+        let folder = staging.url
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            staging.lease.release()
+        }
+        try macWorkspacePreflight(path: path, context: context, scopeArgument: arguments.scope)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         return try MacAgentWorkspacePinSupport.withPinnedTarget(physicalRoot: physicalRoot, relative: relative, root: root) { pin in
             let descriptor = try MacAgentWorkspacePinSupport.openVerifiedRegularFile(pin, physicalRoot: physicalRoot, displayPath: path)
             defer { Darwin.close(descriptor) }
@@ -2226,10 +2237,6 @@ struct MacWorkspacePublishOutputTool: AgentTool, MacAgentWorkspaceExecutable {
 
             // Freeze the authorized descriptor in private scratch so the shared
             // publisher never follows a user-controlled path after validation.
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
-                                                    attributes: [.posixPermissions: 0o700])
-            defer { try? FileManager.default.removeItem(at: folder) }
             let snapshot = folder.appendingPathComponent(pin.name)
             try Data().write(to: snapshot, options: .withoutOverwriting)
             let writer = try FileHandle(forWritingTo: snapshot)

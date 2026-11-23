@@ -19,6 +19,7 @@ PUSH_ENVIRONMENT = "com.apple.developer.aps-environment"
 CLOUD_CONTAINERS = "com.apple.developer.icloud-container-identifiers"
 CLOUD_SERVICES = "com.apple.developer.icloud-services"
 CLOUD_ENVIRONMENT = "com.apple.developer.icloud-container-environment"
+KEYCHAIN_GROUPS = "keychain-access-groups"
 
 
 def run(*command, **kwargs):
@@ -44,6 +45,13 @@ def validate_claims(profile, requested, certificate, now):
             "The provisioning profile belongs to a different developer team.")
     require(certificate in profile.get("DeveloperCertificates", []),
             "The provisioning profile does not authorize the app's existing Developer ID certificate.")
+    groups = requested[KEYCHAIN_GROUPS]
+    allowed_groups = entitlements.get(KEYCHAIN_GROUPS, [])
+    team = requested[TEAM_ID]
+    require(groups[0] == requested[APPLICATION_ID] and isinstance(allowed_groups, list)
+            and all(group.startswith(f"{team}.")
+                    and (group in allowed_groups or f"{team}.*" in allowed_groups) for group in groups),
+            "The provisioning profile does not grant the requested Keychain groups.")
     for key in (APPLICATION_ID, TEAM_ID, PUSH_ENVIRONMENT, CLOUD_CONTAINERS, CLOUD_SERVICES, CLOUD_ENVIRONMENT):
         expected = requested[key]
         allowed = entitlements.get(key)
@@ -55,6 +63,13 @@ def validate_claims(profile, requested, certificate, now):
         else:
             require(allowed == expected or isinstance(allowed, list) and expected in allowed,
                     f"The provisioning profile does not match {key}.")
+
+
+def verify_signed_claims(app, requested):
+    output = run("/usr/bin/codesign", "-d", "--entitlements", ":-", str(app), stdout=subprocess.PIPE).stdout
+    signed = plistlib.loads(output)
+    require(all(signed.get(key) == value for key, value in requested.items()),
+            "The signed app does not contain the requested CloudKit and Keychain entitlements.")
 
 
 def main():
@@ -81,6 +96,7 @@ def main():
         certificate = Path(prefix + "0").read_bytes()
     validate_claims(profile, requested, certificate, datetime.now(timezone.utc))
     if args.check:
+        verify_signed_claims(args.app, requested)
         print("Floe Mac Developer ID provisioning profile matches the CloudKit signing configuration.")
         return
 
@@ -90,10 +106,7 @@ def main():
     run("/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", sha1(certificate).hexdigest(),
         "--entitlements", str(ENTITLEMENTS), str(args.app))
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(args.app))
-    output = run("/usr/bin/codesign", "-d", "--entitlements", ":-", str(args.app), stdout=subprocess.PIPE).stdout
-    signed = plistlib.loads(output)
-    require(all(signed.get(key) == value for key, value in requested.items()),
-            "The signed app does not contain the requested CloudKit entitlements.")
+    verify_signed_claims(args.app, requested)
 
 
 if __name__ == "__main__":

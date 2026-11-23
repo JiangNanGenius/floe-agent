@@ -47,12 +47,18 @@ let package = Package(
                 "FloeSync",
                 "FloeSyncCore",
                 "FloeMarkdown",
+                "FloeLocalModelCatalog",
+                "FloeLocalModels",
             ]
         )
     ],
     dependencies: [
         .package(path: "../FloeDesktopSync"),
         .package(path: "../FloeAgent/ThirdParty/swift-crypto"),
+        .package(name: "mlx-swift-lm", path: "../FloeAgent/ThirdParty/MLXSwiftLM"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git",
+                 revision: "ab924c82ead3b970caaa1c0ac11171de23f0305a"),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.3.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
         // Matches the main FloeAgent host lock; swift-crypto pulls this
@@ -60,6 +66,12 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-asn1.git", exact: "1.7.1"),
     ],
     targets: [
+        .binaryTarget(
+            name: "LlamaFramework",
+            url: "https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip",
+            checksum: "95e359c6a93b3bc791c5671970ca37f7bdbc9bfae62b55551750186380cea284"
+        ),
+        .target(name: "FloeLlamaVisionShim", publicHeadersPath: "include"),
         .target(
             name: "FloeSkills",
             dependencies: ["FloeTools", .product(name: "ZIPFoundation", package: "ZIPFoundation"),
@@ -67,6 +79,23 @@ let package = Package(
             swiftSettings: upstreamSwiftSettings
         ),
         .target(name: "FloeMarkdown", dependencies: ["FloeCore"]),
+        .target(
+            name: "FloeLocalModelCatalog",
+            dependencies: ["FloeCore"],
+            swiftSettings: upstreamSwiftSettings
+        ),
+        .target(
+            name: "FloeLocalModels",
+            dependencies: [
+                "FloeCore", "FloeModels", "FloeProviders", "FloeLocalModelCatalog", "LlamaFramework", "FloeLlamaVisionShim",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers")
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6), .enableExperimentalFeature("StrictConcurrency")]
+        ),
         .target(name: "FloeSyncCore", dependencies: ["FloeCore"], swiftSettings: upstreamSwiftSettings),
         .target(
             name: "FloeSync",

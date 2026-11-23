@@ -18,12 +18,17 @@ struct MacCreativeWorkbenchView: View {
     var saveToTask: ((URL) async -> Bool)? = nil
     private enum Page: String { case canvas, image, video }
     private enum Editor: Identifiable {
-        case rename, text(UUID?)
+        case rename, text(UUID?), title(UUID)
         var id: String { String(describing: self) }
     }
     private struct MediaToPlace {
         let url: URL
         let kind: CanvasNodeKind
+    }
+    /// Presentation route for the multi-track timeline editor.
+    private struct TimelineEditorRoute: Identifiable {
+        let id = UUID()
+        var draft: MacTimelineDraft
     }
     @State private var page: Page = .canvas
     @State private var reference: URL?
@@ -33,6 +38,7 @@ struct MacCreativeWorkbenchView: View {
     @State private var showsCanvasStart = false
     @State private var mediaToPlace: MediaToPlace?
     @State private var mediaEdit: MacMediaEditSession?
+    @State private var timelineEditor: TimelineEditorRoute?
     @State private var trashID: UUID?
     @State private var query = ""
     @State private var dragID: UUID?
@@ -51,10 +57,13 @@ struct MacCreativeWorkbenchView: View {
                         guard library.selected != nil, !library.isTransferring else { return false }
                         var added = false
                         for url in urls where url.isFileURL {
-                            guard let type = UTType(filenameExtension: url.pathExtension),
-                                  type.conforms(to: .image) || type.conforms(to: .movie) else { continue }
+                            guard let type = UTType(filenameExtension: url.pathExtension) else { continue }
+                            let kind: CanvasNodeKind? = type.conforms(to: .image) ? .image
+                                : type.conforms(to: .movie) ? .video
+                                : type.conforms(to: .audio) ? .audio : nil
+                            guard let kind else { continue }
                             do {
-                                try library.addMedia(url, kind: type.conforms(to: .image) ? .image : .video,
+                                try library.addMedia(url, kind: kind,
                                                      title: url.deletingPathExtension().lastPathComponent)
                                 added = true
                             } catch { library.error = error.localizedDescription }
@@ -107,6 +116,7 @@ struct MacCreativeWorkbenchView: View {
                             case .rename: try library.rename(draft)
                             case .text(let id):
                                 if let id { try library.setText(draft, id: id) } else { try library.addText(draft) }
+                            case .title(let id): try library.setTitle(draft, id: id)
                             }
                             editor = nil
                         }
@@ -116,6 +126,20 @@ struct MacCreativeWorkbenchView: View {
         }
         .sheet(item: $mediaEdit) { session in
             MacMediaEditorView(session: session)
+        }
+        .sheet(item: $timelineEditor) { route in
+            Group {
+                if let store = library.timelineDraftStore {
+                    MacTimelineEditorView(
+                        store: store,
+                        draft: route.draft,
+                        saveToTask: saveToTask,
+                        addToCanvas: { url in routeToCanvas(url, kind: .video) },
+                        onDraftsChanged: {})
+                } else {
+                    ContentUnavailableView(MacCanvasText.routeFailed, systemImage: "exclamationmark.triangle")
+                }
+            }
         }
         .sheet(isPresented: $showsCanvasStart) {
             VStack(spacing: 0) {
@@ -161,7 +185,11 @@ struct MacCreativeWorkbenchView: View {
     }
 
     private func editTitle(_ edit: Editor) -> LocalizedStringKey {
-        switch edit { case .rename: "mac.creative.rename"; case .text: "mac.creative.text" }
+        switch edit {
+        case .rename: "mac.creative.rename"
+        case .text: "mac.creative.text"
+        case .title: "mac.creative.rename"
+        }
     }
 
     @ViewBuilder private var boards: some View {
@@ -275,6 +303,18 @@ struct MacCreativeWorkbenchView: View {
     private var mediaMenu: some View {
         Menu {
             Button("mac.creative.import") { importFile() }
+            Divider()
+            Button(MacCanvasText.newTimelineDraft, systemImage: "timeline.selection") { createTimelineDraft() }
+            let drafts = library.timelineDrafts()
+            if !drafts.isEmpty {
+                Section(MacCanvasText.timelineDraftsSection) {
+                    ForEach(drafts) { item in
+                        Button(item.name) { openTimelineDraft(item) }
+                    }
+                }
+            } else {
+                Button(MacCanvasText.openTimelineDraft, systemImage: "folder") { openTimelineDraftPicker() }
+            }
             if !images.history.isEmpty {
                 Section("mac.settings.images") {
                     ForEach(images.history) { item in
@@ -292,6 +332,55 @@ struct MacCreativeWorkbenchView: View {
                 }
             }
         } label: { Label("mac.creative.media", systemImage: "photo.on.rectangle") }
+    }
+
+    // MARK: Timeline drafts
+
+    /// Creates a fresh draft with one empty visual track, persists it, and
+    /// opens the timeline editor on it.
+    private func createTimelineDraft() {
+        do {
+            var value = try MacTimelineDraft(name: FloeL10n.isChinese ? "未命名时间线" : "Untitled Timeline")
+            _ = try value.addTrack(.visual)
+            try library.saveTimelineDraft(value)
+            timelineEditor = TimelineEditorRoute(draft: value)
+        } catch {
+            library.error = error.localizedDescription
+        }
+    }
+
+    private func openTimelineDraft(_ value: MacTimelineDraft) {
+        timelineEditor = TimelineEditorRoute(draft: value)
+    }
+
+    private func openTimelineDraftPicker() {
+        // No drafts yet: create the first one, which is the only action the
+        // picker could offer anyway.
+        createTimelineDraft()
+    }
+
+    /// Opens a timeline editor preloaded with this node as its first clip.
+    /// The draft is persisted immediately, so closing the editor keeps the
+    /// imported media on the timeline for later editing.
+    private func openNodeInTimeline(node: CanvasNode, url: URL) {
+        Task { await openNodeInTimeline(node: node, url: url) }
+    }
+
+    private func openNodeInTimeline(node: CanvasNode, url: URL) async {
+        do {
+            let title = node.title ?? url.deletingPathExtension().lastPathComponent
+            var value = try MacTimelineDraft(name: title)
+            let track = try value.addTrack(.visual)
+            let info = try await MacTimelineAssetProber.probe(url)
+            let duration = info.isStillImage ? 5 : max(info.duration, 0.1)
+            let clip = try MacTimelineClip.media(
+                sourceURL: url, title: title, timelineStart: 0, duration: duration)
+            try value.addClip(clip, toTrack: track.id)
+            try library.saveTimelineDraft(value)
+            timelineEditor = TimelineEditorRoute(draft: value)
+        } catch {
+            library.error = error.localizedDescription
+        }
     }
 
     private var undoButton: some View {
@@ -504,7 +593,7 @@ struct MacCreativeWorkbenchView: View {
 
     private func tileHeader(_ node: CanvasNode, capability: MacCanvasBackupProjection.NodeCapability, editable: Bool) -> some View {
         HStack {
-            Image(systemName: node.kind == .text ? "textformat" : node.kind == .image ? "photo" : "film")
+            Image(systemName: Self.kindIcon(node.kind))
             Text(verbatim: node.title ?? String(localized: "mac.creative.text")).lineLimit(1)
             if !editable {
                 Image(systemName: "lock.fill").foregroundStyle(.secondary)
@@ -525,11 +614,34 @@ struct MacCreativeWorkbenchView: View {
         Menu {
             Button(MacCanvasText.connectFrom) { connect.begin(from: node.id) }
             if editable {
+                // Text-bearing content nodes share the text editor.
+                if MacCreativeLibrary.textEditableKinds.contains(node.kind) {
+                    Button("mac.creative.edit") { present(.text(node.id), node.text) }
+                }
+                if node.kind == .shape {
+                    Menu(MacCanvasText.shapeMenu) {
+                        ForEach(CanvasShapeKind.allCases, id: \.self) { shape in
+                            let current = node.shape == shape
+                            Button {
+                                perform { try library.setShape(shape, id: node.id) }
+                            } label: {
+                                HStack {
+                                    Text(MacCanvasText.shapeName(shape))
+                                    if current { Image(systemName: "checkmark") }
+                                }
+                            }
+                        }
+                    }
+                }
+                Button(MacCanvasText.renameNode) { present(.title(node.id), node.title ?? "") }
                 if (node.kind == .image || node.kind == .video), let url = library.assetURL(node) {
                     Button(node.kind == .image ? MacMediaEditStrings.editImage : MacMediaEditStrings.editVideo) {
                         openMediaEditor(node: node, url: url)
                     }
                     .accessibilityIdentifier("mac.canvas.editNode")
+                }
+                if (node.kind == .image || node.kind == .video), let url = library.assetURL(node) {
+                    Button(MacCanvasText.editInTimeline) { openNodeInTimeline(node: node, url: url) }
                 }
                 if node.kind == .image, let url = library.assetURL(node) {
                     if images.maximumReferenceImages > 0 {
@@ -539,7 +651,6 @@ struct MacCreativeWorkbenchView: View {
                         Button("mac.creative.useFirstFrame") { reference = url; page = .video }
                     }
                 }
-                if node.kind == .text { Button("mac.creative.edit") { present(.text(node.id), node.text) } }
                 if let url = library.assetURL(node) { Button("mac.creative.open") { NSWorkspace.shared.open(url) } }
                 Button("mac.creative.remove", role: .destructive) { perform { try library.remove(node.id) } }
             } else if let url = library.assetURL(node) {
@@ -557,9 +668,20 @@ struct MacCreativeWorkbenchView: View {
                 kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 400,
                 kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
                 Image(decorative: thumbnail, scale: 1).resizable().scaledToFit()
-            } else if node.kind == .video, let file = library.assetURL(node) {
-                Button { NSWorkspace.shared.open(file) } label: { Image(systemName: "play.rectangle").font(.largeTitle) }.buttonStyle(.plain)
-            } else if node.kind == .text {
+            } else if (node.kind == .video || node.kind == .audio), let file = library.assetURL(node) {
+                Button { NSWorkspace.shared.open(file) } label: {
+                    Image(systemName: node.kind == .video ? "play.rectangle" : "waveform.circle")
+                        .font(.largeTitle)
+                }.buttonStyle(.plain)
+            } else if node.kind == .file, let file = library.assetURL(node) {
+                VStack(spacing: 4) {
+                    Image(systemName: "doc").font(.title2)
+                    Text(verbatim: file.lastPathComponent)
+                        .font(.caption2).lineLimit(2).multilineTextAlignment(.center)
+                }
+            } else if node.kind == .shape {
+                shapeBody(node)
+            } else if MacCreativeLibrary.textEditableKinds.contains(node.kind) {
                 Text(verbatim: node.text).lineLimit(5)
             } else {
                 // Read-only representation of preserved content.
@@ -571,6 +693,77 @@ struct MacCreativeWorkbenchView: View {
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func shapeBody(_ node: CanvasNode) -> some View {
+        let shape = node.shape ?? .roundedRectangle
+        let color = node.metadata["shapeFill"].flatMap(Self.rgbColor) ?? Color.accentColor
+        return ZStack {
+            switch shape {
+            case .rectangle:
+                Rectangle().fill(color.opacity(0.25))
+            case .roundedRectangle:
+                RoundedRectangle(cornerRadius: 12).fill(color.opacity(0.25))
+            case .ellipse:
+                Ellipse().fill(color.opacity(0.25))
+            case .diamond:
+                DiamondShape().fill(color.opacity(0.25))
+            case .triangle:
+                TriangleShape().fill(color.opacity(0.25))
+            }
+            if !node.text.isEmpty {
+                Text(verbatim: node.text).lineLimit(4).padding(6)
+            }
+        }
+        .padding(4)
+    }
+
+    private struct DiamondShape: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { p in
+                p.move(to: CGPoint(x: rect.midX, y: rect.minY))
+                p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+                p.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+                p.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+                p.closeSubpath()
+            }
+        }
+    }
+
+    private struct TriangleShape: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { p in
+                p.move(to: CGPoint(x: rect.midX, y: rect.minY))
+                p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+                p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+                p.closeSubpath()
+            }
+        }
+    }
+
+    private static func rgbColor(_ hex: String) -> Color? {
+        guard hex.hasPrefix("#"), hex.count == 7 else { return nil }
+        var value: UInt64 = 0
+        guard Scanner(string: String(hex.dropFirst())).scanHexInt64(&value) else { return nil }
+        return Color(red: Double((value >> 16) & 0xFF) / 255,
+                     green: Double((value >> 8) & 0xFF) / 255,
+                     blue: Double(value & 0xFF) / 255)
+    }
+
+    private static func kindIcon(_ kind: CanvasNodeKind) -> String {
+        switch kind {
+        case .text: return "textformat"
+        case .stickyNote: return "note.text"
+        case .card: return "rectangle.on.rectangle"
+        case .shape: return "square.on.circle"
+        case .image: return "photo"
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .file: return "doc"
+        case .group: return "folder"
+        case .generationTask: return "sparkles"
+        case .scene3D: return "cube"
+        }
     }
 
     private func nodeDrag(_ node: CanvasNode) -> some Gesture {
@@ -681,9 +874,11 @@ struct MacCreativeWorkbenchView: View {
 
     private func importFile() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image, .movie]
+        panel.allowedContentTypes = [.image, .movie, .audio]
         guard panel.runModal() == .OK, let file = panel.url else { return }
-        let movie = UTType(filenameExtension: file.pathExtension)?.conforms(to: .movie) == true
-        add(file, kind: movie ? .video : .image, title: file.deletingPathExtension().lastPathComponent)
+        let type = UTType(filenameExtension: file.pathExtension)
+        let kind: CanvasNodeKind = type?.conforms(to: .movie) == true ? .video
+            : type?.conforms(to: .audio) == true ? .audio : .image
+        add(file, kind: kind, title: file.deletingPathExtension().lastPathComponent)
     }
 }

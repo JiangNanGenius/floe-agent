@@ -500,7 +500,7 @@ struct MacProviderSettingsView: View {
             if role == .conversation, let record = optionsTargetRecord {
                 Section {
                     LabeledContent(MacProviderText.t("默认对话模型", "Default Chat Model")) {
-                        if workspace.selectedModelID == record.model.id {
+                        if workspace.selectedPrimaryModelID == record.model.id {
                             Label(MacProviderText.t("使用中", "In use"), systemImage: "checkmark.circle.fill")
                         } else {
                             Button(MacProviderText.t("设为默认", "Set as Default")) {

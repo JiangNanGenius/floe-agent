@@ -12,16 +12,23 @@ struct MacWorkspaceApprovalView: View {
     let approval: HostAgentApproval
     @State private var grantScope: FloeMacFileGrantScope?
     @State private var scopeOwner: HostAgentApproval?
+    @State private var toolGrantScope: MacScopedApprovalScope?
+    @State private var toolScopeOwner: HostAgentApproval?
 
     private var selectedScope: Binding<FloeMacFileGrantScope?> {
         Binding(get: { scopeOwner == approval ? grantScope : nil }, set: { grantScope = $0; scopeOwner = approval })
+    }
+
+    private var selectedToolScope: Binding<MacScopedApprovalScope?> {
+        Binding(get: { toolScopeOwner == approval ? toolGrantScope : nil },
+                set: { toolGrantScope = $0; toolScopeOwner = approval })
     }
 
     var body: some View {
         var card = ApprovalCardView(
             approval: approval.cardRequest,
             singleUseOnly: true,
-            approveTitleOverride: selectedScope.wrappedValue == nil ? nil : "action.approve",
+            approveTitleOverride: (selectedScope.wrappedValue == nil && selectedToolScope.wrappedValue == nil) ? nil : "action.approve",
             canApprove: approval.canAllow,
             isResolving: workspace.isStopping || workspace.isResolvingApproval || workspace.isTerminating,
             displayedScope: fileScope,
@@ -31,7 +38,12 @@ struct MacWorkspaceApprovalView: View {
             switch decision {
             case .allow:
                 let scope = selectedScope.wrappedValue
-                Task { await workspace.resolveApproval(approval, allow: true, remember: scope) }
+                let toolScope = selectedToolScope.wrappedValue
+                Task {
+                    await workspace.resolveApproval(approval, allow: true,
+                                                    remember: scope,
+                                                    rememberScopedTool: toolScope)
+                }
             case .deny: Task { await workspace.resolveApproval(approval, allow: false) }
             default: break
             }
@@ -87,6 +99,23 @@ struct MacWorkspaceApprovalView: View {
                     Text("mac.permissions.projectFile").tag(Optional(FloeMacFileGrantScope.workspace))
                 }
             }.pickerStyle(.menu).controlSize(.small)
+        }
+        if approval.canAllow, workspace.canRememberScopedTool(approval) {
+            Picker(MacPermissionsText.t("记住此工具", "Remember this tool"), selection: selectedToolScope) {
+                Text(MacPermissionsText.t("仅此一次", "Just once"))
+                    .tag(nil as MacScopedApprovalScope?)
+                Text(MacPermissionsText.t("在此任务中", "For this task"))
+                    .tag(Optional(MacScopedApprovalScope.toolTask))
+                if workspace.workspaces.contains(where: { $0.id == approval.workspaceID && $0.kind == .project }) {
+                    Text(MacPermissionsText.t("在此项目中", "For this project"))
+                        .tag(Optional(MacScopedApprovalScope.toolProject))
+                }
+                Text(MacPermissionsText.t("本次会话", "For this session"))
+                    .tag(Optional(MacScopedApprovalScope.toolSession))
+            }
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .accessibilityIdentifier("approval.rememberToolScope")
         }
         if let detail = MacNativeCommandPolicy.preview(approval.toolCall) {
             ScrollView { preview(detail) }.frame(maxHeight: 135)

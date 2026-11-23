@@ -36,6 +36,7 @@ struct HostAgentWorkspaceView: View {
     static var smokeLocatedMessageID: UUID?
     #endif
     @StateObject private var search: ThreadSearchModel
+    @ObservedObject private var voiceSession: MacVoiceSession
     @FocusState private var promptFocused: Bool
     @State private var editingPrompt = false
     @State private var promptSelection = NSRange(location: 0, length: 0)
@@ -83,6 +84,7 @@ struct HostAgentWorkspaceView: View {
         self.findRequest = findRequest
         self.findConversationID = findConversationID
         #if FLOE_UNIFIED_MAC
+        _voiceSession = ObservedObject(wrappedValue: workspace.voiceSession)
         _search = StateObject(wrappedValue: ThreadSearchModel(
             provider: { [weak workspace] query in
                 guard let workspace, let id = findConversationID, workspace.selectedID == id else {
@@ -378,6 +380,7 @@ struct HostAgentWorkspaceView: View {
             await search.search()
         }
         .onDisappear {
+            if voiceSession.isActive { voiceSession.stop() }
             search.end()
             attachmentImport?.cancel()
             attachmentImport = nil
@@ -385,6 +388,9 @@ struct HostAgentWorkspaceView: View {
             textImportTask?.cancel()
             textImportTask = nil
             textImportAttachmentID = nil
+        }
+        .onChange(of: workspace.attachmentOwnerID) { _, _ in
+            if voiceSession.isActive { voiceSession.stop() }
         }
         .sheet(isPresented: $editingPrompt, onDismiss: { promptFocused = true }) {
             VStack(spacing: 0) {
@@ -498,7 +504,8 @@ struct HostAgentWorkspaceView: View {
     }
 
     private var canSubmitComposer: Bool {
-        guard attachmentImport == nil, !workspace.isTerminating, workspace.selectedID == findConversationID,
+        guard attachmentImport == nil, !voiceSession.isActive, !workspace.isTerminating,
+              workspace.selectedID == findConversationID,
               !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         if workspace.isSending { return workspace.canSteer }
         let compatible = mode == .chat || workspace.composerProvider?.model.capabilities.contains(.tools) == true
@@ -585,6 +592,7 @@ struct HostAgentWorkspaceView: View {
                     #endif
                     .disabled(workspace.isTerminating || (workspace.isSending && workspace.selectedID == nil))
                     .composerResponsiveFieldSlot()
+                voiceControls
                 Button { editingPrompt = true } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
@@ -627,6 +635,9 @@ struct HostAgentWorkspaceView: View {
                     .disabled(!canSubmitComposer)
                 }
             }
+            if voiceSession.isActive || voiceSession.problem != nil {
+                voiceStatus
+            }
             if let openModelSettings {
                 ComposerContextLayout {
                     modelControl(openSettings: openModelSettings).disabled(workspace.isSending)
@@ -654,6 +665,73 @@ struct HostAgentWorkspaceView: View {
         .padding(.horizontal, 6)
         .padding(.bottom, 3)
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder private var voiceControls: some View {
+        if voiceSession.isActive {
+            let dictating = voiceSession.mode == .dictation
+            Button {
+                if dictating { voiceSession.finishDictation() }
+                else { voiceSession.stop() }
+            } label: {
+                Image(systemName: "stop.circle")
+            }
+            .buttonStyle(ComposerButtonStyle())
+            .help(dictating ? Text("mac.voice.finishDictation") : Text("mac.voice.stop"))
+            .accessibilityLabel(dictating ? Text("mac.voice.finishDictation") : Text("mac.voice.stop"))
+            .accessibilityIdentifier("thread.composer.voice.stop")
+        } else {
+            Button { beginVoice(.dictation) } label: { Image(systemName: "mic") }
+                .buttonStyle(ComposerButtonStyle())
+                .help("mac.voice.dictation")
+                .accessibilityLabel("mac.voice.dictation")
+                .accessibilityIdentifier("thread.composer.voice.dictate")
+                .disabled(!workspace.isReady || workspace.isTerminating || workspace.isLoadingHistory)
+            Button { beginVoice(.conversation) } label: { Image(systemName: "waveform") }
+                .buttonStyle(ComposerButtonStyle())
+                .help("mac.voice.conversation")
+                .accessibilityLabel("mac.voice.conversation")
+                .accessibilityIdentifier("thread.composer.voice.conversation")
+                .disabled(!workspace.isReady || workspace.isTerminating || workspace.isSending
+                          || workspace.isLoadingHistory || workspace.composerProvider == nil)
+        }
+    }
+
+    private var voiceStatus: some View {
+        let action: LocalizedStringKey = switch voiceSession.phase {
+        case .idle: ""
+        case .preparing: "mac.voice.preparing"
+        case .listening: "mac.voice.listening"
+        case .finishing: "mac.voice.finishing"
+        case .waiting: "mac.voice.waiting"
+        case .speaking: "mac.voice.speaking"
+        }
+        return HStack(spacing: 7) {
+            if let problem = voiceSession.problem { Text(problem) }
+            else {
+                Text(action).fontWeight(.medium)
+                if voiceSession.phase == .listening, !voiceSession.transcript.isEmpty {
+                    Text(voiceSession.transcript).lineLimit(2)
+                }
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.bottom, 2)
+    }
+
+    private func beginVoice(_ mode: MacVoiceSession.Mode) {
+        let owner = workspace.attachmentOwnerID
+        let binding = draft
+        voiceSession.start(mode, locale: workspace.voiceLocale, admit: workspace.admitScheduleWork) { text in
+            guard workspace.attachmentOwnerID == owner else { return }
+            let current = binding.wrappedValue
+            binding.wrappedValue = current.isEmpty || current.last?.isWhitespace == true ? current + text : current + " " + text
+            promptFocused = true
+        } turn: { text in
+            try await workspace.runVoiceTurn(text, owner: owner)
+        }
     }
 
     private var runningInputControl: some View {
@@ -1148,7 +1226,7 @@ struct HostAgentWorkspaceView: View {
     }
 
     @ViewBuilder private func modelControl(openSettings: @escaping () -> Void) -> some View {
-        let chatModels = workspace.providers.filter {
+        let chatModels = workspace.taskModelChoices.filter {
             $0.canSelectAsPrimary
         }
         if chatModels.isEmpty {
@@ -1158,7 +1236,7 @@ struct HostAgentWorkspaceView: View {
             .buttonStyle(ComposerButtonStyle())
         } else {
             ThreadComposerModelMenu(
-                models: chatModels.map(\.model), providers: workspace.accounts.map(\.profile),
+                models: chatModels.map(\.model), providers: workspace.taskModelProviderProfiles,
                 selectedModelID: workspace.composerProvider?.model.id,
                 onSelect: { _ = workspace.selectComposerModel($0.id) }
             ) {
@@ -1184,6 +1262,7 @@ struct HostAgentWorkspaceView: View {
     /// stands in while nothing is configured.
     private var composerModelTitle: String {
         guard let provider = workspace.composerProvider else {
+            if workspace.needsLocalModel { return String(localized: "mac.localModels.selectedUnavailable") }
             return String(localized: "host.chat.provider")
         }
         let account = provider.profile.displayName ?? provider.profile.baseURL.host ?? provider.displayTitle

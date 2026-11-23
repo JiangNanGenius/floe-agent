@@ -12,7 +12,10 @@ import Foundation
 import UniformTypeIdentifiers
 #if FLOE_UNIFIED_MAC
 import FloeDeviceSync
+import FloeLocalModelCatalog
+import FloeLocalModels
 import FloeSkills
+import FloeSync
 import FloeTools
 import LocalAuthentication
 #endif
@@ -54,6 +57,9 @@ struct HostAgentProvider: Codable {
     /// as nil and keep working; the effective preset is still resolvable
     /// from the endpoint when needed.
     var presetID: String?
+    private var runtimeAdapter: (any ProviderAdapter)?
+
+    private enum CodingKeys: String, CodingKey { case profile, model, apiKey, presetID }
 
     /// The label shown in the provider list: the user-chosen name when set,
     /// otherwise the model ID (the 1.3.0 single-profile behavior).
@@ -106,15 +112,17 @@ struct HostAgentProvider: Codable {
 
     func binding() -> FloeMacSelfProviderBinding {
         FloeMacSelfProviderBinding(provider: profile, model: model,
-            adapter: ProviderAdapterFactory().adapter(for: profile),
+            adapter: runtimeAdapter ?? ProviderAdapterFactory().adapter(for: profile),
             credentials: ProviderCredentials(apiKey: apiKey.isEmpty ? nil : apiKey))
     }
 
-    init(profile: ProviderProfile, model: ModelProfile, apiKey: String, presetID: String?) {
+    init(profile: ProviderProfile, model: ModelProfile, apiKey: String, presetID: String?,
+         runtimeAdapter: (any ProviderAdapter)? = nil) {
         self.profile = profile
         self.model = model
         self.apiKey = apiKey
         self.presetID = presetID
+        self.runtimeAdapter = runtimeAdapter
     }
 
     var canSelectAsPrimary: Bool {
@@ -225,13 +233,17 @@ private struct MacProjectApprovalContext {
     let identities: [String: String]
     let primaryIsOnDevice: Bool
     let networkStatus: NetworkStatusMonitor
+    let connectorBindings: [String: MacWorkbenchConnectorToolBinding]
 
     func policy(_ mode: TaskApprovalMode, reviewer: FloeMacSelfProviderBinding?) -> any ApprovalPolicy {
         let taskPolicy = MacTaskApprovalPolicy.make(mode: mode, reviewer: reviewer,
             primaryIsOnDevice: primaryIsOnDevice, isOffline: networkStatus.isOffline)
         let files = grants.wrapping(taskPolicy, workspaceID: workspaceID, conversationID: conversationID,
                                    workspaceRoot: root, authorizationIdentities: identities)
-        return MacMemoryApprovalPolicy(base: MacNativeCommandPolicy(mode: mode, base: files))
+        let scoped = MacScopedToolGrantPolicy(base: files, grants: .shared, session: .shared,
+            workspaceID: workspaceID, conversationID: conversationID,
+            bindings: connectorBindings, askModeOnly: mode == .ask)
+        return MacMemoryApprovalPolicy(base: MacNativeCommandPolicy(mode: mode, base: scoped))
     }
 }
 
@@ -445,6 +457,11 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     let taskSchedules = MacTaskScheduleCenter()
+    let voiceSession = MacVoiceSession()
+    var voiceLocale: Locale {
+        preferences.string(forKey: VoiceRecognitionLanguage.defaultsKey)
+            .flatMap(VoiceRecognitionLanguage.init(rawValue:))?.locale ?? .current
+    }
     var taskNotifications: MacTaskNotifications?
     private var attemptedSafeRecovery = Set<UUID>()
 
@@ -772,9 +789,52 @@ final class HostAgentWorkspace: ObservableObject {
         return runToolActivity[runID] ?? []
     }
 
+    @Published private(set) var installedLocalModels: [HostAgentProvider] = []
+    @Published private(set) var selectedLocalModelID: UUID?
+    private static let selectedLocalModelKey = "floe.mac.models.defaultLocalModelID"
+    private static let onDeviceModelIDs = Set(CuratedLocalModelCatalog.knownEntries.map(\.profileID))
+        .union([AppleFoundationModelIdentity.profileID])
+
+    var taskModelChoices: [HostAgentProvider] {
+        installedLocalModels + providers.filter { !Self.onDeviceModelIDs.contains($0.model.id) }
+    }
+
+    var taskModelProviderProfiles: [ProviderProfile] {
+        (installedLocalModels.first.map { [$0.profile] } ?? []) + accounts.map(\.profile)
+    }
+
+    var selectedPrimaryModelID: UUID? { selectedLocalModelID ?? selectedModelID }
+
+    func publishInstalledLocalModels(_ models: [ModelProfile], provider: ProviderProfile, adapter: any ProviderAdapter) {
+        guard !isTerminating, provider.kind == .local, provider.id == ProviderProfile.onDeviceProviderID else { return }
+        var seen = Set<UUID>()
+        installedLocalModels = models.compactMap { model in
+            guard Self.onDeviceModelIDs.contains(model.id), model.providerID == provider.id,
+                  seen.insert(model.id).inserted else { return nil }
+            return HostAgentProvider(profile: provider, model: model, apiKey: "", presetID: nil, runtimeAdapter: adapter)
+        }
+    }
+
+    private func localModel(withID id: UUID) -> HostAgentProvider? {
+        installedLocalModels.first { $0.model.id == id && $0.canSelectAsPrimary }
+    }
+
+    private func isLocalModel(_ id: UUID) -> Bool {
+        selectedLocalModelID == id || Self.onDeviceModelIDs.contains(id)
+    }
+
+    var needsLocalModel: Bool {
+        guard let id = taskModelID ?? selectedLocalModelID, isLocalModel(id) else { return false }
+        return localModel(withID: id) == nil
+    }
+
     var composerProvider: HostAgentProvider? {
-        providers.first { $0.model.id == taskModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }
-            ?? providers.first { $0.model.id == selectedModelID && $0.canSelectAsPrimary }
+        if let taskModelID {
+            if isLocalModel(taskModelID) { return localModel(withID: taskModelID) }
+            if let chosen = providers.first(where: { $0.model.id == taskModelID && $0.canSelectAsPrimary }) { return chosen }
+        }
+        if let selectedLocalModelID { return localModel(withID: selectedLocalModelID) }
+        return providers.first { $0.model.id == selectedModelID && $0.canSelectAsPrimary }
             ?? providers.first(where: \.canSelectAsPrimary)
     }
 
@@ -787,13 +847,13 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func selectComposerProvider(_ id: UUID) {
-        if let model = providers.first(where: { $0.profile.id == id && $0.canSelectAsPrimary }) { selectComposerModel(model.model.id) }
+        if let model = taskModelChoices.first(where: { $0.profile.id == id && $0.canSelectAsPrimary }) { selectComposerModel(model.model.id) }
     }
 
     @discardableResult
     func selectComposerModel(_ id: UUID) -> Bool {
         guard !isSending, !isLoadingHistory, !isTerminating,
-              providers.contains(where: { $0.model.id == id && $0.canSelectAsPrimary }) else { return false }
+              taskModelChoices.contains(where: { $0.model.id == id && $0.canSelectAsPrimary }) else { return false }
         taskModelID = id
         return true
     }
@@ -979,6 +1039,7 @@ final class HostAgentWorkspace: ObservableObject {
         #if FLOE_UNIFIED_MAC
         self.webSearch = MacSearchSettings(namespace: namespace, useKeychain: useKeychain, preferences: preferences)
         self.preferences = preferences
+        self.selectedLocalModelID = preferences.string(forKey: Self.selectedLocalModelKey).flatMap(UUID.init(uuidString:))
         self.auxiliaryPreferences = preferences.data(forKey: Self.auxiliaryPreferencesKey)
             .flatMap { try? JSONDecoder().decode(ModelSelectionPreferences.self, from: $0) } ?? .init()
         self.auxiliaryVisionReasoning = preferences.bool(forKey: Self.visionReasoningKey)
@@ -1010,6 +1071,11 @@ final class HostAgentWorkspace: ObservableObject {
             }
             guard let runtime else { return }
             try await runtime.bootstrap()
+            #if FLOE_UNIFIED_MAC
+            await MacScopedToolGrants.shared.bindHostStorage(MacSQLiteScopedToolGrantPersistence(
+                try await runtime.workspaceApprovalRecords()
+            ))
+            #endif
             try await childSubagents.prepare(runtime: runtime)
             // Archived tasks stay out of the workspace; they are only
             // reachable again after an explicit restore.
@@ -1298,7 +1364,8 @@ final class HostAgentWorkspace: ObservableObject {
 
     #if FLOE_UNIFIED_MAC
     func synchronizeCloudModels(publishingModelID modelID: UUID? = nil) async throws -> [MacCloudModelEntry] {
-        guard vault != nil, isReady, !isSending, !isTerminating, !isSynchronizingCloudModels,
+        guard cloudSyncPreferences.overallEnabled, cloudSyncPreferences.configurationEnabled,
+              vault != nil, isReady, !isSending, !isTerminating, !isSynchronizingCloudModels,
               let release = admit() else { throw MacICloudModelError.temporarilyUnavailable }
         isSynchronizingCloudModels = true
         defer { isSynchronizingCloudModels = false; release() }
@@ -1324,23 +1391,99 @@ final class HostAgentWorkspace: ObservableObject {
             return false
         }
         return updateProviderStore { store in
-            var base = entry.provider
-            base.secretRef = nil
-            if let i = store.accounts.firstIndex(where: { $0.id == base.id }) {
-                let saved = store.accounts[i].profile
-                guard saved.baseURL == base.baseURL, saved.wireProtocol == base.wireProtocol, saved.kind == base.kind else {
-                    throw MacICloudModelError.invalidProvider
-                }
-                if let j = store.accounts[i].models.firstIndex(where: { $0.id == entry.model.id }) {
-                    guard store.accounts[i].models[j].remoteModelID == entry.model.remoteModelID else { throw MacICloudModelError.invalidProvider }
-                    store.accounts[i].models[j] = entry.model
-                } else {
-                    store.accounts[i].models.append(entry.model)
-                }
-            } else {
-                store.accounts.append(HostProviderAccount(profile: base, apiKey: "", presetID: base.presetID, models: [entry.model]))
+            try Self.mergeCloudModel(entry, providerKey: nil, into: &store)
+        }
+    }
+
+    private static func mergeCloudModel(_ entry: MacCloudModelEntry, providerKey: String?,
+                                        into store: inout ProviderListEnvelope) throws {
+        guard MacCloudModelEntry.accepts(entry.provider, model: entry.model) else { throw MacICloudModelError.invalidProvider }
+        var base = entry.provider
+        base.secretRef = nil
+        guard let index = store.accounts.firstIndex(where: { $0.id == base.id }) else {
+            store.accounts.append(HostProviderAccount(profile: base, apiKey: providerKey ?? "",
+                                                       presetID: base.presetID, models: [entry.model]))
+            return
+        }
+        let saved = store.accounts[index].profile
+        guard saved.baseURL == base.baseURL, saved.wireProtocol == base.wireProtocol, saved.kind == base.kind else {
+            throw MacICloudModelError.invalidProvider
+        }
+        if let modelIndex = store.accounts[index].models.firstIndex(where: { $0.id == entry.model.id }) {
+            guard store.accounts[index].models[modelIndex].remoteModelID == entry.model.remoteModelID else {
+                throw MacICloudModelError.invalidProvider
+            }
+            store.accounts[index].models[modelIndex] = entry.model
+        } else {
+            store.accounts[index].models.append(entry.model)
+        }
+        if store.accounts[index].apiKey.isEmpty, let providerKey { store.accounts[index].apiKey = providerKey }
+    }
+
+    func synchronizeCloudConfiguration(publishing configuration: MacCloudConfiguration? = nil,
+                                       includeCredentials: Bool) async throws -> MacCloudConfigurationExchange {
+        guard cloudSyncPreferences.overallEnabled, cloudSyncPreferences.configurationEnabled,
+              !includeCredentials || cloudSyncPreferences.savedCredentialsEnabled,
+              vault != nil, isReady, !isSending, !isTerminating, !isSynchronizingCloudModels,
+              let release = admit() else { throw MacICloudModelError.temporarilyUnavailable }
+        isSynchronizingCloudModels = true
+        defer { isSynchronizingCloudModels = false; release() }
+        let credentialAccount = includeCredentials ? preferences.string(forKey: Self.cloudCredentialAccountKey) : nil
+        guard !includeCredentials || credentialAccount != nil else { throw MacICloudModelError.credentialAccessUnavailable }
+        let keys = if configuration != nil && includeCredentials {
+            Dictionary(uniqueKeysWithValues: accounts.filter { !$0.apiKey.isEmpty }.map { ($0.id, $0.apiKey) })
+        } else { [UUID: String]() }
+        let service = MacICloudModelSync(applicationSupport: supportDirectory, namespace: namespace)
+        return try await service.synchronizeConfiguration(publishing: configuration, credentialAccount: credentialAccount,
+                                                           localProviderKeys: keys)
+    }
+
+    private static let cloudCredentialAccountKey = "floe.mac.sync.authorizedCredentialAccount"
+
+    var cloudSyncPreferences: SyncControlPreferences { .load(from: preferences) }
+
+    func setCloudSyncPreferences(_ value: SyncControlPreferences, credentialAccount: String? = nil) {
+        if let credentialAccount { preferences.set(credentialAccount, forKey: Self.cloudCredentialAccountKey) }
+        else if !value.savedCredentialsEnabled { preferences.removeObject(forKey: Self.cloudCredentialAccountKey) }
+        value.save(to: preferences)
+    }
+
+    func configurationForCloud(settings: [ApplicationSettingRecord], videoModelID: UUID?) -> MacCloudConfiguration {
+        let entries = providers.compactMap { record -> MacCloudModelEntry? in
+            guard (record.apiKey.isEmpty || !record.profile.baseURL.absoluteString.contains(record.apiKey)),
+                  MacCloudModelEntry.accepts(record.profile, model: record.model) else { return nil }
+            var profile = record.profile
+            profile.presetID = record.presetID ?? profile.presetID
+            return .init(provider: profile, model: record.model)
+        }
+        var selected = auxiliaryPreferences
+        selected.defaultAgentModelID = selectedModelID
+        selected.approvalModelID = approvalModelID
+        selected.defaultVideoModelID = videoModelID
+        return .init(entries: entries, preferences: selected, settings: settings)
+    }
+
+    func applyCloudConfiguration(_ exchange: MacCloudConfigurationExchange) -> Bool {
+        guard !isSynchronizingCloudModels else { return false }
+        let applied = updateProviderStore { store in
+            for entry in exchange.configuration.entries {
+                try Self.mergeCloudModel(entry, providerKey: exchange.providerKeys[entry.provider.id], into: &store)
+            }
+            if selectedLocalModelID == nil, let id = exchange.configuration.preferences?.defaultAgentModelID,
+               store.providers.contains(where: { $0.model.id == id && $0.canSelectAsPrimary }) {
+                store.selectedModelID = id
             }
         }
+        guard applied else { return false }
+        if let selection = exchange.configuration.preferences {
+            for (role, id) in [(MacAuxiliaryRole.text, selection.generalAuxiliaryLLMModelID), (.vision, selection.visionModelID)] {
+                if let id, auxiliaryCandidates(role).contains(where: { $0.model.id == id }) { setAuxiliaryModel(id, for: role) }
+            }
+            if let id = selection.approvalModelID, providers.contains(where: { $0.model.id == id && $0.model.supportsApprovalSurface }) {
+                setApprovalModelID(id)
+            }
+        }
+        return true
     }
     #endif
 
@@ -1356,10 +1499,26 @@ final class HostAgentWorkspace: ObservableObject {
 
     @discardableResult
     func selectDefaultModel(_ id: UUID) -> Bool {
-        updateProviderStore { store in
+        #if FLOE_UNIFIED_MAC
+        if isLocalModel(id) {
+            guard !isSending, !isTerminating, localModel(withID: id) != nil, let release = admit() else { return false }
+            defer { release() }
+            preferences.set(id.uuidString, forKey: Self.selectedLocalModelKey)
+            selectedLocalModelID = id
+            return true
+        }
+        #endif
+        let updated = updateProviderStore { store in
             guard store.providers.contains(where: { $0.model.id == id && $0.canSelectAsPrimary }) else { throw ProviderStoreError.missingRecord }
             store.selectedModelID = id
         }
+        #if FLOE_UNIFIED_MAC
+        if updated, selectedLocalModelID != nil {
+            preferences.removeObject(forKey: Self.selectedLocalModelKey)
+            selectedLocalModelID = nil
+        }
+        #endif
+        return updated
     }
 
 
@@ -2168,7 +2327,11 @@ final class HostAgentWorkspace: ObservableObject {
               !isLoadingHistory, !historyLoadFailed, !text.isEmpty else { return false }
         do {
             guard let config = try configuration() else {
+                #if FLOE_UNIFIED_MAC
+                notice = needsLocalModel ? String(localized: "mac.localModels.selectedUnavailable") : String(localized: "host.chat.configureFirst")
+                #else
                 notice = String(localized: "host.chat.configureFirst")
+                #endif
                 return false
             }
             #if FLOE_UNIFIED_MAC
@@ -2218,8 +2381,8 @@ final class HostAgentWorkspace: ObservableObject {
                              store: SQLiteTaskScheduleStore) -> Bool {
         guard isReady, !isTerminating, let runtime,
               schedule.workspaceID == nil || workspaces.contains(where: { $0.id == schedule.workspaceID && $0.kind == .project }) else { return false }
-        let eligible = providers.filter { $0.profile.isEnabled && $0.model.isEnabled && $0.model.capabilities.contains(.tools) }
-        guard let requested = schedule.modelID ?? selectedModelID,
+        let eligible = taskModelChoices.filter { $0.profile.isEnabled && $0.model.isEnabled && $0.model.capabilities.contains(.tools) }
+        guard let requested = schedule.modelID ?? selectedPrimaryModelID,
               let provider = eligible.first(where: { $0.model.id == requested }) else { return false }
         return beginSend(schedule.prompt, runtime: runtime, provider: provider.binding(), workspaceID: schedule.workspaceID,
                          mode: .agent, scheduled: .init(schedule: schedule, occurrence: occurrence, store: store))
@@ -2347,7 +2510,7 @@ final class HostAgentWorkspace: ObservableObject {
         guard selectedID == id else { return nil }
         let lastRun = transcriptRuns.max { $0.startedAt < $1.startedAt }
         let modelID = visibleRun?.modelID ?? lastRun?.modelID
-        return providers.first { $0.model.id == modelID }?.model ?? composerProvider?.model
+        return taskModelChoices.first { $0.model.id == modelID }?.model ?? composerProvider?.model
     }
 
     func hasContextWindow(for id: UUID) -> Bool {
@@ -2570,11 +2733,21 @@ final class HostAgentWorkspace: ObservableObject {
                         }
                     }
                     var extensionTools: [AnyAgentTool] = []
+                    var connectorBindings: [String: MacWorkbenchConnectorToolBinding] = [:]
+                    var connectorOrigins: [String: MacWorkbenchConnectorToolOrigin] = [:]
                     if mode != .chat, let workbenchSkills {
                         extensionTools = Self.skillTools(for: workbenchSkills, allowsNetwork: taskPolicy.networkAllowed != false)
                     }
-                    if !readOnly, mode != .chat {
-                        extensionTools.append(contentsOf: workbenchConnectors?.publishedTools ?? [])
+                    if !readOnly, mode != .chat, let connectors = workbenchConnectors {
+                        let published = connectors.publishedTools
+                        connectorOrigins = connectors.toolOrigins
+                        for tool in published {
+                            if let binding = connectors.binding(for: tool.descriptor.name),
+                               binding.descriptorIdentity == tool.descriptor.authorizationIdentity {
+                                connectorBindings[tool.descriptor.name] = binding
+                            }
+                        }
+                        extensionTools.append(contentsOf: published)
                     }
                     let memory = try await runtime.memoryLibrary()
                     let binding = try MacAgentWorkspaceTools.binding(workspace: toolWorkspace,
@@ -2589,29 +2762,26 @@ final class HostAgentWorkspace: ObservableObject {
                     ) { root, identities in
                         let context = MacProjectApprovalContext(grants: grants, workspaceID: toolWorkspace.id,
                             conversationID: taskID, root: root, identities: identities,
-                            primaryIsOnDevice: provider.provider.id == ProviderProfile.onDeviceProviderID, networkStatus: self.networkStatus)
+                            primaryIsOnDevice: provider.provider.id == ProviderProfile.onDeviceProviderID,
+                            networkStatus: self.networkStatus, connectorBindings: connectorBindings)
                         self.liveRuns[taskID]?.approvalContext = context
                         self.liveRuns[taskID]?.approvalMode = approvalMode
                         return context.policy(approvalMode, reviewer: self.reviewer)
                     }
                     tools = binding.allowedToolNames.isEmpty ? nil : binding
                     var extensionApprovals: [String: HostExtensionApproval] = [:]
-                    let server = workbenchConnectors?.configuration?.server
-                    var connectorNames: [String: String] = [:]
-                    if let server, let discovered = workbenchConnectors?.discoveredTools {
-                        for tool in discovered {
-                            let name = MCPRemoteToolSource.namespacedName(prefix: server.namespacePrefix + "_",
-                                                                         remoteName: tool.remoteName)
-                            connectorNames[name] = String(SecretRedactor.redact(tool.remoteName).prefix(128))
-                        }
-                    }
                     for tool in extensionTools where binding.allowedToolNames.contains(tool.descriptor.name) {
                         let descriptor = tool.descriptor
-                        let connectorTool = connectorNames[descriptor.name]
+                        let origin = connectorOrigins[descriptor.name]
+                        let connectorTool = origin.map { String(SecretRedactor.redact($0.remoteName).prefix(128)) }
+                        let target = origin.map {
+                            let name = String(SecretRedactor.redact($0.serverName).prefix(128))
+                            return $0.host.map { "\(name) (\($0))" } ?? name
+                        }
                         extensionApprovals[descriptor.name] = .init(
                             title: connectorTool.map { MacPermissionsText.t("调用 \($0)", "Run \($0)") }
                                 ?? MacPermissionsText.t("管理技能", "Manage Skill"),
-                            target: connectorTool != nil ? server?.endpoint.host() : nil,
+                            target: target,
                             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
                             changesState: descriptor.isSideEffecting
                         )
@@ -3194,7 +3364,7 @@ final class HostAgentWorkspace: ObservableObject {
         let taskID = round.goal.conversationID
         guard !isTerminating, !changingGoals.contains(taskID), queuedInputs[taskID]?.isEmpty != false,
               liveRuns[taskID] == nil else { return }
-        let currentProvider = providers.first { $0.profile.id == provider.provider.id && $0.model.id == provider.model.id
+        let currentProvider = taskModelChoices.first { $0.profile.id == provider.provider.id && $0.model.id == provider.model.id
             && $0.profile.isEnabled && $0.model.isEnabled }?.binding()
         guard let binding = currentProvider ?? (vault == nil ? provider : nil) else { return }
         let prompt = MacPermissionsText.t(
@@ -3384,6 +3554,35 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func resolveApproval(_ approval: HostAgentApproval, allow: Bool, remember scope: FloeMacFileGrantScope? = nil) async {
+        await resolveApproval(approval, allow: allow, remember: scope, onAccepted: nil)
+    }
+
+    #if FLOE_UNIFIED_MAC
+    func canRememberScopedTool(_ approval: HostAgentApproval) -> Bool {
+        guard let run = liveRuns[approval.conversationID], run.approvalMode == .ask,
+              let captured = run.approvalContext?.connectorBindings[approval.toolName] else { return false }
+        return workbenchConnectors?.binding(for: approval.toolName) == captured
+    }
+
+    func resolveApproval(_ approval: HostAgentApproval, allow: Bool, remember scope: FloeMacFileGrantScope?,
+                         rememberScopedTool: MacScopedApprovalScope?) async {
+        let run = liveRuns[approval.conversationID]
+        let binding = run?.approvalContext?.connectorBindings[approval.toolName]
+        let canRemember = canRememberScopedTool(approval)
+        await resolveApproval(approval, allow: allow, remember: scope) { [weak self] in
+            guard allow, canRemember, let rememberScopedTool, let binding, let self,
+                  workbenchConnectors?.binding(for: approval.toolName) == binding else { return }
+            do {
+                try await MacScopedApprovals.record(approval: approval, scope: rememberScopedTool, binding: binding)
+            } catch {
+                if selectedID == approval.conversationID { notice = String(localized: "mac.permissions.grantFailed") }
+            }
+        }
+    }
+    #endif
+
+    private func resolveApproval(_ approval: HostAgentApproval, allow: Bool, remember scope: FloeMacFileGrantScope?,
+                                 onAccepted: (() async -> Void)?) async {
         guard isSending, !isStopping, !isResolvingApproval, !isTerminating,
               pendingApproval == approval, let handle = activeRun,
               handle.identity.runID == approval.runID, !allow || approval.canAllow,
@@ -3416,6 +3615,7 @@ final class HostAgentWorkspace: ObservableObject {
             }
         }
         #endif
+        if result == .accepted { await onAccepted?() }
         guard liveRuns[taskID]?.handle?.identity == handle.identity else { return }
         if result == .accepted, liveRuns[taskID]?.approval == approval { liveRuns[taskID]?.approval = nil }
         await updateLiveRun(handle)
@@ -3513,7 +3713,7 @@ final class HostAgentWorkspace: ObservableObject {
     /// (submit) or is kept queued (drain) with an honest notice, and the
     /// staged files plus draft stay with the user.
     private func modelAcceptsImages(_ modelID: UUID) -> Bool {
-        let modelVision = providers.first(where: { $0.model.id == modelID })?
+        let modelVision = taskModelChoices.first(where: { $0.model.id == modelID })?
             .model.capabilities.contains(.vision) == true
         return modelVision || selectedAuxiliary(.vision) != nil
     }
@@ -3774,7 +3974,7 @@ final class HostAgentWorkspace: ObservableObject {
                         continue
                     }
                     guard let mode = HostAgentMode(rawValue: input.executionMode),
-                          let model = providers.first(where: { $0.model.id == input.selectedModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }),
+                          let model = taskModelChoices.first(where: { $0.model.id == input.selectedModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }),
                           let owner = try await runtime.workspaceForConversation(id), owner.id == input.workspaceID,
                           !isTerminating, !changingTasks.contains(id), liveRuns[id] == nil else { throw CocoaError(.userCancelled) }
                     // A queued guidance carrying an image the bound model
@@ -3973,6 +4173,9 @@ final class HostAgentWorkspace: ObservableObject {
             _ = try await runtime.shutdown(cancelActive: false)
             questionSubscription = nil
         }
+        #if FLOE_UNIFIED_MAC
+        await MacScopedToolGrants.shared.bindHostStorage(nil)
+        #endif
         runtime = nil
         isReady = false
     }
@@ -3983,6 +4186,10 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     private func configuration() throws -> HostAgentProvider? {
+        #if FLOE_UNIFIED_MAC
+        if let taskModelID, isLocalModel(taskModelID) { return localModel(withID: taskModelID) }
+        if taskModelID == nil, let selectedLocalModelID { return localModel(withID: selectedLocalModelID) }
+        #endif
         #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
         if vault == nil { return composerProvider }
         #endif
@@ -3990,6 +4197,7 @@ final class HostAgentWorkspace: ObservableObject {
         let store = try loadProviderStore()
         #if FLOE_UNIFIED_MAC
         if let provider = store.providers.first(where: { $0.model.id == taskModelID && $0.profile.isEnabled && $0.model.isEnabled && $0.model.supportsChatAgentSurface }) { return provider }
+        if let selectedLocalModelID { return localModel(withID: selectedLocalModelID) }
         #endif
         return store.selected
     }
@@ -5467,6 +5675,14 @@ final class HostAgentWorkspace: ObservableObject {
     #endif
     #endif
 }
+
+#if FLOE_UNIFIED_MAC
+extension MacScopedToolGrants {
+    func bindHostStorage(_ storage: (any MacScopedToolGrantPersistence)?) {
+        persistence = storage
+    }
+}
+#endif
 
 // MARK: - User questions (projection, restore, answering)
 //

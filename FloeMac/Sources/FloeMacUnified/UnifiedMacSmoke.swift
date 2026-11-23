@@ -10,6 +10,8 @@ import Darwin
 import FloeAgentRuntime
 import FloeCore
 import FloeDeviceSync
+import FloeLocalModelCatalog
+import FloeLocalModels
 import FloeMacBridgeProtocol
 import FloeMacToolbox
 import FloeModels
@@ -111,6 +113,10 @@ final class UnifiedMacSmoke {
             await exerciseExtensionTools(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--connector-parity-only"), let endpoint = projectTaskFixtureEndpoint, endpoint.host == "127.0.0.1" {
+            await exerciseConnectorParity(model, endpoint: endpoint)
+            return
+        }
         if CommandLine.arguments.contains("--task-terminals-only") {
             await exerciseTaskTerminals(model)
             return
@@ -123,6 +129,14 @@ final class UnifiedMacSmoke {
             await exerciseMemoryLibrary(model)
             return
         }
+        if CommandLine.arguments.contains("--icloud-configuration-only") {
+            await exerciseCloudConfiguration(model)
+            return
+        }
+        if CommandLine.arguments.contains("--managed-storage-and-sites-only") {
+            await exerciseManagedStorageAndSites(model)
+            return
+        }
         if CommandLine.arguments.contains("--memory-runtime-only"), let endpoint = projectTaskFixtureEndpoint,
            endpoint.host == "127.0.0.1" {
             await exerciseMemoryRuntime(model, endpoint: endpoint)
@@ -131,6 +145,12 @@ final class UnifiedMacSmoke {
         if CommandLine.arguments.contains("--voice-host-only"), let endpoint = projectTaskFixtureEndpoint,
            endpoint.host == "127.0.0.1" {
             await exerciseVoiceTurn(model, endpoint: endpoint)
+            return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--local-model-only"),
+           CommandLine.arguments.indices.contains(index + 1),
+           CommandLine.arguments[index + 1].hasPrefix("/") {
+            await exerciseLocalModel(model, directory: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true))
             return
         }
         if CommandLine.arguments.contains("--concurrent-drafts-only"), let endpoint = projectTaskFixtureEndpoint,
@@ -1290,6 +1310,100 @@ final class UnifiedMacSmoke {
         finish(["approvalPressed": pressed, "completed": finished, "stored": saved])
     }
 
+    private func exerciseManagedStorageAndSites(_ model: BridgeAppModel) async {
+        guard await readyFixtureWorkbench(model) != nil, let workspace = model.macWorkspace,
+              let service = workspace.managedStorage, let sites = workspace.browser?.taskTools.siteMemory else {
+            finish(["ready": false]); return
+        }
+        let siteURL = URL(string: "https://example.com/index")!
+        let otherURL = URL(string: "https://example.org")!
+        var result: [String: Bool] = ["defaultEphemeral": sites.store(for: siteURL) == nil]
+        if let origin = sites.remember(url: siteURL), let store = sites.store(for: siteURL),
+           let cookie = HTTPCookie(properties: [.name: "floe-fixture", .value: "synthetic", .domain: "example.com",
+               .path: "/", .secure: "TRUE", .expires: Date().addingTimeInterval(1_200)]) {
+            sites.flush()
+            await store.httpCookieStore.setCookie(cookie)
+            let received = await store.httpCookieStore.allCookies()
+            result["rememberedAndIsolated"] = store.isPersistent && received.contains(where: { $0.name == cookie.name })
+                && sites.store(for: otherURL) == nil
+            let opened = await exerciseSettingsPage(.siteData, model: model)
+            result["siteSettingsVisible"] = opened && model.smokeSiteSettingsMounted
+            await sites.forget(origin: origin)
+            let remaining = await store.httpCookieStore.allCookies()
+            result["rememberedDataRemoved"] = sites.store(for: siteURL) == nil && remaining.isEmpty
+        }
+        let folder = FloeScratch.scratchRoot(temporary: root).appendingPathComponent("skills-" + UUID().uuidString, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let staleFile = folder.appendingPathComponent("fixture.tmp")
+            try Data(repeating: 0x2A, count: 4_096).write(to: staleFile)
+            let old: [FileAttributeKey: Any] = [.modificationDate: Date(timeIntervalSinceNow: -172_800)]
+            try FileManager.default.setAttributes(old, ofItemAtPath: staleFile.path)
+            try FileManager.default.setAttributes(old, ofItemAtPath: folder.path)
+            let opened = await exerciseSettingsPage(.dataStorage, model: model)
+            result["storageSettingsVisible"] = opened && model.smokeStorageSettingsMounted
+            await service.estimateCleanup()
+            result["staleFolderEstimated"] = service.estimate?.eligibleItemCount == 1
+            await service.performCleanup()
+            result["staleFolderRemoved"] = !FileManager.default.fileExists(atPath: folder.path)
+            let agentFolder = try HostAgentDatabase.prepareStorageDirectory(applicationSupport: root, namespace: Bundle.main.bundleIdentifier!)
+            result["taskDatabasePreserved"] = FileManager.default.fileExists(atPath: agentFolder.appendingPathComponent("floe.sqlite").path)
+        } catch { result["storageOperation"] = false }
+        finish(result)
+    }
+
+    private func exerciseSettingsPage(_ pane: BridgeAppModel.SettingsPane, model: BridgeAppModel) async -> Bool {
+        model.openSettings(pane)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while (model.smokeAgentSettingsSheet == nil || model.settingsPane != pane), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+        return model.smokeAgentSettingsSheet?.isVisible == true && model.settingsPane == pane
+    }
+
+    private func exerciseCloudConfiguration(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model),
+              agent.saveProvider(endpoint: "https://example.com/v1", protocolKind: .openAIChatCompletions,
+                                 modelID: "fixture-cloud", key: "fixture-local-key"),
+              let original = agent.providers.first else {
+            finish(["ready": false]); return
+        }
+        let checked = MacSharedSettingsSnapshot(appearance: "dark", verifyAnswers: true, runningInput: .steer)
+        let records = (try? checked.records()) ?? []
+        var renamed = original.model
+        renamed.displayName = "Renamed iPad model"
+        let exchange = MacCloudConfigurationExchange(configuration: .init(
+            entries: [.init(provider: original.profile, model: renamed)],
+            preferences: .init(defaultAgentModelID: renamed.id),
+            settings: records
+        ), providerKeys: [original.profile.id: "fixture-icloud-key"])
+        let applied = agent.applyCloudConfiguration(exchange)
+        let saved = agent.providers.first(where: { $0.model.id == original.model.id })
+        var changedOrigin = original.profile
+        changedOrigin.baseURL = URL(string: "https://example.org/v1")!
+        let rejected = !agent.applyCloudConfiguration(.init(
+            configuration: .init(entries: [.init(provider: changedOrigin, model: renamed)])
+        ))
+        model.openSettings(.iCloud)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !model.smokeCloudSettingsMounted, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        let restored = MacSharedSettingsSnapshot(records: exchange.configuration.settings)
+        finish([
+            "settingsVisible": model.smokeCloudSettingsMounted,
+            "sharedRecordKeys": Set(records.map(\.key)) == [
+                MacSharedSettingsSnapshot.appearanceKey, MacSharedSettingsSnapshot.verifyKey, MacSharedSettingsSnapshot.inputKey
+            ],
+            "decodedSettings": restored.appearance == "dark" && restored.verifyAnswers == true && restored.runningInput == .steer,
+            "modelApplied": applied && saved?.model.displayName == renamed.displayName,
+            "configuredKeyPreserved": saved?.apiKey == original.apiKey,
+            "unrelatedOriginRejected": rejected && agent.providers.first?.profile.baseURL == original.profile.baseURL,
+            "credentialsOffByDefault": !agent.cloudSyncPreferences.savedCredentialsEnabled
+        ])
+    }
+
     private func exerciseVoiceTurn(_ model: BridgeAppModel, endpoint: URL) async {
         guard let agent = await readyFixtureWorkbench(model), agent.useNativeCommandFixture(endpoint: endpoint),
               let pdf = try? writePDFTextAttachment() else {
@@ -1300,14 +1414,115 @@ final class UnifiedMacSmoke {
         var rejectedOtherOwner = false
         do { _ = try await agent.runVoiceTurn("Ignored voice source", owner: UUID()) }
         catch { rejectedOtherOwner = true }
+        let capture = VoiceCaptureFixture()
+        let output = VoicePlaybackFixture()
+        let voice = MacVoiceSession(capture: capture, speaker: output)
+        var dictation = ""
+        var leases = 0
+        func admit() -> (() -> Void)? {
+            leases += 1
+            return { leases -= 1 }
+        }
+        func waitForListening() async {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while voice.phase != .listening, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+        }
+        voice.start(.dictation, locale: Locale(identifier: "en-US"), admit: admit,
+                    compose: { dictation = $0 }, turn: { _ in throw CocoaError(.featureUnsupported) })
+        await waitForListening()
+        let oldCallback = capture.receive
+        capture.receive?(.text("Draft from dictation", final: false))
+        voice.finishDictation()
+        let finalizedDraft = dictation == "Draft from dictation" && !voice.isActive && leases == 0
+        voice.start(.conversation, locale: Locale(identifier: "en-US"), admit: admit,
+            compose: { dictation = $0 }, turn: { text in try await agent.runVoiceTurn(text, owner: owner) })
+        await waitForListening()
+        oldCallback?(.text("Wrong voice generation", final: true))
+        let oldFenced = voice.transcript.isEmpty
+        capture.receive?(.text("A voice fixture question.", final: false))
+        let deadline = ContinuousClock.now + .seconds(10)
+        while capture.starts < 3, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        let continued = capture.starts == 3 && voice.phase == .listening
+        voice.stop()
+        let runMode = agent.transcriptRuns.last?.conversationMode
+        finish(["otherOwnerRejected": rejectedOtherOwner, "ownedAnswer": agent.attachmentOwnerID == owner
+            && agent.selectedID == owner && output.played == ["Confirmed fixture response."],
+            "chatCeiling": runMode == "chat", "attachmentsPreserved": !staged.isEmpty
+                && agent.stagedAttachments.map(\.id) == staged,
+            "dictationCommitted": finalizedDraft && dictation == "Draft from dictation",
+            "previousRecordingFenced": oldFenced, "continuousListening": continued && leases == 0])
+    }
+
+    private final class VoiceCaptureFixture: MacVoiceCapturing {
+        var receive: (@MainActor (MacVoiceInputUpdate) -> Void)?
+        private(set) var starts = 0
+        func start(locale: Locale, receive: @escaping @MainActor (MacVoiceInputUpdate) -> Void) async throws {
+            starts += 1
+            self.receive = receive
+        }
+        func finishInput() { receive?(.text("Draft from dictation", final: true)) }
+        func cancel() { receive = nil }
+    }
+
+    private final class VoicePlaybackFixture: MacVoiceSpeaking {
+        private(set) var played: [String] = []
+        func speak(_ text: String, locale: Locale) async -> Bool {
+            played.append(text)
+            return true
+        }
+        func stop() {}
+    }
+
+    private func exerciseLocalModel(_ model: BridgeAppModel, directory: URL) async {
+        guard #available(macOS 15.4, *), let agent = await readyFixtureWorkbench(model),
+              let entry = CuratedLocalModelCatalog.entries.first,
+              agent.useNativeCommandFixture(endpoint: URL(string: "http://127.0.0.1:1/v1")!) else {
+            finish(["ready": false]); return
+        }
+        let store = LocalModelStore(root: directory)
+        let runtime = LocalModelRuntime(store: store)
+        let provider = LocalProviderAdapter.providerProfile
+        let adapter = LocalProviderAdapter(runtime: runtime, store: store)
+        let settingsOpened = await exerciseSettingsPage(.localModels, model: model) && model.smokeLocalModelSettingsMounted
+        model.closeSettingsWindow()
+        let fixture = ModelProfile(id: entry.profileID, providerID: provider.id,
+            remoteModelID: entry.id, displayName: entry.displayName,
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 256), capabilities: [.text, .tools])
+        agent.publishInstalledLocalModels([fixture], provider: provider, adapter: adapter)
+        let selected = agent.selectDefaultModel(entry.profileID)
+        agent.publishInstalledLocalModels([], provider: provider, adapter: adapter)
+        let held = selected && agent.needsLocalModel && agent.composerProvider == nil
+            && !agent.send("Keep this prompt on this Mac.", mode: .chat)
+        var checks: [String: Any] = ["cloudFallbackPrevented": held, "settingsVisible": settingsOpened]
         do {
-            let answer = try await agent.runVoiceTurn("A voice fixture question.", owner: owner)
-            let runMode = agent.transcriptRuns.last?.conversationMode
-            finish(["otherOwnerRejected": rejectedOtherOwner, "ownedAnswer": agent.attachmentOwnerID == owner
-                && agent.selectedID == owner && answer == "Confirmed fixture response.",
-                "chatCeiling": runMode == "chat", "attachmentsPreserved": !staged.isEmpty
-                    && agent.stagedAttachments.map(\.id) == staged])
-        } catch { finish(["ownedAnswer": false, "otherOwnerRejected": rejectedOtherOwner]) }
+            if !(await store.isInstalled(id: entry.id)) { _ = try await store.download(entry) }
+            checks["verifiedSnapshot"] = await store.isInstalled(id: entry.id)
+            let available = try await adapter.listModels(provider: provider, credentials: .init())
+            agent.publishInstalledLocalModels(available, provider: provider, adapter: adapter)
+            let picked = agent.selectComposerModel(entry.profileID)
+            checks["localPicker"] = picked && agent.composerProvider?.model.id == entry.profileID
+                && agent.taskModelProviderProfiles.contains(where: { $0.kind == .local })
+            if picked && agent.send("What is 2 + 3? Answer with just the number.", mode: .chat) {
+                let deadline = ContinuousClock.now + .seconds(100)
+                while agent.activeRunCount > 0 && ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                let completed = agent.transcriptRuns.last { $0.modelID == entry.profileID }
+                checks["inference"] = completed?.state == "completed" && agent.messages.contains {
+                    $0.runID == completed?.id && $0.role == "assistant" && $0.content.contains("5")
+                }
+                if agent.activeRunCount > 0 { agent.stop() }
+            }
+            await runtime.unload()
+        } catch {
+            let failure = error as NSError
+            checks["failure"] = "\(failure.domain):\(failure.code)"
+        }
+        finish(checks)
     }
 
     private func exerciseExtensionTools(_ model: BridgeAppModel, endpoint: URL) async {
@@ -1351,6 +1566,58 @@ final class UnifiedMacSmoke {
                     "details": details])
         } catch {
             finish(["configured": false, "diagnostics": String(describing: type(of: error))])
+        }
+    }
+
+    private func exerciseConnectorParity(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model), let connectors = agent.workbenchConnectors else {
+            finish(["ready": false]); return
+        }
+        let root = endpoint.deletingLastPathComponent()
+        let bearer = MCPServerConfiguration(displayName: "Bearer fixture", endpoint: root.appendingPathComponent("mcp-bearer"),
+            allowInsecureHTTP: true, authentication: .bearerToken)
+        let header = MCPServerConfiguration(displayName: "Header fixture", endpoint: root.appendingPathComponent("mcp-header"),
+            allowInsecureHTTP: true, authentication: .customHeader, credentialHeaderName: "X-Floe-Fixture")
+        do {
+            try await connectors.configure(server: bearer, credential: "fixture-bearer-token")
+            try await connectors.configure(server: header, credential: "fixture-header-token")
+            guard connectors.servers.count == 2, connectors.publishedTools.count == 2,
+                  let first = connectors.toolOrigins.first(where: { $0.value.serverID == bearer.id })?.key,
+                  let other = connectors.toolOrigins.first(where: { $0.value.serverID == header.id })?.key,
+                  agent.startNamedAgentFixture("Read both synthetic connector receipts.", modelID: "connector-parity-fixture",
+                                               endpoint: endpoint, projectID: nil) else {
+                finish(["discovery": false]); return
+            }
+            let deadline = ContinuousClock.now + .seconds(18)
+            var remembered = false
+            var approvedHeader = false
+            while agent.activeRunCount > 0, ContinuousClock.now < deadline {
+                if let approval = agent.pendingApproval, approval.toolName == first, !remembered {
+                    await agent.resolveApproval(approval, allow: true, remember: nil, rememberScopedTool: .toolTask)
+                    remembered = true
+                }
+                if agent.pendingApproval?.toolName == other, !approvedHeader {
+                    approvedHeader = clickApproval(in: agent, allow: true, screenshot: "authenticated-connector.png")
+                }
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            let completed = agent.messages.contains { $0.content == "Both connector receipts verified." }
+            let grants = try await MacScopedToolGrants.shared.list()
+            let persisted = grants.contains { $0.toolName == first && $0.conversationID == agent.selectedID }
+            for grant in grants { try await MacScopedToolGrants.shared.revoke(id: grant.id) }
+            let revoked = try await MacScopedToolGrants.shared.list().isEmpty
+            if agent.activeRunCount > 0 { agent.stop() }
+            try await connectors.setEnabled(false, serverID: header.id)
+            let isolated = connectors.toolOrigins[first]?.serverID == bearer.id && connectors.toolOrigins[other] == nil
+            try await connectors.remove(serverID: bearer.id)
+            try await connectors.remove(serverID: header.id)
+            finish(["discovery": true, "bearerApproval": remembered, "headerApproval": approvedHeader,
+                    "toolsInvoked": completed, "scopedApprovalPersisted": persisted,
+                    "approvalRevoked": revoked, "disabledInIsolation": isolated,
+                    "notice": agent.notice ?? "", "runStates": agent.transcriptRuns.map(\.state),
+                    "serversRemoved": connectors.servers.isEmpty && connectors.publishedTools.isEmpty])
+        } catch {
+            finish(["discovery": false, "failure": String(describing: type(of: error))])
         }
     }
 
@@ -2253,11 +2520,13 @@ final class UnifiedMacSmoke {
             try? bytes.write(to: report, options: .atomic)
         }
         Task { @MainActor in
+            BridgeApplicationDelegate.model?.closeSettingsWindow()
             // Closing a parent run joins its child workers before releasing the OTA activity lease.
             // The App correctly refuses Quit until that asynchronous cleanup finishes.
             let deadline = ContinuousClock.now + .seconds(8)
             while let model = BridgeApplicationDelegate.model,
-                  model.updates.installation.activity.activityCount != 0, ContinuousClock.now < deadline {
+                  (model.updates.installation.activity.activityCount != 0 || model.smokeAgentSettingsSheet != nil),
+                  ContinuousClock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(40))
             }
             NSApp.terminate(nil)
@@ -2675,6 +2944,11 @@ final class UnifiedMacSmoke {
             guard roundTrip.selectedID != library.selectedID, let imported = roundTrip.page?.nodes,
                   imported.count == 3, let clip = roundTrip.assetURL(imported[2]),
                   try Data(contentsOf: clip) == Data(contentsOf: url) else { return false }
+            if CommandLine.arguments.contains("--timeline-fixture"),
+               !(try await verifyTimelineDraft(library: library, video: url, image: savedImage)) {
+                settingsDiagnostics.append("The multi-track draft, shared subtitle codec, or playable export failed.")
+                return false
+            }
             if CommandLine.arguments.contains("--mixed-canvas-fixture"),
                !(try await verifyMixedCanvas(library: library, image: savedImage, video: savedVideo)) {
                 settingsDiagnostics.append("The mixed canvas did not survive native edit, undo and export.")
@@ -2770,6 +3044,37 @@ final class UnifiedMacSmoke {
         let deadline = ContinuousClock.now + .seconds(3)
         while !library.smokeCanvasEditorOpen && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
         return library.smokeCanvasEditorOpen && library.selectedID == id
+    }
+
+    private func verifyTimelineDraft(library: MacCreativeLibrary, video: URL, image: URL) async throws -> Bool {
+        guard let store = library.timelineDraftStore else { return false }
+        let videoInfo = try await MacTimelineAssetProber.probe(video)
+        let imageInfo = try await MacTimelineAssetProber.probe(image)
+        guard videoInfo.hasAudio, videoInfo.duration >= 0.9 else { return false }
+        var draft = try MacTimelineDraft(name: "Local timeline fixture", canvasWidth: 320, canvasHeight: 180)
+        let picture = try draft.addTrack(.visual)
+        let overlay = try draft.addTrack(.visual)
+        let sound = try draft.addTrack(.audio)
+        let captions = try draft.addTrack(.caption)
+        let clip = try MacTimelineClip.media(sourceURL: video, title: "Picture", timelineStart: 0, duration: 0.9, volume: 0)
+        try draft.addClip(clip, toTrack: picture.id)
+        try draft.setClipGrade(trackID: picture.id, clipID: clip.id, grade: .init(filterID: "CISepiaTone"))
+        try draft.addClip(.media(sourceURL: image, title: "Overlay", timelineStart: 0.5, duration: 0.3), toTrack: overlay.id)
+        try draft.addClip(.media(sourceURL: video, title: "Sound", timelineStart: 0, duration: 0.9), toTrack: sound.id)
+        let cues = try MediaV2SubtitleCodec.parse("1\n00:00:00,150 --> 00:00:00,750\n测试 caption\n")
+        for cue in cues {
+            try draft.addClip(.caption(timelineStart: cue.start, duration: cue.duration, text: cue.text), toTrack: captions.id)
+        }
+        try library.saveTimelineDraft(draft)
+        let reopened = try store.load(id: draft.id)
+        guard reopened.id == draft.id, reopened.tracks == draft.tracks,
+              library.timelineDrafts().contains(where: { $0.id == draft.id }),
+              try MediaV2SubtitleCodec.parse(MediaV2SubtitleCodec.encode(cues, format: .vtt)) == cues else { return false }
+        let movie = root.appendingPathComponent("rendered-timeline.mp4")
+        try await MacTimelineExporter().export(draft: reopened, assets: [video: videoInfo, image: imageInfo], to: movie)
+        let asset = AVURLAsset(url: movie)
+        let audio = try await asset.loadTracks(withMediaType: .audio)
+        return await MacTimelineExporter.verify(movie, expectedDuration: 0.9) && !audio.isEmpty
     }
 
     private func verifyMixedCanvas(library: MacCreativeLibrary, image: URL, video: URL) async throws -> Bool {

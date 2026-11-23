@@ -18,7 +18,7 @@ import FloeAgentRuntime
 public struct FloeMacSelfHostGate: Sendable, Hashable {
     static let maximumLabelBytes = 200
     static let maximumRootPathBytes = 4_096
-    static let maximumToolCount = 64
+    public static let maximumToolCount = 64
     static let maximumToolNameBytes = 128
 
     /// The exact durable workspace this gate authorizes.

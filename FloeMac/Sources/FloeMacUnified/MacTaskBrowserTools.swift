@@ -47,6 +47,21 @@ final class MacTaskBrowserTools: ObservableObject {
     /// Per-owner download presentation state (active banner / saved row /
     /// error row in the workbench chrome). Weak: the controller owns this hub.
     weak var downloads: MacBrowserDownloadController?
+    /// Remembered-site memory shared by every task session this hub creates.
+    /// Injected by the owning workbench (construct-and-pass); nil keeps all
+    /// sessions strictly ephemeral. Model tools can never set it. Setting it
+    /// installs the jar-invalidation hook that detaches live tabs before a
+    /// forgotten jar is wiped.
+    var siteMemory: MacSiteMemoryRegistry? {
+        didSet {
+            siteMemory?.onJarsInvalidated = { [weak self] storeIDs in
+                guard let self else { return }
+                for session in self.store.sessionsByLeastRecentActivity() {
+                    session.detachStores(storeIDs)
+                }
+            }
+        }
+    }
 
     init(restore: RestoreHooks) {
         self.restore = restore
@@ -80,6 +95,7 @@ final class MacTaskBrowserTools: ObservableObject {
     private func makeSession(for owner: UUID) -> MacTaskBrowserSession {
         if let existing = store.session(for: owner) { return existing }
         let session = MacTaskBrowserSession(conversationID: owner, generation: generations[owner] ?? 0)
+        session.siteMemory = siteMemory
         session.onFirstUserInput = { [weak self, weak session] reason in
             guard let self, let session, self.store.session(for: owner) === session else { return }
             self.presentBrowser(owner)

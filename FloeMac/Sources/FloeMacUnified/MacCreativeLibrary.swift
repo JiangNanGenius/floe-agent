@@ -60,6 +60,26 @@ final class MacCreativeLibrary: ObservableObject {
     var selected: CanvasProject? { projects.first { $0.id == selectedID } }
     var page: CanvasDocument? { selected.flatMap { project in project.documents.first { $0.id == project.selectedDocumentID } } }
 
+    // MARK: Timeline drafts
+
+    /// Draft store for the multi-track timeline editor. Lives inside the
+    /// creative library directory so backups, exports and trash flows keep
+    /// owning the whole creative workspace.
+    private(set) lazy var timelineDraftStore: MacTimelineDraftStore? = try? MacTimelineDraftStore(
+        directory: directory.appendingPathComponent("TimelineDrafts", isDirectory: true))
+
+    /// Every readable timeline draft, newest first.
+    func timelineDrafts() -> [MacTimelineDraft] {
+        (try? timelineDraftStore?.loadAll()) ?? []
+    }
+
+    /// Persists (or removes) a timeline draft, then lets the presenter
+    /// refresh its draft list.
+    func saveTimelineDraft(_ draft: MacTimelineDraft) throws {
+        guard let store = timelineDraftStore else { throw CocoaError(.fileWriteUnknown) }
+        try store.save(draft)
+    }
+
     /// True when the selected canvas contains read-only nodes or ink.
     var hasPreservedContent: Bool {
         selected.map(MacCanvasBackupProjection.hasOpaqueContent) ?? false
@@ -147,11 +167,56 @@ final class MacCreativeLibrary: ObservableObject {
         try requireEditable(node)
         let old = node.text
         try updatePage { page in
-            guard let i = page.nodes.firstIndex(where: { $0.id == id && $0.kind == .text }) else { return }
+            guard let i = page.nodes.firstIndex(where: { $0.id == id && Self.textEditableKinds.contains($0.kind) }) else { return }
             page.nodes[i].text = text
         }
         pushUndo(projectID: selected?.id, documentID: selected?.selectedDocumentID) { library in
             try library.setTextSilently(old, id: id)
+        }
+    }
+
+    /// Renames a node's display title without touching its payload
+    /// (asset bytes, metadata, Pencil fields, generation state).
+    func setTitle(_ title: String?, id: UUID) throws {
+        guard let node = page?.nodes.first(where: { $0.id == id }) else { return }
+        try requireEditable(node)
+        let old = node.title
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        try updatePage { page in
+            guard let i = page.nodes.firstIndex(where: { $0.id == id }) else { return }
+            page.nodes[i].title = trimmed?.isEmpty == true ? nil : trimmed
+        }
+        pushUndo(projectID: selected?.id, documentID: selected?.selectedDocumentID) { library in
+            try library.setTitleSilently(old, id: id)
+        }
+    }
+
+    private func setTitleSilently(_ title: String?, id: UUID) throws {
+        try updatePage { page in
+            guard let i = page.nodes.firstIndex(where: { $0.id == id }) else { return }
+            page.nodes[i].title = title
+        }
+    }
+
+    /// Changes a shape node's geometry kind. The node's text, metadata and
+    /// asset payload stay untouched, so iPad backup fields survive.
+    func setShape(_ shape: CanvasShapeKind, id: UUID) throws {
+        guard let node = page?.nodes.first(where: { $0.id == id }) else { return }
+        try requireEditable(node)
+        let old = node.shape
+        try updatePage { page in
+            guard let i = page.nodes.firstIndex(where: { $0.id == id && $0.kind == .shape }) else { return }
+            page.nodes[i].shape = shape
+        }
+        pushUndo(projectID: selected?.id, documentID: selected?.selectedDocumentID) { library in
+            try library.setShapeSilently(old, id: id)
+        }
+    }
+
+    private func setShapeSilently(_ shape: CanvasShapeKind?, id: UUID) throws {
+        try updatePage { page in
+            guard let i = page.nodes.firstIndex(where: { $0.id == id }) else { return }
+            page.nodes[i].shape = shape
         }
     }
 
@@ -165,14 +230,19 @@ final class MacCreativeLibrary: ObservableObject {
 
     private func setTextSilently(_ text: String, id: UUID) throws {
         try updatePage { page in
-            guard let i = page.nodes.firstIndex(where: { $0.id == id && $0.kind == .text }) else { return }
+            guard let i = page.nodes.firstIndex(where: { $0.id == id }) else { return }
             page.nodes[i].text = text
         }
     }
 
+    /// Node kinds whose `text` field the simple board may edit: plain text
+    /// plus the iPad content nodes that carry user-authored copy.
+    static let textEditableKinds: Set<CanvasNodeKind> = [.text, .stickyNote, .card]
+
     func addMedia(_ source: URL, kind: CanvasNodeKind, title: String) throws {
-        guard kind == .image || kind == .video, let type = UTType(filenameExtension: source.pathExtension),
-              type.conforms(to: kind == .image ? .image : .movie),
+        guard MacCanvasBackupProjection.editableKinds.contains(kind),
+              let type = UTType(filenameExtension: source.pathExtension),
+              type.conforms(to: kind == .image ? .image : kind == .video ? .movie : kind == .audio ? .audio : .data),
               try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
         else { throw CocoaError(.fileReadUnsupportedScheme) }
         let id = UUID()
@@ -203,9 +273,15 @@ final class MacCreativeLibrary: ObservableObject {
 
     func assetURL(_ item: CanvasNode) -> URL? {
         guard let url = assetDestination(item) else { return nil }
-        guard let type = UTType(filenameExtension: url.pathExtension),
-              (item.kind == .image && type.conforms(to: .image)) || (item.kind == .video && type.conforms(to: .movie)),
-              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+        guard let type = UTType(filenameExtension: url.pathExtension) else { return nil }
+        let conforms: Bool = switch item.kind {
+        case .image: type.conforms(to: .image)
+        case .video: type.conforms(to: .movie)
+        case .audio: type.conforms(to: .audio)
+        case .file: true // any regular file a file node references
+        default: false
+        }
+        guard conforms, (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
         return url
     }
 
