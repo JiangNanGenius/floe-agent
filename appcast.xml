@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.20</title>
+      <pubDate>Mon, 23 Nov 2026 10:32:19 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.20</link>
+      <sparkle:version>50</sparkle:version>
+      <sparkle:shortVersionString>1.11.20</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>修复 Mac 工作区图片和窗口截图的模型读取。 Deliver workspace images and window captures to the selected vision route.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.20/Floe-Agent-1.11.20.dmg" length="64430817" type="application/octet-stream" sparkle:edSignature="vsGdo1aEbd5eCLhJXGCJafPKAJrRi1Y1UV10hTrl/dcAJhO+q5zbQoimqSU48SWIYdOY+PoIlFKORRwr6+DKCQ==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.19</title>
       <pubDate>Mon, 23 Nov 2026 10:12:50 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.19</link>
