@@ -1120,6 +1120,14 @@ public actor ConversationRunService {
                 durabilityFailure = "The accepted Goal input could not be bound to its original task. Its saved message was kept."
             }
         }
+        // The message retains its send time. The event sequence records
+        // where the runtime inserted it, even when several steers share
+        // one boundary or a queued steer has an older timestamp.
+        await appendEventReliably(
+            runID: runID, kind: .status,
+            payloadJSON: Self.jsonPayload(["kind": SteerConsumptionReceipt.timelineEventKind, "id": input.id.uuidString]),
+            boundary: "steerTimelinePosition", completionCritical: false
+        )
         guard await markRunningInputConsumedReliably(input.id) else { return }
         eventChannel.yield(.userInputConsumed(.init(
             inputID: input.id,

@@ -1290,6 +1290,43 @@ struct ThreadTimelineTests {
         #expect(visible == ["goal", "guidance 1", "guidance 3", "first", "second", "guidance 7"])
     }
 
+    @Test("Committed steers use the run sequence and keep their send timestamps")
+    func committedSteersFollowRunSequence() {
+        let conversationID = UUID()
+        let start = Date(timeIntervalSince1970: 1_000)
+        let run = RunRecord(id: UUID(), conversationID: conversationID, state: "completed",
+                            goal: "Original request", startedAt: start)
+        let sendTime = start.addingTimeInterval(1)
+        let firstSteer = PersistedMessage(id: UUID(), conversationID: conversationID, role: "user",
+            content: run.goal, createdAt: sendTime, runID: run.id)
+        let secondSteer = PersistedMessage(id: UUID(), conversationID: conversationID, role: "user",
+            content: "Second steer", createdAt: sendTime, runID: run.id)
+        func marker(_ message: PersistedMessage, _ sequence: Int) -> RunEventRecord {
+            makeEvent(runID: run.id, sequence: sequence, kind: .status,
+                      payload: ["kind": SteerConsumptionReceipt.timelineEventKind, "id": message.id.uuidString])
+        }
+        let firstAnswer = makeEvent(runID: run.id, sequence: 1, kind: .assistantText, payload: ["text": "Before"])
+        let finalAnswer = makeEvent(runID: run.id, sequence: 5, kind: .assistantText, payload: ["text": "After"])
+        let items = ThreadTimelineBuilder.build(
+            messages: [secondSteer, firstSteer],
+            events: [finalAnswer, marker(secondSteer, 3), marker(firstSteer, 4), marker(firstSteer, 2), firstAnswer],
+            run: run, isRunning: false, liveStreamedText: "", liveReasoningText: "", pendingApprovals: []
+        )
+        let visible = items.compactMap { item -> String? in
+            switch item {
+            case .userMessage(let message): return "user:" + message.content
+            case .assistantMessage(let text, _, _): return "assistant:" + text
+            default: return nil
+            }
+        }
+        #expect(visible == ["assistant:Before", "user:Original request", "user:Second steer", "assistant:After"])
+        let userRows = items.compactMap { item -> PersistedMessage? in
+            if case .userMessage(let message) = item { return message }
+            return nil
+        }
+        #expect(userRows == [firstSteer, secondSteer])
+    }
+
     // MARK: - Trusted design confirmation projection (T7V)
 
     @MainActor @Test("The trusted design confirmation is summarized in the timeline and never renders its grant identity")

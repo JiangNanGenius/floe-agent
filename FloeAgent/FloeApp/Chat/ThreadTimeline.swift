@@ -14,6 +14,8 @@
 // - The selected run's user goal anchors the front of the run block; the
 //   newest `.assistantText` event carries the final reply; `.terminal` is
 //   always last.
+// - Recorded guidance follows the run sequence and retains its send time.
+//   Older guidance without a recorded boundary is placed by timestamp.
 // - Assistant messages already represented by an `.assistantText` event
 //   (matched by content) are projected from the event only, so a reloaded
 //   thread never shows the final reply twice.
@@ -544,14 +546,26 @@ enum ThreadTimelineBuilder {
     ) -> [ThreadTimelineItem] {
         var items: [ThreadTimelineItem] = []
         var startingGoalMessageID: UUID?
+        let sortedEvents = events.sorted { $0.sequence < $1.sequence }
+        let steerMarkers = sortedEvents.reduce(into: [UUID: UUID]()) { markers, event in
+            guard event.kind == .status else { return }
+            let payload = payloadCache.payload(for: event)
+            guard payload["kind"] == SteerConsumptionReceipt.timelineEventKind,
+                  let id = payload["id"].flatMap(UUID.init(uuidString:)) else { return }
+            markers[event.id] = id
+        }
+        let anchoredSteerIDs = Set(steerMarkers.values)
+        let boundUserMessages = messagesForRun.filter { $0.role == "user" }
+        var anchoredSteers = boundUserMessages.reduce(into: [UUID: PersistedMessage]()) { rows, message in
+            if anchoredSteerIDs.contains(message.id) { rows[message.id] = message }
+        }
 
         // 1. The user goal of the selected run anchors the block. Duplicate
         //    prompts are common, so choose the matching message nearest to
         //    this run's start instead of the last equal string globally.
         if let run {
-            let directlyBound = messagesForRun.filter { $0.role == "user" }
-            let candidates = (directlyBound.isEmpty ? unboundUserMessages : directlyBound)
-                .filter { $0.content == run.goal }
+            let candidates = (boundUserMessages.isEmpty ? unboundUserMessages : boundUserMessages)
+                .filter { $0.content == run.goal && !anchoredSteerIDs.contains($0.id) }
             if let goalMessage = candidates.min(by: {
                 abs($0.createdAt.timeIntervalSince(run.startedAt))
                     < abs($1.createdAt.timeIntervalSince(run.startedAt))
@@ -564,7 +578,6 @@ enum ThreadTimelineBuilder {
         // 2. Persisted run events in stored sequence order. The newest
         //    assistantText event becomes the final-reply row; older ones
         //    (multi-turn text before tool calls) render in place.
-        let sortedEvents = events.sorted { $0.sequence < $1.sequence }
         // The provider still receives one paired result for every call ID,
         // including calls that the Harness intentionally coalesced or blocked.
         // Those synthetic pairs are protocol bookkeeping, not user steps;
@@ -603,7 +616,8 @@ enum ThreadTimelineBuilder {
                      || LinuxCacheCleanupRunMetadata.matches(event, runID: run.id, conversationID: run.conversationID))
                 } ?? false)
                 && !isTerminalStatusEvent(event, payloadCache: payloadCache)
-                && !isStaleStatusEvent(event, currentState: run?.state, payloadCache: payloadCache)
+                && (steerMarkers[event.id] != nil
+                    || !isStaleStatusEvent(event, currentState: run?.state, payloadCache: payloadCache))
                 && !isSuppressedToolProtocolEvent(
                     event,
                     suppressedCallIDs: suppressedToolCallIDs,
@@ -620,7 +634,7 @@ enum ThreadTimelineBuilder {
         var currentStepGroup: [RunEventRecord] = []
         let guidedMessages = run.map { _ in
             messagesForRun
-                .filter { ($0.role == "user" && $0.id != startingGoalMessageID)
+                .filter { ($0.role == "user" && $0.id != startingGoalMessageID && !anchoredSteerIDs.contains($0.id))
                     || ($0.role == "assistant" && $0.parts.contains { $0.kind == .interactive }) }
                 .sorted { lhs, rhs in
                     if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
@@ -644,11 +658,14 @@ enum ThreadTimelineBuilder {
             }
         }
         for event in nonTerminalEvents {
-            // Runtime guidance is persisted as another user message bound to
-            // the same run. It has no provider event sequence of its own, so
-            // place it at the nearest durable event boundary by timestamp
-            // without ever reordering provider events relative to each other.
             flushGuidedMessages(upTo: event.createdAt)
+            if let messageID = steerMarkers[event.id] {
+                if let message = anchoredSteers.removeValue(forKey: messageID) {
+                    flushStepGroup()
+                    items.append(.userMessage(message))
+                }
+                continue
+            }
             // Render every assistantText event in place (sequence order),
             // not just the last one. The old "final text only" rule inverted
             // the order when verifyFinalAnswer wrote a draft message.
