@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的 iOS TestFlight 构建为 1.8.73（394）。** Floe QA 可安装，`publictest1` 等待 Beta 审核。GitHub 和 Feather 最近核验的版本为 1.8.72（393）。 [394 交付记录](releases/builds/FLOE_1.8.73_BUILD394_DELIVERY.md)
+**最近已核验的 iOS TestFlight 构建为 1.8.74（395）。** Floe QA 可安装，`publictest1` 等待 Beta 审核。GitHub 和 Feather 最近核验的版本为 1.8.72（393）。 [395 交付记录](releases/builds/FLOE_1.8.74_BUILD395_DELIVERY.md)
 
 ## 依据与判定
 
@@ -13,7 +13,7 @@
 
 ## 本轮版本记录
 
-1.8.74（395）用于内部 Floe QA 和公开 TestFlight。冻结前已核对 Apple 构建 395 为空、版本标签未被占用。交付状态以 Apple 回读为准。
+1.8.74（395）固定于 `221db11f160a3c3efa2d075896dc8974bdb3b3dd`／`v1.8.74`。Floe QA 已可安装，公开 TestFlight 已送审。 [395 交付记录](releases/builds/FLOE_1.8.74_BUILD395_DELIVERY.md)
 
 1.8.73（394）冻结在 `700381f1bc067fcc3b9258ca47f23f2cd76bbb2e`。已联调 Mac 会话同步；Floe QA 可安装，公开 TestFlight 状态为 `WAITING_FOR_BETA_REVIEW`。 [394 交付记录](releases/builds/FLOE_1.8.73_BUILD394_DELIVERY.md)
 

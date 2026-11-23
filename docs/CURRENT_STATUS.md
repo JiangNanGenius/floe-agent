@@ -3,9 +3,9 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-内部 TestFlight 的 Floe QA 可安装 1.8.73（394）。该构建加入独立的 Mac 会话同步设置。 / Floe QA can install 1.8.73 (394), which adds a separate setting for syncing conversations with Mac. [394 交付记录 / Delivery](releases/builds/FLOE_1.8.73_BUILD394_DELIVERY.md)
+内部 TestFlight 的 Floe QA 可安装 1.8.74（395）。本版支持选定会话分页同步与断点续传。 / Floe QA can install 1.8.74 (395), which adds paged sync and resumption for selected conversations. [395 交付记录 / Delivery](releases/builds/FLOE_1.8.74_BUILD395_DELIVERY.md)
 
-394 已加入 `publictest1` 并提交公开 TestFlight 审核。Apple 显示「等待 Beta 审核」，通过后自动开放给测试者。 / Build 394 is awaiting external TestFlight review, with automatic distribution after approval. [公开测试 / Public beta](https://testflight.apple.com/join/nz6qeT2J)
+395 已加入 `publictest1` 并提交公开 TestFlight 审核。Apple 显示「等待 Beta 审核」，通过后自动开放。 / Build 395 is awaiting external TestFlight review, with automatic distribution after approval. [公开测试 / Public beta](https://testflight.apple.com/join/nz6qeT2J)
 
 GitHub 和 Feather 最近核验的版本为 1.8.72（393）。 / The latest verified GitHub and Feather delivery is 1.8.72 (393). [393 交付记录 / Delivery](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md)
 
