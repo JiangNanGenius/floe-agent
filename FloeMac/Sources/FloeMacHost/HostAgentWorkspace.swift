@@ -2098,30 +2098,18 @@ final class HostAgentWorkspace: ObservableObject {
 
     // MARK: - Personal file workspace
 
-    /// The file workspace of the current task, for file panes and Space
-    /// browsing only: the explicit project when the selected conversation
-    /// (or the draft's project picker) is bound to one, otherwise the
-    /// per-task personal workspace — the durable owner row for a saved
-    /// conversation, or a synthetic private record for the unsaved draft.
-    /// Personal records carry an empty bookmark by design, so the returned
-    /// presentation record populates a bookmark bound to the verified
-    /// per-task root exactly like a project row. For the current task only,
-    /// the root may be materialized lazily (0o700, owner-pinned) so a fresh
-    /// draft's Files work before the first send; no folder is ever created
-    /// for tasks other than the current one, and the stable UUID keeps the
-    /// root constant across repeated reads.
+    /// Stable scope for the current task. The file browser and other file
+    /// actions resolve this record only when they need the directory.
     var fileWorkspaceForCurrentTask: WorkspaceRecord? {
-        if let selectedID {
-            guard let owner = selectedConversationWorkspace else { return nil }
-            return presentationRecord(for: owner)
-        }
-        // Draft: an explicitly picked project wins; otherwise the synthetic
-        // per-task scope keyed by the persisted draft UUID.
+        if selectedID != nil { return selectedConversationWorkspace }
         if let projectID = selectedWorkspaceID,
            let project = workspaces.first(where: { $0.id == projectID && $0.kind == .project }) {
             return project
         }
-        return presentationRecord(for: personalWorkspaceRecord(id: draftTaskID, title: ""))
+        let id = draftTaskID
+        return WorkspaceRecord(id: id, name: "Chat", rootBookmark: Data(), kind: .privateTask,
+                               internalRelativePath: "PrivateTasks/\(id.uuidString)",
+                               createdAt: .distantPast, updatedAt: .distantPast)
     }
 
     func saveGeneratedMedia(_ source: URL, owner: UUID, workspaceID: UUID) async -> Bool {
@@ -2131,12 +2119,17 @@ final class HostAgentWorkspace: ObservableObject {
               type.conforms(to: .image) || type.conforms(to: .movie), let release = admit() else { return false }
         changingTasks.insert(owner)
         defer { changingTasks.remove(owner); release() }
-        let bookmark = record.rootBookmark
+        let leaseBase = personalTaskLeaseBase
         let publication = Task.detached(priority: .userInitiated) {
-            var stale = false
-            let root = try URL(resolvingBookmarkData: bookmark, options: [.withoutUI],
+            let root: URL
+            if record.kind == .privateTask {
+                root = try MacAgentWorkspaceTools.resolvePrivateTaskRoot(record, base: leaseBase)
+            } else {
+                var stale = false
+                root = try URL(resolvingBookmarkData: record.rootBookmark, options: [.withoutUI],
                                relativeTo: nil, bookmarkDataIsStale: &stale)
-            guard !stale else { throw CocoaError(.fileWriteNoPermission) }
+                guard !stale else { throw CocoaError(.fileWriteNoPermission) }
+            }
             let accessing = root.startAccessingSecurityScopedResource()
             defer { if accessing { root.stopAccessingSecurityScopedResource() } }
             return try MacWorkspaceFileImport.save(source, in: root)
@@ -2168,42 +2161,6 @@ final class HostAgentWorkspace: ObservableObject {
         HostAgentDatabase.runOutputArtifactRoot(in: personalTaskLeaseBase)
     }
 
-    /// Durable-shaped private workspace record for one stable task UUID.
-    private func personalWorkspaceRecord(id: UUID, title: String) -> WorkspaceRecord {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return WorkspaceRecord(
-            id: id,
-            name: trimmed.isEmpty ? "Chat" : String(trimmed.prefix(80)),
-            rootBookmark: Data(),
-            kind: .privateTask,
-            internalRelativePath: "PrivateTasks/\(id.uuidString)"
-        )
-    }
-
-    /// UI presentation form of a workspace record: personal rows resolve
-    /// their root through the same verified pinned resolver as the tool
-    /// binding (which may lazily materialize the current task's leaf with
-    /// 0o700 ownership checks) and gain a bookmark bound to that exact leaf —
-    /// personal rows persist an empty bookmark by design. Project rows are
-    /// returned unchanged. Nil when the root cannot be verified; never binds
-    /// a shared parent instead.
-    private func presentationRecord(for record: WorkspaceRecord) -> WorkspaceRecord? {
-        guard record.kind == .privateTask else { return record }
-        guard let relative = record.internalRelativePath,
-              MacAgentWorkspaceTools.personalTaskID(relativePath: relative) != nil else { return nil }
-        let root: URL
-        do {
-            root = try MacAgentWorkspaceTools.verifiedPersonalTaskRoot(
-                relativePath: relative, leaseBase: personalTaskLeaseBase, createIfNeeded: true
-            )
-        } catch {
-            return nil
-        }
-        guard let bookmark = try? root.bookmarkData() else { return nil }
-        var presented = record
-        presented.rootBookmark = bookmark
-        return presented
-    }
     #endif
 
     #if FLOE_UNIFIED_MAC
@@ -3535,7 +3492,7 @@ final class HostAgentWorkspace: ObservableObject {
         let snapshot = await handle.snapshot()
         guard liveRuns[taskID]?.handle?.identity == handle.identity,
               liveSnapshotVersions[taskID] == generation else { return }
-        let text = snapshot?.streamedText ?? ""
+        let text = snapshot?.assistantTextTail ?? ""
         if liveRuns[taskID]?.streamedText != text { liveRuns[taskID]?.streamedText = text }
         let reasoning = snapshot?.reasoningText ?? ""
         if liveRuns[taskID]?.reasoningText != reasoning { liveRuns[taskID]?.reasoningText = reasoning }

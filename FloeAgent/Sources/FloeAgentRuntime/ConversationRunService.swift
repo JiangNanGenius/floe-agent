@@ -27,6 +27,9 @@ public actor ConversationRunService {
         public var conversationID: UUID
         public var stateName: String
         public var streamedText: String
+        /// The current assistant segment after the most recent durable
+        /// transcript boundary. Earlier prose is already in ordered events.
+        public var assistantTextTail: String
         /// Provider-supplied reasoning text/summary accumulated for this run.
         /// It is separate from the canonical assistant answer so clients can
         /// present it behind an explicit disclosure control.
@@ -78,6 +81,7 @@ public actor ConversationRunService {
             conversationID: UUID,
             stateName: String,
             streamedText: String,
+            assistantTextTail: String? = nil,
             reasoningText: String = "",
             hasProviderActivity: Bool = false,
             liveness: AgentLivenessSnapshot = AgentLivenessSnapshot(
@@ -99,6 +103,7 @@ public actor ConversationRunService {
             self.conversationID = conversationID
             self.stateName = stateName
             self.streamedText = streamedText
+            self.assistantTextTail = assistantTextTail ?? streamedText
             self.reasoningText = reasoningText
             self.hasProviderActivity = hasProviderActivity
             self.liveness = liveness
@@ -596,6 +601,7 @@ public actor ConversationRunService {
                 liveness: liveness
             ),
             streamedText: streamedText,
+            assistantTextTail: unflushedAssistantSegment,
             reasoningText: reasoningText,
             hasProviderActivity: hasProviderActivity,
             liveness: liveness,

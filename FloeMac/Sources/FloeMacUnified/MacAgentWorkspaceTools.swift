@@ -361,11 +361,11 @@ public enum MacAgentWorkspaceTools {
     /// `PrivateTasks/<task UUID>` relative path under the host-configured
     /// lease base (the owner-only runtime directory — the same base the
     /// self-core lease appends the relative path to, so the binding root and
-    /// the verified lease root are identical). The leaf is materialized only
-    /// when a tool session actually binds this workspace. Anything but the
+    /// the verified lease root are identical). The leaf is materialized on
+    /// demand by file surfaces and tool sessions. Anything but the
     /// exact two-component task-keyed shape fails closed — a personal
     /// workspace is never a shared parent and never falls back.
-    private static func resolvePrivateTaskRoot(_ workspace: WorkspaceRecord, base: URL?) throws -> URL {
+    static func resolvePrivateTaskRoot(_ workspace: WorkspaceRecord, base: URL?) throws -> URL {
         guard workspace.kind == .privateTask else {
             throw MacAgentWorkspaceToolsError.workspaceKindUnsupported(workspace.kind.rawValue)
         }

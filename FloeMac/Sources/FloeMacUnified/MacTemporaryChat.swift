@@ -188,20 +188,26 @@ struct MacTemporaryChatView: View {
                 Text(verbatim: provider.model.displayName).font(.caption).foregroundStyle(.secondary)
             }
             HStack(alignment: .bottom) {
-                TextField("host.chat.prompt", text: $model.draft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder).lineLimit(1...7).disabled(model.keeping)
+                MacComposerTextInput(text: $model.draft, placeholder: String(localized: "host.chat.prompt"),
+                                     isEditable: !model.keeping, submit: submit)
+                    .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(.quaternary) }
                 if model.sending {
                     Button("host.chat.stop", action: model.stop)
                 } else {
-                    Button("host.chat.send") { if let provider { model.send(provider: provider.binding(), search: search) } }
+                    Button("host.chat.send", action: submit)
                         .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(provider == nil || model.keeping || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(provider == nil || model.keeping || !MacComposerTextInput.hasText(model.draft))
                 }
             }
             if model.keeping { ProgressView(MacPermissionsText.t("正在保留会话…", "Saving chat…")).controlSize(.small) }
         }
         .padding().frame(maxWidth: 800).frame(maxWidth: .infinity)
         .accessibilityIdentifier("mac.temporary.chat")
+    }
+
+    private func submit() {
+        guard let provider, !model.sending, !model.keeping else { return }
+        model.send(provider: provider.binding(), search: search)
     }
 }
 

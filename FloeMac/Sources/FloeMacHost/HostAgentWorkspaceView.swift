@@ -37,7 +37,7 @@ struct HostAgentWorkspaceView: View {
     #endif
     @StateObject private var search: ThreadSearchModel
     @ObservedObject private var voiceSession: MacVoiceSession
-    @FocusState private var promptFocused: Bool
+    @State private var promptFocusRequest: UUID?
     @State private var editingPrompt = false
     @State private var promptSelection = NSRange(location: 0, length: 0)
     @State private var attachmentPreview: MacConversationAttachmentPreview?
@@ -312,7 +312,7 @@ struct HostAgentWorkspaceView: View {
                             await workspace.editFailedInput(failed) { text in
                                 guard binding.wrappedValue.isEmpty else { return false }
                                 binding.wrappedValue = text
-                                promptFocused = true
+                                promptFocusRequest = UUID()
                                 return true
                             }
                         }
@@ -392,7 +392,7 @@ struct HostAgentWorkspaceView: View {
         .onChange(of: workspace.attachmentOwnerID) { _, _ in
             if voiceSession.isActive { voiceSession.stop() }
         }
-        .sheet(isPresented: $editingPrompt, onDismiss: { promptFocused = true }) {
+        .sheet(isPresented: $editingPrompt, onDismiss: { promptFocusRequest = UUID() }) {
             VStack(spacing: 0) {
                 MacExpandedComposer(text: draft, selection: $promptSelection, canSend: canSubmitComposer,
                                     sendLabel: composerSubmitLabel, submit: submitComposer)
@@ -503,17 +503,23 @@ struct HostAgentWorkspaceView: View {
         LocalizedStringKey(composerSendRoute.composerTitleKey)
     }
 
+    private var composerPlaceholder: String {
+        guard workspace.isSending else { return String(localized: "host.chat.prompt") }
+        return workspace.runningInputMode == .steer
+            ? String(localized: "mac.agent.steerPrompt") : String(localized: "mac.agent.queuePrompt")
+    }
+
     private var canSubmitComposer: Bool {
         guard attachmentImport == nil, !voiceSession.isActive, !workspace.isTerminating,
               workspace.selectedID == findConversationID,
-              !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+              MacComposerTextInput.hasText(draft.wrappedValue) else { return false }
         if workspace.isSending { return workspace.canSteer }
         let compatible = mode == .chat || workspace.composerProvider?.model.capabilities.contains(.tools) == true
         return workspace.composerProvider != nil && compatible && !workspace.isAcceptingPlan
     }
 
     private func submitComposer() {
-        guard canSubmitComposer else { return }
+        guard canSubmitComposer, (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return }
         if workspace.isSending {
             // iPad parity: a running task accepts text plus the currently
             // staged attachments as one queued/steered message. Text stays
@@ -574,23 +580,7 @@ struct HostAgentWorkspaceView: View {
             ComposerResponsiveRow(spacing: 4, stackedSpacing: 2) {
                 composerAttachments
                     .composerResponsiveLeadingControl()
-                TextField(LocalizedStringKey(workspace.isSending ? (workspace.runningInputMode == .steer ? "mac.agent.steerPrompt" : "mac.agent.queuePrompt") : "host.chat.prompt"), text: draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(FloeTheme.Typography.body)
-                    .focused($promptFocused)
-                    .onChange(of: workspace.draftSelectionID, initial: true) {
-                        if workspace.selectedID == nil { promptFocused = true }
-                    }
-                    .lineLimit(1...7)
-                    .frame(minHeight: FloeTheme.minimumTarget)
-                    .onPasteCommand(of: acceptsAttachmentImport ? [.fileURL, .image] : []) { _ in
-                        pasteAttachments()
-                    }
-                    .accessibilityIdentifier("thread.composer.input")
-                    #if FLOE_MAC_HOST_SMOKE
-                    .background(MacWorkbenchButtonFrameReader { workspace.smokePromptFrame = $0 })
-                    #endif
-                    .disabled(workspace.isTerminating || (workspace.isSending && workspace.selectedID == nil))
+                composerInput
                     .composerResponsiveFieldSlot()
                 voiceControls
                 Button { editingPrompt = true } label: {
@@ -667,6 +657,21 @@ struct HostAgentWorkspaceView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var composerInput: some View {
+        let editable = !workspace.isTerminating && (!workspace.isSending || workspace.selectedID != nil)
+        let paste: (() -> Void)? = acceptsAttachmentImport ? { pasteAttachments() } : nil
+        return MacComposerTextInput(text: draft, placeholder: composerPlaceholder, focusRequest: promptFocusRequest,
+                                    isEditable: editable, pasteAttachments: paste, submit: submitComposer)
+            .onChange(of: workspace.draftSelectionID, initial: true) {
+                if workspace.selectedID == nil { promptFocusRequest = UUID() }
+            }
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("thread.composer.input")
+            #if FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { workspace.smokePromptFrame = $0 })
+            #endif
+    }
+
     @ViewBuilder private var voiceControls: some View {
         if voiceSession.isActive {
             let dictating = voiceSession.mode == .dictation
@@ -728,7 +733,7 @@ struct HostAgentWorkspaceView: View {
             guard workspace.attachmentOwnerID == owner else { return }
             let current = binding.wrappedValue
             binding.wrappedValue = current.isEmpty || current.last?.isWhitespace == true ? current + text : current + " " + text
-            promptFocused = true
+            promptFocusRequest = UUID()
         } turn: { text in
             try await workspace.runVoiceTurn(text, owner: owner)
         }
@@ -1284,7 +1289,7 @@ struct HostAgentWorkspaceView: View {
                 guard !workspace.isSending, !workspace.isTerminating, workspace.selectedID == findConversationID else { return }
                 let current = draft.wrappedValue
                 draft.wrappedValue = current.isEmpty ? text : current + "\n\n" + text
-                promptFocused = true
+                promptFocusRequest = UUID()
             }, retryPlan: retryPlan, handleSearchResult: didHandleSearchResult)
     }
     #else

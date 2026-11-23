@@ -3,6 +3,7 @@
 import AppKit
 import Darwin
 import FloeMacBridgeProtocol
+import FloeModels
 import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
@@ -116,6 +117,8 @@ struct MacWorkspaceFilesView: View {
     var remembersRoot: Bool = true
     var fixedRootBookmark: Data?
     var fixedRootURL: URL? = nil
+    var fixedPrivateWorkspace: WorkspaceRecord? = nil
+    var privateTaskRootBase: URL? = nil
     var managedConversationsRoot: URL? = nil
     var recentlyDeletedDirectory: URL? = nil
     var workspaceRevision: UUID? = nil
@@ -153,6 +156,7 @@ struct MacWorkspaceFilesView: View {
     @State private var selection: Set<URL> = []
     @State private var focused: URL?
     @State private var filter = ""
+    @State private var restoringRoot = true
     @State private var reloadID = UUID()
     @State private var loading = false
     @State private var limited = false
@@ -195,10 +199,12 @@ struct MacWorkspaceFilesView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if directory == nil && fixedRootBookmark != nil {
+            if restoringRoot {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if directory == nil && fixedRootBookmark != nil {
                 ContentUnavailableView(t("无法读取项目文件夹", "Project Folder Unavailable"),
                                        systemImage: "folder.badge.questionmark")
-            } else if directory == nil && fixedRootURL != nil {
+            } else if directory == nil && (fixedRootURL != nil || fixedPrivateWorkspace != nil) {
                 ContentUnavailableView(t("无法读取任务文件夹", "Task Files Unavailable"),
                                        systemImage: "folder.badge.questionmark")
             } else if directory == nil && requiresTaskRoot {
@@ -237,7 +243,7 @@ struct MacWorkspaceFilesView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .disabled(mutationInProgress)
-        .onAppear(perform: restoreSavedRoot)
+        .task { await restoreSavedRoot() }
         .task(id: reloadID) { await loadDirectory() }
         .onChange(of: hasPendingChanges, initial: true) { _, pending in onPendingChanges?(pending) }
         .onChange(of: workspaceRevision) { reloadID = UUID() }
@@ -1284,7 +1290,7 @@ struct MacWorkspaceFilesView: View {
 
     /// The root is host-fixed (project bookmark or default directory): the
     /// user cannot close or change it, and the choice is never persisted.
-    private var rootIsFixed: Bool { fixedRootBookmark != nil || fixedRootURL != nil }
+    private var rootIsFixed: Bool { fixedRootBookmark != nil || fixedRootURL != nil || fixedPrivateWorkspace != nil }
 
     /// Reveals the current root folder in Finder. The root is either
     /// host-verified (fixed) or was picked through the guarded panel, so this
@@ -1310,9 +1316,9 @@ struct MacWorkspaceFilesView: View {
         }
     }
 
-    private func setRoot(_ resolved: URL) {
+    private func setRoot(_ resolved: URL, remember: Bool = true) {
         root = resolved
-        if !rootIsFixed && remembersRoot {
+        if remember && !rootIsFixed && remembersRoot {
             savedRootBookmark = try? resolved.bookmarkData(options: [],
                                                            includingResourceValuesForKeys: nil, relativeTo: nil)
         }
@@ -1326,59 +1332,59 @@ struct MacWorkspaceFilesView: View {
         navigate(to: resolved)
     }
 
-    private func restoreSavedRoot() {
+    private func restoreSavedRoot() async {
         // A task inspector without a usable per-task root stays empty: the
         // remembered ad-hoc folder must never load or stage here. Space's
         // custom selection restores through this same bookmark branch, so
         // the guard keys on the task mode only.
-        guard !requiresTaskRoot else { return }
-        if let fixedRootURL {
-            // Host-resolved app-owned directory: verify it is still a
-            // readable directory, then browse it. The view never creates it;
-            // the host owns the storage layout.
-            guard root == nil else { return }
-            let resolved = fixedRootURL.resolvingSymlinksInPath().standardizedFileURL
-            guard FileManager.default.isReadableFile(atPath: resolved.path),
-                  (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return }
-            setRoot(resolved)
-            return
-        }
-        if let fixedRootBookmark {
+        defer { restoringRoot = false }
+        guard !Task.isCancelled, !requiresTaskRoot, root == nil else { return }
+        let fixed = rootIsFixed
+        let privateWorkspace = fixedPrivateWorkspace
+        let leaseBase = privateTaskRootBase
+        let fixedURL = fixedRootURL
+        #if FLOE_MAC_HOST_SMOKE
+        let bookmark = fixedRootBookmark
+        #else
+        let bookmark = fixedRootBookmark ?? (remembersRoot && !fixed ? savedRootBookmark : nil)
+        #endif
+        guard fixed || bookmark != nil else { return }
+
+        let worker = Task.detached(priority: .userInitiated) { () -> (url: URL, updatedBookmark: Data?)? in
+            guard !Task.isCancelled else { return nil }
             var stale = false
-            guard root == nil,
-                  let url = try? URL(resolvingBookmarkData: fixedRootBookmark, options: [.withoutUI],
-                                     relativeTo: nil, bookmarkDataIsStale: &stale),
-                  !stale else { return }
+            let url: URL
+            if let privateWorkspace {
+                guard let root = try? MacAgentWorkspaceTools.resolvePrivateTaskRoot(privateWorkspace, base: leaseBase) else { return nil }
+                url = root
+            } else if let fixedURL {
+                url = fixedURL
+            } else {
+                guard let bookmark,
+                      let root = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI],
+                                          relativeTo: nil, bookmarkDataIsStale: &stale),
+                      !fixed || !stale else { return nil }
+                url = root
+            }
             let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-            guard FileManager.default.isReadableFile(atPath: resolved.path),
-                  (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return }
-            setRoot(resolved)
-            return
-        }
-#if FLOE_MAC_HOST_SMOKE
-        return
-#else
-        guard remembersRoot, root == nil, let bookmark = savedRootBookmark else { return }
-        do {
-            var stale = false
-            let url = try URL(resolvingBookmarkData: bookmark, options: [.withoutUI],
-                              relativeTo: nil, bookmarkDataIsStale: &stale)
-            let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-            guard resolved.resolvingSymlinksInPath().path == resolved.path,
+            guard privateWorkspace == nil || resolved.path == url.path,
                   FileManager.default.isReadableFile(atPath: resolved.path),
                   (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
-                savedRootBookmark = nil
-                return
+                return nil
             }
-            if stale {
-                savedRootBookmark = try? resolved.bookmarkData(options: [],
-                                                               includingResourceValuesForKeys: nil, relativeTo: nil)
+            let refreshed = stale && !fixed ? try? resolved.bookmarkData() : nil
+            return (resolved, refreshed)
+        }
+        let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+        guard !Task.isCancelled, root == nil else { return }
+        if let result {
+            if let updatedBookmark = result.updatedBookmark, savedRootBookmark == bookmark {
+                savedRootBookmark = updatedBookmark
             }
-            setRoot(resolved)
-        } catch {
+            setRoot(result.url, remember: false)
+        } else if !fixed, savedRootBookmark == bookmark {
             savedRootBookmark = nil
         }
-#endif
     }
 
     private func clearFolder() {

@@ -128,6 +128,7 @@ struct MacWorkspaceRootView: View {
     @State private var showProjectRename = false
     @State private var showProjectFolderError = false
     @State private var displayedFileRoot: WorkspaceRecord?
+    @State private var openedFilesPane: AnyHashable?
     @State private var expandedWorkspaceIDs: Set<UUID> = []
 
     private var boundLayout: some View {
@@ -273,6 +274,12 @@ struct MacWorkspaceRootView: View {
         .onChange(of: preferredFileRoot, initial: true) { _, root in
             if !workspace.hasPendingWorkspaceFileChanges { displayedFileRoot = root }
         }
+        .onChange(of: filesVisible, initial: true) { _, visible in
+            if visible { openedFilesPane = filesPaneIdentity }
+        }
+        .onChange(of: filesPaneIdentity) { _, identity in
+            openedFilesPane = filesVisible ? identity : nil
+        }
     }
 
     var body: some View {
@@ -378,7 +385,9 @@ struct MacWorkspaceRootView: View {
 
     private var inspectorPane: some View {
         ZStack {
-            filesPane
+            if filesVisible || openedFilesPane == filesPaneIdentity || workspace.hasPendingWorkspaceFileChanges {
+                filesPane
+            }
             if showsTask, let inspector { taskInspector(inspector) }
         }
     }
@@ -490,16 +499,18 @@ struct MacWorkspaceRootView: View {
 
     private var filesPane: some View {
         let selectionID = workspace.draftSelectionID
-        let rootID = preferredFileRoot?.id
+        let rootID = displayedFileRoot?.id
         return MacWorkspaceFilesView(
             insertInDraft: { text in
                 guard selectionID == workspace.draftSelectionID, rootID == displayedFileRoot?.id else { return }
                 insertFileText(text)
             },
             canInsertInDraft: canUseFileInTask,
-            remembersRoot: remembersFileRoot,
+            remembersRoot: remembersFileRoot && showsSpaceFiles,
             fixedRootBookmark: displayedFileRootBookmark,
             fixedRootURL: spaceFilesFixedURL,
+            fixedPrivateWorkspace: displayedFileRoot?.kind == .privateTask ? displayedFileRoot : nil,
+            privateTaskRootBase: workspace.personalTaskLeaseBase,
             managedConversationsRoot: workspace.defaultConversationsDirectory,
             recentlyDeletedDirectory: workspace.personalTaskLeaseBase.appendingPathComponent("RecentlyDeleted", isDirectory: true),
             workspaceRevision: workspace.workspaceRevision,
@@ -512,13 +523,14 @@ struct MacWorkspaceRootView: View {
             },
             canChangeFiles: { !workspace.isTerminating },
             onPendingChanges: { pending in
+                guard workspace.hasPendingWorkspaceFileChanges != pending else { return }
                 workspace.hasPendingWorkspaceFileChanges = pending
                 if !pending { displayedFileRoot = preferredFileRoot }
             },
             layout: showsSpaceFiles ? .adaptive : .inspector,
             findRequest: fileFindRequest,
             rootFolderLabels: spaceRootFolderLabels,
-            requiresTaskRoot: showsTask && !currentTaskFileRootUsable,
+            requiresTaskRoot: showsTask && (displayedFileRoot == nil || !currentTaskFileRootUsable),
             onChooseProject: chooseProjectForTask
         )
         .id(filesPaneIdentity)
@@ -935,10 +947,6 @@ struct MacWorkspaceRootView: View {
         }
     }
 
-    /// Per-task workspace rows carry an empty bookmark by design, so only a
-    /// non-empty, resolvable bookmark may fix the files root; the host's
-    /// presentation record is expected to populate it exactly like a project
-    /// row.
     private var displayedFileRootBookmark: Data? {
         guard let record = displayedFileRoot, !record.rootBookmark.isEmpty else { return nil }
         return record.rootBookmark
@@ -963,26 +971,23 @@ struct MacWorkspaceRootView: View {
         }
     }
 
-    /// One identity per root source so switching tasks, projects or Space
-    /// modes resets the browser; two personal tasks never share a root.
+    /// Keep an editor mounted against its displayed scope until pending file
+    /// work finishes. The new scope gets its own browser instance afterward.
     private var filesPaneIdentity: AnyHashable {
-        if let record = preferredFileRoot { return AnyHashable(record.id) }
+        if let record = displayedFileRoot { return AnyHashable(record.id) }
         return AnyHashable(spaceFilesRoot)
     }
 
-    /// A task-mode file root is usable only when the host provides a
-    /// per-task record with a resolvable bookmark (the presentation record
-    /// populates it like a project row). Anything else keeps the inspector
-    /// in its unavailable state — staging from a saved or ad-hoc folder is
-    /// never allowed for a personal task.
     private var currentTaskFileRootUsable: Bool {
-        currentTaskFileRecord?.rootBookmark.isEmpty == false
+        guard let record = currentTaskFileRecord else { return false }
+        return record.kind == .privateTask
+            ? record.internalRelativePath != nil && record.isDisposableTaskWorkspace
+            : !record.rootBookmark.isEmpty
     }
 
     private var canUseFileInTask: Bool {
         guard canEditVisibleDraft, !showsTask || destinationConversationID == workspace.selectedID else { return false }
-        guard let record = currentTaskFileRecord, !record.rootBookmark.isEmpty else { return false }
-        return displayedFileRoot?.id == record.id
+        return currentTaskFileRootUsable && displayedFileRoot?.id == currentTaskFileRecord?.id
     }
 
     private var activeSpacePage: MacSpacePage? {

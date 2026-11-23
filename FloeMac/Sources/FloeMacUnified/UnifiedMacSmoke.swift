@@ -121,6 +121,14 @@ final class UnifiedMacSmoke {
             await exerciseTaskTerminals(model)
             return
         }
+        if CommandLine.arguments.contains("--composer-paste-only") {
+            await exerciseComposerPaste(model)
+            return
+        }
+        if CommandLine.arguments.contains("--transcript-stage-order-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseTranscriptStageOrder(model, endpoint: endpoint)
+            return
+        }
         let pagedHistoryPair = CommandLine.arguments.contains("--device-history-paged-pair-only")
         if CommandLine.arguments.contains("--device-history-only") || pagedHistoryPair {
             await exerciseDeviceHistory(model, usePagedPeer: pagedHistoryPair)
@@ -1168,6 +1176,172 @@ final class UnifiedMacSmoke {
             _ = await unified.closeTaskTerminals()
             finish(["terminalStarted": false, "diagnostic": String(describing: type(of: error))])
         }
+    }
+
+    private func exerciseComposerPaste(_ model: BridgeAppModel) async {
+        guard let agent = await readyFixtureWorkbench(model), let window = visibleWorkbench,
+              let content = window.contentView, let drafts = model.macWorkspace?.smokeDraftStore else {
+            finish(["ready": false]); return
+        }
+        window.makeKeyAndOrderFront(nil)
+        let limit = ContinuousClock.now + .seconds(5)
+        var editor: NSTextView?
+        while ContinuousClock.now < limit {
+            if let field = window.firstResponder as? NSTextView, field.isEditable {
+                editor = field
+                break
+            }
+            content.layoutSubtreeIfNeeded()
+            if let frame = agent.smokePromptFrame, !frame.isEmpty {
+                _ = clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: window)
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard let editor else { finish(["composerFocused": false]); return }
+        let owner = agent.uncommittedDraftID
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let longest = String(repeating: "多行粘贴包含中文、emoji ✅ 和字母。\n", count: 18_000)
+        let cases = [
+            ("multiline", String(repeating: "多行粘贴包含中文、emoji ✅ 和字母。\n", count: 4_000)),
+            ("unbroken", String(repeating: "abcdef0123456789", count: 22_500)),
+            ("nearDraftLimit", longest)
+        ]
+        var results: [String: Any] = [:]
+        for (label, text) in cases {
+            board.clearContents()
+            guard board.setString(text, forType: .string) else { finish(["fixturePasteboard": false]); return }
+            editor.setSelectedRange(NSRange(location: 0, length: (editor.string as NSString).length))
+            try? Data(label.utf8).write(to: report.appendingPathExtension("paste-stage"), options: .atomic)
+            let start = ContinuousClock.now
+            let accepted = editor.readSelection(from: board, type: .string)
+            content.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(60))
+            let elapsed = (ContinuousClock.now - start).components
+            let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+            results[label + "Seconds"] = seconds
+            results[label + "Bytes"] = text.utf8.count
+            results[label + "Retained"] = accepted && drafts.text(for: owner) == text && editor.string == text
+            results[label + "Responsive"] = seconds < 2
+        }
+        drafts.flush()
+        let archive = agent.personalTaskLeaseBase.appendingPathComponent("Drafts/drafts.json")
+        let saveDeadline = ContinuousClock.now + .seconds(4)
+        var savedCompleteDraft = false
+        while ContinuousClock.now < saveDeadline {
+            if let bytes = try? Data(contentsOf: archive),
+               let document = try? JSONDecoder().decode(ComposerDraftDocument<DesignJSONValue, DesignJSONValue>.self, from: bytes),
+               document.drafts[owner.uuidString]?.text == longest {
+                savedCompleteDraft = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        results["savedCompleteDraft"] = savedCompleteDraft
+
+        if let endpoint = projectTaskFixtureEndpoint {
+            agent.defaultMode = .chat
+            let configured = agent.addProvider(name: "Composer Fixture", endpoint: endpoint.absoluteString,
+                                               protocolKind: .openAIChatCompletions, modelID: "draft-stream",
+                                               key: "", allowsPlainHTTP: true)
+            let text = "Send a pasted draft using the keyboard."
+            board.clearContents()
+            board.setString(text, forType: .string)
+            editor.setSelectedRange(NSRange(location: 0, length: (editor.string as NSString).length))
+            if configured, editor.readSelection(from: board, type: .string) {
+                window.makeFirstResponder(editor)
+                for type: NSEvent.EventType in [.keyDown, .keyUp] {
+                    if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [.command],
+                                                    timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                                    characters: "\r", charactersIgnoringModifiers: "\r",
+                                                    isARepeat: false, keyCode: 36) {
+                        NSApp.postEvent(event, atStart: false)
+                    }
+                }
+            }
+            let sendDeadline = ContinuousClock.now + .seconds(12)
+            while (agent.selectedID != owner || agent.isTaskRunning(owner)), ContinuousClock.now < sendDeadline {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            results["commandReturnSent"] = agent.selectedID == owner && drafts.text(for: owner).isEmpty
+                && agent.messages.contains { $0.role == "user" && $0.content == text }
+        }
+        finish(results)
+    }
+
+    private func exerciseTranscriptStageOrder(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model) else { finish(["ready": false]); return }
+        let folder = root.appendingPathComponent("Stage order", isDirectory: true)
+        let markerA = "Stage A introduction."
+        let markerB = "Stage B explanation."
+        let markerC = "Stage C conclusion."
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            try Data("First fixture".utf8).write(to: folder.appendingPathComponent("first.txt"))
+            try Data("Second fixture".utf8).write(to: folder.appendingPathComponent("second.txt"))
+            guard let project = await agent.addWorkspace(name: folder.lastPathComponent, rootURL: folder),
+                  agent.startNamedAgentFixture("Read the two local fixtures in order.", modelID: "stage-order-fixture",
+                                               endpoint: endpoint, projectID: project.id) else {
+                finish(["started": false]); return
+            }
+        } catch {
+            finish(["project": false]); return
+        }
+
+        func order() -> [String] {
+            let items = ThreadTimelineBuilder.buildConversation(messages: agent.messages, runs: agent.transcriptRuns,
+                eventsByRun: agent.transcriptEventsByRun, liveRunID: agent.transcriptLiveRunID, isRunning: agent.isSending,
+                liveStreamedText: agent.streamedText, liveReasoningText: agent.liveReasoning, pendingApprovals: [])
+            return items.flatMap { item -> [String] in
+                switch item {
+                case .assistantMessage(let text, _, _): [text]
+                case .liveAssistantTail: ["live:" + agent.streamedText]
+                case .stepGroup(let events, _):
+                    events.compactMap { event in
+                        guard event.kind == .toolRequest else { return nil }
+                        let fields = ThreadEventPayload.decode(event.payloadJSON)
+                        return fields["callID"] ?? fields["id"]
+                    }
+                default: []
+                }
+            }
+        }
+
+        let firstTool = "fixture-stage-first"
+        let secondTool = "fixture-stage-second"
+        let expected = [markerA, firstTool, markerB, secondTool, markerC]
+        var liveB: [String]?
+        var liveC: [String]?
+        var decisions = Set<String>()
+        let deadline = ContinuousClock.now + .seconds(22)
+        while agent.activeRunCount > 0 && ContinuousClock.now < deadline {
+            if let approval = agent.pendingApproval, approval.toolName == "workspace.readFile",
+               decisions.insert(approval.callID).inserted {
+                await agent.resolveApproval(approval, allow: true)
+            }
+            if agent.streamedText.contains(markerB), !agent.streamedText.contains(markerC), liveB == nil {
+                let shown = order()
+                if shown.contains(firstTool) { liveB = shown }
+            }
+            if agent.streamedText.contains(markerC), liveC == nil {
+                let shown = order()
+                if shown.contains(secondTool) { liveC = shown }
+            }
+            try? await Task.sleep(for: .milliseconds(35))
+        }
+        guard agent.activeRunCount == 0, let id = agent.selectedID else {
+            if agent.isSending { agent.stop() }
+            finish(["completed": false, "liveB": liveB ?? [], "liveC": liveC ?? []]); return
+        }
+        let settled = order()
+        await agent.select(nil)
+        await agent.select(id)
+        let reopened = order()
+        finish(["secondPhaseInPlace": liveB == [markerA, firstTool, "live:" + markerB],
+                "thirdPhaseInPlace": liveC == [markerA, firstTool, markerB, secondTool, "live:" + markerC],
+                "settledInOrder": settled == expected,
+                "reopenedInOrder": reopened == expected,
+                "liveB": liveB ?? [], "liveC": liveC ?? [], "settled": settled, "reopened": reopened])
     }
 
     private actor DeviceHistoryFixturePages {
@@ -2387,6 +2561,8 @@ final class UnifiedMacSmoke {
                                 key: "", allowsPlainHTTP: true),
               agent.selectNewDraft(in: nil) else { finish(["configured": false]); return }
         let first = agent.uncommittedDraftID
+        let firstRoot = agent.fileWorkspaceForCurrentTask
+        let stableDraftScope = firstRoot?.id == first && firstRoot == agent.fileWorkspaceForCurrentTask
         let promptA = "First independent stream"
         let promptB = "Second independent stream"
         drafts.setText(promptA, for: first)
@@ -2422,6 +2598,20 @@ final class UnifiedMacSmoke {
         let staysOnDraft = agent.selectedID == nil && third == agent.uncommittedDraftID && drafts.text(for: third) == unsent
         let firstUnused = drafts.text(for: first).isEmpty
         let secondUnused = drafts.text(for: second).isEmpty
+        let thirdRoot = agent.defaultConversationsDirectory?.appendingPathComponent(third.uuidString, isDirectory: true)
+        let hiddenFilesStayedIdle = thirdRoot.map { !FileManager.default.fileExists(atPath: $0.path) } ?? false
+        let filesShortcut = await performMenuShortcut("0", title: String(localized: "mac.workspace.toggleFiles"),
+                                                      modifiers: [.command, .option])
+        let filesDeadline = ContinuousClock.now + .seconds(3)
+        var openedOwnFiles = false
+        while filesShortcut, ContinuousClock.now < filesDeadline {
+            if agent.smokeInspectorShown, let thirdRoot,
+               (try? thirdRoot.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                openedOwnFiles = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(30))
+        }
         await agent.select(first)
         let firstSaved = agent.messages.contains { $0.role == "user" && $0.content == promptA }
             && !agent.messages.contains { $0.role == "user" && $0.content == promptB }
@@ -2431,6 +2621,7 @@ final class UnifiedMacSmoke {
         var results: [String: Any] = ["firstSent": firstSent, "secondOpenedBeforeAdmission": secondOpened && first != second,
                 "secondSent": secondSent, "concurrentStreams": concurrentlyRunning,
                 "draftAfterStreams": staysOnDraft, "separateSavedMessages": firstSaved && secondSaved && firstUnused && secondUnused,
+                "stableDraftScope": stableDraftScope, "hiddenFilesStayedIdle": hiddenFilesStayedIdle, "openedOwnFiles": openedOwnFiles,
                 "retypedDraftPreserved": retypedDraftPreserved && drafts.text(for: repeatedDraft).isEmpty]
         if usesSidebar { results["newTaskFromSidebar"] = thirdUsable }
         else {
@@ -2585,6 +2776,9 @@ final class UnifiedMacSmoke {
         let outside = root.appendingPathComponent("approval-fixture.txt")
         func taskRoot() -> URL? {
             guard let record = agent.fileWorkspaceForCurrentTask else { return nil }
+            if record.kind == .privateTask {
+                return try? MacAgentWorkspaceTools.resolvePrivateTaskRoot(record, base: agent.personalTaskLeaseBase)
+            }
             var stale = false
             return try? URL(resolvingBookmarkData: record.rootBookmark, options: [.withoutUI], relativeTo: nil,
                             bookmarkDataIsStale: &stale)

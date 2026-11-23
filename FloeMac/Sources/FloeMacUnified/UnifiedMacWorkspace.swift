@@ -506,11 +506,16 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     }
 
     private func terminalOwner(for id: UUID, record: WorkspaceRecord) throws -> MacTaskTerminalOwner {
-        var stale = false
-        let url = try URL(resolvingBookmarkData: record.rootBookmark,
+        let url: URL
+        if record.kind == .privateTask {
+            url = try MacAgentWorkspaceTools.resolvePrivateTaskRoot(record, base: agent?.personalTaskLeaseBase)
+        } else {
+            var stale = false
+            url = try URL(resolvingBookmarkData: record.rootBookmark,
                           options: [.withSecurityScope, .withoutUI, .withoutMounting],
                           relativeTo: nil, bookmarkDataIsStale: &stale)
-        guard !stale else { throw CocoaError(.fileReadNoPermission) }
+            guard !stale else { throw CocoaError(.fileReadNoPermission) }
+        }
         let access = TaskTerminalFolderAccess(url)
         let owner = try taskTerminals.owner(taskID: id, workspaceURL: access.url)
         owner.admission = terminalAdmission
