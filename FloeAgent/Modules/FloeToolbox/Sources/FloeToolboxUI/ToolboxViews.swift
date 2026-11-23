@@ -181,18 +181,35 @@ public struct ToolboxSpaceNavigation: View {
 public struct ToolboxHomeView: View {
     @Environment(\.locale) private var toolboxLocale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var search = ""
+    @State private var localSearch = ""
     private func text(_ zh: String,_ en: String) -> String { toolboxLocale.language.languageCode?.identifier == "zh" ? zh : en }
     private let availability: [ToolboxTool: ToolboxAvailability]
     private let showsAssistantAvailability: Bool
+    private let externalSearch: Binding<String>?
+    private let featuredTools: [ToolboxTool]
     private let onOpen: (ToolboxTool) -> Void
     public init(availability: [ToolboxTool: ToolboxAvailability], showsAssistantAvailability: Bool = true,
+                search: Binding<String>? = nil, featuredTools: [ToolboxTool] = [.location, .level, .measure, .calculator, .roaming, .http],
                 onOpen: @escaping (ToolboxTool) -> Void) {
         self.availability = availability
         self.showsAssistantAvailability = showsAssistantAvailability
+        self.externalSearch = search
+        self.featuredTools = featuredTools
         self.onOpen = onOpen
     }
+
+    private var search: String { externalSearch?.wrappedValue ?? localSearch }
+
     public var body: some View {
+        if externalSearch == nil {
+            directory.navigationTitle(text("工具箱", "Toolbox"))
+                .searchable(text: $localSearch, prompt: text("搜索工具", "Search tools"))
+        } else {
+            directory
+        }
+    }
+
+    private var directory: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize
             ScrollView {
@@ -223,8 +240,7 @@ public struct ToolboxHomeView: View {
                 .frame(maxWidth: 1100)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
-        }.navigationTitle(text("工具箱", "Toolbox"))
-            .searchable(text: $search, prompt: text("搜索工具", "Search tools"))
+        }
     }
 
     private var matchingTools: [ToolboxTool] {
@@ -241,12 +257,14 @@ public struct ToolboxHomeView: View {
             case .timer: "计时器 stopwatch countdown"
             default: ""
             }
-            return (tool.title(in: toolboxLocale) + " " + summary(tool) + " " + tool.rawValue + " " + aliases).localizedStandardContains(query)
+            let searchable = [tool.title(in: toolboxLocale), summary(tool), tool.rawValue,
+                              tool.group.title(in: toolboxLocale), aliases].joined(separator: " ")
+            return searchable.localizedStandardContains(query)
         }
     }
 
     private var featured: [ToolboxTool] {
-        [.location, .level, .measure, .calculator, .roaming, .http].filter { availability[$0] != nil && !isUnsupported($0) }
+        featuredTools.filter { availability[$0] != nil && !isUnsupported($0) }
     }
 
     private func featuredShelf(wide: Bool, width: CGFloat) -> some View {
@@ -258,22 +276,26 @@ public struct ToolboxHomeView: View {
                         Button { onOpen(tool) } label: {
                             VStack(alignment: .leading, spacing: 12) {
                                 ToolboxToolIcon(tool:tool)
-                                    .font(.title).foregroundStyle(.tint)
+                                    .font(featuredIconFont).foregroundStyle(.tint)
                                     .accessibilityHidden(true)
                                 Text(tool.title(in: toolboxLocale))
-                                    .font(.title3.weight(.semibold)).foregroundStyle(.primary)
-                                Text(summary(tool)).font(.subheadline).foregroundStyle(.secondary)
+                                    .font(featuredTitleFont).foregroundStyle(.primary)
+                                Text(summary(tool)).font(featuredDetailFont).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 Label(text("打开", "Open"), systemImage: "arrow.right")
-                                    .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+                                    .font(featuredDetailFont.weight(.semibold)).foregroundStyle(.tint)
                             }
-                            .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-                            .padding(16)
+                            .frame(maxWidth: .infinity, minHeight: featuredMinHeight, alignment: .topLeading)
+                            .padding(featuredPadding)
+                            #if os(macOS)
+                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+                            #else
                             .background(.background, in: RoundedRectangle(cornerRadius: 16))
+                            #endif
                             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary, lineWidth: 0.5))
                         }
                         .buttonStyle(.plain)
-                        .frame(width: wide ? 300 : max(220, width - 68))
+                        .frame(width: featuredCardWidth(wide: wide, width: width))
                         .accessibilityIdentifier("toolbox.featured.\(tool.rawValue)")
                     }
                 }
@@ -284,6 +306,22 @@ public struct ToolboxHomeView: View {
             .scrollTargetBehavior(.viewAligned)
         }.accessibilityIdentifier("toolbox.featured")
     }
+
+    #if os(macOS)
+    private var featuredIconFont: Font { .title3 }
+    private var featuredTitleFont: Font { .headline }
+    private var featuredDetailFont: Font { .callout }
+    private let featuredMinHeight: CGFloat = 90
+    private let featuredPadding: CGFloat = 12
+    private func featuredCardWidth(wide: Bool, width: CGFloat) -> CGFloat { min(208, max(170, width - 64)) }
+    #else
+    private var featuredIconFont: Font { .title }
+    private var featuredTitleFont: Font { .title3.weight(.semibold) }
+    private var featuredDetailFont: Font { .subheadline }
+    private let featuredMinHeight: CGFloat = 150
+    private let featuredPadding: CGFloat = 16
+    private func featuredCardWidth(wide: Bool, width: CGFloat) -> CGFloat { wide ? 300 : max(220, width - 68) }
+    #endif
 
     private func directoryRow(_ tool: ToolboxTool) -> some View {
         VStack(spacing: 0) {

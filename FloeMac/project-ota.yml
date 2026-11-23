@@ -66,6 +66,7 @@ targets:
       - path: ../FloeAgent/FloeApp/Chat/ToolCallCardView.swift
       - path: ../FloeAgent/FloeApp/Chat/AssistantMessageView.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadSearchModel.swift
+      - path: ../FloeAgent/FloeApp/Chat/ConversationSearchView.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadSearchBar.swift
       - path: ../FloeAgent/FloeApp/Chat/ThreadComposerModelMenu.swift
       - path: ../FloeAgent/FloeApp/Chat/ComposerDraftTextRevisions.swift

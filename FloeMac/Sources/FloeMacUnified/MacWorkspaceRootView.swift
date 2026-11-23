@@ -48,6 +48,7 @@ struct MacWorkspaceRootView: View {
     #if FLOE_MAC_HOST_SMOKE
     static var smokeTaskCenterFrame: CGRect?
     static var smokeNewTaskFrame: CGRect?
+    static var smokeTaskSearchFrame: CGRect?
     static var smokeTemporaryFrame: CGRect?
     static var smokeSpaceProjectPickerFrame: CGRect?
     static var smokeSidebarFrames: [String: CGRect] = [:]
@@ -101,9 +102,7 @@ struct MacWorkspaceRootView: View {
     @State private var compactDetail = false
     @State private var inspectorWidth: CGFloat = 340
     @GestureState private var dividerTranslation: CGFloat = 0
-    @State private var showHistorySearch = false
-    @FocusState private var historySearchFocused: Bool
-    @State private var historySearch = ""
+    @State private var showsTaskSearch = false
     @State private var searchResultTarget: (conversation: UUID, message: UUID)?
     @State private var conversationFindRequest: UUID?
     @State private var fileFindRequest: UUID?
@@ -137,11 +136,13 @@ struct MacWorkspaceRootView: View {
                 .safeAreaInset(edge: .top, spacing: 0) {
                     HStack(spacing: 0) {
                         Spacer()
+                        taskSearchButton
                         sidebarToggle(show: false)
                     }
                     .padding(.trailing, 8)
                     .frame(minHeight: FloeTheme.minimumTarget + 8)
                     .background { titlebarDragArea }
+                    .background(FloeTheme.sidebarSurface)
                 }
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 320)
                 .ignoresSafeArea(.container, edges: .top)
@@ -153,6 +154,7 @@ struct MacWorkspaceRootView: View {
         .coordinateSpace(name: "floe.workbench.window")
         .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $workspace.isSettingsPresented, content: settingsContent)
+        .sheet(isPresented: $showsTaskSearch) { taskSearchSheet }
         .sheet(item: $taskPermissions) { presentation in
             MacTaskPermissionsSheet(workspace: workspace, selectionID: presentation.id, isDraft: presentation.isDraft)
         }
@@ -550,9 +552,6 @@ struct MacWorkspaceRootView: View {
                         sidebarHistory
                     }
                 }
-                .onChange(of: showHistorySearch) { _, shown in
-                    if shown { proxy.scrollTo("sidebar.navigation", anchor: .top) }
-                }
                 #if FLOE_MAC_HOST_SMOKE
                 .onReceive(NotificationCenter.default.publisher(for: Self.smokeRevealProjectRow)) { note in
                     guard note.object as? HostAgentWorkspace === workspace,
@@ -575,54 +574,11 @@ struct MacWorkspaceRootView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
         }
+        .background(FloeTheme.sidebarSurface)
     }
 
     private var sidebarNavigation: some View {
         VStack(spacing: 1) {
-            HStack(spacing: 6) {
-                if showHistorySearch {
-                    TextField("mac.workspace.findTask", text: $historySearch)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($historySearchFocused)
-                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(TapGesture().onEnded { historySearchFocused = true })
-                        .accessibilityIdentifier("workspace.taskSearch")
-                        .onAppear {
-                            historySearchFocused = true
-                            #if FLOE_MAC_HOST_SMOKE
-                            workspace.smokeTaskSearchMounted = true
-                            #endif
-                        }
-                        #if FLOE_MAC_HOST_SMOKE
-                        .onDisappear { workspace.smokeTaskSearchMounted = false }
-                        #endif
-                        .onSubmit {
-                            guard !historySearchQuery.isEmpty else { return }
-                            if let result = filteredConversations.first { openTask(result.id) }
-                            else { searchConversationContent() }
-                        }
-                        .onExitCommand(perform: closeTaskSearch)
-                    Button(action: closeTaskSearch) {
-                        Label("host.chat.cancel", systemImage: "xmark.circle.fill")
-                            .labelStyle(.iconOnly)
-                            .macWorkspaceIconTarget()
-                    }
-                    .buttonStyle(.borderless)
-                } else {
-                    Button(action: focusTaskSearch) {
-                        Label("mac.workspace.findTask", systemImage: "magnifyingglass")
-                            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .font(.callout)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .help("mac.workspace.findTask")
-                }
-            }
-            .padding(.horizontal, 9)
-            .frame(minHeight: FloeTheme.minimumTarget)
             sidebarLink(.newTask(nil), title: "workbench.new_task", icon: "square.and.pencil")
                 .accessibilityIdentifier("sidebar.workbench.new_task")
                 .disabled(!canSelectTask)
@@ -639,7 +595,7 @@ struct MacWorkspaceRootView: View {
                 #if FLOE_MAC_HOST_SMOKE
                 .background(MacWorkbenchButtonFrameReader { workspace.smokeSpaceFrame = $0 })
                 #endif
-            sidebarLink(.creative, title: "mac.creative.title", icon: "paintpalette")
+            sidebarLink(.creative, title: "mac.creative.title", icon: "rectangle.and.pencil.and.ellipsis")
                 .accessibilityIdentifier("workspace.creative")
                 #if FLOE_MAC_HOST_SMOKE
                 .background(MacWorkbenchButtonFrameReader { workspace.smokeCreativeFrame = $0 })
@@ -650,20 +606,8 @@ struct MacWorkspaceRootView: View {
 
     private var sidebarHistory: some View {
         LazyVStack(alignment: .leading, spacing: 1) {
-            if historySearchQuery.isEmpty {
-                projectSidebar
-                personalHistory
-            } else {
-                Button(action: searchConversationContent) {
-                    Label("mac.workspace.searchConversationContent", systemImage: "text.magnifyingglass")
-                        .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .font(.callout)
-                .padding(.horizontal, 8)
-                ForEach(filteredConversations) { conversationSidebarRow($0) }
-            }
+            projectSidebar
+            personalHistory
         }
         .padding(8)
     }
@@ -734,7 +678,7 @@ struct MacWorkspaceRootView: View {
             })
             #endif
         } content: {
-            ForEach(filteredConversations.filter { members.contains($0.id) }) {
+            ForEach(visibleConversations.filter { members.contains($0.id) }) {
                 conversationSidebarRow($0)
             }
         }
@@ -773,7 +717,7 @@ struct MacWorkspaceRootView: View {
     private var personalHistory: some View {
         if workspace.projectTaskMembership != nil || workspace.workspaces.isEmpty {
             let projectIDs = Set(workspace.projectTaskMembership?.values.flatMap { $0 } ?? [])
-            let personal = filteredConversations.filter { !projectIDs.contains($0.id) }
+            let personal = visibleConversations.filter { !projectIDs.contains($0.id) }
             if !personal.isEmpty {
                 sidebarHeading("settings.all_workspaces_files_view.chat")
                 ForEach(personal) { conversationSidebarRow($0) }
@@ -849,7 +793,7 @@ struct MacWorkspaceRootView: View {
 
     private func sidebarLink(_ route: MacWorkspaceDestination, title: LocalizedStringKey, icon: String,
                              conversationTitle: String? = nil) -> some View {
-        sidebarLinkButton(route) {
+        sidebarLinkButton(route, primary: conversationTitle == nil) {
             if let conversationTitle {
                 Label { Text(verbatim: conversationTitle) } icon: { Image(systemName: icon) }
             } else {
@@ -858,9 +802,10 @@ struct MacWorkspaceRootView: View {
         }
     }
 
-    private func sidebarLinkButton<Label: View>(_ route: MacWorkspaceDestination,
+    private func sidebarLinkButton<Label: View>(_ route: MacWorkspaceDestination, primary: Bool,
                                                 @ViewBuilder label: @escaping () -> Label) -> some View {
         let selected = destination == route || (route == .space(.files) && isInSpace)
+        let highlighted = selected && primary
         let font: Font = if case .conversation = route { .callout } else { .body }
         return Button {
             if case .newTask(let projectID) = route { startNewTask(in: projectID) }
@@ -878,27 +823,22 @@ struct MacWorkspaceRootView: View {
                         .accessibilityHidden(true)
                 }
             }
-            .labelStyle(MacWorkspaceLabelStyle())
+            .labelStyle(MacWorkspaceLabelStyle(highlighted: highlighted))
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .font(font.weight(selected ? .medium : .regular))
             .frame(minHeight: FloeTheme.minimumTarget)
-            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 6))
+            .background(selected ? Color.accentColor.opacity(highlighted ? 1 : 0.14) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: primary ? FloeTheme.minimumTarget / 2 : 6))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private var historySearchQuery: String { historySearch.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-    private var filteredConversations: [ConversationRecord] {
-        let query = historySearchQuery
-        return workspace.conversations.filter {
-            $0.isVisibleInOrdinaryList && (query.isEmpty || $0.workbenchDisplayTitle.localizedStandardContains(query))
-        }
+    private var visibleConversations: [ConversationRecord] {
+        workspace.conversations.filter(\.isVisibleInOrdinaryList)
     }
 
     private var canSelectTask: Bool {
@@ -1134,7 +1074,7 @@ struct MacWorkspaceRootView: View {
         .padding(.trailing, 12)
         .frame(minHeight: FloeTheme.minimumTarget + 8)
         .background { titlebarDragArea }
-        .background(FloeTheme.chromeMaterial)
+        .background(FloeTheme.sidebarSurface)
     }
 
     private var spaceProjectControl: some View {
@@ -1642,24 +1582,55 @@ struct MacWorkspaceRootView: View {
     }
 
     private func focusTaskSearch() {
-        sidebarVisibility = .all
-        showHistorySearch = true
-        historySearchFocused = true
+        guard workspace.isReady, !workspace.isTerminating, !showsTaskSearch else { return }
+        showsTaskSearch = true
         #if FLOE_MAC_HOST_SMOKE
         workspace.smokeTaskFindInvocations += 1
         #endif
     }
 
-    private func searchConversationContent() {
-        workspace.taskCenterShowsArchived = false
-        workspace.taskCenterQuery = historySearchQuery
-        closeTaskSearch()
-        destination = .taskCenter
+    private var taskSearchButton: some View {
+        Button(action: focusTaskSearch) {
+            FloeWorkbenchControlIcon(systemImage: "magnifyingglass")
+                .macWorkspaceIconTarget()
+        }
+        .buttonStyle(.plain)
+        .disabled(!workspace.isReady)
+        .accessibilityLabel("mac.workspace.findTask")
+        .help("mac.workspace.findTask")
+        .accessibilityIdentifier("workspace.taskSearch.open")
+        #if FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader { Self.smokeTaskSearchFrame = $0 })
+        #endif
     }
 
-    private func closeTaskSearch() {
-        historySearch = ""
-        showHistorySearch = false
+    private var taskSearchSheet: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("chat.search.prompt").font(.headline)
+                Spacer()
+                Button("action.done") { showsTaskSearch = false }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("globalSearch.done")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+            FloeConversationSearchList { query in
+                try await workspace.taskContentMatches(query, archived: false)
+            } openMatch: { hit in
+                guard canSelectTask || workspace.selectedID == hit.conversationID else { return }
+                showsTaskSearch = false
+                searchResultTarget = hit.messageID.map { (hit.conversationID, $0) }
+                openTask(hit.conversationID)
+            }
+            .listStyle(.inset)
+        }
+        .frame(minWidth: 460, idealWidth: 560, minHeight: 320, idealHeight: 420)
+        #if FLOE_MAC_HOST_SMOKE
+        .onAppear { workspace.smokeTaskSearchMounted = true }
+        .onDisappear { workspace.smokeTaskSearchMounted = false }
+        #endif
     }
 
     private func toggleInspector() {
@@ -1884,13 +1855,15 @@ private extension View {
 }
 
 private struct MacWorkspaceLabelStyle: LabelStyle {
+    var highlighted = false
+
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 9) {
             configuration.icon
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(highlighted ? Color.white : FloeTheme.primary)
                 .frame(width: 19)
             configuration.title
-                .foregroundStyle(.primary)
+                .foregroundStyle(highlighted ? Color.white : Color.primary)
         }
     }
 }

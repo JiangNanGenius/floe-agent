@@ -11,115 +11,164 @@
 // A temporary chat lives only in RAM and is intentionally absent here; the
 // in-chat find is the memory-only search for that session.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 import FloeCore
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
 
-struct ConversationSearchView: View {
+struct FloeConversationSearchList: View {
+    let searchMatches: (String) async throws -> [ConversationSearchMatch]
+    let openMatch: (ConversationSearchMatch) -> Void
+
+    @FocusState private var searchFocused: Bool
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var environment: AppEnvironment
-    @EnvironmentObject private var router: AppRouter
     @State private var query = ""
+    @State private var resultsQuery = ""
     @State private var matches: [ConversationSearchMatch] = []
     @State private var searchError: String?
     @State private var isSearching = false
 
+    private var term: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var currentMatches: [ConversationSearchMatch] { resultsQuery == term ? matches : [] }
+
     var body: some View {
+        #if os(macOS)
+        VStack(spacing: 0) {
+            HStack {
+                searchField
+                if isSearching { ProgressView().controlSize(.small) }
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            Divider()
+            List { resultsSection }.listStyle(.inset)
+        }
+        .defaultFocus($searchFocused, true)
+        .onExitCommand { dismiss() }
+        .task(id: term) { await search(term) }
+        #else
         List {
             Section {
-                TextField("chat.conversation_search_view.search_conversations", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                if isSearching {
-                    ProgressView()
-                }
+                searchField
+                if isSearching { ProgressView().controlSize(.small) }
             }
-            Section("chat.conversation_search_view.result") {
-                if let searchError { Text(searchError).foregroundStyle(.red) }
-                if matches.isEmpty, !query.isEmpty, !isSearching, searchError == nil {
-                    ContentUnavailableView(
-                        "chat.conversation_search_view.no_matching_messages_found",
-                        systemImage: "magnifyingglass")
-                } else {
-                    ForEach(matches) { hit in
-                        Button {
-                            open(hit)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 6) {
-                                    Text(hit.conversationTitle)
-                                        .font(.headline)
-                                        .lineLimit(1)
-                                    if hit.isTitleOnly {
-                                        Text(ThreadSearchCopy.titleOnly)
-                                            .font(.caption2)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(.quaternary, in: Capsule())
-                                    }
-                                }
-                                Text(hit.snippet)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                Text(hit.createdAt, style: .date)
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .accessibilityIdentifier(
-                            "globalSearch.hit.\(hit.messageID?.uuidString ?? hit.conversationID.uuidString)")
+            resultsSection
+        }
+        .task(id: term) { await search(term) }
+        #endif
+    }
+
+    private var searchField: some View {
+        TextField("chat.conversation_search_view.search_conversations", text: $query)
+            .textFieldStyle(.roundedBorder)
+            .focused($searchFocused)
+            .accessibilityIdentifier("workspace.taskSearch")
+            #if os(macOS)
+            .onSubmit { if let first = currentMatches.first { openMatch(first) } }
+            #endif
+    }
+
+    private var resultsSection: some View {
+        Section("chat.conversation_search_view.result") {
+            if let searchError, resultsQuery == term { Text(searchError).foregroundStyle(FloeTheme.destructive) }
+            if currentMatches.isEmpty, !term.isEmpty, resultsQuery == term, !isSearching, searchError == nil {
+                ContentUnavailableView(
+                    "chat.conversation_search_view.no_matching_messages_found",
+                    systemImage: "magnifyingglass")
+            } else {
+                ForEach(currentMatches) { hit in resultButton(hit) }
+            }
+        }
+    }
+
+    private func resultButton(_ hit: ConversationSearchMatch) -> some View {
+        Button {
+            guard resultsQuery == term else { return }
+            openMatch(hit)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(hit.conversationTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if hit.isTitleOnly {
+                        Text(ThreadSearchCopy.titleOnly)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
                     }
                 }
+                Text(hit.snippet)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text(hit.createdAt, style: .date)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
+            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .navigationTitle("chat.search.prompt")
-        .task(id: query) { await search() }
+        .accessibilityIdentifier("globalSearch.hit.\(hit.messageID?.uuidString ?? hit.conversationID.uuidString)")
+        #if os(macOS) && FLOE_MAC_HOST_SMOKE
+        .background(MacWorkbenchButtonFrameReader {
+            Self.smokeSearchResultFrames[hit.messageID ?? hit.conversationID] = $0
+        })
+        #endif
     }
 
-    private func open(_ hit: ConversationSearchMatch) {
-        dismiss()
-        router.openConversation(hit.conversationID)
-        // Title-only: open the conversation and stop. Only a real message hit
-        // asks the thread to reveal/highlight an exact row.
-        if let messageID = hit.messageID {
-            ThreadSearchJumpCenter.request(
-                conversationID: hit.conversationID, messageID: messageID)
-        }
-    }
+    #if os(macOS) && FLOE_MAC_HOST_SMOKE
+    static var smokeSearchResultFrames: [UUID: CGRect] = [:]
+    #endif
 
-    private func search() async {
-        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func search(_ value: String) async {
+        guard !Task.isCancelled, value == term else { return }
+        matches = []
+        searchError = nil
+        resultsQuery = ""
         guard !value.isEmpty else {
-            matches = []
-            searchError = nil
             isSearching = false
             return
         }
         isSearching = true
-        searchError = nil
+        defer { if !Task.isCancelled, value == term { isSearching = false } }
         do {
             try await Task.sleep(for: .milliseconds(220))
-            let results = try await environment.intelligenceStore
-                .conversationSearchMatches(value, limit: 40)
-            guard !Task.isCancelled, value == query.trimmingCharacters(in: .whitespacesAndNewlines)
-            else { return }
-            // Internal Canvas agent conversations are not ordinary library
-            // history (the previous screen excluded them by the same durable
-            // marker). The durable store filters stay authoritative.
-            matches = results.filter {
-                !$0.conversationTitle.hasPrefix(CanvasAgentIdentity.conversationTitlePrefix)
-            }
-            isSearching = false
-        } catch is CancellationError {
-            return
+            let results = try await searchMatches(value)
+            guard !Task.isCancelled, value == term else { return }
+            matches = results
+            resultsQuery = value
         } catch {
-            guard !Task.isCancelled else { return }
-            isSearching = false
+            guard !Task.isCancelled, value == term else { return }
+            resultsQuery = value
             searchError = error.localizedDescription
         }
     }
 }
+
+#if canImport(UIKit)
+struct ConversationSearchView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
+
+    var body: some View {
+        FloeConversationSearchList { value in
+            try await environment.intelligenceStore.conversationSearchMatches(value, limit: 40).filter {
+                !$0.conversationTitle.hasPrefix(CanvasAgentIdentity.conversationTitlePrefix)
+            }
+        } openMatch: { hit in
+            dismiss()
+            router.openConversation(hit.conversationID)
+            if let messageID = hit.messageID {
+                ThreadSearchJumpCenter.request(conversationID: hit.conversationID, messageID: messageID)
+            }
+        }
+        .navigationTitle("chat.search.prompt")
+    }
+}
+#endif
 #endif

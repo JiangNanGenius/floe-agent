@@ -16,6 +16,61 @@ import SwiftUI
 import FloeCore
 import FloeProviders
 
+struct FloeOfficialProviderCatalogSection: View {
+    #if os(macOS) && FLOE_MAC_HOST_SMOKE
+    static var smokeRefreshFrame: CGRect?
+    #endif
+    let catalog: ProviderCatalogIndex?
+    var refreshInProgress = false
+    var refreshError: String? = nil
+    let refresh: () async -> Void
+
+    @State private var refreshing = false
+
+    var body: some View {
+        Section {
+            Button {
+                guard !refreshing, !refreshInProgress else { return }
+                refreshing = true
+                Task {
+                    defer { refreshing = false }
+                    await refresh()
+                }
+            } label: {
+                HStack {
+                    Label("providers.catalog.refresh", systemImage: "arrow.clockwise")
+                        .foregroundStyle(FloeTheme.primary)
+                    Spacer()
+                    if refreshing || refreshInProgress {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .contentShape(Rectangle())
+            }
+            .disabled(refreshing || refreshInProgress)
+            .accessibilityIdentifier("providers.catalog.refresh")
+            #if os(macOS) && FLOE_MAC_HOST_SMOKE
+            .background(MacWorkbenchButtonFrameReader { Self.smokeRefreshFrame = $0 })
+            #endif
+
+            if let refreshError {
+                Label { Text(verbatim: refreshError) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.pending)
+                    .accessibilityIdentifier("providers.catalog.error")
+            }
+        } header: {
+            Text("providers.catalog.official")
+        } footer: {
+            if let catalog {
+                Text(FloeL10n.l("providers.catalog.official_footer",
+                                catalog.document.source.project, catalog.offeredProviderCount))
+            }
+        }
+    }
+}
+
 /// Compact, searchable supplier selector embedded in the provider editor.
 struct ProviderCatalogPicker: View {
     /// Product role of the editor session. Catalog results are filtered to

@@ -1014,3 +1014,20 @@
 "mac.voice.noSpeech" = "No speech was recognized.";
 "mac.voice.turnFailed" = "The voice message could not be sent. Check the model and try again.";
 "mac.voice.playbackFailed" = "The answer could not be played.";
+
+/* Shared iPad workbench */
+"action.done" = "Done";
+"chat.add_provider.hint" = "Add a model provider to start chatting.";
+"chat.conversation_search_view.no_matching_messages_found" = "No matching messages found";
+"chat.conversation_search_view.result" = "Result";
+"chat.conversation_search_view.search_conversations" = "Search conversations…";
+"chat.new.prompt" = "What would you like to talk about?";
+"chat.search.prompt" = "Search conversations";
+"composer.mode.agent" = "Agent";
+"composer.mode.chat" = "Chat";
+"composer.mode.goal" = "Goal";
+"composer.mode.plan" = "Plan";
+"composer.no_model" = "No model configured";
+"providers.catalog.official_footer" = "Source: %@ · %d providers";
+"thread.empty" = "No activity yet";
+"thread.empty.hint" = "Send a task to start the thread.";

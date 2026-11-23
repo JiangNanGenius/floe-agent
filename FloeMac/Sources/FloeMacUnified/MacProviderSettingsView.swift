@@ -264,45 +264,45 @@ struct MacProviderSettingsView: View {
             }
             .padding(20)
             Divider()
-            if let openMediaSettings {
-                HStack(spacing: 16) {
-                    ForEach([ProviderCatalogServiceRole.image, .video], id: \.self) { role in
-                        Button(role == .image ? MacProviderText.t("选择生图模型", "Choose Image Model")
-                                              : MacProviderText.t("选择视频模型", "Choose Video Model")) {
-                            openMediaSettings(role)
-                        }
-                        .buttonStyle(.link)
-                        .accessibilityIdentifier("settings.providers.select." + role.rawValue)
-                        #if FLOE_MAC_HOST_SMOKE
-                        .background(MacWorkbenchButtonFrameReader { Self.smokeSelectionFrames[role] = $0 })
-                        #endif
-                    }
-                    Spacer()
+            List {
+                ForEach(ProviderCatalogServiceRole.allCases, id: \.self) { role in
+                    providerSection(role)
                 }
-                .padding(.horizontal, 20).padding(.vertical, 8)
+                FloeOfficialProviderCatalogSection(catalog: catalog,
+                    refreshInProgress: workspace.refreshingModelProviderCatalog, refreshError: catalogError,
+                    refresh: refreshCatalog)
             }
-            if groups.isEmpty {
-                ContentUnavailableView("mac.provider.noProviders", systemImage: "antenna.radiowaves.left.and.right")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(ProviderCatalogServiceRole.allCases, id: \.self) { role in
-                        let accounts = groups.filter { account in
-                            account.models.contains(where: role.groups)
-                                || (account.models.isEmpty
-                                    && role == (account.initialRole ?? .conversation))
-                        }
-                        if !accounts.isEmpty {
-                            Section {
-                                ForEach(accounts) { account in
-                                    providerListHeader(account, role: role)
-                                }
-                            } header: { Label(role.macProviderTitle, systemImage: role.macProviderIcon) }
-                        }
-                    }
+            .listStyle(.inset)
+        }
+    }
+
+    @ViewBuilder private func providerSection(_ role: ProviderCatalogServiceRole) -> some View {
+        let accounts = groups.filter { account in
+            account.models.contains(where: role.groups)
+                || (account.models.isEmpty && role == (account.initialRole ?? .conversation))
+        }
+        if !accounts.isEmpty || role == .conversation || openMediaSettings != nil {
+            Section {
+                ForEach(accounts) { account in providerListHeader(account, role: role) }
+                if accounts.isEmpty && role == .conversation {
+                    Text("mac.provider.noProviders").foregroundStyle(.secondary)
+                        .frame(minHeight: FloeTheme.minimumTarget)
                 }
-                .listStyle(.inset)
-            }
+                if role != .conversation, let openMediaSettings {
+                    Button { openMediaSettings(role) } label: {
+                        Label(role == .image ? MacProviderText.t("选择生图模型", "Choose Image Model")
+                                             : MacProviderText.t("选择视频模型", "Choose Video Model"),
+                              systemImage: role.macProviderIcon)
+                            .foregroundStyle(FloeTheme.primary)
+                            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("settings.providers.select." + role.rawValue)
+                    #if FLOE_MAC_HOST_SMOKE
+                    .background(MacWorkbenchButtonFrameReader { Self.smokeSelectionFrames[role] = $0 })
+                    #endif
+                }
+            } header: { Text(role.macProviderTitle) }
         }
     }
 

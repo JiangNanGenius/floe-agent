@@ -485,6 +485,12 @@ struct HostAgentWorkspaceView: View {
     private var composer: some View {
         VStack(spacing: 0) {
             pendingInputs
+            if workspace.isReady, !workspace.isLoadingHistory, !workspace.isSending,
+               !workspace.taskModelChoices.contains(where: \.canSelectAsPrimary),
+               let openModelSettings {
+                FloeModelSetupBanner(actionTitle: "host.chat.provider", openSetup: openModelSettings)
+                    .padding(.horizontal, 12)
+            }
             inlineComposer
         }
         .frame(maxWidth: 824)
@@ -1189,9 +1195,10 @@ struct HostAgentWorkspaceView: View {
         }
         if chatModels.isEmpty {
             Button(action: openSettings) {
-                FloeThreadComposerChip(title: Text("mac.workspace.configureModel"), systemImage: "cpu")
+                FloeThreadComposerChip(title: Text("composer.no_model"), systemImage: "cpu", tint: FloeTheme.pending)
             }
             .buttonStyle(ComposerButtonStyle())
+            .accessibilityIdentifier("composer.model.configure")
         } else {
             ThreadComposerModelMenu(
                 models: chatModels.map(\.model), providers: workspace.taskModelProviderProfiles,
@@ -1230,7 +1237,7 @@ struct HostAgentWorkspaceView: View {
     private var conversation: some View {
         MacThreadTranscript(workspace: workspace, conversationID: findConversationID,
             searchText: search.query, searchIsActive: search.isActive, focusedMessageID: search.focusedMessageID,
-            requestedMessageID: requestedMessageID, openModelSettings: openModelSettings,
+            requestedMessageID: requestedMessageID,
             openAttachment: { message, item in
                 guard let id = item.attachmentID else { return }
                 Task {
@@ -1375,19 +1382,17 @@ private struct HostTaskCardChrome: ViewModifier {
 extension HostAgentMode {
     var title: LocalizedStringKey {
         switch self {
-        case .chat: "mac.agent.mode.chat"
-        case .agent: "mac.agent.mode.agent"
-        case .plan: "mac.agent.mode.plan"
-        case .goal: "mac.agent.mode.goal"
+        case .chat: "composer.mode.chat"
+        case .agent: "composer.mode.agent"
+        case .plan: "composer.mode.plan"
+        case .goal: "composer.mode.goal"
         }
     }
 
     var prompt: LocalizedStringKey {
         switch self {
-        case .chat: "mac.chat.welcome"
-        case .plan: "mac.plan.welcome"
-        case .goal: "mac.goal.welcome"
-        case .agent: "home.welcome"
+        case .chat: "chat.new.prompt"
+        case .agent, .plan, .goal: "home.welcome"
         }
     }
 

@@ -204,7 +204,7 @@ struct HomeLaunchpadView: View {
                 approvalsStrip
             }
             if !viewModel.hasConfiguredProvider {
-                providerBar
+                FloeModelSetupBanner(actionTitle: "setup.launcher.open") { router.presentedSetup = .manual }
             }
             if let error = viewModel.actionError {
                 errorBar(error)
@@ -327,24 +327,6 @@ struct HomeLaunchpadView: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
         }
-    }
-
-    private var providerBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .foregroundStyle(FloeTheme.pending)
-                .accessibilityHidden(true)
-            Text("chat.add_provider.hint")
-                .font(FloeTheme.Typography.metadata)
-            Spacer()
-            Button("setup.launcher.open") { router.presentedSetup = .manual }
-                .buttonStyle(.bordered)
-                .frame(minHeight: FloeTheme.minimumTarget)
-                .accessibilityIdentifier("setup.open")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(FloeTheme.pending.opacity(0.08))
     }
 
     private func errorBar(_ message: String) -> some View {

@@ -102,7 +102,6 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
     }
     @Published private(set) var menuAvailability = MenuAvailability()
     private var commandObservation: AnyCancellable?
-    private var presentingSheet = false
     private var draftStore: MacWorkspaceDraftStore?
     private(set) var temporaryChat: MacTemporaryChatModel?
     private var agentLeases = Set<BridgeUpdateActivity.Lease>()
@@ -396,16 +395,23 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         refreshMenuAvailability()
     }
 
+    private var workbenchHasModalPresentation: Bool {
+        agent?.isSettingsPresented == true || agentWindow?.attachedSheet != nil
+            || NSApp.modalWindow != nil || NSApp.keyWindow?.sheetParent != nil
+    }
+
     private var currentMenuAvailability: MenuAvailability {
-        guard let agent, let window = agentWindow, !agent.isTerminating, !agent.isSettingsPresented,
-              !presentingSheet, window.attachedSheet == nil, NSApp.modalWindow == nil,
-              NSApp.keyWindow?.sheetParent == nil else { return .init() }
+        guard let agent, let window = agentWindow, !agent.isTerminating,
+              !workbenchHasModalPresentation else { return .init() }
         let key = window === NSApp.keyWindow && window.isKeyWindow
         return .init(openSpace: true, newTask: agent.isReady && !agent.isAcceptingPlan,
                      find: key, stop: key && agent.canStop, toggleFiles: key && agent.windowShowsTask)
     }
 
     private func refreshMenuAvailability() {
+        // AppKit owns the modal input lock. Keep the last window menu state
+        // during a sheet transition; dispatch still checks the live window.
+        guard !workbenchHasModalPresentation else { return }
         let latest = currentMenuAvailability
         if latest != menuAvailability { menuAvailability = latest }
     }
@@ -449,15 +455,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         DispatchQueue.main.async { [weak self] in self?.refreshMenuAvailability() }
     }
 
-    func windowWillBeginSheet(_ notification: Notification) {
-        guard notification.object as? NSWindow === agentWindow else { return }
-        presentingSheet = true
-        refreshMenuAvailability()
-    }
-
     func windowDidEndSheet(_ notification: Notification) {
         guard notification.object as? NSWindow === agentWindow else { return }
-        presentingSheet = false
         DispatchQueue.main.async { [weak self] in self?.refreshMenuAvailability() }
     }
 
@@ -494,7 +493,6 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate, ObservableObject {
         if let sheet = agentWindow?.attachedSheet { agentWindow?.endSheet(sheet) }
         commandObservation = nil
         menuAvailability = .init()
-        presentingSheet = false
         agentWindow?.close()
         agentWindow?.contentViewController = nil
         agentWindow = nil

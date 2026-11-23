@@ -369,6 +369,20 @@ final class UnifiedMacSmoke {
             finish(["checks": checks, "heights": heights])
             return
         }
+        if CommandLine.arguments.contains("--interactive-workbench-only") {
+            guard let agent = await readyFixtureWorkbench(model) else { finish(["opened": false]); return }
+            if CommandLine.arguments.contains("--touch-dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
+            try? Data().write(to: report.appendingPathExtension("ready"))
+            let stop = report.appendingPathExtension("done").path
+            let deadline = ContinuousClock.now + .seconds(240)
+            while !FileManager.default.fileExists(atPath: stop) && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+            if let workspace = model.macWorkspace { _ = await workspace.closeToolbox() }
+            if agent.beginTermination() { try? await agent.finishTermination() }
+            finish(["opened": true])
+            return
+        }
         if CommandLine.arguments.contains("--task-media-workbench-only") {
             model.openAgentWorkspace()
             guard let agent = model.macWorkspace?.agent, let endpoint = projectTaskFixtureEndpoint else {
@@ -401,6 +415,11 @@ final class UnifiedMacSmoke {
             let ready = ContinuousClock.now + .seconds(6)
             while !agent.isReady && ContinuousClock.now < ready { try? await Task.sleep(for: .milliseconds(40)) }
             var checks = ["settings": await exerciseUnifiedSettings(model: model)]
+            await waitForWorkbenchSheetDismissal()
+            checks["modelSetup"] = await verifyModelSetupEntry(model: model, workspace: agent)
+            await waitForWorkbenchSheetDismissal()
+            checks["taskSearchSheet"] = await verifyTaskMenus(model: model, workspace: agent)
+            checks["spaceNavigation"] = await exerciseSpaceNavigation(model: model)
             checks["files"] = await MacWorkspaceFileOperationsSmoke.verify(in: root)
             let fileEditorFailures = MacWorkspaceFileEditingSmoke.runSyntheticChecks()
             checks["sharedFileEditor"] = fileEditorFailures.isEmpty
@@ -408,8 +427,9 @@ final class UnifiedMacSmoke {
             checks["temporaryLifecycle"] = await MacTemporaryChatModel.verify(in: agent)
             _ = agent.addProvider(name: "Workbench fixture", endpoint: "https://example.invalid/v1",
                                   protocolKind: .openAIChatCompletions, modelID: "workbench-fixture", key: "")
+            let returnedToDraft = await openNewTaskFromSidebar(workspace: agent)
             await Task.yield()
-            let clicked = clickWorkbenchButton(ids: ["home.temporary.toggle"], frame: MacWorkspaceRootView.smokeTemporaryFrame,
+            let clicked = returnedToDraft && clickWorkbenchButton(ids: ["home.temporary.toggle"], frame: MacWorkspaceRootView.smokeTemporaryFrame,
                                                screenshot: nil)
             let entered = ContinuousClock.now + .seconds(2)
             while temporary.session == nil && ContinuousClock.now < entered { try? await Task.sleep(for: .milliseconds(40)) }
@@ -4379,6 +4399,55 @@ final class UnifiedMacSmoke {
         return true
     }
 
+    private func verifyModelSetupEntry(model: BridgeAppModel, workspace: HostAgentWorkspace) async -> Bool {
+        guard let window = visibleWorkbench, let content = window.contentView else { return false }
+        let entryDeadline = ContinuousClock.now + .seconds(3)
+        while FloeModelSetupBanner.smokeActionFrame == nil && ContinuousClock.now < entryDeadline {
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard clickWorkbenchButton(ids: ["setup.open"], frame: FloeModelSetupBanner.smokeActionFrame, screenshot: nil) else {
+            settingsDiagnostics.append("The empty task did not expose its model setup button.")
+            return false
+        }
+        let settingsDeadline = ContinuousClock.now + .seconds(3)
+        while model.smokeAgentSettingsSheet?.isVisible != true && ContinuousClock.now < settingsDeadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        defer { model.closeSettingsWindow() }
+        guard model.settingsPane == .models, let sheet = model.smokeAgentSettingsSheet,
+              let body = sheet.contentView else { return false }
+        let catalogDeadline = ContinuousClock.now + .seconds(2)
+        while FloeOfficialProviderCatalogSection.smokeRefreshFrame == nil && ContinuousClock.now < catalogDeadline {
+            body.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: body)
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        let clicked = pressAccessibilityButton(body, id: "providers.catalog.refresh")
+            || FloeOfficialProviderCatalogSection.smokeRefreshFrame.map {
+                clickWindowLocation(NSPoint(x: $0.midX, y: $0.midY), in: sheet)
+            } == true
+        guard clicked else {
+            settingsDiagnostics.append("Model setup did not expose refresh in the provider list.")
+            return false
+        }
+        let refreshDeadline = ContinuousClock.now + .seconds(12)
+        var beganRefresh = false
+        while ContinuousClock.now < refreshDeadline {
+            if workspace.refreshingModelProviderCatalog {
+                beganRefresh = true
+            } else if beganRefresh {
+                capture(body, extension: "settings-official-catalog.png")
+                return workspace.modelProviderCatalog != nil
+                    && accessibilityElement(body, id: "providers.catalog.error") == nil
+            }
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        settingsDiagnostics.append("The directory refresh did not complete from the model list.")
+        return false
+    }
+
     private func verifyTaskMenus(model: BridgeAppModel, workspace: HostAgentWorkspace) async -> Bool {
         model.openAgentWorkspace()
         let activated = ContinuousClock.now + .seconds(2)
@@ -4396,29 +4465,75 @@ final class UnifiedMacSmoke {
         while !workspace.smokeTaskSearchMounted && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        guard workspace.smokeTaskSearchMounted, await performMenuShortcut("f", title: findTitle) else {
-            settingsDiagnostics.append("Find did not show the task search field.")
+        guard workspace.smokeTaskSearchMounted, workspace.smokeTaskFindInvocations == 1,
+              let window = visibleWorkbench, let searchSheet = window.attachedSheet,
+              await closeFixtureSheet(searchSheet, id: "globalSearch.done") else {
+            settingsDiagnostics.append("Find did not open the task search sheet.")
             return false
         }
-        while workspace.smokeTaskFindInvocations < 2 && ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(30))
-        }
-        guard workspace.smokeTaskSearchMounted, workspace.smokeTaskFindInvocations == 2,
-              await workspace.verifyChatSmoke(admissionIsClosedToInstall: { true }),
+        let phrase = "Mac workbench transcript evidence"
+        guard await workspace.verifyChatSmoke(reply: phrase), let id = workspace.selectedID,
+              let message = workspace.messages.last?.id,
               await performMenuShortcut("f", title: findTitle) else { return false }
         let conversationDeadline = ContinuousClock.now + .seconds(2)
         while !workspace.smokeConversationSearchMounted && ContinuousClock.now < conversationDeadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        guard workspace.smokeConversationSearchMounted, workspace.smokeTaskFindInvocations == 2,
+        guard workspace.smokeConversationSearchMounted, workspace.smokeTaskFindInvocations == 1,
               await performMenuShortcut("f", title: String(localized: "mac.workspace.findTask"), modifiers: [.command, .shift]) else {
             return false
         }
         let taskSearchDeadline = ContinuousClock.now + .seconds(2)
-        while workspace.smokeTaskFindInvocations < 3 && ContinuousClock.now < taskSearchDeadline {
+        while (!workspace.smokeTaskSearchMounted || window.attachedSheet == nil) && ContinuousClock.now < taskSearchDeadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
-        return workspace.smokeTaskSearchMounted && workspace.smokeTaskFindInvocations == 3
+        guard workspace.smokeTaskFindInvocations == 2, let sheet = window.attachedSheet, let content = sheet.contentView else {
+            return false
+        }
+        sheet.makeKey()
+        let focusDeadline = ContinuousClock.now + .seconds(2)
+        while !(sheet.firstResponder is NSTextView) && ContinuousClock.now < focusDeadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        guard let editor = sheet.firstResponder as? NSTextView else {
+            settingsDiagnostics.append("The search sheet did not focus its input field.")
+            return false
+        }
+        editor.insertText(phrase, replacementRange: editor.selectedRange())
+        let resultID = "globalSearch.hit." + message.uuidString
+        let resultDeadline = ContinuousClock.now + .seconds(4)
+        var pressedResult = false
+        while ContinuousClock.now < resultDeadline {
+            content.layoutSubtreeIfNeeded()
+            refreshButtonFrames(in: content)
+            let frame = FloeConversationSearchList.smokeSearchResultFrames[message]
+            if frame != nil || accessibilityElement(content, id: resultID) != nil {
+                capture(content, extension: "task-search.png")
+                pressedResult = pressAccessibilityButton(content, id: resultID)
+                    || frame.map { clickWindowLocation(NSPoint(x: $0.midX, y: $0.midY), in: sheet) } == true
+                if pressedResult { break }
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        while pressedResult && (HostAgentWorkspaceView.smokeLocatedMessageID != message || window.attachedSheet != nil)
+                && ContinuousClock.now < resultDeadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        guard pressedResult, HostAgentWorkspaceView.smokeLocatedMessageID == message,
+              workspace.selectedID == id, window.attachedSheet == nil else {
+            settingsDiagnostics.append("The search sheet did not open the exact saved message.")
+            if window.attachedSheet === sheet { _ = await closeFixtureSheet(sheet, id: "globalSearch.done") }
+            return false
+        }
+        return true
+    }
+
+    private func waitForWorkbenchSheetDismissal() async {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while let window = visibleWorkbench, (window.attachedSheet != nil || !window.isKeyWindow),
+              ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(35))
+        }
     }
 
     private func verifyDesktopFilesLayout(window: NSWindow, content: NSView, workspace: HostAgentWorkspace) async -> Bool {
@@ -4815,8 +4930,8 @@ final class UnifiedMacSmoke {
     }
 
     private func selectComposerMode(_ mode: HostAgentMode, workspace: HostAgentWorkspace) async -> Bool {
-        let titles = HostAgentMode.allCases.map { NSLocalizedString("mac.agent.mode." + $0.rawValue, comment: "") }
-        let target = NSLocalizedString("mac.agent.mode." + mode.rawValue, comment: "")
+        let titles = HostAgentMode.allCases.map { NSLocalizedString("composer.mode." + $0.rawValue, comment: "") }
+        let target = NSLocalizedString("composer.mode." + mode.rawValue, comment: "")
         let chosen = await selectMenuChoice(frame: workspace.smokeModeFrame, titles: titles, target: target)
         if !chosen || workspace.composerMode != mode {
             settingsDiagnostics.append("Mode menu expected \(mode.rawValue), got \(workspace.composerMode.rawValue), selected=\(chosen).")
@@ -4864,6 +4979,7 @@ final class UnifiedMacSmoke {
 
     private func exerciseSpaceNavigation(model: BridgeAppModel) async -> Bool {
         guard let workspace = model.macWorkspace, let agent = workspace.agent else { return false }
+        await waitForWorkbenchSheetDismissal()
         let priorToolbox = workspace.toolbox
         func waitForPage(_ page: MacSpacePage) async -> Bool {
             let deadline = ContinuousClock.now + .seconds(2)
@@ -4886,27 +5002,26 @@ final class UnifiedMacSmoke {
             settingsDiagnostics.append("The Space picker could not receive an event at \(point) from \(frame).")
             return false
         }
-        let spaceTitle = String(localized: "space.title")
-        let toolboxTitle = String(localized: "mac.workspace.toolbox")
-        let spaceMenu = NSApp.mainMenu?.item(withTitle: spaceTitle)?.submenu
-        spaceMenu?.update()
-        guard let spaceMenu, let toolboxItem = spaceMenu.item(withTitle: toolboxTitle), toolboxItem.isEnabled else {
-            settingsDiagnostics.append("The Space menu did not contain an enabled Toolbox item.")
-            return false
-        }
-        spaceMenu.performActionForItem(at: spaceMenu.index(of: toolboxItem))
-        guard await waitForPage(.toolbox), workspace.toolbox === priorToolbox else {
-            settingsDiagnostics.append("The Toolbox menu did not enter Space without opening a second tool window.")
-            return false
-        }
         guard clickWorkbenchButton(ids: ["workspace.space"], frame: agent.smokeSpaceFrame, screenshot: "space-menu.png") else {
             settingsDiagnostics.append("The Space sidebar control did not accept a click.")
             return false
         }
         guard await waitForPage(.files), clickSpaceSegment(1, screenshot: "space-files.png"),
               await waitForPage(.toolbox), workspace.toolbox === priorToolbox,
-              clickSpaceSegment(0, screenshot: "space-toolbox.png") else { return false }
-        return await waitForPage(.files)
+              clickSpaceSegment(0, screenshot: "space-toolbox.png"), await waitForPage(.files) else { return false }
+        let spaceTitle = String(localized: "space.title")
+        let toolboxTitle = String(localized: "mac.workspace.toolbox")
+        NSApp.mainMenu?.update()
+        if let menu = NSApp.mainMenu?.item(withTitle: spaceTitle)?.submenu {
+            if menu.numberOfItems == 0 { menu.delegate?.menuNeedsUpdate?(menu) }
+            menu.update()
+            if let command = menu.item(withTitle: toolboxTitle), command.isEnabled {
+                menu.performActionForItem(at: menu.index(of: command))
+                return await waitForPage(.toolbox) && workspace.toolbox === priorToolbox
+            }
+        }
+        settingsDiagnostics.append("The Space menu did not contain an enabled Toolbox item.")
+        return false
     }
 
     private func exerciseToolbox(model: BridgeAppModel) async -> Bool {
@@ -5732,13 +5847,13 @@ final class UnifiedMacSmoke {
         while model.smokeAgentSettingsSheet?.isVisible != true && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
         }
+        defer { model.closeSettingsWindow() }
         guard let window = model.smokeAgentSettingsSheet, window.isVisible, model.settingsPane == .general,
               model.smokeSettingsWindow?.isVisible != true,
               let workspace = model.macWorkspace?.agent else {
             settingsDiagnostics.append("Settings after menu: \(model.settingsPane), sheet visible=\(model.smokeAgentSettingsSheet?.isVisible == true)")
             return false
         }
-        defer { model.closeSettingsWindow() }
         workspace.defaultMode = .plan
         workspace.verifyAgentAnswers = true
         workspace.allowsWorkspaceWrites = false

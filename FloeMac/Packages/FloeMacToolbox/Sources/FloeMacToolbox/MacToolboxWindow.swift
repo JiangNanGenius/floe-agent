@@ -57,6 +57,24 @@ public enum MacToolboxCatalog {
     }
 }
 
+public struct MacToolboxDirectory: View {
+    @Binding private var search: String
+    private let openTool: (String) -> Void
+
+    public init(search: Binding<String>, openTool: @escaping (String) -> Void) {
+        _search = search
+        self.openTool = openTool
+    }
+
+    public var body: some View {
+        ToolboxHomeView(
+            availability: Dictionary(uniqueKeysWithValues: MacToolboxCatalog.availableTools.map { ($0, .available) }),
+            showsAssistantAvailability: false, search: $search,
+            featuredTools: [.terminal, .browser, .calculator, .scanner]
+        ) { openTool($0.rawValue) }
+    }
+}
+
 @MainActor
 fileprivate final class MacToolboxSelection: ObservableObject {
     private static let defaultsKey = "floe.mac.toolbox.selectedTool"

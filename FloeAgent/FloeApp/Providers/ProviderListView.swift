@@ -248,27 +248,11 @@ struct ProviderListView: View {
                 }
             }
 
-            if let catalog, onRefreshCatalog != nil {
-                Section {
-                    Button {
-                        Task {
-                            await onRefreshCatalog?()
-                            await viewModel.load()
-                            refreshCapabilityProposals()
-                        }
-                    } label: {
-                        Label("providers.catalog.refresh", systemImage: "arrow.clockwise")
-                    }
-                    .frame(minHeight: FloeTheme.minimumTarget)
-                    .accessibilityIdentifier("providers.catalog.refresh")
-                } header: {
-                    Text("providers.catalog.official")
-                } footer: {
-                    Text(FloeL10n.l(
-                        "providers.catalog.official_footer",
-                        catalog.document.source.project,
-                        catalog.offeredProviderCount
-                    ))
+            if let catalog, let onRefreshCatalog {
+                FloeOfficialProviderCatalogSection(catalog: catalog) {
+                    await onRefreshCatalog()
+                    await viewModel.load()
+                    refreshCapabilityProposals()
                 }
             }
         }

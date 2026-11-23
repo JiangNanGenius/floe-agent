@@ -217,12 +217,49 @@ struct FloeWorkbenchWelcomeHeader<Welcome: View>: View {
     }
 }
 
+struct FloeModelSetupBanner: View {
+    #if os(macOS) && FLOE_MAC_HOST_SMOKE
+    static var smokeActionFrame: CGRect?
+    #endif
+    let actionTitle: LocalizedStringKey
+    let openSetup: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityHidden(true)
+            Text("chat.add_provider.hint")
+                .font(FloeTheme.Typography.metadata)
+            Spacer(minLength: 8)
+            Button(actionTitle, action: openSetup)
+                .buttonStyle(.bordered)
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("setup.open")
+                #if os(macOS) && FLOE_MAC_HOST_SMOKE
+                .background(MacWorkbenchButtonFrameReader { Self.smokeActionFrame = $0 })
+                #endif
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(FloeTheme.pending.opacity(0.08))
+    }
+}
+
 struct FloeThreadComposerChrome: ViewModifier {
     var documentAssistant = false
 
+    private var surface: some ShapeStyle {
+        #if os(macOS)
+        return FloeTheme.stepSurface
+        #else
+        return FloeTheme.chromeMaterial
+        #endif
+    }
+
     func body(content: Content) -> some View {
         content
-            .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : FloeTheme.composerRadius, style: .continuous))
+            .background(surface, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : FloeTheme.composerRadius, style: .continuous))
             .overlay {
                 if !documentAssistant {
                     RoundedRectangle(cornerRadius: FloeTheme.composerRadius, style: .continuous)
@@ -240,6 +277,7 @@ struct FloeThreadComposerChip: View {
     let systemImage: String
     var betaBadge = false
     var maximumWidth: CGFloat = 280
+    var tint: Color = .secondary
 
     var body: some View {
         HStack(spacing: 6) {
@@ -255,7 +293,7 @@ struct FloeThreadComposerChip: View {
             }
         }
         .font(FloeTheme.Typography.metadata)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(tint)
         .lineLimit(1)
         .truncationMode(.tail)
         .frame(maxWidth: maximumWidth, alignment: .leading)

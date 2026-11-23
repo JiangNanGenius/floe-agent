@@ -16,7 +16,6 @@ struct MacThreadTranscript: View {
     let searchIsActive: Bool
     let focusedMessageID: UUID?
     let requestedMessageID: UUID?
-    let openModelSettings: (() -> Void)?
     let openAttachment: (PersistedMessage, AttachmentChipItem) -> Void
     let hasDraft: Bool
     let reuseMessage: (String) -> Void
@@ -31,34 +30,12 @@ struct MacThreadTranscript: View {
 
     var body: some View {
         let snapshot = projection.read(workspace)
-        let items = snapshot.items
-        let liveRun = workspace.transcriptRuns.first { $0.id == workspace.transcriptLiveRunID }
-        ThreadTranscriptViewport(
-            ready: !workspace.isLoadingHistory, searchIsActive: searchIsActive, jump: jump,
-            updates: ThreadTranscriptUpdates(textBytes: workspace.streamedText.utf8.count,
-                reasoningBytes: workspace.liveReasoning.utf8.count,
-                eventCount: workspace.transcriptEventsByRun.values.reduce(0) { $0 + $1.count },
-                messageCount: workspace.messages.count, isRunning: workspace.isSending),
-            firstRowID: items.first?.id, hasEarlierMessages: workspace.hasEarlierMessages,
-            loadingEarlierMessages: workspace.isLoadingEarlierMessages || workspace.isTerminating,
-            maximumLineWidth: 824, loadEarlier: {
-                let first = workspace.messages.first?.id
-                await workspace.loadEarlierMessages()
-                return workspace.selectedID == conversationID && workspace.messages.first?.id != first
-            }
-        ) { layout in
-            if items.isEmpty && workspace.pendingPrompt == nil && !workspace.isSending {
-                welcome(height: layout.viewportFrame.height)
+        Group {
+            if snapshot.items.isEmpty, workspace.pendingPrompt == nil, !workspace.isSending,
+               workspace.isReady, !workspace.isLoadingHistory, !workspace.hasEarlierMessages, !searchIsActive {
+                emptyContent
             } else {
-                ThreadTimelineRows(items: items, rowIDs: snapshot.rowIDs, isRunning: workspace.isSending) { item in
-                    row(item, layout: layout, decisions: snapshot.decisions, liveRun: liveRun)
-                }
-                if let prompt = workspace.pendingPrompt { UserMessageBubble(text: prompt) }
-                if workspace.isSending && liveRun == nil {
-                    if !workspace.liveReasoning.isEmpty { ReasoningBlockView(text: workspace.liveReasoning, isStreaming: true) }
-                    if !workspace.streamedText.isEmpty { AssistantMessageView(text: workspace.streamedText, isStreaming: true, allowsReadAloud: false) }
-                    else if workspace.pendingApproval == nil { ModelResponseWaitingView() }
-                }
+                transcript(items: snapshot.items, rowIDs: snapshot.rowIDs, decisions: snapshot.decisions)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 4) {
@@ -101,6 +78,34 @@ struct MacThreadTranscript: View {
         }
     }
 
+    private func transcript(items: [ThreadTimelineItem], rowIDs: [String], decisions: [ToolDecisionAnnotation]) -> some View {
+        let liveRun = workspace.transcriptRuns.first { $0.id == workspace.transcriptLiveRunID }
+        return ThreadTranscriptViewport(
+            ready: !workspace.isLoadingHistory, searchIsActive: searchIsActive, jump: jump,
+            updates: ThreadTranscriptUpdates(textBytes: workspace.streamedText.utf8.count,
+                reasoningBytes: workspace.liveReasoning.utf8.count,
+                eventCount: workspace.transcriptEventsByRun.values.reduce(0) { $0 + $1.count },
+                messageCount: workspace.messages.count, isRunning: workspace.isSending),
+            firstRowID: items.first?.id, hasEarlierMessages: workspace.hasEarlierMessages,
+            loadingEarlierMessages: workspace.isLoadingEarlierMessages || workspace.isTerminating,
+            maximumLineWidth: 824, loadEarlier: {
+                let first = workspace.messages.first?.id
+                await workspace.loadEarlierMessages()
+                return workspace.selectedID == conversationID && workspace.messages.first?.id != first
+            }
+        ) { layout in
+            ThreadTimelineRows(items: items, rowIDs: rowIDs, isRunning: workspace.isSending) { item in
+                row(item, layout: layout, decisions: decisions, liveRun: liveRun)
+            }
+            if let prompt = workspace.pendingPrompt { UserMessageBubble(text: prompt) }
+            if workspace.isSending && liveRun == nil {
+                if !workspace.liveReasoning.isEmpty { ReasoningBlockView(text: workspace.liveReasoning, isStreaming: true) }
+                if !workspace.streamedText.isEmpty { AssistantMessageView(text: workspace.streamedText, isStreaming: true, allowsReadAloud: false) }
+                else if workspace.pendingApproval == nil { ModelResponseWaitingView() }
+            }
+        }
+    }
+
     private func moveToMessage(_ id: UUID) -> Bool {
         guard let rowID = ThreadTimelineMessageLocation.rowID(for: id, items: projection.read(workspace).items,
             messages: workspace.messages, eventsByRun: workspace.transcriptEventsByRun) else { return false }
@@ -111,16 +116,32 @@ struct MacThreadTranscript: View {
         return true
     }
 
-    private func welcome(height: CGFloat) -> some View {
-        VStack(spacing: 12) {
-            FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
-                Text(workspace.composerMode.prompt)
-            }
-            if workspace.composerProvider == nil, let openModelSettings {
-                Button("host.chat.provider", action: openModelSettings).buttonStyle(.bordered).controlSize(.small)
+    private var emptyContent: some View {
+        Group {
+            if conversationID == nil {
+                ViewThatFits(in: .vertical) {
+                    FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
+                        Text(workspace.composerMode.prompt)
+                    }
+                    Text(workspace.composerMode.prompt).font(FloeTheme.Typography.title)
+                    Color.clear.accessibilityHidden(true)
+                }
+            } else {
+                ViewThatFits(in: .vertical) {
+                    ContentUnavailableView {
+                        Label("thread.empty", systemImage: "text.bubble")
+                    } description: {
+                        Text("thread.empty.hint")
+                    }
+                    Text("thread.empty").font(FloeTheme.Typography.title)
+                    Color.clear.accessibilityHidden(true)
+                }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: max(0, height - 34))
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier(conversationID == nil ? "thread.newTask.welcome" : "thread.saved.empty")
     }
 
     @ViewBuilder private func row(_ item: ThreadTimelineItem, layout: ThreadTranscriptLayout,

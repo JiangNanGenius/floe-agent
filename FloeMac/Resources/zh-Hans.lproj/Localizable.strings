@@ -1011,3 +1011,20 @@
 "mac.voice.noSpeech" = "没有识别到讲话。";
 "mac.voice.turnFailed" = "语音消息发送失败，请检查模型后重试。";
 "mac.voice.playbackFailed" = "无法播放这条回复。";
+
+/* Shared iPad workbench */
+"action.done" = "完成";
+"chat.add_provider.hint" = "添加模型提供商后即可开始对话。";
+"chat.conversation_search_view.no_matching_messages_found" = "没有找到匹配的消息";
+"chat.conversation_search_view.result" = "结果";
+"chat.conversation_search_view.search_conversations" = "搜索对话内容…";
+"chat.new.prompt" = "今天想聊什么？";
+"chat.search.prompt" = "搜索对话";
+"composer.mode.agent" = "智能体";
+"composer.mode.chat" = "聊天";
+"composer.mode.goal" = "目标";
+"composer.mode.plan" = "计划";
+"composer.no_model" = "未配置模型";
+"providers.catalog.official_footer" = "来源：%@ · %d 个提供方";
+"thread.empty" = "暂无活动";
+"thread.empty.hint" = "发送一个任务即可开始线程。";
