@@ -55,20 +55,14 @@ struct HomeLaunchpadView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ScrollView {
-                VStack {
-                    Spacer(minLength: 24)
-                    header
-                    Spacer(minLength: 24)
-                }
-                .padding(.horizontal, 24)
-                .frame(maxWidth: 720)
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: max(proxy.size.height, 320)
-                )
+            ViewThatFits(in: .vertical) {
+                header
+                welcomeText
+                Color.clear.accessibilityHidden(true)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     composer
@@ -138,7 +132,6 @@ struct HomeLaunchpadView: View {
         .onChange(of: center.availableAgentModels.map(\.id)) { _, _ in
             viewModel.reconcileModelSelection()
         }
-        .refreshable { await viewModel.load() }
         .toolbar {
             if !designStart {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -177,12 +170,16 @@ struct HomeLaunchpadView: View {
                 .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
                 .accessibilityHidden(true)
 
-            HomeWelcomeText(key: launchPromptKey)
-                .font(.title2.weight(.semibold))
-                .multilineTextAlignment(.center)
-                .accessibilityAddTraits(.isHeader)
+            welcomeText
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private var welcomeText: some View {
+        HomeWelcomeText(key: launchPromptKey)
+            .font(.title2.weight(.semibold))
+            .multilineTextAlignment(.center)
+            .accessibilityAddTraits(.isHeader)
     }
 
     // MARK: - Composer (centered, prominent)
