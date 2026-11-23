@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.21</title>
+      <pubDate>Mon, 23 Nov 2026 11:20:46 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.21</link>
+      <sparkle:version>51</sparkle:version>
+      <sparkle:shortVersionString>1.11.21</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>已生效的引导按用户消息顺序显示。 Show consumed steering in the right place as a user message.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.21/Floe-Agent-1.11.21.dmg" length="64442899" type="application/octet-stream" sparkle:edSignature="XkP0KLpg81ayCSMekHvsopMJA743A0yIJn5NAe92cKO8I2IlDHhWltKEWZwUzPGuuYQBinIkewdZaNBQ5093AA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.20</title>
       <pubDate>Mon, 23 Nov 2026 10:32:19 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.20</link>
