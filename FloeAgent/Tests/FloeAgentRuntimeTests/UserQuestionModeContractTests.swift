@@ -10,10 +10,7 @@ import FloeTestSupport
 @Suite("User-question mode contract")
 struct UserQuestionModeContractTests {
     private func descriptor() -> ToolCatalog.Descriptor {
-        .init(name: UserAskTool.name, toolDescription: UserAskTool.toolDescription,
-              parametersJSON: UserAskTool.parametersJSON, riskLabels: UserAskTool.riskLabels,
-              isSideEffecting: UserAskTool.isSideEffecting, effect: UserAskTool.toolEffect,
-              executionBoundary: UserAskTool.executionBoundary)
+        .init(tool: UserAskTool.self)
     }
 
     @Test("Plan wire requests retain one complete available question schema alongside submit under optional-schema pressure")
@@ -204,7 +201,7 @@ struct UserQuestionModeContractTests {
             let temporary = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx",
                 toolsAvailable: true, compactForLocal: compact, chatFastMode: true, temporaryReadOnly: true)
             #expect(!temporary.contains("# User decisions"))
-            #expect(temporary.contains("temporary, RAM-only conversation"))
+            #expect(temporary.contains("This conversation stays in RAM."))
         }
     }
 

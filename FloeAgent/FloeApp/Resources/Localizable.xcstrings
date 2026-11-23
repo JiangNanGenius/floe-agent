@@ -278940,6 +278940,301 @@
         }
       }
     },
+    "settings.approval.review.large_action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This action is too detailed for a quick model review. Review the full action to continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这项操作的内容较长，请核对完整操作后确认。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這項操作的內容較長，請核對完整操作後確認。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作内容が長いため、全体を確認してから続行してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "작업 내용이 길어 빠른 검토가 어렵습니다. 전체 작업을 확인한 후 계속하세요."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cette action est trop détaillée pour une vérification rapide. Vérifiez l’action complète pour continuer."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Aktion ist zu umfangreich für eine schnelle Prüfung. Prüfe die gesamte Aktion, um fortzufahren."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta acción es demasiado detallada para una revisión rápida. Revisa la acción completa para continuar."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta ação é detalhada demais para uma análise rápida. Confira a ação completa para continuar."
+          }
+        }
+      }
+    },
+    "settings.approval.review.timed_out": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The approval model took too long. Please review the action."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "审批模型响应超时，请核对这项操作。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "審批模型回應逾時，請核對這項操作。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "承認モデルの応答がタイムアウトしました。操作内容を確認してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "승인 모델 응답 시간이 초과되었습니다. 작업을 확인하세요."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle d’approbation a dépassé le délai. Vérifiez l’action."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Genehmigungsmodell hat zu lange gebraucht. Prüfe die Aktion."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo de aprobación tardó demasiado. Revisa la acción."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O modelo de aprovação demorou demais. Confira a ação."
+          }
+        }
+      }
+    },
+    "settings.approval.review.unclear_decision": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The approval model did not give a clear decision. Please review the action."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "审批模型未给出明确决定，请核对这项操作。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "審批模型未給出明確決定，請核對這項操作。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "承認モデルが明確な判断を返しませんでした。操作内容を確認してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "승인 모델이 명확한 결정을 내리지 못했습니다. 작업을 확인하세요."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle d’approbation n’a pas donné de décision claire. Vérifiez l’action."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Genehmigungsmodell hat keine klare Entscheidung geliefert. Prüfe die Aktion."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo de aprobación no dio una decisión clara. Revisa la acción."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O modelo de aprovação não deu uma decisão clara. Confira a ação."
+          }
+        }
+      }
+    },
+    "settings.approval.thinking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Approval model reasoning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "审批模型思考"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "審批模型思考"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "承認モデルの推論"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "승인 모델 추론"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raisonnement du modèle d’approbation"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schlussfolgern für Genehmigungen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Razonamiento del modelo de aprobación"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raciocínio do modelo de aprovação"
+          }
+        }
+      }
+    },
+    "settings.approval.thinking.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off by default. When enabled, reviews request the model’s lowest reasoning level and may take longer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认关闭。开启后会请求模型支持的最低思考强度，审批可能耗时更长。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "預設關閉。開啟後會要求模型支援的最低思考強度，審批可能花費較長時間。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デフォルトはオフです。オンにすると最も低い推論レベルをリクエストするため、承認に時間がかかることがあります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기본값은 꺼짐입니다. 켜면 모델에 가장 낮은 추론 수준을 요청하며 검토가 더 오래 걸릴 수 있습니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé par défaut. Une fois activé, le niveau de raisonnement le plus bas est demandé au modèle et la vérification peut prendre plus de temps."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standardmäßig aus. Ist die Option aktiv, wird die niedrigste Denkstufe angefordert. Die Prüfung kann länger dauern."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado de forma predeterminada. Al activarlo, se solicita el nivel de razonamiento más bajo y la revisión puede tardar más."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desativado por padrão. Ao ativar, a análise solicita o menor nível de raciocínio do modelo e pode demorar mais."
+          }
+        }
+      }
+    },
     "settings.apple_capabilities_settings_view.alarm": {
       "extractionState": "manual",
       "localizations": {

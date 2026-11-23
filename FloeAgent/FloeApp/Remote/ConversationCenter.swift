@@ -5333,9 +5333,13 @@ final class ConversationCenter: ObservableObject {
         }
         let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID
             ?? generalAuxiliaryProviderAndModel()?.1.id)
-        let localBackend = await localApprovalBackend(primaryModel: primaryModel)
         let mustUseLocalApproval = environment.networkStatusMonitor.isOffline
             || primaryModel.providerID == ProviderProfile.onDeviceProviderID
+        let localBackend = environment.networkStatusMonitor.isOffline
+            && primaryModel.providerID != ProviderProfile.onDeviceProviderID && mode != .ask
+            ? await localApprovalBackend() : nil
+        var localPackageBackend = localBackend?.backend
+        localPackageBackend?.reviewKind = .softwarePackage
         switch mode {
         case .ask:
             return HumanApprovalPolicy()
@@ -5357,7 +5361,7 @@ final class ConversationCenter: ObservableObject {
                 )
                 return AutomaticApprovalPolicy(
                     backend: localBackend.backend,
-                    packageReviewBackend: localBackend.backend
+                    packageReviewBackend: localPackageBackend
                 )
             }
             guard let modelID = modelPreferences.approvalModelID,
@@ -5371,7 +5375,10 @@ final class ConversationCenter: ObservableObject {
                 adapter: providerAdapter(for: provider),
                 provider: provider,
                 model: model,
-                credentials: resolveCredentials(for: provider)
+                credentials: resolveCredentials(for: provider),
+                actionThinkingEnabled: { [weak settings = environment.settingsCenter] in
+                    settings?.approvalModelThinkingEnabled ?? false
+                }
             ), packageReviewBackend: packageBackend)
         case .fullAccess:
             // Weak local models may assist with approval, but can never grant
@@ -5385,7 +5392,7 @@ final class ConversationCenter: ObservableObject {
                     backend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
                         ? nil : localBackend?.backend,
                     packageReviewBackend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
-                        ? nil : (localBackend?.backend ?? packageBackend)
+                        ? nil : (localPackageBackend ?? packageBackend)
                 )
             }
             return TaskFullAccessPolicy(packageReviewBackend: packageBackend)
@@ -5397,12 +5404,10 @@ final class ConversationCenter: ObservableObject {
         let backend: ApprovalModelBackend
     }
 
-    private func localApprovalBackend(primaryModel: ModelProfile) async -> LocalApprovalRoute? {
+    private func localApprovalBackend() async -> LocalApprovalRoute? {
         let localModels = modelsByProvider[ProviderProfile.onDeviceProviderID] ?? []
         let residentID = await environment.localModelRuntime.residentModelID()
-        let model: ModelProfile? = if primaryModel.providerID == ProviderProfile.onDeviceProviderID {
-            primaryModel
-        } else if let residentID {
+        let model: ModelProfile? = if let residentID {
             localModels.first(where: { $0.remoteModelID == residentID })
         } else {
             localModels.first(where: { $0.isEnabled && $0.capabilities.contains(.text) })
@@ -5416,7 +5421,10 @@ final class ConversationCenter: ObservableObject {
                 adapter: providerAdapter(for: provider),
                 provider: provider,
                 model: model,
-                credentials: ProviderCredentials()
+                credentials: ProviderCredentials(),
+                actionThinkingEnabled: { [weak settings = environment.settingsCenter] in
+                    settings?.approvalModelThinkingEnabled ?? false
+                }
             )
         )
     }

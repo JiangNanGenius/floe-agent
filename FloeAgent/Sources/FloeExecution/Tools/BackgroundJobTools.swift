@@ -678,7 +678,7 @@ public struct JobsSubmitTool: AgentTool {
     }
 }
 
-public struct JobsStatusTool: AgentTool {
+public struct JobsStatusTool: LocalApprovalExemptTool {
     public struct Arguments: Decodable, Sendable {
         public var jobID: String
         public init(jobID: String) { self.jobID = jobID }
@@ -751,7 +751,7 @@ private struct JobOutputPageView: Encodable {
     }
 }
 
-public struct JobsResultTool: AgentTool {
+public struct JobsResultTool: LocalApprovalExemptTool {
     public struct Arguments: Decodable, Sendable {
         public var jobID: String
         /// Byte offset into the full spooled output. Omit for the first page.

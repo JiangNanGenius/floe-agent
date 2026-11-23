@@ -458,7 +458,7 @@ public actor SubagentRunnerRegistry {
     }
 }
 
-public struct DelegateWaitTool: AgentTool {
+public struct DelegateWaitTool: LocalApprovalExemptTool {
     public struct Arguments: Decodable, Sendable {
         public let childID: UUID
         public let seconds: Double?

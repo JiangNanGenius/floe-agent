@@ -13,12 +13,14 @@
 //     frozen effort on the wire model.
 #if canImport(UIKit)
 import Foundation
+import Synchronization
 import Testing
 import UIKit
 import FloeCore
 import FloeModels
 import FloePersistence
 import FloeProviders
+import FloeSecurity
 @testable import FloeApp
 
 @Suite("FloeApp.AutomaticReasoningEffortLifecycle")
@@ -432,6 +434,95 @@ private final class ScriptedEffortState: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return efforts
+    }
+}
+@Suite("Approval model request")
+struct ApprovalModelRequestTests {
+    private final class Adapter: ProviderAdapter {
+        let protocolKind: ModelProtocol = .openAIChatCompletions
+        let events: [AgentEvent]
+        let requests = Mutex<[ProviderStreamRequest]>([])
+
+        init(events: [AgentEvent]) {
+            self.events = events
+        }
+
+        func stream(request: ProviderStreamRequest, credentials: ProviderCredentials)
+            -> AsyncThrowingStream<AgentEvent, Error> {
+            requests.withLock { $0.append(request) }
+            return AsyncThrowingStream { continuation in
+                for event in events { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
+
+        func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+    }
+
+    private func backend(_ adapter: Adapter) -> ApprovalModelBackend {
+        let provider = ProviderProfile(kind: .openAI, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.example.com/v1")!)
+        return ApprovalModelBackend(adapter: adapter, provider: provider,
+            model: ModelProfile(providerID: provider.id, remoteModelID: "gpt-5.2", displayName: "Reviewer",
+                limits: .init(contextTokens: 32_768, maxOutputTokens: 8_192), reasoningEffort: .maximum),
+            credentials: ProviderCredentials())
+    }
+
+    private func action(arguments: Data = Data(#"{"path":"reports/latest.txt","mode":"read"}"#.utf8)) throws
+        -> ProposedAction {
+        let scope = ToolScope.hostPath(hostID: UUID(), path: "/srv/reports")
+        let call = try ToolCall(id: "approval-fixture", toolName: "fixture.inspect", argumentsJSON: arguments, scope: scope)
+        return ProposedAction(toolCall: call, riskLabels: ["readsFiles"], userGoal: "Continue",
+            recentContext: String(repeating: "Unrelated assistant/tool output. ", count: 256),
+            userRequests: ["Inspect /srv/reports. Leave all files intact.", "Continue"],
+            hostAndPathScope: scope, trustedContext: .init(environmentClass: .remote))
+    }
+
+    @Test("Approval requests carry exact bounded facts and use off or the lowest effort",
+          arguments: [false, true])
+    func compactRequest(thinking: Bool) async throws {
+        let adapter = Adapter(events: [
+            .textDelta(.init(text: #"{"decision":"allow","reason":"Within scope."}"#)),
+            .completed(.init(stopReason: .endTurn))
+        ])
+        var reviewer = backend(adapter)
+        if thinking { reviewer.actionThinkingEnabled = { true } }
+        let proposed = try action()
+        let decision = try await reviewer.decide(proposed)
+        #expect(decision.permitsExecution)
+
+        let captured = adapter.requests.withLock { $0 }
+        try #require(captured.count == 1)
+        let request = captured[0]
+        let data = request.messages.map(\.content).joined(separator: "\n")
+        #expect(data.utf8.count < 2_000)
+        #expect(data.contains(String(decoding: proposed.toolCall.argumentsJSON, as: UTF8.self)))
+        #expect(data.contains("/srv/reports") && data.contains("readsFiles"))
+        #expect(data.contains("Leave all files intact.") && !data.contains("Unrelated assistant/tool output"))
+        #expect(request.toolSchemas.isEmpty)
+        #expect(request.reasoningPolicy == (thinking ? .modelDefault : .disabled))
+        #expect(request.model.reasoningEffort == (thinking ? .low : .automatic))
+        #expect(request.model.limits.maxOutputTokens == (thinking ? 1_024 : 192))
+    }
+
+    @Test("Oversized approval input gets a human review without sending a partial action")
+    func oversizedApprovalInput() async throws {
+        let adapter = Adapter(events: [])
+        let arguments = try JSONEncoder().encode(["value": String(repeating: "x", count: 24_000)])
+        let decision = try await backend(adapter).decide(action(arguments: arguments))
+        #expect(decision.logLabel == "escalateToHuman")
+        #expect(adapter.requests.withLock { $0.isEmpty })
+    }
+
+    @Test("Reasoning without a visible decision goes directly to human review")
+    func reasoningOnlyResult() async throws {
+        let adapter = Adapter(events: [
+            .reasoningSummary(.init(text: "ALLOW")),
+            .completed(.init(stopReason: .endTurn))
+        ])
+        let decision = try await backend(adapter).decide(action())
+        #expect(decision.logLabel == "escalateToHuman")
+        #expect(adapter.requests.withLock { $0.count } == 1)
     }
 }
 #endif

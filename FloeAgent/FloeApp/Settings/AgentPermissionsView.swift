@@ -50,7 +50,7 @@ struct AgentPermissionsView: View {
                 Text("settings.general.agent_mode.footer")
             }
 
-            Section("settings.agent_permissions_view.auto_approval_model") {
+            Section {
                 Picker("settings.agent_permissions_view.approval_model", selection: approvalModelBinding) {
                     Text("settings.agent_permissions_view.not_configured_asks_on_medium_risk").tag(UUID?.none)
                     ForEach(conversationCenter.approvalModels) { model in
@@ -58,12 +58,18 @@ struct AgentPermissionsView: View {
                     }
                 }
                 .accessibilityIdentifier("settings.approvalModel")
-                Text("settings.agent_permissions_view.the_approval_model_gets_no_tools")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle("settings.approval.thinking", isOn: Binding(
+                    get: { center.approvalModelThinkingEnabled },
+                    set: { center.setApprovalModelThinkingEnabled($0) }
+                ))
+                .accessibilityIdentifier("settings.approvalThinking")
                 if let approvalSaveError {
                     Text(approvalSaveError).font(.footnote).foregroundStyle(FloeTheme.destructive)
                 }
+            } header: {
+                Text("settings.agent_permissions_view.auto_approval_model")
+            } footer: {
+                Text("settings.approval.thinking.footer")
             }
 
             Section {

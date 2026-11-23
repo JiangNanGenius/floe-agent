@@ -110,6 +110,11 @@ public protocol AgentTool: Sendable {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput
 }
 
+/// Opt-in for compiled tools that only consult local reference data or work
+/// with the current task's own state. Their normal capability, ownership and
+/// argument checks still apply.
+public protocol LocalApprovalExemptTool: AgentTool {}
+
 public extension AgentTool {
     static var toolDescription: String { name }
     static var parametersJSON: String { #"{"type":"object","additionalProperties":false}"# }

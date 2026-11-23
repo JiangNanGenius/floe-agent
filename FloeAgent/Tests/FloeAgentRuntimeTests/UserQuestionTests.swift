@@ -11,6 +11,15 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.UserQuestions")
 struct UserQuestionTests {
 
+    private actor RejectingApprovalBackend: ModelApprovalPolicy.DecisionBackend {
+        private(set) var reviewedCallIDs: [String] = []
+
+        func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+            reviewedCallIDs.append(action.toolCall.id)
+            return .deny(reason: "Reviewed")
+        }
+    }
+
     private func fixture() async throws -> (DatabaseManager, UUID, UUID, UserQuestionStore, UserQuestionCoordinator) {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
@@ -59,6 +68,95 @@ struct UserQuestionTests {
         #expect(request.questions[0].selection == .single)
         #expect(request.questions[0].allowsFreeText == false)
         try request.validate()
+    }
+
+    @Test("Automatic approval shows the native question directly and resumes with the user's answer")
+    func questionSkipsApprovalAndWaitsForAnswer() async throws {
+        let (_, conversation, run, store, coordinator) = try await fixture()
+        let registry = ToolRunnerRegistry()
+        registerUserQuestionTool(coordinator: coordinator, registry: registry)
+        let backend = RejectingApprovalBackend()
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "direct-question", toolName: UserAskTool.name,
+            arguments: #"{"questions":[{"question":"Which deliverable?","options":[{"id":"a","label":"Report"}]}]}"#)
+        adapter.script = [
+            [.toolRequest(call), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "I will use your choice.")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(configuration: .init(conversationID: conversation,
+            provider: provider, model: TestFixtures.testModel(providerID: provider.id),
+            userQuestionRecovery: coordinator), adapter: adapter,
+            policy: DynamicApprovalPolicy(AutomaticApprovalPolicy(backend: backend)),
+            executor: CatalogToolExecutor(runners: registry), checkpointStore: MockCheckpointStore(),
+            runID: run)
+        let running = Task { try await runtime.start(goal: "Ask which deliverable to prepare.") }
+        defer { running.cancel() }
+        let snapshot = try await waitForSnapshot(store,
+            requestID: UserQuestionCoordinator.requestID(runID: run, toolCallID: call.id), timeout: 5)
+        #expect(adapter.requests.count == 1)
+        let target = snapshot.target(for: try #require(snapshot.currentQuestion))
+        let answer = try await coordinator.submitHumanAnswer(target: target,
+            answer: .init(customText: "Short report"))
+        #expect(answer.accepted)
+        try await running.value
+
+        let result = try #require(adapter.requests.last?.toolResults.first)
+        let receiptLine = try #require(result.output.split(separator: "\n").last)
+        let receipt = try JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(receiptLine.utf8))
+        #expect(receipt.status == .answered)
+        #expect(receipt.answers.first?.customText == "Short report")
+        let reviewed = await backend.reviewedCallIDs
+        #expect(reviewed.isEmpty)
+    }
+
+    @Test("Task-local progress and reads skip review without exempting remote scope or replacement descriptors",
+          arguments: [true, false])
+    func localToolsKeepApprovalScope(automatic: Bool) async throws {
+        let read = ToolCatalog.Descriptor(tool: TaskReadPlanTool.self)
+        let update = ToolCatalog.Descriptor(tool: TaskUpdatePlanTool.self)
+        let goalStatus = ToolCatalog.Descriptor(tool: TaskReadGoalTool.self)
+        let wait = ToolCatalog.Descriptor(tool: AgentWaitTool.self)
+        let create = ToolCatalog.Descriptor(tool: TaskCreateGoalTool.self)
+        let question = ToolCatalog.Descriptor(tool: UserAskTool.self)
+        let replacement = ToolCatalog.Descriptor(name: question.name,
+            toolDescription: question.toolDescription, parametersJSON: question.parametersJSON,
+            riskLabels: question.riskLabels, isSideEffecting: question.isSideEffecting,
+            effect: question.effect, executionBoundary: question.executionBoundary)
+        #expect(replacement.authorizationIdentity != question.authorizationIdentity)
+
+        let executor = MockExecutor()
+        executor.descriptors = Dictionary(uniqueKeysWithValues:
+            [read, update, goalStatus, wait, create, replacement].map { ($0.name, $0) })
+        let calls = try [
+            TestFixtures.toolCall(id: "plan", toolName: read.name, arguments: "{}"),
+            TestFixtures.toolCall(id: "progress", toolName: update.name,
+                arguments: #"{"title":"Work","steps":[{"id":"step","title":"Check files","status":"inProgress","evidence":[]}]}"#),
+            TestFixtures.toolCall(id: "goal-status", toolName: goalStatus.name, arguments: "{}"),
+            TestFixtures.toolCall(id: "wait", toolName: wait.name, arguments: #"{"seconds":0}"#),
+            TestFixtures.toolCall(id: "create-goal", toolName: create.name,
+                arguments: #"{"objective":"Create a goal","acceptanceCriteria":["Verified"],"steps":["Check"]}"#),
+            TestFixtures.toolCall(id: "replacement", toolName: replacement.name,
+                arguments: #"{"questions":[{"question":"Which deliverable?"}]}"#),
+            ToolCall(id: "remote", toolName: wait.name, argumentsJSON: Data(#"{"seconds":1}"#.utf8), scope: .host(UUID()))
+        ]
+        let adapter = MockAdapter()
+        adapter.script = [
+            calls.map { .toolRequest($0) } + [.completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "Done.")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let backend = RejectingApprovalBackend()
+        let policy: any ApprovalPolicy = automatic
+            ? AutomaticApprovalPolicy(backend: backend) : ModelApprovalPolicy(backend: backend)
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id)), adapter: adapter,
+            policy: policy, executor: executor, checkpointStore: MockCheckpointStore())
+        try await runtime.start(goal: "Read and update the task's progress.")
+
+        #expect(Set(executor.executedCalls.map(\.id)) == ["plan", "progress", "goal-status", "wait"])
+        let reviewed = await backend.reviewedCallIDs
+        #expect(reviewed == ["create-goal", "replacement", "remote"])
     }
 
     @Test("A required custom answer reaches the model receipt and durable runtime recovery")

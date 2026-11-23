@@ -271,7 +271,7 @@ public actor SubagentPeerBus {
 }
 
 /// Lists sibling subagents of the caller inside the same root task.
-public struct DelegatePeersTool: AgentTool {
+public struct DelegatePeersTool: LocalApprovalExemptTool {
     public struct Arguments: Decodable, Sendable {
         public var includeFinished: Bool?
         public init(includeFinished: Bool? = nil) { self.includeFinished = includeFinished }

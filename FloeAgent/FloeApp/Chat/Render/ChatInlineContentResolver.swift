@@ -176,7 +176,7 @@ enum ChatInlineContentResolver {
     }
 }
 
-private struct ChatContentListTool: AgentTool {
+private struct ChatContentListTool: LocalApprovalExemptTool {
     struct Arguments: Decodable, Sendable {
         var runID: UUID?; var afterSequence: Int?; var eventLimit: Int?
         var cursor: String?; var limit: Int?

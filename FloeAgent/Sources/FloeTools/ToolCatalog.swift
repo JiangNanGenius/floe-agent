@@ -53,6 +53,13 @@ public enum ToolCatalog {
         /// execute an approved call concurrently with sibling parallel-safe
         /// calls. Direct writes stay batch barriers.
         public var supportsConcurrentBatchDispatch: Bool
+        private var localApprovalExemptionName: String?
+
+        public var skipsLocalApprovalReview: Bool {
+            localApprovalExemptionName == name
+                && !requiresHostScope && !isSideEffecting && riskLabels.isEmpty
+                && (effect == .readOnly || effect == .internalState)
+        }
 
         public init(
             name: String,
@@ -79,6 +86,24 @@ public enum ToolCatalog {
             self.supportsConcurrentBatchDispatch = supportsConcurrentBatchDispatch
         }
 
+        public init<T: AgentTool>(tool: T.Type) {
+            self.init(
+                name: T.name,
+                toolDescription: T.toolDescription,
+                parametersJSON: T.parametersJSON,
+                riskLabels: T.riskLabels,
+                isSideEffecting: T.isSideEffecting,
+                effect: T.toolEffect,
+                requiresHostScope: T.requiresHostScope,
+                prerequisites: T.prerequisites,
+                executionBoundary: T.executionBoundary,
+                supportsConcurrentBatchDispatch: T.supportsConcurrentBatchDispatch
+            )
+            if tool is any LocalApprovalExemptTool.Type {
+                localApprovalExemptionName = T.name
+            }
+        }
+
         /// Stable identity of the exact authority shown to policy and the
         /// provider. Approval grants bind to this digest so replacing a
         /// dynamic runner under the same name cannot inherit old authority.
@@ -103,6 +128,7 @@ public enum ToolCatalog {
             // to the exact authority policy approved.
             if executionBoundary != .any { material.append("boundary:\(executionBoundary.rawValue)") }
             if supportsConcurrentBatchDispatch { material.append("concurrent-batch") }
+            if skipsLocalApprovalReview { material.append("local-approval-exempt") }
             return SHA256.hash(data: Data(material.joined(separator: "\u{1f}").utf8))
                 .map { String(format: "%02x", $0) }
                 .joined()
@@ -200,18 +226,7 @@ public enum ToolCatalog {
 
     /// Registers a tool type. Called once at app startup per tool module.
     public static func register<T: AgentTool>(_ type: T.Type, compatibilityOnly: Bool = false) {
-        registry.register(Descriptor(
-            name: T.name,
-            toolDescription: T.toolDescription,
-            parametersJSON: T.parametersJSON,
-            riskLabels: T.riskLabels,
-            isSideEffecting: T.isSideEffecting,
-            effect: T.toolEffect,
-            requiresHostScope: T.requiresHostScope,
-            prerequisites: T.prerequisites,
-            executionBoundary: T.executionBoundary,
-            supportsConcurrentBatchDispatch: T.supportsConcurrentBatchDispatch
-        ), compatibilityOnly: compatibilityOnly)
+        registry.register(Descriptor(tool: type), compatibilityOnly: compatibilityOnly)
     }
 
     /// Looks up a tool descriptor by name. Absent names are rejected before

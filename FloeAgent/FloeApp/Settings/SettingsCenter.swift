@@ -45,6 +45,7 @@ final class SettingsCenter: ObservableObject {
     @Published var reduceMotionOverride: Bool?
     @Published var hapticsEnabled = true
     @Published var dateTimeStyle: DateTimeDisplayStyle = .relative
+    @Published private(set) var approvalModelThinkingEnabled = false
 
     // MARK: - Cross-session preferences (DB app_settings layer)
 
@@ -184,6 +185,7 @@ final class SettingsCenter: ObservableObject {
         static let reduceMotion = prefix + "reduceMotion"
         static let haptics = prefix + "hapticsEnabled"
         static let dateTimeStyle = prefix + "dateTimeStyle"
+        static let approvalModelThinking = prefix + "approvalModelThinking"
     }
 
     // MARK: - Loading
@@ -471,6 +473,7 @@ final class SettingsCenter: ObservableObject {
 
     private func loadUserDefaults() {
         userQuestionDefaults = UserQuestionDefaults.load(from: defaults)
+        approvalModelThinkingEnabled = defaults.bool(forKey: UDKey.approvalModelThinking)
         documentAssistantLeavePolicy = .restored(defaults.string(forKey: DocumentAssistantLeavePolicy.defaultsKey))
         let syncPreferences = SyncControlPreferences.load(from: defaults)
         overallSyncEnabled = syncPreferences.overallEnabled
@@ -507,6 +510,11 @@ final class SettingsCenter: ObservableObject {
     }
 
     // MARK: - Setters (UserDefaults layer)
+
+    func setApprovalModelThinkingEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: UDKey.approvalModelThinking)
+        approvalModelThinkingEnabled = enabled
+    }
 
     func setDocumentAssistantLeavePolicy(_ value: DocumentAssistantLeavePolicy) {
         defaults.set(value.rawValue, forKey: DocumentAssistantLeavePolicy.defaultsKey)
