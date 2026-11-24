@@ -81,6 +81,26 @@ class DeviceAccessPresentationTest {
     }
 
     @Test
+    fun usbSetupExposesOnlyActionsTheLegacyBackendCanPerform() {
+        fun actions(state: DeviceAccessAdbUi) =
+            DeviceAccessPresentation.adbActions(state, pairingSupported = false)
+        assertEquals(setOf(DeviceAccessAdbActionUi.ENABLE), actions(DeviceAccessAdbUi.Off))
+        for (state in listOf(
+            DeviceAccessAdbUi.UsbSetupRequired, DeviceAccessAdbUi.RestartRequired,
+            DeviceAccessAdbUi.ServiceDied(), DeviceAccessAdbUi.Revoked,
+            DeviceAccessAdbUi.Error("Unavailable"), DeviceAccessAdbUi.PairRequired(),
+        )) {
+            assertEquals(setOf(DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS), actions(state))
+        }
+        assertEquals(setOf(DeviceAccessAdbActionUi.STOP), actions(DeviceAccessAdbUi.ServiceAlive(2000)))
+        assertEquals(R.string.device_access_adb_state_usb_required,
+            DeviceAccessPresentation.adbStatusRes(DeviceAccessAdbUi.UsbSetupRequired))
+        assertNull(DeviceAccessPresentation.adbEffectiveUid(DeviceAccessAdbUi.UsbSetupRequired))
+        assertTrue(DeviceAccessPresentation.adbActions(DeviceAccessAdbUi.UsbSetupRequired,
+            DeviceAccessBusyUi.STARTING, pairingSupported = false).isEmpty())
+    }
+
+    @Test
     fun busyWorkDisablesConflictingActionsButKeepsPairingCancel() {
         val busyStart = DeviceAccessPresentation.adbActions(
             DeviceAccessAdbUi.Paired(), DeviceAccessBusyUi.STARTING)

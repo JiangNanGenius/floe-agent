@@ -43,6 +43,10 @@
     <string name="device_access_screen_requires_task">Start a device task to choose a sharing scope.</string>
 
     <string name="device_access_adb_section">Embedded ADB access</string>
+    <string name="device_access_adb_pair_guide_title">Wireless pairing setup</string>
+    <string name="device_access_adb_state_usb_required">Waiting for USB setup</string>
+    <string name="device_access_adb_paired_next">Your device is paired. Tap Start service to use ADB in Floe.</string>
+    <string name="device_access_usb_check">Check service status</string>
     <string name="device_access_adb_intro">A private Floe service with shell access. It is not root, needs pairing on this device, and is included in this build.</string>
     <string name="device_access_adb_state_off">Off</string>
     <string name="device_access_adb_state_pair_required">Pairing required</string>
@@ -50,7 +54,7 @@
     <string name="device_access_adb_state_paired">Paired</string>
     <string name="device_access_adb_state_alive">Service running</string>
     <string name="device_access_adb_state_died">Service stopped</string>
-    <string name="device_access_adb_state_restart">Restart required</string>
+    <string name="device_access_adb_state_restart">Start the service again</string>
     <string name="device_access_adb_state_revoked">Pairing revoked</string>
     <string name="device_access_adb_state_error">Unavailable</string>
     <string name="device_access_adb_state_uid">Shell UID %1$d</string>
@@ -59,7 +63,7 @@
     <string name="device_access_adb_pair_hint">Get a pairing code in Android Settings, then enter it in the Floe notification.</string>
     <string name="device_access_adb_pair_system_step">1. In Developer options, tap Wireless debugging. Turn it on and choose Pair device with pairing code.</string>
     <string name="device_access_adb_pair_allow_local_network">Allow local network access</string>
-    <string name="device_access_adb_pair_local_network_hint">2. Allow local network access so Floe can find this device’s pairing port.</string>
+    <string name="device_access_adb_pair_local_network_hint">Allow local network access so Floe can find the pairing port on this device.</string>
     <string name="device_access_adb_pair_open_hint">2. When Android shows the 6-digit code, pull down the notification shade and tap Enter pairing code in the Floe notification. Return to Floe when pairing finishes to start the service.</string>
     <string name="device_access_adb_pair_manual">Pair manually</string>
     <string name="device_access_adb_pair_manual_hide">Hide manual pairing</string>
@@ -174,7 +178,7 @@
     <string name="device_access_pairing_port_label">Pairing port</string>
     <string name="device_access_pairing_port_searching">Looking for this device’s pairing port…</string>
     <string name="device_access_pairing_port_find">Find pairing port</string>
-    <string name="device_access_pairing_unsupported">Wireless pairing needs Android 11 or later. This device needs the one-time USB setup from a computer; the service is not presented as available here.</string>
+    <string name="device_access_pairing_unsupported">For USB setup, turn on USB debugging in Developer options, connect to a computer and accept the debugging prompt. Run Floe’s USB setup command on that computer.</string>
 
     <string name="device_access_root_check_title">Check for root access?</string>
     <string name="device_access_root_check_message">Floe never roots this device. If a root grant already exists, checking turns root access on for the operations you start; otherwise it reports that no grant was found. You can turn it off again.</string>

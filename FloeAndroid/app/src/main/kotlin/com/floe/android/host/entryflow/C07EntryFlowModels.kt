@@ -774,6 +774,8 @@ internal enum class C07SetupStep(val key: String) {
     VOICE("voice"),
     FILES("files"),
     NOTIFICATIONS("notifications"),
+    LINUX("linux"),
+    DEVICE("device"),
     DONE("done");
 
     companion object {
@@ -820,17 +822,58 @@ internal object C07EntryDedup {
 }
 
 /** Pure, side-effect-free setup-guide navigation. It never reads or writes a
- * provider, model, voice, account or credential choice. */
+ * provider, model, voice, account or credential choice.
+ *
+ * The guide walks an explicit VISIBLE step list: the Full-only device/ADB
+ * step exists only while the real phone settings category is registered, so
+ * a Play build (or an unwired host) never shows a step whose destination
+ * does not exist. The persisted step KEY stays stable across that
+ * variation: a stored key that is not currently visible is normalized to
+ * the nearest visible step instead of crashing or fabricating a destination.
+ */
 internal object C07SetupMachine {
-    fun next(state: C07SetupState, now: Long): C07SetupState {
-        val next = C07SetupStep.entries.getOrNull(state.step.ordinal + 1)
-            ?: return state
+    fun reopen(state: C07SetupState, now: Long): C07SetupState {
+        val step = if (state.finished && state.step == C07SetupStep.DONE) C07SetupStep.WELCOME else state.step
+        return state.copy(step = step, seen = true, finished = false, skipped = false, updatedAt = now)
+    }
+
+    /** Steps offered by this distribution. A cold-starting device settings owner
+     * affects its action's readiness, not the progress of the guide. */
+    fun visibleSteps(deviceAvailable: Boolean): List<C07SetupStep> =
+        C07SetupStep.entries.filter { it != C07SetupStep.DEVICE || deviceAvailable }
+
+    /** Maps a (possibly stale or channel-hidden) stored step onto the visible
+     * list: the step itself when visible, otherwise the nearest visible step
+     * BEFORE it (a hidden device step lands on Linux, never on a fake page),
+     * otherwise the first visible step. */
+    fun normalize(step: C07SetupStep, steps: List<C07SetupStep>): C07SetupStep =
+        if (step in steps) {
+            step
+        } else {
+            steps.lastOrNull { it.ordinal <= step.ordinal } ?: steps.first()
+        }
+
+    fun next(state: C07SetupState, steps: List<C07SetupStep>, now: Long): C07SetupState {
+        val current = state.step
+        val next = if (current in steps) {
+            steps.getOrNull(steps.indexOf(current) + 1)
+        } else {
+            // A stored step hidden on this channel: continue at the first
+            // visible step after it, never dead-end on the hidden page.
+            steps.firstOrNull { it.ordinal > current.ordinal }
+        } ?: normalize(current, steps)
         return state.copy(step = next, seen = true, updatedAt = now)
     }
 
-    fun previous(state: C07SetupState, now: Long): C07SetupState {
-        val previous = C07SetupStep.entries.getOrNull(state.step.ordinal - 1)
-            ?: return state
+    fun previous(state: C07SetupState, steps: List<C07SetupStep>, now: Long): C07SetupState {
+        val current = state.step
+        val previous = if (current in steps) {
+            steps.getOrNull(steps.indexOf(current) - 1)
+        } else {
+            // Back from a hidden stored step lands on the nearest visible
+            // step before it (a hidden device step returns to Linux).
+            steps.lastOrNull { it.ordinal < current.ordinal }
+        } ?: normalize(current, steps)
         return state.copy(step = previous, seen = true, updatedAt = now)
     }
 

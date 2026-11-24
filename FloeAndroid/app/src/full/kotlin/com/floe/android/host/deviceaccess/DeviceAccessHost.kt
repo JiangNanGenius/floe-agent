@@ -910,7 +910,7 @@ internal class DeviceAccessHost(
         onOpenAboutPhone = { launcher ->
             openAdbSettings(launcher, AdbPairingSettings.Page.ABOUT_PHONE)
         },
-        onPairingNotificationsEnabled = ::refreshPairingNotification,
+        onPairingAccessChanged = ::refreshPairingNotification,
         onRequestPairingLocalNetwork = ::requestPairingLocalNetwork,
         onCheckRootGrant = ::checkRootGrant,
         onEnableRoot = ::setRootEnabled,
@@ -978,6 +978,7 @@ internal class DeviceAccessHost(
                 adb to root
             }.collectLatest { (adb, root) ->
                 adbStatus = adb
+                if (adb is AdbStatus.ServiceAlive) usbBootstrapExported = false
                 rootStatus = root
                 // Immediately retire stale ADB controls on disconnect; the
                 // background readiness and system probes may take time.
@@ -2848,6 +2849,9 @@ internal class DeviceAccessHost(
         }
         val status = adbStatus ?: return DeviceAccessAdbUi.Error(
             context.getString(R.string.device_access_error_unavailable), "controller_unbound")
+        if (!pairingSupported() && status !is AdbStatus.ServiceAlive && status !is AdbStatus.Error) {
+            return DeviceAccessAdbUi.UsbSetupRequired
+        }
         return when (status) {
             AdbStatus.Disabled -> DeviceAccessAdbUi.Off
             AdbStatus.PairRequired -> DeviceAccessAdbUi.PairRequired(pairingSessionOpen)
@@ -3751,7 +3755,7 @@ internal class DeviceAccessHost(
     private fun localNetworkBlocked(): Boolean = try {
         host.integrations.localNetwork.blocksConnectHop(LOCAL_PAIRING_ENDPOINT)
     } catch (_: Throwable) {
-        false
+        Build.VERSION.SDK_INT >= LOCAL_NETWORK_API
     }
 
     private fun onLocalNetworkDenied(code: String) {
@@ -3849,17 +3853,18 @@ internal class DeviceAccessHost(
             onDenied = ::onPairingLocalNetworkDenied,
             isCurrent = { !closed && pairingNotification.currentEpoch() == epoch },
         ) {
-            if (error?.code?.startsWith("local_network_") == true) error = null
             refreshPairingNotification()
-            publish()
         }
     }
 
     private fun refreshPairingNotification() {
-        if (!closed && pairingSessionOpen && busy == DeviceAccessBusyUi.NONE &&
-            !localNetworkBlocked() &&
-            PairingNotificationAccess.availability(context) == PairingNotificationPolicy.Availability.AVAILABLE
-        ) {
+        if (closed || !pairingSessionOpen || busy != DeviceAccessBusyUi.NONE || localNetworkBlocked()) return
+        if (error?.section == DeviceAccessErrorSectionUi.ADB &&
+            error?.code?.startsWith("local_network_") == true) {
+            error = null
+            publish()
+        }
+        if (PairingNotificationAccess.availability(context) == PairingNotificationPolicy.Availability.AVAILABLE) {
             reissuePairingNotification(R.string.device_access_pairing_notification_text)
         }
     }
@@ -3917,10 +3922,11 @@ internal class DeviceAccessHost(
     }
 
     private fun exportUsbBootstrap() {
-        if (busy != DeviceAccessBusyUi.NONE) return
+        if (busy != DeviceAccessBusyUi.NONE || pairingSupported() || !settings.adbEnabled) return
         val controller = rootController ?: run {
             error = DeviceAccessUiError(
-                context.getString(R.string.device_access_error_unavailable), "controller_unbound")
+                context.getString(R.string.device_access_error_unavailable), "controller_unbound",
+                DeviceAccessErrorSectionUi.ADB)
             publish()
             return
         }
@@ -3940,19 +3946,20 @@ internal class DeviceAccessHost(
                             error = DeviceAccessUiError(
                                 context.getString(R.string.device_access_error_unavailable),
                                 "clipboard",
+                                DeviceAccessErrorSectionUi.ADB,
                             )
                         }
                     }
                     is RootResult.Denied -> error = DeviceAccessUiError(
-                        context.getString(R.string.device_access_error_backend_failed), result.code)
+                        context.getString(R.string.device_access_error_backend_failed), result.code, DeviceAccessErrorSectionUi.ADB)
                     is RootResult.Unavailable -> error = DeviceAccessUiError(
-                        context.getString(R.string.device_access_error_unavailable), result.code)
+                        context.getString(R.string.device_access_error_unavailable), result.code, DeviceAccessErrorSectionUi.ADB)
                     is RootResult.Failed -> error = DeviceAccessUiError(
-                        context.getString(R.string.device_access_error_backend_failed), result.code)
+                        context.getString(R.string.device_access_error_backend_failed), result.code, DeviceAccessErrorSectionUi.ADB)
                 }
             } catch (_: Throwable) {
                 error = DeviceAccessUiError(
-                    context.getString(R.string.device_access_error_unavailable), "usb_bootstrap")
+                    context.getString(R.string.device_access_error_unavailable), "usb_bootstrap", DeviceAccessErrorSectionUi.ADB)
             } finally {
                 busy = DeviceAccessBusyUi.NONE
                 publish()

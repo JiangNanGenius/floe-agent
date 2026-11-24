@@ -34,9 +34,10 @@ import io.github.robinpcrd.cupertino.section.SectionItem
  * subscription, developer-funded test or remote send exists here.
  */
 internal object C07EntryFlowFeature {
+    const val SETTINGS_KEY = "x:entryflow"
     fun settingsSection(): FloeSettingsExternalSection =
         FloeSettingsExternalSection(
-            key = "x:entryflow",
+            key = SETTINGS_KEY,
             titleRes = R.string.entryflow_title,
             icon = FloeIcons.Gearshape,
             content = { C07EntryFlowSettingsDestination() },
@@ -94,7 +95,7 @@ private fun C07EntryFlowSettingsDestination() {
                     )
                     FloePrimaryAction(
                         label = stringResource(R.string.entryflow_setup_title),
-                        onClick = { C07EntryFlowHost.openSetupGuide() },
+                        onClick = { C07EntryFlowHost.openSetupGuide(C07EntryFlowFeature.SETTINGS_KEY) },
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     )
                 }

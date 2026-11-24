@@ -1486,11 +1486,16 @@ private fun FloeShellContent(
         // C07 share/setup surfaces. Both are dismissible Dialogs over the
         // CURRENT route; arrival never navigates. The notice is a small
         // bounded card, not a second navigation layer.
+        val setupGuideVisible by C07EntryFlowHost.setupUi.collectAsState()
         C07EntryFlowSurface(
             onOpenSettingsSection = { key ->
                 settingsSectionKey = key
                 application?.componentDocumentReturns?.clear()
                 settingsVisible = true
+            },
+            onOpenFiles = {
+                dismissIme()
+                spaceFilesVisible = true
             },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1499,12 +1504,37 @@ private fun FloeShellContent(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         )
 
+        // The setup guide and a configuration surface (Settings or the folder
+        // manager) never stack as dialogs. Opening one over the other SUSPENDS
+        // the guide and returns it to the same step when the surface closes;
+        // an explicit guide open from Settings genuinely replaces Settings
+        // (Back afterwards acts on the guide, not a hidden stale sheet).
+        LaunchedEffect(settingsVisible, spaceFilesVisible) {
+            if (settingsVisible || spaceFilesVisible) {
+                C07EntryFlowHost.onConfigurationSurfaceShown()
+            } else {
+                C07EntryFlowHost.onConfigurationSurfaceHidden()
+            }
+        }
+        LaunchedEffect(setupGuideVisible?.visible) {
+            if (setupGuideVisible?.visible == true &&
+                (settingsVisible || spaceFilesVisible)
+            ) {
+                settingsVisible = false
+                spaceFilesVisible = false
+            }
+        }
+
         SettingsSheet(
             visible = settingsVisible,
             initialSection = settingsSectionKey,
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
             onDismiss = { settingsVisible = false },
+            returnToSetupOnBack = C07EntryFlowHost.showingSetupConfiguration,
+            onOpenSetupGuide = {
+                C07EntryFlowHost.openSetupGuide(com.floe.android.design.FloeSettingsSection.GENERAL.name)
+            },
             // The preview is composed in the shell window, while settings is a
             // separate Dialog window. Open it only after the sheet is gone so
             // one tap reveals the preview instead of stacking it behind the

@@ -58,12 +58,13 @@ class C07EntryDedupSetupTest {
 
     @Test
     fun setupGuideNavigationPreservesOnlyItsOwnPosition() {
+        val steps = C07SetupMachine.visibleSteps(deviceAvailable = true)
         var state = C07SetupState()
-        state = C07SetupMachine.next(state, now)
+        state = C07SetupMachine.next(state, steps, now)
         assertEquals(C07SetupStep.MODELS, state.step)
-        state = C07SetupMachine.next(state, now)
+        state = C07SetupMachine.next(state, steps, now)
         assertEquals(C07SetupStep.VOICE, state.step)
-        state = C07SetupMachine.previous(state, now)
+        state = C07SetupMachine.previous(state, steps, now)
         assertEquals(C07SetupStep.MODELS, state.step)
         state = C07SetupMachine.finish(state, now)
         assertTrue(state.finished)
