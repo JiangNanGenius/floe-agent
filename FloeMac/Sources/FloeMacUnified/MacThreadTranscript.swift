@@ -63,6 +63,13 @@ struct MacThreadTranscript: View {
             unavailableResult = false
             _ = moveToMessage(id)
         }
+        #if FLOE_MAC_HOST_SMOKE
+        .onChange(of: workspace.streamedText.utf8.count, initial: true) { _, bytes in
+            if CommandLine.arguments.contains("--workbench-performance-only") {
+                workspace.smokeRenderedStream = (conversationID, bytes)
+            }
+        }
+        #endif
         .overlay(alignment: .top) {
             if unavailableResult, let requestedMessageID, let conversationID {
                 HStack {

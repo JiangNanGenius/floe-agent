@@ -4,6 +4,7 @@
 import AVKit
 import AppKit
 import CloudKit
+import Combine
 import CoreImage
 import CoreText
 import CryptoKit
@@ -156,6 +157,10 @@ final class UnifiedMacSmoke {
         }
         if CommandLine.arguments.contains("--composer-paste-only") {
             await exerciseComposerPaste(model)
+            return
+        }
+        if CommandLine.arguments.contains("--workbench-performance-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseWorkbenchPerformance(model, endpoint: endpoint)
             return
         }
         if CommandLine.arguments.contains("--transcript-stage-order-only"), let endpoint = projectTaskFixtureEndpoint {
@@ -1778,6 +1783,117 @@ final class UnifiedMacSmoke {
                 "sentAttachment": sentAttachment, "agentReadyForNextInput": modeWhileRunning == .agent && agent.composerMode == .agent,
                 "deliveredFollowUp": followUpWasQueued && agent.messages.filter { $0.role == "user" && $0.content == followUp }.count == 1,
                 "noNewGoalRound": agent.transcriptRuns.count == 2 && agent.transcriptRuns.filter { $0.goalID == goal.id }.count == 1])
+    }
+
+    private func exerciseWorkbenchPerformance(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model), let window = visibleWorkbench,
+              let content = window.contentView, let drafts = model.macWorkspace?.smokeDraftStore,
+              await agent.verifyChatSmoke(), let historyID = agent.selectedID else {
+            finish(["ready": false]); return
+        }
+        do {
+            try await agent.seedPerformanceHistory(conversationID: historyID, count: 600)
+            await agent.select(historyID)
+            for _ in 0..<21 where agent.hasEarlierMessages { await agent.loadEarlierMessages() }
+        } catch { finish(["historyError": error.localizedDescription]); return }
+
+        func seconds(_ duration: Duration) -> Double {
+            Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+        }
+        func wait(_ predicate: () -> Bool) async -> Bool {
+            let timeout = ContinuousClock.now + .seconds(6)
+            while !predicate() && ContinuousClock.now < timeout {
+                try? await Task.sleep(for: .milliseconds(12))
+            }
+            return predicate()
+        }
+        func composer(in view: NSView) -> NSTextView? {
+            if let editor = view as? NSTextView, editor.isEditable,
+               editor.accessibilityIdentifier() == "thread.composer.input" { return editor }
+            for child in view.subviews {
+                if let editor = composer(in: child) { return editor }
+            }
+            return nil
+        }
+
+        let loaded = agent.messages.count
+        agent.verifyAgentAnswers = false
+        guard loaded == 602, !agent.hasEarlierMessages,
+              agent.startNamedAgentFixture("Stream the history fixture.", modelID: "performance-history",
+                                           endpoint: endpoint, projectID: nil, mode: .chat),
+              await wait({ agent.streamedText.hasPrefix("HISTORY_BEGIN") }) else {
+            finish(["historyRows": loaded, "firstStream": false, "diagnostics": agent.smokeRunDiagnostics]); return
+        }
+
+        var workspaceChanges = 0
+        let observation = agent.objectWillChange.sink { _ in workspaceChanges += 1 }
+        var textUpdates = 0
+        var textBytes = agent.streamedText.utf8.count
+        var renderedUpdates = 0
+        var renderedBytes = agent.smokeRenderedStream?.bytes
+        var mainGaps: [Double] = []
+        let sampleEnd = ContinuousClock.now + .seconds(4)
+        while textUpdates < 40 && agent.isTaskRunning(historyID) && ContinuousClock.now < sampleEnd {
+            let before = ContinuousClock.now
+            try? await Task.sleep(for: .milliseconds(16))
+            mainGaps.append(seconds(before.duration(to: .now)))
+            let next = agent.streamedText.utf8.count
+            if next != textBytes { textUpdates += 1; textBytes = next }
+            if let rendered = agent.smokeRenderedStream, rendered.owner == historyID, rendered.bytes != renderedBytes {
+                renderedBytes = rendered.bytes
+                renderedUpdates += 1
+            }
+        }
+        observation.cancel()
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let largeDraft = String(repeating: "多行粘贴包含中文、emoji ✅ 和字母。\n", count: 18_000)
+        content.layoutSubtreeIfNeeded()
+        var pasteSeconds: Double?
+        var pasteRetained = false
+        if let editor = composer(in: content), pasteboard.setString(largeDraft, forType: .string) {
+            let start = ContinuousClock.now
+            let accepted = editor.readSelection(from: pasteboard, type: .string)
+            content.layoutSubtreeIfNeeded()
+            await Task.yield()
+            pasteSeconds = seconds(start.duration(to: .now))
+            pasteRetained = accepted && editor.string == largeDraft && drafts.text(for: historyID) == largeDraft
+        }
+
+        let newTaskStart = ContinuousClock.now
+        let newTaskOpened = await openNewTaskFromSidebar(workspace: agent)
+        let newTaskSeconds = seconds(newTaskStart.duration(to: .now))
+        let otherID = agent.attachmentOwnerID
+        let draftIsolated = otherID != historyID && drafts.text(for: otherID).isEmpty
+        let otherAdmitted = newTaskOpened && agent.isTaskRunning(historyID)
+            && agent.startNamedAgentFixture("Stream the independent fixture.", modelID: "performance-other",
+                                            endpoint: endpoint, projectID: nil, mode: .chat)
+        let otherWasVisible = otherAdmitted ? await wait({
+            agent.selectedID == otherID && agent.streamedText.hasPrefix("OTHER_BEGIN")
+        }) : false
+        let returnStart = ContinuousClock.now
+        if otherWasVisible { model.openNotifiedTask(historyID) }
+        let returned = otherWasVisible ? await wait({ agent.selectedID == historyID && !agent.isLoadingHistory }) : false
+        let returnSeconds = seconds(returnStart.duration(to: .now))
+        let backToHistory = returned ? await wait({ agent.smokeRenderedStream?.owner == historyID
+            && (agent.smokeRenderedStream?.bytes ?? 0) > 0 }) : false
+        let returnedToActiveStream = backToHistory && agent.isTaskRunning(otherID) && agent.isTaskRunning(historyID)
+            && agent.streamedText.hasPrefix("HISTORY_BEGIN") && drafts.text(for: historyID) == largeDraft
+        let bothSettled = await wait({ !agent.isTaskRunning(historyID) && !agent.isTaskRunning(otherID) })
+        let savedHistory = (try? await agent.transcript(conversationID: historyID).last)?.content ?? ""
+        let savedOther = (try? await agent.transcript(conversationID: otherID).last)?.content ?? ""
+        let sorted = mainGaps.sorted()
+        finish(["historyRows": loaded, "streamUpdates": textUpdates, "renderedUpdates": renderedUpdates,
+                "workspaceChangesDuringStream": workspaceChanges,
+                "mainProbeP95Seconds": sorted.isEmpty ? 0 : sorted[Int(Double(sorted.count - 1) * 0.95)],
+                "pasteRetained": pasteRetained, "pasteBytes": largeDraft.utf8.count,
+                "pasteSeconds": pasteSeconds ?? -1, "newTaskOpened": newTaskOpened, "newTaskSeconds": newTaskSeconds,
+                "draftIsolated": draftIsolated, "returnedToActiveStream": returnedToActiveStream,
+                "returnSeconds": returnSeconds, "independentRepliesSaved": bothSettled
+                    && savedHistory.hasPrefix("HISTORY_BEGIN") && savedHistory.contains("HISTORY_DONE")
+                    && savedOther.hasPrefix("OTHER_BEGIN") && savedOther.contains("OTHER_DONE"),
+                "diagnostics": agent.smokeRunDiagnostics])
     }
 
     private func exerciseComposerPaste(_ model: BridgeAppModel) async {

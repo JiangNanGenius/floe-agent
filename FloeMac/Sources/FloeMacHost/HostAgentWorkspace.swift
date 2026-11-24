@@ -9,6 +9,7 @@ import FloePersistence
 import FloeProviders
 import FloeSecurity
 import Foundation
+import Observation
 import UniformTypeIdentifiers
 #if FLOE_UNIFIED_MAC
 import FloeDeviceSync
@@ -308,15 +309,26 @@ final class HostAgentWorkspace: ObservableObject {
     typealias ReleaseWork = @MainActor () -> Void
     typealias AdmitWork = @MainActor () throws -> ReleaseWork
 
+    fileprivate struct StreamContent: Equatable {
+        var answer = ""
+        var reasoning = ""
+    }
+
+    // A run's text changes much more often than its lifecycle. The transcript
+    // observes this reference without invalidating the workbench on each chunk.
+    @Observable
+    fileprivate final class LiveStream {
+        var content = StreamContent()
+    }
+
     private struct LiveRun {
         let prompt: String?
         let mode: HostAgentMode
         let startedAt = Date()
         var handle: FloeMacSelfSessionHandle?
         var phase: FloeMacSelfSessionPhase?
-        var streamedText = ""
+        let stream = LiveStream()
         var reconnectAttempt: Int?
-        var reasoningText = ""
         var awaitingModel = false
         var waitingForQuestion = false
         var reviewingCalls = Set<String>()
@@ -374,11 +386,11 @@ final class HostAgentWorkspace: ObservableObject {
     }
     var isResolvingApproval: Bool { visibleRun?.resolvingApproval == true }
     var runPhase: FloeMacSelfSessionPhase? { visibleRun?.phase }
-    var liveReasoning: String { visibleRun?.reasoningText ?? "" }
+    var liveReasoning: String { visibleRun?.stream.content.reasoning ?? "" }
     var awaitingModel: Bool { visibleRun?.awaitingModel == true }
     var reconnectAttempt: Int? { visibleRun?.reconnectAttempt }
     var isReviewingApproval: Bool { visibleRun?.reviewingCalls.isEmpty == false }
-    var streamedText: String { visibleRun?.streamedText ?? "" }
+    var streamedText: String { visibleRun?.stream.content.answer ?? "" }
     var pendingPrompt: String? {
         guard let run = visibleRun else { return nil }
         if let id = run.handle?.identity.userMessageID, messages.contains(where: { $0.id == id }) { return nil }
@@ -3297,7 +3309,9 @@ final class HostAgentWorkspace: ObservableObject {
                     workspaces = records
                     workspaceRevision = UUID()
                 }
-                liveRuns[taskID]?.streamedText = ""
+                if let stream = liveRuns[taskID]?.stream, !stream.content.answer.isEmpty {
+                    stream.content.answer = ""
+                }
                 guard let terminal, terminal.confirmed else {
                     if terminal?.unconfirmedReason == "resumeNotDispatched" {
                         _ = try? await handle.close(allowUnconfirmed: true)
@@ -3786,10 +3800,10 @@ final class HostAgentWorkspace: ObservableObject {
         let snapshot = await handle.snapshot()
         guard liveRuns[taskID]?.handle?.identity == handle.identity,
               liveSnapshotVersions[taskID] == generation else { return }
-        let text = snapshot?.assistantTextTail ?? ""
-        if liveRuns[taskID]?.streamedText != text { liveRuns[taskID]?.streamedText = text }
-        let reasoning = snapshot?.reasoningText ?? ""
-        if liveRuns[taskID]?.reasoningText != reasoning { liveRuns[taskID]?.reasoningText = reasoning }
+        let content = StreamContent(answer: snapshot?.assistantTextTail ?? "", reasoning: snapshot?.reasoningText ?? "")
+        if let stream = liveRuns[taskID]?.stream, stream.content != content {
+            stream.content = content
+        }
         let waiting = snapshot?.liveness.phase == .waitingForFirstEvent
         if liveRuns[taskID]?.awaitingModel != waiting { liveRuns[taskID]?.awaitingModel = waiting }
         let waitingForQuestion = snapshot?.stateName == "waitingUserQuestion"
@@ -5049,6 +5063,28 @@ final class HostAgentWorkspace: ObservableObject {
               (try? await runtime.saveAutomaticTitle("Late title", conversationID: id)) == false
         else { return false }
         return (try? await runtime.conversations().first(where: { $0.id == id })?.title) == "My project"
+    }
+
+    var smokeRenderedStream: (owner: UUID?, bytes: Int)?
+
+    func seedPerformanceHistory(conversationID: UUID, count: Int) async throws {
+        guard vault == nil, let runtime, selectedID == conversationID, !isSending else { throw CancellationError() }
+        let database = try DatabaseManager(path: runtime.databaseURL)
+        let store = SQLiteConversationStore(database: database)
+        do {
+            for index in 0..<count {
+                let role = index.isMultiple(of: 2) ? "user" : "assistant"
+                try await store.appendMessage(PersistedMessage(
+                    id: UUID(), conversationID: conversationID, role: role,
+                    content: "Fixture history \(index).\n\nA short line for the **workspace**.",
+                    createdAt: Date(timeIntervalSince1970: 2_000 + Double(index))
+                ))
+            }
+        } catch {
+            try? await database.close()
+            throw error
+        }
+        try await database.close()
     }
 
     func verifyConversationHistorySmoke(reference: URL) async -> Bool {
