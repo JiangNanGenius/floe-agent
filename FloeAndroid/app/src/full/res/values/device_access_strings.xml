@@ -46,7 +46,7 @@
     <string name="device_access_adb_intro">A private Floe service with shell access. It is not root, needs pairing on this device, and is included in this build.</string>
     <string name="device_access_adb_state_off">Off</string>
     <string name="device_access_adb_state_pair_required">Pairing required</string>
-    <string name="device_access_adb_state_pairing">Waiting for pairing</string>
+    <string name="device_access_adb_state_pairing">Pairing…</string>
     <string name="device_access_adb_state_paired">Paired</string>
     <string name="device_access_adb_state_alive">Service running</string>
     <string name="device_access_adb_state_died">Service stopped</string>
@@ -55,9 +55,18 @@
     <string name="device_access_adb_state_error">Unavailable</string>
     <string name="device_access_adb_state_uid">Shell UID %1$d</string>
     <string name="device_access_adb_enable">Turn on embedded ADB</string>
-    <string name="device_access_adb_pair">Pair with Android</string>
-    <string name="device_access_adb_pair_hint">Floe opens Developer options. Turn on Wireless debugging; Android shows a 6-digit code. Enter it in the pairing notification so Android’s screen stays in front.</string>
-    <string name="device_access_adb_pair_open_hint">Enter the 6-digit code in the pairing notification. If your device closes the dialog when Floe comes forward, use split screen or enter the code here while the dialog stays visible.</string>
+    <string name="device_access_adb_pair">Set up wireless pairing</string>
+    <string name="device_access_adb_pair_hint">Get a pairing code in Android Settings, then enter it in the Floe notification.</string>
+    <string name="device_access_adb_pair_system_step">1. In Developer options, tap Wireless debugging. Turn it on and choose Pair device with pairing code.</string>
+    <string name="device_access_adb_pair_open_hint">2. When Android shows the 6-digit code, pull down the notification shade and tap Enter pairing code in the Floe notification. Return to Floe when pairing finishes to start the service.</string>
+    <string name="device_access_adb_pair_manual">Pair manually</string>
+    <string name="device_access_adb_pair_manual_hide">Hide manual pairing</string>
+    <string name="device_access_adb_pair_manual_hint">Use split screen to keep the Android pairing dialog open. Enter the 6-digit code and the port (the number after the colon) shown in that dialog.</string>
+    <string name="device_access_adb_pair_developer_help">Can’t find Developer options?</string>
+    <string name="device_access_adb_pair_developer_hint">Find Build number in About phone and tap it seven times. On Samsung it’s under Software information. Then return to Floe to open Developer options.</string>
+    <string name="device_access_adb_open_about_phone">Open About phone</string>
+    <string name="device_access_adb_settings_home_hint">Android Settings opened. Search for Developer options or Wireless debugging.</string>
+    <string name="device_access_adb_settings_manual_hint">Could not open Android Settings from Floe. Open Settings and search for Developer options or Wireless debugging.</string>
     <string name="device_access_adb_code_label">Pairing code</string>
     <string name="device_access_adb_code_submit">Finish pairing</string>
     <string name="device_access_adb_code_invalid">Enter the 6-digit code</string>
@@ -170,11 +179,11 @@
 
     <string name="device_access_pairing_notification_channel">Device pairing</string>
     <string name="device_access_pairing_notification_title">Pairing with Android</string>
-    <string name="device_access_pairing_notification_text">Android’s pairing screen stays open. Enter the 6-digit code here.</string>
-    <string name="device_access_pairing_notification_action">Enter code</string>
+    <string name="device_access_pairing_notification_text">When Android shows the 6-digit code, tap Enter pairing code.</string>
+    <string name="device_access_pairing_notification_action">Enter pairing code</string>
     <string name="device_access_pairing_notification_invalid">Enter exactly the 6-digit code shown by Android.</string>
     <string name="device_access_pairing_notification_retry">The code was not accepted. Check Android’s pairing screen and try again.</string>
-    <string name="device_access_pairing_notification_off">Notifications are off, so you cannot enter the code inline. Allow pairing notifications, or keep Android’s dialog visible and enter the code here.</string>
+    <string name="device_access_pairing_notification_off">2. Allow pairing notifications to enter the code from the notification shade. You can also pair manually in split screen.</string>
     <string name="device_access_pairing_notification_allow">Allow pairing notifications</string>
     <string name="device_access_pairing_notification_settings">Open notification settings</string>
     <string name="device_access_pairing_service_channel">Pairing in progress</string>

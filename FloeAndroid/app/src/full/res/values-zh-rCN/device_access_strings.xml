@@ -44,7 +44,7 @@
     <string name="device_access_adb_intro">由 Floe 自带的 shell 权限服务提供。它不是 Root，需要在本机配对，并已包含在此版本中。</string>
     <string name="device_access_adb_state_off">关闭</string>
     <string name="device_access_adb_state_pair_required">需要配对</string>
-    <string name="device_access_adb_state_pairing">等待配对</string>
+    <string name="device_access_adb_state_pairing">正在配对…</string>
     <string name="device_access_adb_state_paired">已配对</string>
     <string name="device_access_adb_state_alive">服务运行中</string>
     <string name="device_access_adb_state_died">服务已停止</string>
@@ -53,9 +53,18 @@
     <string name="device_access_adb_state_error">不可用</string>
     <string name="device_access_adb_state_uid">Shell 身份（UID %1$d）</string>
     <string name="device_access_adb_enable">开启内嵌 ADB</string>
-    <string name="device_access_adb_pair">与 Android 配对</string>
-    <string name="device_access_adb_pair_hint">Floe 会打开开发者选项。开启无线调试后，Android 会显示 6 位配对码；请在配对通知中输入，让 Android 的配对界面保持在前台。</string>
-    <string name="device_access_adb_pair_open_hint">请在配对通知中输入 6 位配对码。如果设备在 Floe 回到前台时关闭配对对话框，请使用分屏，或在对话框保持可见时在 Floe 内输入。</string>
+    <string name="device_access_adb_pair">开始无线配对</string>
+    <string name="device_access_adb_pair_hint">在 Android 设置里取配对码，再通过 Floe 的通知输入。</string>
+    <string name="device_access_adb_pair_system_step">1. 在开发者选项中点击「无线调试」这一行，开启后点「使用配对码配对设备」。</string>
+    <string name="device_access_adb_pair_open_hint">2. 看到 6 位码后，下拉通知栏，在 Floe 通知中点「输入配对码」。完成后回 Floe 启动服务。</string>
+    <string name="device_access_adb_pair_manual">手动配对</string>
+    <string name="device_access_adb_pair_manual_hide">收起手动配对</string>
+    <string name="device_access_adb_pair_manual_hint">用分屏保持 Android 的配对窗口可见。填入该窗口显示的 6 位码和端口（冒号后的数字）。</string>
+    <string name="device_access_adb_pair_developer_help">找不到开发者选项？</string>
+    <string name="device_access_adb_pair_developer_hint">在「关于手机」中找到版本号并连点 7 次。三星的版本号在「软件信息」里。然后回 Floe 打开开发者选项。</string>
+    <string name="device_access_adb_open_about_phone">打开关于手机</string>
+    <string name="device_access_adb_settings_home_hint">已打开系统设置。搜索「开发者选项」或「无线调试」。</string>
+    <string name="device_access_adb_settings_manual_hint">无法从 Floe 打开系统设置。请手动打开「设置」，搜索「开发者选项」或「无线调试」。</string>
     <string name="device_access_adb_code_label">配对码</string>
     <string name="device_access_adb_code_submit">完成配对</string>
     <string name="device_access_adb_code_invalid">请输入 6 位配对码</string>
@@ -167,11 +176,11 @@
 
     <string name="device_access_pairing_notification_channel">设备配对</string>
     <string name="device_access_pairing_notification_title">正在与 Android 配对</string>
-    <string name="device_access_pairing_notification_text">Android 的配对界面会保持打开。请在此输入 6 位配对码。</string>
+    <string name="device_access_pairing_notification_text">看到 Android 显示的 6 位码后，点「输入配对码」。</string>
     <string name="device_access_pairing_notification_action">输入配对码</string>
     <string name="device_access_pairing_notification_invalid">请准确输入 Android 显示的 6 位配对码。</string>
     <string name="device_access_pairing_notification_retry">配对码未被接受。请查看 Android 的配对界面后重试。</string>
-    <string name="device_access_pairing_notification_off">通知已关闭，无法在通知中直接输入配对码。请允许配对通知，或让 Android 的配对对话框保持可见并在 Floe 内输入。</string>
+    <string name="device_access_pairing_notification_off">2. 允许配对通知后可在通知栏输入配对码。也可使用分屏手动配对。</string>
     <string name="device_access_pairing_notification_allow">允许配对通知</string>
     <string name="device_access_pairing_notification_settings">打开通知设置</string>
     <string name="device_access_pairing_service_channel">配对进行中</string>

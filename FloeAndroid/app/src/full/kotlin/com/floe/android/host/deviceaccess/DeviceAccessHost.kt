@@ -904,7 +904,13 @@ internal class DeviceAccessHost(
         onStartAdbServiceAtPort = ::startAdbService,
         onStopAdbService = ::stopAdbService,
         onForgetAdbPairing = ::forgetPairing,
-        onOpenDeveloperOptions = ::openDeveloperOptions,
+        onOpenDeveloperOptions = { launcher ->
+            openAdbSettings(launcher, AdbPairingSettings.Page.DEVELOPER_OPTIONS)
+        },
+        onOpenAboutPhone = { launcher ->
+            openAdbSettings(launcher, AdbPairingSettings.Page.ABOUT_PHONE)
+        },
+        onPairingNotificationsEnabled = ::refreshPairingNotification,
         onCheckRootGrant = ::checkRootGrant,
         onEnableRoot = ::setRootEnabled,
         onStageApks = ::stageApks,
@@ -2832,6 +2838,13 @@ internal class DeviceAccessHost(
 
     private fun adbUi(): DeviceAccessAdbUi {
         if (!settings.adbEnabled) return DeviceAccessAdbUi.Off
+        if (pairingSessionOpen) {
+            return when {
+                busy == DeviceAccessBusyUi.PAIRING -> DeviceAccessAdbUi.Pairing
+                adbStatus is AdbStatus.Paired -> DeviceAccessAdbUi.Paired(pairingSessionOpen = true)
+                else -> DeviceAccessAdbUi.PairRequired(pairingSessionOpen = true)
+            }
+        }
         val status = adbStatus ?: return DeviceAccessAdbUi.Error(
             context.getString(R.string.device_access_error_unavailable), "controller_unbound")
         return when (status) {
@@ -2909,8 +2922,26 @@ internal class DeviceAccessHost(
         startActivity(intent)
     }
 
-    private fun openDeveloperOptions() {
-        startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+    private fun openAdbSettings(launcher: Context, page: AdbPairingSettings.Page) {
+        if (closed) return
+        if (page == AdbPairingSettings.Page.DEVELOPER_OPTIONS) refreshPairingNotification()
+        when (AdbPairingSettings.open(launcher, page)) {
+            AdbPairingSettings.Opened.REQUESTED_PAGE -> {
+                if (error?.code != "adb_settings_home" && error?.code != "adb_settings_unavailable") return
+                error = null
+            }
+            AdbPairingSettings.Opened.SETTINGS_HOME -> error = DeviceAccessUiError(
+                context.getString(R.string.device_access_adb_settings_home_hint),
+                "adb_settings_home",
+                DeviceAccessErrorSectionUi.ADB,
+            )
+            AdbPairingSettings.Opened.UNAVAILABLE -> error = DeviceAccessUiError(
+                context.getString(R.string.device_access_adb_settings_manual_hint),
+                "adb_settings_unavailable",
+                DeviceAccessErrorSectionUi.ADB,
+            )
+        }
+        publish()
     }
 
     private fun startActivity(intent: Intent) {
@@ -3725,7 +3756,10 @@ internal class DeviceAccessHost(
     private fun onLocalNetworkDenied(code: String) {
         busy = DeviceAccessBusyUi.NONE
         error = DeviceAccessUiError(
-            context.getString(R.string.device_access_error_local_network), code)
+            context.getString(R.string.device_access_error_local_network),
+            code,
+            DeviceAccessErrorSectionUi.ADB,
+        )
         publish()
     }
 
@@ -3802,35 +3836,37 @@ internal class DeviceAccessHost(
         closePairingSession()
         pairingSessionOpen = true
         error = null
-        pairingNotification.open()
+        val session = pairingNotification.open()
         postPairingNotification()
         publish()
-        val started = withLocalPairingPermission(
+        // Prepare local-network access while Floe is visible on versions
+        // that require it. The system Settings button remains a separate
+        // foreground gesture even when this permission is denied.
+        if (Build.VERSION.SDK_INT >= LOCAL_NETWORK_API) withLocalPairingPermission(
             owner = "adb-pairing-open",
             onDenied = ::onPairingLocalNetworkDenied,
+            isCurrent = { !closed && pairingNotification.currentEpoch() == session.epoch },
+        ) {}
+    }
+
+    private fun refreshPairingNotification() {
+        if (busy == DeviceAccessBusyUi.NONE &&
+            PairingNotificationAccess.availability(context) == PairingNotificationPolicy.Availability.AVAILABLE
         ) {
-            // Only open the Android screen after any required local-network
-            // grant is settled; the pairing flow never starts half-authorized.
-            // A late permission result after Cancel must not revive it.
-            if (pairingSessionOpen && !closed) {
-                openDeveloperOptions()
-                launchPairingDiscovery()
-            }
-        }
-        if (!started && !closed) {
-            pairingDiscovery = DeviceAccessPairingDiscoveryUi.UNAVAILABLE
-            publish()
+            reissuePairingNotification(R.string.device_access_pairing_notification_text)
         }
     }
 
     private fun discoverPairingPort() {
         if (busy == DeviceAccessBusyUi.PAIRING) return
+        val epoch = pairingNotification.currentEpoch() ?: return
         error = null
         pairingDiscovery = DeviceAccessPairingDiscoveryUi.DISCOVERING
         publish()
         val started = withLocalPairingPermission(
             owner = "adb-pairing-port",
             onDenied = ::onPairingLocalNetworkDenied,
+            isCurrent = { !closed && pairingNotification.currentEpoch() == epoch },
         ) {
             if (pairingSessionOpen && !closed) launchPairingDiscovery()
         }
@@ -4392,14 +4428,6 @@ internal class DeviceAccessHost(
             return false
         }
         return try {
-            val contentIntent = Intent(context, com.floe.android.MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            val contentPending = PendingIntent.getActivity(
-                context,
-                PairingNotificationPolicy.NOTIFICATION_ID,
-                contentIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
             // Explicit component + a fresh requestCode per token. The mutable
             // flag is required ONLY so the platform can attach RemoteInput
             // results; there is no implicit intent another app could target.
@@ -4428,11 +4456,9 @@ internal class DeviceAccessHost(
                 .setContentTitle(
                     context.getString(R.string.device_access_pairing_notification_title))
                 .setContentText(context.getString(textRes))
-                .setContentIntent(contentPending)
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
                 .setTimeoutAfter(PairingNotificationSession.TOKEN_LIFETIME_MILLIS)
                 .addAction(

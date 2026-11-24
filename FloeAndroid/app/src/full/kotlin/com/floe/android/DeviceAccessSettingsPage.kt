@@ -4,7 +4,9 @@
 package com.floe.android
 
 import android.Manifest
+import android.content.Context
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -247,8 +249,8 @@ sealed interface DeviceAccessAdbUi {
     data object Off : DeviceAccessAdbUi
 
     /**
-     * No usable pairing. [pairingSessionOpen] means the Android pairing
-     * screen was opened from Floe. The six-digit code can be entered in the
+     * No usable pairing. [pairingSessionOpen] means Floe's setup guide is
+     * open. The six-digit code can be entered in the
      * inline notification while that screen stays in front, or in the visible
      * field when the device keeps the dialog open (manual/split path). The
      * value is caller-owned RAM only.
@@ -395,8 +397,7 @@ class DeviceAccessCallbacks(
     val onAdvancedSystemTargetsChange: (Set<String>) -> Unit = {},
     val onScreenScopeChange: (DeviceAccessScreenScopeUi) -> Unit = {},
     val onEnableAdb: () -> Unit = {},
-    /** Opens the system Wireless debugging pairing screen and posts the
-     * inline-code notification; the caller keeps Floe's code entry alive. */
+    /** Opens Floe's pairing guide and prepares its inline-code notification. */
     val onPairAdb: () -> Unit = {},
     /** [code] is the RAM-only field value; the callee must not persist/log it. */
     val onSubmitPairingCode: (String) -> Unit = {},
@@ -411,7 +412,9 @@ class DeviceAccessCallbacks(
     val onStartAdbServiceAtPort: (Int) -> Unit = {},
     val onStopAdbService: () -> Unit = {},
     val onForgetAdbPairing: () -> Unit = {},
-    val onOpenDeveloperOptions: () -> Unit = {},
+    val onOpenDeveloperOptions: (Context) -> Unit = {},
+    val onOpenAboutPhone: (Context) -> Unit = {},
+    val onPairingNotificationsEnabled: () -> Unit = {},
     val onCheckRootGrant: () -> Unit = {},
     val onEnableRoot: (Boolean) -> Unit = {},
     /** Stage SAF-picked APKs into the App-local install staging dir. */
@@ -853,22 +856,26 @@ fun DeviceAccessSettingsPage(
         onDismiss = { systemFoldersOpen = false },
     )
     val context = LocalContext.current
+    val activity = LocalActivity.current as? ComponentActivity
     var notificationAvailability by remember {
         mutableStateOf(PairingNotificationAccess.availability(context))
     }
     var notificationDeniedHere by remember { mutableStateOf(false) }
-    var pairAfterNotificationGrant by remember { mutableStateOf(false) }
+    var showManualPairing by remember { mutableStateOf(false) }
+    var showDeveloperOptionsHelp by remember { mutableStateOf(false) }
+    val refreshNotificationAvailability: () -> Unit = {
+        val next = PairingNotificationAccess.availability(context)
+        val enabled = next == PairingNotificationPolicy.Availability.AVAILABLE
+        val newlyEnabled = enabled && notificationAvailability != next
+        notificationAvailability = next
+        if (enabled) notificationDeniedHere = false
+        if (newlyEnabled) callbacks.onPairingNotificationsEnabled()
+    }
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        notificationAvailability = PairingNotificationAccess.availability(context)
         if (!granted) notificationDeniedHere = true
-        if (pairAfterNotificationGrant) {
-            pairAfterNotificationGrant = false
-            // Pairing is still useful on devices that keep the dialog open;
-            // the page shows the explicit inline-unavailable hint.
-            callbacks.onPairAdb()
-        }
+        refreshNotificationAvailability()
     }
     // Multi-APK SAF staging. The launcher hands picked document uris to the
     // host, which copies bytes into the App-local staging dir; staging alone
@@ -892,17 +899,10 @@ fun DeviceAccessSettingsPage(
         onRemove = callbacks.onRemoveStagedApk,
         onDismiss = { stagedApksOpen = false },
     )
-    val activity = context as? ComponentActivity
-    DisposableEffect(activity) {
+    DisposableEffect(activity, callbacks) {
         if (activity == null) return@DisposableEffect onDispose { }
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                val next = PairingNotificationAccess.availability(context)
-                notificationAvailability = next
-                if (next == PairingNotificationPolicy.Availability.AVAILABLE) {
-                    notificationDeniedHere = false
-                }
-            }
+            if (event == Lifecycle.Event.ON_RESUME) refreshNotificationAvailability()
         }
         activity.lifecycle.addObserver(observer)
         onDispose { activity.lifecycle.removeObserver(observer) }
@@ -919,19 +919,13 @@ fun DeviceAccessSettingsPage(
             PairingNotificationAccess.openSettings(context)
         }
     }
-    val pairWithNotification: () -> Unit = {
-        when (notificationAvailability) {
-            PairingNotificationPolicy.Availability.AVAILABLE -> callbacks.onPairAdb()
-            PairingNotificationPolicy.Availability.PERMISSION_REQUIRED -> {
-                pairAfterNotificationGrant = true
-                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-            else -> {
-                notificationDeniedHere = true
-                callbacks.onPairAdb()
-            }
-        }
+    val beginPairing: () -> Unit = {
+        showManualPairing = false
+        showDeveloperOptionsHelp = false
+        callbacks.onPairAdb()
     }
+    val openDeveloperOptions: () -> Unit = { callbacks.onOpenDeveloperOptions(activity ?: context) }
+    val pairingGuideOpen = DeviceAccessPresentation.adbShowsCodeField(state.adb)
     // Explicit app-data folder draft. RAM-only presentation input; the host
     // validates the backend-shape before it becomes a grantable root.
     var appDataDraft by remember { mutableStateOf("") }
@@ -948,23 +942,20 @@ fun DeviceAccessSettingsPage(
         DeviceAccessAdbActionUi.ENABLE in adbActions ->
             stringResource(R.string.device_access_adb_enable) to callbacks.onEnableAdb
         DeviceAccessAdbActionUi.PAIR in adbActions ->
-            stringResource(R.string.device_access_adb_pair) to pairWithNotification
-        // Pairing code form is open: submit rides next to the code field.
+            stringResource(R.string.device_access_adb_pair) to beginPairing
         else -> null
     }
     val adbCancelLabel = stringResource(R.string.device_access_adb_cancel_pairing)
     val adbDevOptionsLabel = stringResource(R.string.device_access_adb_open_developer_options)
     val adbForgetLabel = stringResource(R.string.device_access_adb_forget)
     val adbSecondaryActions: List<Pair<String, () -> Unit>> = listOfNotNull(
-        if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions &&
-            !DeviceAccessPresentation.adbShowsCodeField(state.adb)
-        ) {
+        if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions) {
             adbCancelLabel to callbacks.onCancelPairing
         } else {
             null
         },
-        if (DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS in adbActions) {
-            adbDevOptionsLabel to callbacks.onOpenDeveloperOptions
+        if (DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS in adbActions && !pairingGuideOpen) {
+            adbDevOptionsLabel to openDeveloperOptions
         } else {
             null
         },
@@ -1020,22 +1011,7 @@ fun DeviceAccessSettingsPage(
                     DeviceAccessPresentation.adbEffectiveUid(state.adb)?.let { uid ->
                         CaptionText(stringResource(R.string.device_access_adb_state_uid, uid))
                     }
-                    // State-specific guidance, never a fabricated success. While
-                    // the pairing session is open the notification text explains
-                    // the inline path; the manual/split fallback keeps the real
-                    // system action wording.
                     when {
-                        DeviceAccessPresentation.adbShowsCodeField(state.adb) -> when (notificationAvailability) {
-                            PairingNotificationPolicy.Availability.AVAILABLE -> CaptionText(
-                                stringResource(R.string.device_access_adb_pair_open_hint),
-                                Modifier.padding(top = 2.dp),
-                            )
-                            PairingNotificationPolicy.Availability.UNSUPPORTED -> Unit
-                            else -> CaptionText(
-                                stringResource(R.string.device_access_pairing_notification_off),
-                                Modifier.padding(top = 2.dp),
-                            )
-                        }
                         state.adb == DeviceAccessAdbUi.RestartRequired -> CaptionText(
                             stringResource(R.string.device_access_adb_restart_hint),
                             Modifier.padding(top = 2.dp),
@@ -1046,7 +1022,7 @@ fun DeviceAccessSettingsPage(
                         )
                         else -> Unit
                     }
-                    if (DeviceAccessAdbActionUi.PAIR in adbActions) {
+                    if (DeviceAccessAdbActionUi.PAIR in adbActions && state.pairingSupported) {
                         CaptionText(
                             stringResource(R.string.device_access_adb_pair_hint),
                             Modifier.padding(top = 2.dp),
@@ -1091,7 +1067,7 @@ fun DeviceAccessSettingsPage(
             if (DeviceAccessPresentation.adbCanRenewPairing(state)) {
                 FloeActionRow(
                     label = stringResource(R.string.device_access_adb_pair_again),
-                    onClick = pairWithNotification,
+                    onClick = beginPairing,
                 )
             }
             if (DeviceAccessPresentation.adbCanSpecifyConnectPort(state)) {
@@ -1123,8 +1099,51 @@ fun DeviceAccessSettingsPage(
                     enabled = state.busy == DeviceAccessBusyUi.NONE,
                 )
             }
-            // Pairing port + code entry: ephemeral RAM-only caller state.
-            if (DeviceAccessPresentation.adbShowsCodeField(state.adb)) {
+            if (pairingGuideOpen) {
+                PairingNotificationAction(
+                    availability = notificationAvailability,
+                    permissionDenied = notificationDeniedHere,
+                    onAllow = allowPairingNotifications,
+                )
+                FloeSectionRow(title = {
+                    CaptionText(stringResource(R.string.device_access_adb_pair_system_step))
+                })
+                FloeActionRow(label = adbDevOptionsLabel, onClick = openDeveloperOptions)
+                FloeSectionRow(title = {
+                    CaptionText(stringResource(
+                        if (notificationAvailability == PairingNotificationPolicy.Availability.AVAILABLE) {
+                            R.string.device_access_adb_pair_open_hint
+                        } else {
+                            R.string.device_access_pairing_notification_off
+                        },
+                    ))
+                })
+                FloeActionRow(
+                    label = stringResource(
+                        if (showManualPairing) R.string.device_access_adb_pair_manual_hide
+                        else R.string.device_access_adb_pair_manual,
+                    ),
+                    onClick = { showManualPairing = !showManualPairing },
+                )
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_adb_pair_developer_help),
+                    onClick = { showDeveloperOptionsHelp = !showDeveloperOptionsHelp },
+                )
+                if (showDeveloperOptionsHelp) {
+                    FloeSectionRow(title = {
+                        CaptionText(stringResource(R.string.device_access_adb_pair_developer_hint))
+                    })
+                    FloeActionRow(
+                        label = stringResource(R.string.device_access_adb_open_about_phone),
+                        onClick = { callbacks.onOpenAboutPhone(activity ?: context) },
+                    )
+                }
+            }
+            // The explicit split-screen fallback keeps port and code in RAM.
+            if (pairingGuideOpen && showManualPairing) {
+                FloeSectionRow(title = {
+                    CaptionText(stringResource(R.string.device_access_adb_pair_manual_hint))
+                })
                 when (state.pairingDiscovery) {
                     DeviceAccessPairingDiscoveryUi.DISCOVERING ->
                         FloeSectionRow(title = {
@@ -1169,8 +1188,6 @@ fun DeviceAccessSettingsPage(
                     revealOnLabel = stringResource(R.string.notes_pdf_unlock_show),
                     revealOffLabel = stringResource(R.string.notes_pdf_unlock_hide),
                 )
-                // Submit and cancel share one wrapping capsule row instead of
-                // stacking full-width button rows above the keyboard.
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1189,12 +1206,6 @@ fun DeviceAccessSettingsPage(
                         enabled = DeviceAccessPresentation.adbSubmitEnabled(
                             pairingCode, state.pairingPort, state.adb, state.busy),
                     )
-                    if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions) {
-                        PageCapsuleButton(
-                            stringResource(R.string.device_access_adb_cancel_pairing),
-                            onClick = callbacks.onCancelPairing,
-                        )
-                    }
                 }
                 // Inline validation stays adjacent to the field while the
                 // partial code is on screen: it is a transient error state,
@@ -1208,13 +1219,6 @@ fun DeviceAccessSettingsPage(
                         )
                     })
                 }
-            }
-            if (DeviceAccessPresentation.adbShowsCodeField(state.adb)) {
-                PairingNotificationAction(
-                    availability = notificationAvailability,
-                    permissionDenied = notificationDeniedHere,
-                    onAllow = allowPairingNotifications,
-                )
             }
             // Remaining actions the current state genuinely offers share one
             // wrapping capsule row (cancel / developer options / forget).
