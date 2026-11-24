@@ -358,6 +358,7 @@ public fun EntrySetupGuideSheet(
     onAction: () -> Unit,
     onDismiss: () -> Unit,
     notificationAction: EntryNotificationAction = EntryNotificationAction.OPEN_SETTINGS,
+    deviceSettingsReady: Boolean = false,
     onSecondaryAction: (() -> Unit)? = null,
 ) {
     val colors = Floe.colors
@@ -417,10 +418,12 @@ public fun EntrySetupGuideSheet(
                 )
             }
             setupActionLabel(step, notificationAction)?.let { label ->
+                val enabled = step != EntrySetupStep.DEVICE || deviceSettingsReady
                 Spacer(Modifier.height(18.dp))
                 FloePrimaryAction(
-                    label = stringResource(label),
+                    label = stringResource(if (enabled) label else R.string.entryflow_unavailable),
                     onClick = onAction,
+                    enabled = enabled,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 val secondary = setupSecondaryActionLabel(step)

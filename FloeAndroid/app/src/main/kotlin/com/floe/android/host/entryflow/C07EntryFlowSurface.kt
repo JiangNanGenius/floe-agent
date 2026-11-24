@@ -38,6 +38,7 @@ import com.floe.android.feature.entryflow.EntrySetupGuideSheet
 import com.floe.android.feature.entryflow.EntrySetupStep
 import com.floe.android.feature.entryflow.EntrySetupUi
 import com.floe.android.feature.entryflow.EntryShareSheet
+import com.floe.android.host.settings.DistributionSettingsFeature
 
 /**
  * The App-owned presentation of an admitted share and the optional setup
@@ -154,6 +155,7 @@ internal fun C07EntryFlowSurface(
             visible = false,
         ),
         notificationAction = notificationAction,
+        deviceSettingsReady = DistributionSettingsFeature.wired,
         onNext = C07EntryFlowHost::nextSetupStep,
         onBack = C07EntryFlowHost::previousSetupStep,
         onSkip = C07EntryFlowHost::skipSetupGuide,

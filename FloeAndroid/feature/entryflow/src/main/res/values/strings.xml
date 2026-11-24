@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="entryflow_title">Setup &amp; Feedback</string>
-    <string name="entryflow_setup_title">Setup guide</string>
+    <string name="entryflow_setup_title">Setup wizard</string>
     <string name="entryflow_setup_body">Set up models, voice, folders and notifications at your own pace.</string>
     <string name="entryflow_feedback_title">Feedback &amp; diagnostics</string>
     <string name="entryflow_feedback_body">Write a report and export it with redacted diagnostics. Nothing is sent automatically.</string>

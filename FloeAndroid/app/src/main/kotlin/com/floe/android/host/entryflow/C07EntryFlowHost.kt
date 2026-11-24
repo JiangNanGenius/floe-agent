@@ -275,13 +275,12 @@ internal object C07EntryFlowHost {
     /* ------------------------------ setup guide ------------------------------ */
 
     /**
-     * Steps actually walkable in this process: the device/ADB step exists only
-     * while the Full phone settings category is genuinely registered, so the
-     * guide never offers a destination that is not there.
+     * The installed channel determines the number of steps from first launch.
+     * The device action separately observes its settings owner's readiness.
      */
     private fun visibleSetupSteps(): List<C07SetupStep> =
         C07SetupMachine.visibleSteps(
-            deviceAvailable = com.floe.android.host.settings.DistributionSettingsFeature.wired,
+            deviceAvailable = com.floe.android.host.settings.DistributionSettingsFeature.available,
         )
 
     fun openSetupGuide(originSection: String) {

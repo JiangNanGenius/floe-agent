@@ -837,8 +837,8 @@ internal object C07SetupMachine {
         return state.copy(step = step, seen = true, finished = false, skipped = false, updatedAt = now)
     }
 
-    /** Steps offered for this process/channel. `deviceAvailable` is true only
-     * when the actual registered phone settings section can be opened. */
+    /** Steps offered by this distribution. A cold-starting device settings owner
+     * affects its action's readiness, not the progress of the guide. */
     fun visibleSteps(deviceAvailable: Boolean): List<C07SetupStep> =
         C07SetupStep.entries.filter { it != C07SetupStep.DEVICE || deviceAvailable }
 
