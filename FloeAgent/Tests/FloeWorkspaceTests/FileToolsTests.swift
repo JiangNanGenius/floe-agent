@@ -230,9 +230,9 @@ struct FileToolsTests {
         let service = try fixture.environment.makeService()
         let first = try service.listDirectory(".", pageToken: nil, nameContains: "keep")
         #expect(first.entries.count == 200)
-        #expect(first.entries.allSatisfy { $0.name.hasPrefix("keep-") })
+        #expect(first.entries.map(\.name) == (0..<200).map { String(format: "keep-%03d.txt", $0) })
         let second = try service.listDirectory(".", pageToken: first.nextPageToken, nameContains: "keep")
-        #expect(second.entries.count == 5)
+        #expect(second.entries.map(\.name) == (200..<205).map { String(format: "keep-%03d.txt", $0) })
         #expect(second.nextPageToken == nil)
     }
 

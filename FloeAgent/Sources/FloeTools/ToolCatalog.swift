@@ -23,10 +23,11 @@ public enum RetiredExecutionTools {
         pythonPackagesName, wasmPackagesName
     ]
 
+    private static let wireNames = Set(names.map { $0.replacingOccurrences(of: ".", with: "_") })
+
     public static func contains(_ name: String) -> Bool {
         let canonical = ToolAliasTable.canonical(name)
-        return names.contains(canonical)
-            || names.contains { $0.replacingOccurrences(of: ".", with: "_") == canonical }
+        return names.contains(canonical) || wireNames.contains(canonical)
     }
 }
 
@@ -201,6 +202,7 @@ public enum ToolCatalog {
     private final class RegistryStorage: @unchecked Sendable {
         private var descriptors: [String: Descriptor] = [:]
         private var compatibilityNames = Set<String>()
+        private var listedDescriptors: [Descriptor]?
         private let lock = NSLock()
 
         func register(_ descriptor: Descriptor, compatibilityOnly: Bool = false) {
@@ -208,6 +210,7 @@ public enum ToolCatalog {
             lock.lock()
             descriptors[descriptor.name] = descriptor
             if compatibilityOnly { compatibilityNames.insert(descriptor.name) } else { compatibilityNames.remove(descriptor.name) }
+            listedDescriptors = nil
             lock.unlock()
         }
 
@@ -220,7 +223,10 @@ public enum ToolCatalog {
         func all() -> [Descriptor] {
             lock.lock()
             defer { lock.unlock() }
-            return descriptors.values.filter { !compatibilityNames.contains($0.name) }.sorted { $0.name < $1.name }
+            if let listedDescriptors { return listedDescriptors }
+            let visible = descriptors.values.filter { !compatibilityNames.contains($0.name) }.sorted { $0.name < $1.name }
+            listedDescriptors = visible
+            return visible
         }
     }
 

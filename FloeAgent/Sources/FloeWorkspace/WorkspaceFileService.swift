@@ -220,28 +220,23 @@ public struct WorkspaceFileService: Sendable {
         }
         var names: [String] = []
         names.reserveCapacity(min(Self.maxDirectoryEntries, Self.pageSize * 2))
+        let needle = nameContains?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var scanned = 0
         for case let child as URL in enumerator {
             try cancellation?.throwIfCancelled()
-            guard names.count < Self.maxDirectoryEntries else {
+            guard scanned < Self.maxDirectoryEntries else {
                 throw WorkspaceToolError.tooLarge(limit: Self.maxDirectoryEntries)
             }
-            names.append(child.lastPathComponent)
+            scanned += 1
+            let name = child.lastPathComponent
+            if !needle.isEmpty, name.range(of: needle, options: .caseInsensitive) == nil { continue }
+            if !includeDirectories || !includeFiles {
+                let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                guard isDirectory ? includeDirectories : includeFiles else { continue }
+            }
+            names.append(name)
         }
         names.sort { $0.localizedStandardCompare($1) == .orderedAscending }
-
-        if let nameContains {
-            let needle = nameContains.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !needle.isEmpty {
-                names = names.filter { $0.range(of: needle, options: .caseInsensitive) != nil }
-            }
-        }
-        if !includeDirectories || !includeFiles {
-            names = names.filter { name in
-                let child = url.appendingPathComponent(name)
-                let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return isDirectory ? includeDirectories : includeFiles
-            }
-        }
 
         let startIndex = Self.decodePageToken(pageToken, count: names.count)
         let endIndex = min(startIndex + Self.pageSize, names.count)
@@ -1010,7 +1005,7 @@ public struct WorkspaceFileService: Sendable {
         return String(path.dropFirst(base.count + 1))
     }
 
-    private static func decodePageToken(_ token: String?, count: Int) -> Int {
+    static func decodePageToken(_ token: String?, count: Int) -> Int {
         guard let token, let index = Int(token) else { return 0 }
         return max(0, min(index, count))
     }

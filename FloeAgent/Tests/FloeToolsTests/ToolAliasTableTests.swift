@@ -15,6 +15,7 @@ struct ToolAliasTableTests {
             #expect(ToolAliasTable.aliases(of: canonical).contains(old))
         }
         #expect(ToolAliasTable.canonical("unknown.tool") == "unknown.tool")
+        #expect(ToolAliasTable.canonical("unknown_tool") == "unknown_tool")
     }
 
     @Test func compatibilityRunnersRemainCallableWithoutDiscovery() {

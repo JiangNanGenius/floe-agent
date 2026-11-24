@@ -254,7 +254,7 @@ public struct WorkspaceListDirectoryTool: AgentTool {
                 entries = entries.filter { $0.name.range(of: needle, options: .caseInsensitive) != nil }
             }
             entries = entries.filter { $0.isDirectory ? includeDirectories : includeFiles }
-            let offset = Int(args.pageToken ?? "0") ?? 0
+            let offset = WorkspaceFileService.decodePageToken(args.pageToken, count: entries.count)
             let end = min(entries.count, offset + WorkspaceFileService.pageSize)
             let page = offset < entries.count ? Array(entries[offset..<end]) : []
             var lines = page.map { entry in

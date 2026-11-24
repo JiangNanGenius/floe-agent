@@ -144,6 +144,7 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
     private var runners: [String: AnyAgentTool] = [:]
     private let lock = NSLock()
     private var compatibilityNames = Set<String>()
+    private var listedRunners: [AnyAgentTool]?
 
     public init() {}
 
@@ -153,6 +154,7 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
         lock.lock()
         runners[tool.descriptor.name] = tool
         if compatibilityOnly { compatibilityNames.insert(tool.descriptor.name) } else { compatibilityNames.remove(tool.descriptor.name) }
+        listedRunners = nil
         lock.unlock()
     }
 
@@ -176,8 +178,16 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
     /// All currently executable runtime descriptors, sorted for deterministic
     /// provider requests and diagnostics.
     public var allDescriptors: [ToolCatalog.Descriptor] {
-        let visible = lock.withLock { runners.values.filter { !compatibilityNames.contains($0.descriptor.name) } }
-        return visible.filter { $0.isAvailable() }.map(\.descriptor).sorted { $0.name < $1.name }
+        let listed = lock.withLock {
+            if let listedRunners { return listedRunners }
+            let sorted = runners.values.filter { !compatibilityNames.contains($0.descriptor.name) }
+                .sorted { $0.descriptor.name < $1.descriptor.name }
+            listedRunners = sorted
+            return sorted
+        }
+        // Availability can change without registration. Ask the live runner
+        // on every request, outside the lock as during direct lookup.
+        return listed.compactMap { $0.isAvailable() ? $0.descriptor : nil }
     }
 
     /// Removes runtime entries owned by one dynamic source. Native callers do
@@ -186,6 +196,7 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
     public func unregister(where shouldRemove: (String) -> Bool) {
         lock.lock()
         runners = runners.filter { !shouldRemove($0.key) }
+        listedRunners = nil
         lock.unlock()
     }
 }

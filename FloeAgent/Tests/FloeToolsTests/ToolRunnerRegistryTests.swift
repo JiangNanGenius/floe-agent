@@ -183,6 +183,7 @@ struct ToolRunnerRegistryTests {
         let captured = try #require(registry.runner(named: EchoRunnerTool.name))
         #expect(registry.allDescriptors.count == 1)
         state.set(false)
+        #expect(registry.allDescriptors.isEmpty)
         #expect(registry.descriptor(named: EchoRunnerTool.name) == nil)
         await #expect(throws: FloeError.self) {
             try await captured.execute(argumentsJSON: Data(#"{"text":"blocked"}"#.utf8),
@@ -235,12 +236,14 @@ struct ToolRunnerRegistryTests {
             ),
             run: { _, _ in ToolExecutionOutput(summary: "first", fullOutputSHA256: "") }
         ))
+        #expect(registry.allDescriptors.first?.toolDescription == "test.replaceable")
         registry.register(AnyAgentTool(
             descriptor: ToolCatalog.Descriptor(
-                name: "test.replaceable", riskLabels: [], isSideEffecting: false
+                name: "test.replaceable", toolDescription: "Updated runner", riskLabels: [], isSideEffecting: false
             ),
             run: { _, _ in ToolExecutionOutput(summary: "second", fullOutputSHA256: "") }
         ))
+        #expect(registry.allDescriptors.first?.toolDescription == "Updated runner")
         let output = try await registry.runner(named: "test.replaceable")?
             .execute(argumentsJSON: Data("{}".utf8), context: makeContext())
         #expect(output?.summary == "second")
@@ -270,6 +273,7 @@ struct ToolRunnerRegistryTests {
         registry.unregister { $0.hasPrefix("mcp.alpha.") }
         #expect(registry.runner(named: first.name) == nil)
         #expect(registry.runner(named: second.name) != nil)
+        #expect(registry.allDescriptors.map(\.name) == [second.name])
     }
 
     // MARK: Execution closed loop through CatalogToolExecutor

@@ -29,6 +29,10 @@ public enum ToolAliasTable {
         "cloudWorkspace.gitBranch": "cloudWorkspace.git.branch"
     ]
 
+    private static let historicalWireNames = Dictionary(renamed.map { name, canonical in
+        (name.replacingOccurrences(of: ".", with: "_"), canonical)
+    }, uniquingKeysWith: { first, _ in first })
+
     /// Lowercased query token → capability group. A query containing one of
     /// these terms expands to the group before falling back to description
     /// ranking. Shared by ToolDiscovery and SkillManagement.
@@ -81,9 +85,8 @@ public enum ToolAliasTable {
 
     /// Canonical spelling for a renamed name; unchanged names pass through.
     public static func canonical(_ name: String) -> String {
-        if let canonical = renamed[name] { return canonical }
         // Known historical provider wire spellings only; never guess arbitrary names.
-        return renamed.first { $0.key.replacingOccurrences(of: ".", with: "_") == name }?.value ?? name
+        return renamed[name] ?? historicalWireNames[name] ?? name
     }
 
     /// Aliases that currently resolve to `name`, sorted for deterministic output.
