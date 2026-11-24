@@ -72,8 +72,6 @@ struct ThreadPlanConfirmationPresentationKey: Hashable {
 
 /// The canonical thread: messages + run events for one conversation.
 struct ThreadDetailView: View {
-    private static let latestAnchorID = "thread-latest-anchor"
-
     /// Identity of a delegated child opened from a delegate card.
     private struct PresentedChildRun: Identifiable {
         let id: UUID
@@ -123,7 +121,7 @@ struct ThreadDetailView: View {
     @State private var selectedImportantFile: ImportantFileShortcut?
     @State private var selectedGame: ChatGameProjectLink?
     @State private var selectedAttachment: ChatAttachmentOpenRequest?
-    @State private var latestAnchorVisible = false
+    @State private var visibleLatestAnchorID: String?
     @State private var returningToLatest = false
     @State private var latestFollow = LatestMessageFollowState()
     @State private var threadPosition = ScrollPosition(idType: String.self)
@@ -796,7 +794,8 @@ struct ThreadDetailView: View {
     // MARK: - Thread content
 
     private var threadScroll: some View {
-        ZStack(alignment: .bottomTrailing) {
+        let latestAnchorID = "thread-latest-anchor." + (viewModel.timeline.last?.id ?? "empty")
+        return ZStack(alignment: .bottomTrailing) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if viewModel.hasEarlierMessages {
@@ -857,21 +856,8 @@ struct ThreadDetailView: View {
                     }
 
                     Color.clear.frame(height: 4)
-                        .id(Self.latestAnchorID)
+                        .id(latestAnchorID)
                         .accessibilityHidden(true)
-                        .onScrollVisibilityChange(threshold: 0.5) { visible in
-                            let wasVisible = latestAnchorVisible
-                            latestAnchorVisible = visible
-                            if visible {
-                                returningToLatest = false
-                            } else if wasVisible, viewModel.hasLoaded, latestFollow.followsLatest,
-                                      !isUserScrolling, !search.isActive {
-                                // A newly measured tail can leave the viewport while following.
-                                // Restore the same target once it actually leaves, not on
-                                // every geometry change from a streaming message.
-                                scrollToLatest()
-                            }
-                        }
                 }
                 .scrollTargetLayout()
                 .padding([.horizontal, .top])
@@ -884,6 +870,16 @@ struct ThreadDetailView: View {
             // content height before the new rows have been laid out.
             .defaultScrollAnchor(latestFollow.followsLatest && !isUserScrolling && !search.isActive ? .bottom : nil,
                                  for: .sizeChanges)
+            .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.5) { visibleIDs in
+                let wasVisible = visibleLatestAnchorID == latestAnchorID
+                if visibleIDs.contains(latestAnchorID) {
+                    visibleLatestAnchorID = latestAnchorID
+                    returningToLatest = false
+                } else if wasVisible {
+                    visibleLatestAnchorID = nil
+                    followLatestIfNeeded(latestAnchorID)
+                }
+            }
             .onScrollPhaseChange { old, phase in
                 if phase == .interacting, old != .interacting {
                     earlierActivityScrollDemand &+= 1
@@ -913,8 +909,8 @@ struct ThreadDetailView: View {
                     }
             })
 
-            if returningToLatest || (!latestAnchorVisible && latestFollow.isAwayFromLatest && !latestFollow.followsLatest) {
-                Button(action: scrollToLatest) {
+            if returningToLatest || (visibleLatestAnchorID != latestAnchorID && latestFollow.isAwayFromLatest && !latestFollow.followsLatest) {
+                Button { scrollToLatest(latestAnchorID) } label: {
                     Image(systemName: "arrow.down")
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 38, height: 38)
@@ -930,8 +926,10 @@ struct ThreadDetailView: View {
             }
         }
         .onChange(of: viewModel.hasLoaded) { _, loaded in
-            guard loaded, latestFollow.followsLatest, !isUserScrolling, !search.isActive else { return }
-            scrollToLatest()
+            if loaded { followLatestIfNeeded(latestAnchorID) }
+        }
+        .onChange(of: latestAnchorID) { _, anchorID in
+            followLatestIfNeeded(anchorID)
         }
         .onChange(of: scrollRequest, initial: false) { _, request in
             guard let request,
@@ -946,14 +944,18 @@ struct ThreadDetailView: View {
         }
     }
 
-    private func scrollToLatest() {
+    private func followLatestIfNeeded(_ anchorID: String) {
+        guard viewModel.hasLoaded, latestFollow.followsLatest, !isUserScrolling, !search.isActive else { return }
+        scrollToLatest(anchorID)
+    }
+
+    private func scrollToLatest(_ anchorID: String) {
         latestFollow.returnToLatest()
-        returningToLatest = !latestAnchorVisible
-        // The lazy stack's estimated height can move during pagination and
-        // streaming. Use the identity of its real last view for both entry and
-        // explicit jumps, with no long animation through off-screen rows.
+        returningToLatest = visibleLatestAnchorID != anchorID
+        // A new last row is a new target. This reissues the follow request when
+        // a page arrives without scrolling on every token of the same reply.
         withTransaction(Transaction(animation: nil)) {
-            threadPosition.scrollTo(id: Self.latestAnchorID, anchor: .bottom)
+            threadPosition.scrollTo(id: anchorID, anchor: .bottom)
         }
     }
 

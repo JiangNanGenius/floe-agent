@@ -225,7 +225,14 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         func expectHittable(_ element: XCUIElement, timeout: TimeInterval) {
             let predicate = NSPredicate { _, _ in element.exists && element.isHittable }
             let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-            XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed)
+            let result = XCTWaiter.wait(for: [expectation], timeout: timeout)
+            if result != .completed {
+                let screenshot = XCTAttachment(screenshot: app.screenshot())
+                screenshot.name = "Latest transcript row did not reach the viewport"
+                screenshot.lifetime = .keepAlways
+                add(screenshot)
+            }
+            XCTAssertEqual(result, .completed)
         }
         // The saved conversation receives 96 new rows of varying heights
         // after opening, through the same store and notification as live chat.
