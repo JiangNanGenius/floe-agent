@@ -214,6 +214,34 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         removeFixturePaste()
     }
 
+    func testLatestMessageRemainsReachableAfterLateRowsLoad() {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launch(arguments: ["--ui-test-native-answer-fixture", "message-burst"])
+        defer { app.terminate() }
+
+        let transcript = app.scrollViews["thread.messages.viewport"].firstMatch
+        XCTAssertTrue(transcript.waitForExistence(timeout: 15))
+        let latest = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "QA burst marker 95")).firstMatch
+        func expectHittable(_ element: XCUIElement, timeout: TimeInterval) {
+            let predicate = NSPredicate { _, _ in element.exists && element.isHittable }
+            let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+            XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed)
+        }
+        // The saved conversation receives 96 new rows of varying heights
+        // after opening, through the same store and notification as live chat.
+        expectHittable(latest, timeout: 18)
+
+        let arrow = app.buttons["thread.jumpToLatest"].firstMatch
+        for _ in 0..<3 {
+            transcript.swipeDown(velocity: .fast)
+            XCTAssertTrue(arrow.waitForExistence(timeout: 3), "Scrolling into history must expose the return arrow")
+            XCTAssertFalse(latest.isHittable)
+            arrow.tap()
+            expectHittable(latest, timeout: 3)
+            XCTAssertFalse(arrow.exists, "The arrow should disappear once the last message is in view")
+        }
+    }
+
     private func tapEditingCommand(_ labels: [String], in editor: XCUIElement, app: XCUIApplication) {
         editor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
         let match = NSPredicate(format: "label IN %@", labels)

@@ -1,0 +1,4 @@
+{
+  "en-US": "Open a long conversation while recent messages are still loading. Check that the most recent reply is visible. Scroll into earlier messages and tap the down arrow several times to verify that it lands on the latest message each time. Open a chat search result and verify that it stays in view.",
+  "zh-Hans": "打开一段近期消息仍在加载的长会话，检查最后一条是否可见。向上浏览旧消息，再点向下箭头，多试几次，确认每次都能回到最新消息。打开会话搜索结果，确认页面保留在对应消息。"
+}
