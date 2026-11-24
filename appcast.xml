@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.11.31</title>
+      <pubDate>Tue, 24 Nov 2026 12:40:13 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.31</link>
+      <sparkle:version>61</sparkle:version>
+      <sparkle:shortVersionString>1.11.31</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>优化长会话流式输出和切换任务时的响应。 Improved workbench responsiveness during streaming in long conversations.</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.11.31/Floe-Agent-1.11.31.dmg" length="65197888" type="application/octet-stream" sparkle:edSignature="LASugVhYHsAuHmjddMxAk5Gv3r8tkqWSXiBKz3ZHdojkC7l7czC+wvnNi9+bIAmqxiuGWOYOkf95sfCIsLZQDA==" />
+    </item>
+    <item>
       <title>Floe Agent 1.11.30</title>
       <pubDate>Tue, 24 Nov 2026 12:17:05 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.11.30</link>
