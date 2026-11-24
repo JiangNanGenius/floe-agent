@@ -134,6 +134,10 @@ final class UnifiedMacSmoke {
             await exerciseTaskLifecycle(model, endpoint: endpoint)
             return
         }
+        if CommandLine.arguments.contains("--basic-approval-flow-only"), let endpoint = projectTaskFixtureEndpoint {
+            await exerciseBasicApprovalFlow(model, endpoint: endpoint)
+            return
+        }
         if CommandLine.arguments.contains("--extension-tools-only"), let endpoint = projectTaskFixtureEndpoint, endpoint.host == "127.0.0.1" {
             await exerciseExtensionTools(model, endpoint: endpoint)
             return
@@ -1325,6 +1329,76 @@ final class UnifiedMacSmoke {
         return agent.isReady ? agent : nil
     }
 
+    private func exerciseBasicApprovalFlow(_ model: BridgeAppModel, endpoint: URL) async {
+        guard let agent = await readyFixtureWorkbench(model),
+              agent.addProvider(name: "Fixture Reviewer", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "basic-approval-reviewer", key: "",
+                                allowsPlainHTTP: true, supportsApproval: true),
+              let reviewer = agent.providers.first(where: { $0.model.remoteModelID == "basic-approval-reviewer" }),
+              await agent.setApprovalMode(.automatic, asDefault: true) else {
+            finish(["configured": false]); return
+        }
+        agent.verifyAgentAnswers = false
+        agent.setApprovalModelID(reviewer.model.id)
+        let folder = root.appendingPathComponent("Approval Project", isDirectory: true)
+        let output = folder.appendingPathComponent("choice.txt")
+        let privateOutput = folder.appendingPathComponent("private.txt")
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil,
+              let project = await agent.addWorkspace(name: "Approval Project", rootURL: folder, selectForNewTask: false),
+              agent.startNamedAgentFixture("Ask me to choose the output, then use the terminal to save choice.txt.",
+                                           modelID: "basic-approval-primary", endpoint: endpoint, projectID: project.id) else {
+            finish(["started": false]); return
+        }
+        let questionDeadline = ContinuousClock.now + .seconds(12)
+        while agent.isSending && agent.pendingQuestion == nil && agent.pendingApproval == nil
+                && ContinuousClock.now < questionDeadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        let question = agent.pendingQuestion
+        let directQuestion = question != nil && agent.pendingApproval == nil
+        let answered = directQuestion ? await answerProjectQuestion(in: agent) : false
+        let reviewDeadline = ContinuousClock.now + .seconds(12)
+        var approved = false
+        var privateDenied = false
+        var unchangedBeforeApproval = false
+        while answered && agent.isSending && !privateDenied && ContinuousClock.now < reviewDeadline {
+            if let card = agent.pendingApproval, card.toolName == "exec.shell", card.workspaceID == project.id {
+                if !approved, card.text?.contains("choice.txt") == true, card.reason.contains("Verify the named file") {
+                    unchangedBeforeApproval = !FileManager.default.fileExists(atPath: output.path)
+                    approved = clickApproval(in: agent, allow: true, screenshot: "basic-file-approval.png")
+                } else if approved, card.text?.contains("private.txt") == true, card.reason.contains("private review") {
+                    privateDenied = clickApproval(in: agent, allow: false, screenshot: "basic-private-approval.png")
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(45))
+        }
+        let finishDeadline = ContinuousClock.now + .seconds(10)
+        while privateDenied && agent.isSending && ContinuousClock.now < finishDeadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        let pending = agent.pendingApproval.map { "\($0.toolName): \($0.reason)" } ?? ""
+        let saved = (try? String(contentsOf: output, encoding: .utf8)) == "Approved\n"
+        let answeredAfterDenial = !agent.isSending && agent.messages.contains {
+            $0.role == "assistant" && $0.content == "Basic flow verified."
+        }
+        var reopened = false
+        if answeredAfterDenial, let taskID = agent.selectedID, let question {
+            await agent.select(nil)
+            await agent.select(taskID)
+            let receipts = agent.settledQuestions[question.runID]?.filter { $0.requestID == question.requestID } ?? []
+            let answer = receipts.first?.questions.first?.answerRecord()
+            reopened = agent.selectedConversationWorkspace?.id == project.id && receipts.count == 1
+                && answer?.source == .human && answer?.selectedOptionIDs == ["report"]
+                && agent.messages.contains { $0.role == "assistant" && $0.content == "Basic flow verified." }
+        }
+        if agent.isSending { agent.stop() }
+        finish(["directQuestion": directQuestion, "answeredInApp": answered, "approvedFile": approved,
+                "fileUnchangedBeforeApproval": unchangedBeforeApproval, "savedToProject": saved,
+                "privateActionDenied": privateDenied && !FileManager.default.fileExists(atPath: privateOutput.path),
+                "answeredAfterDenial": answeredAfterDenial, "persistedOnReopen": reopened, "pendingApproval": pending,
+                "diagnostics": settingsDiagnostics + agent.smokeRunDiagnostics])
+    }
+
     private func exerciseTaskLifecycle(_ model: BridgeAppModel, endpoint: URL) async {
         guard let agent = await readyFixtureWorkbench(model), await agent.verifyChatSmoke(), let original = agent.selectedID else {
             finish(["ready": false]); return
@@ -1342,11 +1416,17 @@ final class UnifiedMacSmoke {
         let folder = root.appendingPathComponent("Scheduled project", isDirectory: true)
         guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil,
               let project = await agent.addWorkspace(name: "Scheduled project", rootURL: folder, selectForNewTask: false),
-              agent.useNativeCommandFixture(endpoint: endpoint) else { finish(["policy": policy, "fixture": false]); return }
+              agent.addProvider(name: "Schedule Fixture", endpoint: endpoint.absoluteString,
+                                protocolKind: .openAIChatCompletions, modelID: "native-mac-fixture", key: "",
+                                supportsTools: true, allowsPlainHTTP: true),
+              let fixtureModel = agent.providers.first(where: { $0.model.remoteModelID == "native-mac-fixture" }) else {
+            finish(["policy": policy, "fixture": false]); return
+        }
         let once = TaskScheduleRecord(title: "Fixture calendar", prompt: "Respond to the scheduled task.",
             workspaceID: project.id, cadence: .once, scheduledAt: Date().addingTimeInterval(2))
         let repeating = TaskScheduleRecord(title: "Fixture repeat", prompt: "Respond to the recurring task.",
-            cadence: .daily, scheduledAt: Date().addingTimeInterval(3600), anchorTimezone: "Etc/UTC")
+            cadence: .daily, scheduledAt: Date().addingTimeInterval(3600), anchorTimezone: "Etc/UTC",
+            modelID: fixtureModel.model.id)
         let missed = TaskScheduleRecord(title: "Fixture missed", prompt: "Respond to the manual make-up.",
             cadence: .once, scheduledAt: Date().addingTimeInterval(-600))
         let firstKey = TaskSchedulePlanner.dedupeKey(for: once.scheduledAt, record: once)
@@ -1448,9 +1528,15 @@ final class UnifiedMacSmoke {
         }
         var scheduleSheet = false
         var manualScheduleRoute = false
+        var unrelatedManualRunKeepsSheet = false
+        let savedRepeating = center.records.first { $0.id == repeating.id } ?? repeating
+        var unavailableSchedule = savedRepeating
+        unavailableSchedule.modelID = UUID()
+        let savedUnavailable = await center.save(unavailableSchedule)
         MacWorkspaceTaskCenter.smokeSchedulesFrame = nil
         MacTaskScheduleView.smokeRunNowFrames = [:]
-        if clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame, screenshot: nil) {
+        if savedUnavailable,
+           clickWorkbenchButton(ids: ["workspace.taskCenter"], frame: MacWorkspaceRootView.smokeTaskCenterFrame, screenshot: nil) {
             let controls = ContinuousClock.now + .seconds(3)
             while MacWorkspaceTaskCenter.smokeSchedulesFrame == nil && ContinuousClock.now < controls {
                 try? await Task.sleep(for: .milliseconds(35))
@@ -1464,26 +1550,49 @@ final class UnifiedMacSmoke {
                 if let sheet = window.attachedSheet, let content = sheet.contentView {
                     capture(content, extension: "scheduled-tasks-sheet.png")
                     scheduleSheet = true
-                    let runButton = "mac.schedule.runNow." + repeating.id.uuidString
-                    content.layoutSubtreeIfNeeded()
-                    refreshButtonFrames(in: content)
-                    var pressed = pressAccessibilityButton(content, id: runButton)
-                    if !pressed, let frame = MacTaskScheduleView.smokeRunNowFrames[repeating.id] {
-                        pressed = clickWindowLocation(NSPoint(x: frame.midX, y: frame.midY), in: sheet)
+                    func pressRunNow() -> Bool {
+                        clickFixtureButton(in: sheet, ids: ["mac.schedule.runNow." + repeating.id.uuidString],
+                                           frame: MacTaskScheduleView.smokeRunNowFrames[repeating.id])
                     }
-                    if pressed {
-                        let launched = ContinuousClock.now + .seconds(6)
-                        while ContinuousClock.now < launched {
-                            if let manual = center.lastManualLaunch, manual.scheduleID == repeating.id,
-                               agent.selectedID == manual.conversationID, window.attachedSheet == nil {
-                                manualScheduleRoute = true
-                                break
+                    let pressed = pressRunNow()
+                    let failed = ContinuousClock.now + .seconds(5)
+                    while pressed && ContinuousClock.now < failed
+                            && (center.isBusy || center.launching.contains(repeating.id) || !center.recent.contains(where: {
+                                $0.scheduleID == repeating.id && $0.isManualRun && $0.state == .failed
+                            })) { try? await Task.sleep(for: .milliseconds(40)) }
+                    let recordedFailure = center.recent.contains {
+                        $0.scheduleID == repeating.id && $0.isManualRun && $0.state == .failed && $0.conversationID == nil
+                    }
+                    if recordedFailure, await center.save(savedRepeating) {
+                        let priorSelection = agent.selectedID
+                        await center.runNow(savedRepeating)
+                        let otherDeadline = ContinuousClock.now + .seconds(6)
+                        var otherRun: TaskScheduleOccurrence?
+                        while ContinuousClock.now < otherDeadline {
+                            otherRun = center.recent.first {
+                                $0.scheduleID == repeating.id && $0.isManualRun && $0.state == .completed
                             }
+                            if otherRun != nil && !center.isBusy && !center.running.contains(repeating.id) { break }
                             try? await Task.sleep(for: .milliseconds(40))
+                        }
+                        unrelatedManualRunKeepsSheet = otherRun?.conversationID != nil && window.attachedSheet === sheet
+                            && agent.selectedID == priorSelection
+                        if unrelatedManualRunKeepsSheet, pressRunNow() {
+                            let launched = ContinuousClock.now + .seconds(6)
+                            while ContinuousClock.now < launched {
+                                if let manual = center.recent.first(where: {
+                                    $0.scheduleID == repeating.id && $0.isManualRun && $0.id != otherRun?.id
+                                        && $0.conversationID != nil
+                                }), agent.selectedID == manual.conversationID, window.attachedSheet == nil {
+                                    manualScheduleRoute = true
+                                    break
+                                }
+                                try? await Task.sleep(for: .milliseconds(40))
+                            }
                         }
                     }
                     if !manualScheduleRoute {
-                        settingsDiagnostics.append("Schedule Run Now pressed=\(pressed), bound=\(center.lastManualLaunch?.scheduleID == repeating.id), sheetOpen=\(window.attachedSheet != nil).")
+                        settingsDiagnostics.append("Schedule Run Now pressed=\(pressed), failure=\(recordedFailure), unrelated isolated=\(unrelatedManualRunKeepsSheet), sheet open=\(window.attachedSheet != nil).")
                     }
                     if window.attachedSheet === sheet { _ = await closeFixtureSheet(sheet, id: "mac.schedule.done") }
                 }
@@ -1496,7 +1605,7 @@ final class UnifiedMacSmoke {
         finish(["policy": policy, "calendarCompletedOnce": stored && result.count == 1 && result.first?.state == .completed,
                 "calendarStates": result.map(\.state.rawValue), "recurringPauseResume": recurringStored && paused && rearmed,
                 "recurringSkipNext": recurringSkipped, "oneShotSkipEndsPlan": disabledAfterSkip,
-                "manualScheduleRoute": manualScheduleRoute,
+                "manualScheduleRoute": manualScheduleRoute, "unrelatedManualRunKeepsSheet": unrelatedManualRunKeepsSheet,
                 "recordedMissed": missedStored && recordedMiss, "manualMakeup": manual,
                 "afterSuccess": directed, "linkedSchedule": linked, "structuredCompatibility": structuredCompatibility,
                 "sameVisibleTask": correctSelection, "ownsProject": projectOwner, "notificationRoute": notificationRoutes, "scheduleSheet": scheduleSheet,
@@ -1508,26 +1617,37 @@ final class UnifiedMacSmoke {
 
     private func openFixtureModelChoices(_ model: BridgeAppModel, accountID: UUID, expected: Set<String>) async -> Bool {
         let accountKey = "\(ProviderCatalogServiceRole.conversation.rawValue).\(accountID.uuidString)"
+        MacProviderSettingsView.smokeAccountFrames[accountKey] = nil
+        MacProviderSettingsView.smokeEditorRole = nil
         MacProviderSettingsView.smokeManageModelsFrame = nil
         MacProviderSettingsView.smokeModelChoices = []
+        MacProviderSettingsView.smokeModelListMounted = false
         model.openSettings(.models)
         defer { model.closeSettingsWindow() }
         let deadline = ContinuousClock.now + .seconds(5)
-        var accountOpened = false
+        var accountPressedAt: ContinuousClock.Instant?
+        var triedAccessibleAccount = false
         var listOpened = false
         while ContinuousClock.now < deadline {
-            if let window = model.smokeAgentSettingsSheet, let content = window.contentView {
+            if let window = model.smokeAgentSettingsSheet, window.isVisible, let content = window.contentView {
                 content.layoutSubtreeIfNeeded()
                 refreshButtonFrames(in: content)
-                if !accountOpened {
-                    accountOpened = pressAccessibilityButton(content, id: "settings.providers.account." + accountKey)
-                    if !accountOpened, let frame = MacProviderSettingsView.smokeAccountFrames[accountKey] {
-                        accountOpened = clickWindowLocation(.init(x: frame.midX, y: frame.midY), in: window)
-                    }
-                } else if !listOpened {
+                if MacProviderSettingsView.smokeEditorRole == .conversation && !listOpened {
                     listOpened = pressAccessibilityButton(content, id: "settings.providers.manageModels")
                     if !listOpened, let frame = MacProviderSettingsView.smokeManageModelsFrame {
                         listOpened = clickWindowLocation(.init(x: frame.midX, y: frame.midY), in: window)
+                    }
+                } else if MacProviderSettingsView.smokeEditorRole == nil {
+                    if accountPressedAt == nil,
+                       let frame = MacProviderSettingsView.smokeAccountFrames[accountKey], !frame.isEmpty {
+                        let point = NSPoint(x: frame.midX, y: frame.midY)
+                        if content.bounds.contains(content.convert(point, from: nil)),
+                           clickWindowLocation(point, in: window) {
+                            accountPressedAt = .now
+                        }
+                    } else if let accountPressedAt, accountPressedAt.duration(to: .now) >= .milliseconds(400),
+                              !triedAccessibleAccount {
+                        triedAccessibleAccount = pressAccessibilityButton(content, id: "settings.providers.account." + accountKey)
                     }
                 }
                 if listOpened && MacProviderSettingsView.smokeModelListMounted &&
@@ -1547,7 +1667,7 @@ final class UnifiedMacSmoke {
             }
             try? await Task.sleep(for: .milliseconds(40))
         }
-        settingsDiagnostics.append("Model list account=\(accountOpened) button=\(listOpened) mounted=\(MacProviderSettingsView.smokeModelListMounted) selection=\(MacProviderSettingsView.smokeModelChoices.count)")
+        settingsDiagnostics.append("Model list account pressed=\(accountPressedAt != nil) accessible press=\(triedAccessibleAccount) editor=\(MacProviderSettingsView.smokeEditorRole?.rawValue ?? "none") button=\(listOpened) mounted=\(MacProviderSettingsView.smokeModelListMounted) selection=\(MacProviderSettingsView.smokeModelChoices.count)")
         if let view = model.smokeAgentSettingsSheet?.contentView {
             capture(view, extension: "provider-model-list-failed.png")
         }
@@ -5209,13 +5329,15 @@ final class UnifiedMacSmoke {
         }
         func press(_ action: String, card: UserQuestionCardModel) -> Bool {
             guard let id = UserQuestionCardView.smokeMarker(action, target: card.currentTarget),
-                  let anchor = marker(id, in: content), window.isKeyWindow else { return false }
+                  let anchor = marker(id, in: content) else { return false }
             _ = anchor.scrollToVisible(anchor.bounds)
             content.layoutSubtreeIfNeeded()
             let point = NSPoint(x: anchor.bounds.midX, y: anchor.bounds.midY)
             guard !anchor.bounds.isEmpty, anchor.visibleRect.contains(point),
                   content.visibleRect.contains(anchor.convert(point, to: content)) else { return false }
-            return click(anchor, at: point, in: window)
+            if window.isKeyWindow { return click(anchor, at: point, in: window) }
+            if pressAccessibilityButton(content, id: "user_question." + action) { return true }
+            return clickWindowLocation(anchor.convert(point, to: nil), in: window)
         }
 
         let deadline = ContinuousClock.now + .seconds(10)

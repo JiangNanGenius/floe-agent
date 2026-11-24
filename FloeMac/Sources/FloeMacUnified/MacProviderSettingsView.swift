@@ -356,7 +356,9 @@ struct MacProviderSettingsView: View {
                     Text(MacProviderText.t("\(count) 个模型", "\(count) models"))
                         .font(.caption).foregroundStyle(.secondary)
                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }.contentShape(Rectangle())
+                }
+                .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("settings.providers.account." + role.rawValue + "." + group.id.uuidString)

@@ -5016,29 +5016,6 @@ public actor FloeAgentRuntime {
                 decision: "deny:missing-remote-scope"
             )
         }
-        // Action-aware effective classification for a VERIFIED read action in
-        // a temporary run: A's policy decided this exact descriptor+arguments
-        // pair is a safe read above, so the trusted projection (narrowed
-        // schema/classification) is what approval metadata uses. The BASE
-        // descriptor keeps its authorization identity, grant binding and
-        // argument validation; a real write action never reaches this point
-        // (it was denied above), and nothing is replaced in the registry.
-        let approvalDescriptor = actionAwareApprovalDescriptor(for: call, descriptor: descriptor)
-        let action = ProposedAction(
-            toolCall: call,
-            riskLabels: Set(approvalDescriptor.riskLabels.map(\.rawValue)),
-            userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
-            recentContext: Self.approvalContext(from: messages),
-            userRequests: Self.approvalUserRequests(from: messages),
-            hostAndPathScope: call.scope,
-            preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
-            preapprovedPythonPackages: configuration.preapprovedPythonPackages,
-            trustedContext: Self.trustedExecutionContext(
-                call: call,
-                descriptor: approvalDescriptor,
-                configuration: configuration
-            )
-        )
         // Catastrophic gate runs before every policy.
         if let gate, let command = extractCommandString(from: call) {
             let verdict = gate.evaluate(command: command)
@@ -5066,6 +5043,34 @@ public actor FloeAgentRuntime {
             )
             return .approved(grant: reusableGrant)
         }
+        if case .local = call.scope, descriptor.name == call.toolName, descriptor.skipsLocalApprovalReview {
+            let policyName = policy.policyName
+            logger.info("toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(policyName) decision=allow:local-tool")
+            return .approved(grant: ApprovalGrant(
+                scope: Self.bind(Self.approvalScope(for: call), to: authorizationIdentity),
+                expiresAt: nil,
+                policyName: policyName
+            ))
+        }
+
+        // The validated temporary read can use its narrower classification
+        // for policy while keeping its registered identity and executor.
+        let approvalDescriptor = actionAwareApprovalDescriptor(for: call, descriptor: descriptor)
+        let action = ProposedAction(
+            toolCall: call,
+            riskLabels: Set(approvalDescriptor.riskLabels.map(\.rawValue)),
+            userGoal: statefulRouteGoal,
+            recentContext: Self.approvalContext(from: messages),
+            userRequests: Self.approvalUserRequests(from: messages),
+            hostAndPathScope: call.scope,
+            preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
+            preapprovedPythonPackages: configuration.preapprovedPythonPackages,
+            trustedContext: Self.trustedExecutionContext(
+                call: call,
+                descriptor: approvalDescriptor,
+                configuration: configuration
+            )
+        )
         let decision: ApprovalDecision
         let requiresModelReview = (policy as? any ApprovalReviewRouting)?
             .requiresModelReview(action) ?? (policy.policyName == "approval-model")

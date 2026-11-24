@@ -22,10 +22,7 @@ struct MacTaskScheduleView: View {
     @State private var linkedIDs: Set<UUID> = []
     /// Result line for the last successful Skip Next (iPad parity).
     @State private var skipNotice: String?
-    /// Set when THIS sheet tapped Run Now. Navigation on bind only honors a
-    /// launch this instance initiated, so another open sheet (task center +
-    /// inspector) or a stale bind cannot steal the route.
-    @State private var pendingRunNowScheduleID: UUID?
+    @State private var manualLaunchRequest: UUID?
     #if FLOE_MAC_HOST_SMOKE
     static var smokeRunNowFrames: [UUID: CGRect] = [:]
     #endif
@@ -49,7 +46,10 @@ struct MacTaskScheduleView: View {
                 Button(MacPermissionsText.t("新建", "New"), systemImage: "plus") { edit = Edit(record: nil) }
                     .buttonStyle(.borderless)
                     .accessibilityIdentifier("mac.schedule.create")
-                Button(MacPermissionsText.t("完成", "Done")) { dismiss() }
+                Button(MacPermissionsText.t("完成", "Done")) {
+                    manualLaunchRequest = nil
+                    dismiss()
+                }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("mac.schedule.done")
@@ -96,14 +96,7 @@ struct MacTaskScheduleView: View {
         }
         .frame(width: 690, height: 560)
         .task { await center.reload() }
-        .onChange(of: center.lastManualLaunch) { _, launch in
-            // The conversation is persisted before the sidebar list reloads.
-            // Only open the task for a Run Now tap in this sheet.
-            guard let launch, launch.scheduleID == pendingRunNowScheduleID else { return }
-            pendingRunNowScheduleID = nil
-            dismiss()
-            openTask(launch.conversationID)
-        }
+        .onDisappear { manualLaunchRequest = nil }
         .task(id: center.recent) {
             if let originTaskID { linkedIDs = await center.linkedSchedules(for: originTaskID) }
         }
@@ -134,8 +127,16 @@ struct MacTaskScheduleView: View {
             }
             Spacer()
             Button(MacPermissionsText.t("立即运行", "Run Now")) {
-                pendingRunNowScheduleID = record.id
-                Task { await center.runNow(record) }
+                let request = UUID()
+                manualLaunchRequest = request
+                Task {
+                    await center.runNow(record) { conversationID in
+                        guard manualLaunchRequest == request else { return }
+                        manualLaunchRequest = nil
+                        dismiss()
+                        openTask(conversationID)
+                    }
+                }
             }
             .accessibilityIdentifier("mac.schedule.runNow." + record.id.uuidString)
             .disabled(center.isBusy || center.running.contains(record.id) || center.launching.contains(record.id))

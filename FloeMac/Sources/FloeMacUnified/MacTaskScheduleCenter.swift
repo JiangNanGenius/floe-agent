@@ -10,12 +10,7 @@ import FloePersistence
 /// calendar, logical occurrence identity, exclusive claim and durable state.
 @MainActor
 final class MacTaskScheduleCenter: ObservableObject {
-    /// A manual "Run Now" launch that actually bound to a run. Equatable so
-    /// SwiftUI `.onChange` can observe it (a bare tuple is not).
-    struct ManualLaunch: Equatable, Sendable {
-        let scheduleID: UUID
-        let conversationID: UUID
-    }
+    typealias ManualLaunch = @MainActor (UUID) -> Void
 
     @Published private(set) var records: [TaskScheduleRecord] = []
     @Published private(set) var recent: [TaskScheduleOccurrence] = []
@@ -23,9 +18,6 @@ final class MacTaskScheduleCenter: ObservableObject {
     @Published private(set) var launching = Set<UUID>()
     @Published private(set) var running = Set<UUID>()
     @Published private(set) var errorMessage: String?
-    /// Published after the manual occurrence is bound to its persisted run.
-    @Published private(set) var lastManualLaunch: ManualLaunch?
-
     private weak var workspace: HostAgentWorkspace?
     private var store: SQLiteTaskScheduleStore?
     private var poll: Task<Void, Never>?
@@ -126,12 +118,12 @@ final class MacTaskScheduleCenter: ObservableObject {
         }
     }
 
-    func runNow(_ schedule: TaskScheduleRecord) async {
+    func runNow(_ schedule: TaskScheduleRecord, onBound: ManualLaunch? = nil) async {
         await change { store in
             guard !launching.contains(schedule.id), !running.contains(schedule.id),
                   let saved = try await store.schedule(id: schedule.id),
                   let occurrence = try await store.runNow(id: schedule.id, at: Date()) else { return }
-            try await dispatch(saved, occurrence: occurrence, store: store)
+            try await dispatch(saved, occurrence: occurrence, store: store, onBound: onBound)
         }
     }
 
@@ -192,16 +184,16 @@ final class MacTaskScheduleCenter: ObservableObject {
     }
 
     private func dispatch(_ schedule: TaskScheduleRecord, occurrence: TaskScheduleOccurrence,
-                          store: SQLiteTaskScheduleStore) async throws {
+                          store: SQLiteTaskScheduleStore, onBound: ManualLaunch? = nil) async throws {
         guard try await store.claimOccurrence(id: occurrence.id, at: Date()) else { return }
         launching.insert(schedule.id)
-        if workspace?.launchScheduledTask(schedule, occurrence: occurrence, store: store) != true {
+        if workspace?.launchScheduledTask(schedule, occurrence: occurrence, store: store, onBound: onBound) != true {
             await failLaunch(occurrence, store: store)
         }
     }
 
     func bindLaunched(occurrence: TaskScheduleOccurrence, runID: UUID, conversationID: UUID,
-                      store: SQLiteTaskScheduleStore) async {
+                      store: SQLiteTaskScheduleStore, onBound: ManualLaunch?) async {
         defer { launching.remove(occurrence.scheduleID); running.insert(occurrence.scheduleID) }
         do {
             let now = Date()
@@ -209,10 +201,11 @@ final class MacTaskScheduleCenter: ObservableObject {
                 errorMessage = MacPermissionsText.t("无法关联这次定时运行。", "Could not link this scheduled run.")
                 return
             }
-            if occurrence.isManualRun { try await store.markManualStarted(id: occurrence.scheduleID, at: now) }
-            else { try await store.markStarted(id: occurrence.scheduleID, at: now) }
             if occurrence.isManualRun {
-                lastManualLaunch = ManualLaunch(scheduleID: occurrence.scheduleID, conversationID: conversationID)
+                onBound?(conversationID)
+                try await store.markManualStarted(id: occurrence.scheduleID, at: now)
+            } else {
+                try await store.markStarted(id: occurrence.scheduleID, at: now)
             }
             try await refresh(store)
         } catch { showStorageError() }

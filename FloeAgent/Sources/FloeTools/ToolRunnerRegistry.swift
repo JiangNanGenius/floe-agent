@@ -81,21 +81,7 @@ public struct AnyAgentTool: Sendable {
     /// Type-erases a concrete `AgentTool`: decodes `argumentsJSON` into the
     /// tool's `Arguments`, validates them, then executes.
     public init<T: AgentTool>(_ tool: T) {
-        // Every compiled metadata field must survive type erasure: a wrapper
-        // registration that silently restored defaults would drop the
-        // main-run/child-only boundary and the parallel-safety flag.
-        self.descriptor = ToolCatalog.Descriptor(
-            name: T.name,
-            toolDescription: T.toolDescription,
-            parametersJSON: T.parametersJSON,
-            riskLabels: T.riskLabels,
-            isSideEffecting: T.isSideEffecting,
-            effect: T.toolEffect,
-            requiresHostScope: T.requiresHostScope,
-            prerequisites: T.prerequisites,
-            executionBoundary: T.executionBoundary,
-            supportsConcurrentBatchDispatch: T.supportsConcurrentBatchDispatch
-        )
+        self.descriptor = ToolCatalog.Descriptor(tool: T.self)
         self.validateArguments = { argumentsJSON in
             let arguments: T.Arguments
             do {

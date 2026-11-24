@@ -2452,6 +2452,7 @@ final class HostAgentWorkspace: ObservableObject {
         let schedule: TaskScheduleRecord
         let occurrence: TaskScheduleOccurrence
         let store: SQLiteTaskScheduleStore
+        let onBound: MacTaskScheduleCenter.ManualLaunch?
     }
 
     #if FLOE_UNIFIED_MAC
@@ -2462,14 +2463,14 @@ final class HostAgentWorkspace: ObservableObject {
     }
 
     func launchScheduledTask(_ schedule: TaskScheduleRecord, occurrence: TaskScheduleOccurrence,
-                             store: SQLiteTaskScheduleStore) -> Bool {
+                             store: SQLiteTaskScheduleStore, onBound: MacTaskScheduleCenter.ManualLaunch?) -> Bool {
         guard isReady, !isTerminating, let runtime,
               schedule.workspaceID == nil || workspaces.contains(where: { $0.id == schedule.workspaceID && $0.kind == .project }) else { return false }
         let eligible = taskModelChoices.filter { $0.profile.isEnabled && $0.model.isEnabled && $0.model.capabilities.contains(.tools) }
         guard let requested = schedule.modelID ?? selectedPrimaryModelID,
               let provider = eligible.first(where: { $0.model.id == requested }) else { return false }
         return beginSend(schedule.prompt, runtime: runtime, provider: provider.binding(), workspaceID: schedule.workspaceID,
-                         mode: .agent, scheduled: .init(schedule: schedule, occurrence: occurrence, store: store))
+                         mode: .agent, scheduled: .init(schedule: schedule, occurrence: occurrence, store: store, onBound: onBound))
     }
 
     func recentScheduleRuns() async -> [RecentRunSummary] {
@@ -3134,7 +3135,7 @@ final class HostAgentWorkspace: ObservableObject {
                 #if FLOE_UNIFIED_MAC
                 if let scheduled {
                     await taskSchedules.bindLaunched(occurrence: scheduled.occurrence, runID: handle.identity.runID,
-                                                     conversationID: taskID, store: scheduled.store)
+                                                     conversationID: taskID, store: scheduled.store, onBound: scheduled.onBound)
                     if taskPolicy.notificationPolicy.shouldNotifyStages {
                         let scheduleTitle = taskSchedules.records.first(where: { $0.id == scheduled.schedule.id })?.title
                         taskNotifications?.post(.started, taskID: taskID, key: handle.identity.runID.uuidString,
