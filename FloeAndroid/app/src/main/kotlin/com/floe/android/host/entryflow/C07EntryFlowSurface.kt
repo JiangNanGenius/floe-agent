@@ -94,6 +94,12 @@ internal fun C07EntryFlowSurface(
             EntryNotificationAction.OPEN_SETTINGS
         }
     }
+    val notificationSettings = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { C07EntryFlowHost.refreshSetupStatus() }
+    val openNotificationSettings = {
+        C07EntryFlowHost.openSystemNotificationSettings { notificationSettings.launch(it) }
+    }
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
@@ -179,10 +185,10 @@ internal fun C07EntryFlowSurface(
                         runCatching {
                             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }.onFailure {
-                            C07EntryFlowHost.openSystemNotificationSettings()
+                            openNotificationSettings()
                         }
                     } else {
-                        C07EntryFlowHost.openSystemNotificationSettings()
+                        openNotificationSettings()
                     }
                 }
                 EntrySetupStep.LINUX -> C07EntryFlowHost.beginSetupConfiguration(

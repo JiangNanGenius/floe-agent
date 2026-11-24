@@ -389,17 +389,18 @@ internal object C07EntryFlowHost {
     /** Open the real system notification settings for this App (the only
      * notification control before Android 13, and the fallback afterwards).
      * Nothing is enabled by opening it. */
-    fun openSystemNotificationSettings() {
+    fun openSystemNotificationSettings(launch: (Intent) -> Unit) {
         if (!initialized) return
         val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
             .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, appContext.packageName)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { appContext.startActivity(intent) }.onFailure {
+        // Launch in the calling Activity's stack so Back returns to this step,
+        // even when the system Settings app already has another page open.
+        runCatching { launch(intent) }.onFailure {
             val fallback = Intent(
                 android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.parse("package:${appContext.packageName}"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            runCatching { appContext.startActivity(fallback) }.onFailure {
+            )
+            runCatching { launch(fallback) }.onFailure {
                 showNotice(EntryNoticeKind.OPEN_FAILED)
             }
         }
