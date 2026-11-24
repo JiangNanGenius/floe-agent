@@ -26,9 +26,9 @@ struct InlineAnswerBodyView: View {
     var body: some View {
         let blocks = InlineContentBlockParser.parse(source, streaming: isStreaming)
         #if canImport(AlarmKit)
-        let suppressedTimerBlocks = InlineTimerBodyProjection.suppressedReferenceBlockIDs(
-            text: source, sources: inlineTimerProjection, isStreaming: isStreaming)
-        let visibleBlocks = blocks.filter { !suppressedTimerBlocks.contains($0.id) }
+        let timerReferences = InlineTimerBodyProjection.bodyReferences(in: blocks, sources: inlineTimerProjection)
+        let visibleBlocks = timerReferences.suppressedBlockIDs.isEmpty ? blocks
+            : blocks.filter { !timerReferences.suppressedBlockIDs.contains($0.id) }
         #else
         let visibleBlocks = blocks
         #endif
@@ -43,8 +43,7 @@ struct InlineAnswerBodyView: View {
             // Projected native countdown timers for answers whose model text
             // omitted the reference: appended once per whole answer (never
             // per paragraph), each card verifying its own durable receipt.
-            let projectedTimers = InlineTimerBodyProjection.unreferencedSources(
-                inlineTimerProjection, text: source, isStreaming: isStreaming)
+            let projectedTimers = timerReferences.unreferencedSources
             if !projectedTimers.isEmpty {
                 ForEach(projectedTimers, id: \.creationID) { timerSource in
                     InlineTimerCard(source: timerSource)

@@ -126,6 +126,9 @@ final class ThreadDetailViewModel: ObservableObject {
         didSet { cachedImportantFiles = nil }
     }
     @Published private(set) var eventsByRun: [UUID: [RunEventRecord]] = [:] { didSet { timelineRevision &+= 1 } }
+    #if canImport(AlarmKit)
+    private var timerAssignmentsByRun: [UUID: InlineTimerBodyProjection.AnswerAssignments] = [:]
+    #endif
     @Published private(set) var usageByRun: [UUID: [RunUsageRecord]] = [:]
     @Published private(set) var liveUsage = UsageSnapshot()
     @Published private(set) var latestUsage = UsageSnapshot()
@@ -734,6 +737,9 @@ final class ThreadDetailViewModel: ObservableObject {
                 messageIDs = []
                 eventIDsByRun = [:]
                 eventsByRun = [:]
+                #if canImport(AlarmKit)
+                timerAssignmentsByRun.removeAll()
+                #endif
                 stopLiveUpdates()
                 return
             }
@@ -917,6 +923,7 @@ final class ThreadDetailViewModel: ObservableObject {
     }
 
     private func mergeRunHeaders(_ incoming: [RunRecord]) {
+        guard !incoming.isEmpty, incoming != runs else { return }
         var headers = Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0) })
         var changed = false
         for header in incoming where headers[header.id] != header {
@@ -1212,8 +1219,23 @@ final class ThreadDetailViewModel: ObservableObject {
             // sequence order over the merged superset.
             merged = (existing + added).sorted { $0.sequence < $1.sequence }
         }
+        #if canImport(AlarmKit)
+        timerAssignmentsByRun[runID] = nil
+        #endif
         eventsByRun[runID] = merged
     }
+
+    #if canImport(AlarmKit)
+    func timerSources(runID: UUID, answerID: UUID? = nil, legacyAnswerID: UUID? = nil,
+                      isStreaming: Bool = false) -> [InlineTimerCardSource] {
+        guard let events = eventsByRun[runID], !events.isEmpty else { return [] }
+        if timerAssignmentsByRun[runID] == nil {
+            timerAssignmentsByRun[runID] = .init(events: events)
+        }
+        return timerAssignmentsByRun[runID]?.sources(
+            answerID: answerID, legacyAnswerID: legacyAnswerID, isStreaming: isStreaming) ?? []
+    }
+    #endif
 
     private nonisolated static func messageCursor(_ message: PersistedMessage) -> ConversationMessageCursor {
         .init(createdAt: message.createdAt, messageID: message.id)
@@ -2698,9 +2720,10 @@ final class ThreadDetailViewModel: ObservableObject {
                 if previousRunID != self.selectedRunID || serviceBecameAvailable {
                     self.startLiveUpdates()
                 } else if self.observedServiceRunID == nil, let run = self.selectedRun {
-                    self.liveStateName = run.state
-                    self.isRunning = !RunStateLocalizer.isTerminal(run.state)
+                    let running = !RunStateLocalizer.isTerminal(run.state)
                         && !RunStateLocalizer.isNonExecutingReady(run.state, hasLiveOwner: center.hasLiveOwner(runID: run.id))
+                    if self.liveStateName != run.state { self.liveStateName = run.state }
+                    if self.isRunning != running { self.isRunning = running }
                 }
             }
         }

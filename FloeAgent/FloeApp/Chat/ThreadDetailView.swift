@@ -823,8 +823,7 @@ struct ThreadDetailView: View {
                        }),
                        let runID = viewModel.selectedRun?.id,
                        legacyAnswerID(runID: runID) == nil {
-                        let timerProjection = InlineTimerBodyProjection.project(
-                            text: "", events: viewModel.eventsByRun[runID] ?? [], isStreaming: true)
+                        let timerProjection = viewModel.timerSources(runID: runID, isStreaming: true)
                         if !timerProjection.isEmpty {
                             InlineAnswerBodyView(source: "")
                                 .environment(\.inlineTimerProjection, timerProjection)
@@ -1010,12 +1009,10 @@ struct ThreadDetailView: View {
             let owningRunID = answerRunID(persisted: persisted, idSuffix: idSuffix)
             #if canImport(AlarmKit)
             let timerProjection: [InlineTimerCardSource] = searchRanges.isEmpty
-                ? InlineTimerBodyProjection.project(
-                    text: text,
-                    events: owningRunID.flatMap { viewModel.eventsByRun[$0] } ?? [],
-                    answerID: UUID(uuidString: idSuffix),
-                    legacyAnswerID: owningRunID.flatMap { legacyAnswerID(runID: $0) })
-                : []
+                ? owningRunID.map { runID in
+                    viewModel.timerSources(runID: runID, answerID: UUID(uuidString: idSuffix),
+                                           legacyAnswerID: legacyAnswerID(runID: runID))
+                } ?? [] : []
             #endif
             Group {
             if !searchRanges.isEmpty {
@@ -1125,11 +1122,8 @@ struct ThreadDetailView: View {
             #if canImport(AlarmKit)
             // The streaming tail is the run's in-progress answer body:
             // project confirmed timers whose reference the stream omitted.
-            .environment(\.inlineTimerProjection, viewModel.selectedRunID.flatMap { runID in
-                InlineTimerBodyProjection.project(
-                    text: viewModel.liveStreamedText,
-                    events: viewModel.eventsByRun[runID] ?? [],
-                    isStreaming: true)
+            .environment(\.inlineTimerProjection, viewModel.selectedRunID.map { runID in
+                viewModel.timerSources(runID: runID, isStreaming: true)
             } ?? [])
             #endif
 

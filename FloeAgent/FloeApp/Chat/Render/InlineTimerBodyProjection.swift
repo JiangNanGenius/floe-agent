@@ -152,62 +152,69 @@ enum InlineTimerBodyProjection {
         return status.snapshot == nil || status.snapshot?.id == record.id
     }
 
-    /// Sources whose reference URI the body text omitted. Used both by the
-    /// per-run projection and by a body that already carries an explicit
-    /// projection environment (so a model-markup card is never duplicated).
-    static func unreferencedSources(
-        _ sources: [InlineTimerCardSource],
-        text: String,
-        isStreaming: Bool = false
-    ) -> [InlineTimerCardSource] {
-        let references = parsedReferences(text: text, isStreaming: isStreaming)
-        return sources.filter { source in
-            !references.contains { matches($0, source: source) }
+    /// Reuse the blocks already parsed by the answer renderer. Fenced examples
+    /// and unrelated references stay in the body, including on the live tail.
+    static func bodyReferences(
+        in blocks: [InlineContentBlockParser.Block], sources: [InlineTimerCardSource]
+    ) -> (suppressedBlockIDs: Set<Int>, unreferencedSources: [InlineTimerCardSource]) {
+        guard !sources.isEmpty else { return ([], []) }
+        var seenCreations = Set<String>()
+        var referencedIndices = Set<Int>()
+        var suppressed = Set<Int>()
+        for block in blocks {
+            guard case .reference(_, let uri) = block.content,
+                  let reference = ChatContentReference(uri) else { continue }
+            var firstMatch: Int?
+            for index in sources.indices where matches(reference, source: sources[index]) {
+                referencedIndices.insert(index)
+                firstMatch = firstMatch ?? index
+            }
+            if let firstMatch, !seenCreations.insert(sources[firstMatch].creationID).inserted {
+                suppressed.insert(block.id)
+            }
         }
+        return (suppressed, sources.indices.compactMap { index in
+            referencedIndices.contains(index) ? nil : sources[index]
+        })
     }
 
-    /// Main's block loop can omit only these duplicate native-reference blocks;
-    /// ordinary Markdown, examples in fences and unrelated artifacts stay put.
-    static func suppressedReferenceBlockIDs(
-        text: String, sources: [InlineTimerCardSource], isStreaming: Bool = false
-    ) -> Set<Int> {
-        var seen = Set<String>(), suppressed = Set<Int>()
-        for block in InlineContentBlockParser.parse(text, streaming: isStreaming) {
-            guard case .reference(_, let uri) = block.content, let reference = ChatContentReference(uri),
-                  let source = sources.first(where: { matches(reference, source: $0) }) else { continue }
-            if !seen.insert(source.creationID).inserted { suppressed.insert(block.id) }
+    /// Resolve immutable receipts once when a run's loaded event pages change.
+    /// Timer state still comes from the native service when a card is shown.
+    struct AnswerAssignments {
+        private struct Entry {
+            let source: InlineTimerCardSource
+            let nextAnswerID: UUID?
+            let allowsLegacyFallback: Bool
         }
-        return suppressed
-    }
 
-    /// Candidates assigned to this ONE body. A creation belongs to the first
-    /// assistantText after its first success, or to the live tail until that
-    /// segment is durable. Legacy runs require an explicitly chosen fallback
-    /// message ID; an arbitrary unknown message never adopts every timer.
-    /// `unreferencedSources` decides which candidates need appended cards.
-    static func project(
-        text: String,
-        events: [RunEventRecord],
-        answerID: UUID? = nil,
-        legacyAnswerID: UUID? = nil,
-        isStreaming: Bool = false,
-        limit: Int = projectionLimit
-    ) -> [InlineTimerCardSource] {
-        guard limit > 0 else { return [] }
-        let answers = events.filter { $0.kind == .assistantText && !(payload($0)?["text"] ?? "").isEmpty }
-        return Array(timerArtifacts(events: events).filter { source in
-            let runAnswers = answers.filter { $0.runID == source.runID }
-            let nextAnswer = runAnswers.filter { $0.sequence > source.creationSequence }.min { $0.sequence < $1.sequence }
-            if isStreaming { return nextAnswer == nil }
-            if let nextAnswer { return nextAnswer.id == answerID }
-            return runAnswers.isEmpty && answerID != nil && answerID == legacyAnswerID
-        }.prefix(min(limit, projectionLimit)))
-    }
+        private let entries: [Entry]
 
-    private static func parsedReferences(text: String, isStreaming: Bool) -> [ChatContentReference] {
-        InlineContentBlockParser.parse(text, streaming: isStreaming).compactMap { block in
-            guard case .reference(_, let uri) = block.content else { return nil }
-            return ChatContentReference(uri)
+        init(events: [RunEventRecord]) {
+            let timers = InlineTimerBodyProjection.timerArtifacts(events: events)
+            guard !timers.isEmpty else {
+                entries = []
+                return
+            }
+            let answersByRun = Dictionary(grouping: events.filter {
+                $0.kind == .assistantText && !(InlineTimerBodyProjection.payload($0)?["text"] ?? "").isEmpty
+            }, by: \.runID)
+            entries = timers.map { source in
+                let answers = answersByRun[source.runID, default: []]
+                let next = answers.lazy.filter { $0.sequence > source.creationSequence }
+                    .min { $0.sequence < $1.sequence }
+                return Entry(source: source, nextAnswerID: next?.id, allowsLegacyFallback: answers.isEmpty)
+            }
+        }
+
+        func sources(answerID: UUID? = nil, legacyAnswerID: UUID? = nil, isStreaming: Bool = false,
+                     limit: Int = projectionLimit) -> [InlineTimerCardSource] {
+            guard limit > 0 else { return [] }
+            let matching = entries.lazy.filter { entry in
+                if isStreaming { return entry.nextAnswerID == nil }
+                if let nextAnswerID = entry.nextAnswerID { return nextAnswerID == answerID }
+                return entry.allowsLegacyFallback && answerID != nil && answerID == legacyAnswerID
+            }
+            return matching.prefix(min(limit, projectionLimit)).map { $0.source }
         }
     }
 

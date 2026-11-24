@@ -4,6 +4,7 @@
 // are synthetic; no real StudioAuthority store or user data is touched.
 
 #if canImport(UIKit)
+import Combine
 import Foundation
 import Testing
 import FloeCore
@@ -273,6 +274,19 @@ struct FileAssistantLifecycleTests {
         await center.authoringConversationBecameVisible(first)
         #expect(!center.conversations.contains { $0.id == first })
         #expect(center.fileAssistantConversations.contains { $0.id == first })
+        do {
+            var ordinaryUpdates = 0
+            var assistantUpdates = 0
+            let ordinaryObserver = center.$conversations.dropFirst().sink { _ in ordinaryUpdates += 1 }
+            let assistantObserver = center.$fileAssistantConversations.dropFirst().sink { _ in assistantUpdates += 1 }
+            defer {
+                ordinaryObserver.cancel()
+                assistantObserver.cancel()
+            }
+            await center.authoringConversationBecameVisible(first)
+            #expect(ordinaryUpdates == 0)
+            #expect(assistantUpdates == 0)
+        }
         let oldWorkspace = try await SQLiteWorkspaceStore(database: fixture.environment.database).workspaceID(conversationID: first)
 
         let next = try await fixture.environment.studioCoordinator.restartAssistant(for: file, expectedConversationID: first)

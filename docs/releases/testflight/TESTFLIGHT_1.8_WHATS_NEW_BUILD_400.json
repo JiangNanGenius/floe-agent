@@ -1,0 +1,4 @@
+{
+  "en-US": "Stream a long answer and scroll through the conversation. Reopen a task that created a timer and check that each timer still appears once in its own answer. Open a document assistant, return to the task list, and verify its title and status still update when they change. Paste a long mixed-language draft and check the usage estimate.",
+  "zh-Hans": "生成一条长回复，在流式输出时滚动会话。重新打开曾创建定时器的任务，检查每个定时器只在所属回复中出现一次。打开文档助手并返回任务列表，检查标题和状态有变化时仍会更新。粘贴一段中英文混排的长文本，核对用量估算。"
+}

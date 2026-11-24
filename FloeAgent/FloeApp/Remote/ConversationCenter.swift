@@ -1337,11 +1337,6 @@ final class ConversationCenter: ObservableObject {
     private var sessionReconciliationTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionContinuations: [UUID: [UUID: AsyncStream<ConversationSessionSnapshot>.Continuation]] = [:]
     private var pendingSessionPublishes: [UUID: Task<Void, Never>] = [:]
-    /// Reuses immutable historical event pages across live projections. A run
-    /// that is no longer newest cannot acquire more events, so repeatedly
-    /// decoding up to 1,000 rows for every visible historical run only makes
-    /// long conversations slower without changing the UI.
-    private var sessionSnapshotCache: [UUID: ConversationSessionSnapshot] = [:]
     /// Launch/delete coordination. A delete first closes the conversation to
     /// new launches, then waits for any transaction already in progress.
     private var launchCount = 0
@@ -1953,7 +1948,7 @@ final class ConversationCenter: ObservableObject {
             conversation = try await claimNativeEditorOwnership(conversationID, owner: owner)
         }
         if !isTemporary, conversation.editorOwnership != nil {
-            conversations.removeAll { $0.id == conversationID }
+            removeFromOrdinaryConversationList(conversationID)
         }
         let messagePage = try await conversationStore.messagePage(
             conversationID: conversationID, before: nil, limit: 20
@@ -2007,7 +2002,7 @@ final class ConversationCenter: ObservableObject {
         // Updates can share the same persisted second. A terminal goal must
         // never hide the next unfinished goal in a streamed UI snapshot.
         let activeGoal = Self.presentedGoal(goals)
-        let snapshot = ConversationSessionSnapshot(
+        return ConversationSessionSnapshot(
             revision: revision,
             conversation: conversation,
             messages: messages,
@@ -2023,10 +2018,6 @@ final class ConversationCenter: ObservableObject {
             taskPolicy: taskPolicy,
             pendingInputs: try await runningInputStore(for: conversationID).pending(conversationID: conversationID)
         )
-        if revision >= (sessionSnapshotCache[conversationID]?.revision ?? -1) {
-            sessionSnapshotCache[conversationID] = snapshot
-        }
-        return snapshot
     }
 
     func sessionEvents(conversationID: UUID) -> AsyncStream<ConversationSessionSnapshot> {
@@ -2038,7 +2029,6 @@ final class ConversationCenter: ObservableObject {
                     self?.sessionContinuations[conversationID]?[subscriberID] = nil
                     if self?.sessionContinuations[conversationID]?.isEmpty != false {
                         self?.sessionContinuations[conversationID] = nil
-                        self?.sessionSnapshotCache[conversationID] = nil
                         self?.sessionReconciliationTasks.removeValue(forKey: conversationID)?.cancel()
                     }
                 }
@@ -2242,13 +2232,26 @@ final class ConversationCenter: ObservableObject {
             || pendingRunPreparations.values.contains { $0.conversationID.map(conversations.contains) == true }
     }
 
+    private func removeFromOrdinaryConversationList(_ conversationID: UUID) {
+        guard conversations.contains(where: { $0.id == conversationID }) else { return }
+        conversations.removeAll { $0.id == conversationID }
+    }
+
+    private func editorListReplacing(_ fresh: ConversationRecord, in rows: [ConversationRecord]) -> [ConversationRecord] {
+        var updated = rows.filter { $0.id != fresh.id && $0.editorOwnership != fresh.editorOwnership }
+        updated.append(fresh)
+        return ConversationListOrdering.sorted(updated)
+    }
+
     private func refreshConversationInList(_ conversationID: UUID) async {
         // Temporary conversations never enter the saved list projection.
         guard !isTemporaryConversation(conversationID) else { return }
         do { try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID, validateCanvasBinding: false) }
         catch {
-            conversations.removeAll { $0.id == conversationID }
-            fileAssistantConversations.removeAll { $0.id == conversationID }
+            removeFromOrdinaryConversationList(conversationID)
+            if fileAssistantConversations.contains(where: { $0.id == conversationID }) {
+                fileAssistantConversations.removeAll { $0.id == conversationID }
+            }
             return
         }
         guard var fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
@@ -2260,45 +2263,49 @@ final class ConversationCenter: ObservableObject {
                     fresh = try await claimNativeEditorOwnership(conversationID, owner: owner)
                 }
             } catch {
-                conversations.removeAll { $0.id == conversationID }
+                removeFromOrdinaryConversationList(conversationID)
                 return // Unknown ownership cannot authorize ordinary publication.
             }
         }
         if let owner = fresh.editorOwnership, owner.kind == .file {
             guard (try? await environment.studioCoordinator.assistantProjectForOwnership(conversationID)) == owner.documentID,
                   currentFileAssistants[owner.documentID] == nil || currentFileAssistants[owner.documentID] == conversationID else {
-                conversations.removeAll { $0.id == conversationID }
-                fileAssistantConversations.removeAll { $0.id == conversationID }
+                removeFromOrdinaryConversationList(conversationID)
+                if fileAssistantConversations.contains(where: { $0.id == conversationID }) {
+                    fileAssistantConversations.removeAll { $0.id == conversationID }
+                }
                 return
             }
             currentFileAssistants[owner.documentID] = conversationID
             fileAssistantConversationIDs.insert(conversationID)
-            fileAssistantConversations.removeAll { $0.id == conversationID || $0.editorOwnership == fresh.editorOwnership }
-            fileAssistantConversations.append(fresh)
-            ConversationListOrdering.sort(&fileAssistantConversations)
+            let updated = editorListReplacing(fresh, in: fileAssistantConversations)
+            if updated != fileAssistantConversations { fileAssistantConversations = updated }
         } else if let owner = fresh.editorOwnership, owner.kind == .canvas {
             guard currentCanvasAssistants[owner] == conversationID else {
-                conversations.removeAll { $0.id == conversationID }
-                canvasAssistantConversations.removeAll { $0.id == conversationID }
+                removeFromOrdinaryConversationList(conversationID)
+                if canvasAssistantConversations.contains(where: { $0.id == conversationID }) {
+                    canvasAssistantConversations.removeAll { $0.id == conversationID }
+                }
                 return
             }
-            canvasAssistantConversations.removeAll { $0.id == conversationID || $0.editorOwnership == owner }
-            canvasAssistantConversations.append(fresh)
-            ConversationListOrdering.sort(&canvasAssistantConversations)
+            let updated = editorListReplacing(fresh, in: canvasAssistantConversations)
+            if updated != canvasAssistantConversations { canvasAssistantConversations = updated }
         }
         guard fresh.isVisibleInOrdinaryList else {
-            conversations.removeAll { $0.id == conversationID }
+            removeFromOrdinaryConversationList(conversationID)
             return
         }
-        if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+        var updated = conversations
+        if let index = updated.firstIndex(where: { $0.id == conversationID }) {
             guard conversations[index].updatedAt != fresh.updatedAt
                     || conversations[index].title != fresh.title
                     || conversations[index].pinnedAt != fresh.pinnedAt else { return }
-            conversations[index] = fresh
+            updated[index] = fresh
         } else {
-            conversations.insert(fresh, at: 0)
+            updated.insert(fresh, at: 0)
         }
-        ConversationListOrdering.sort(&conversations)
+        ConversationListOrdering.sort(&updated)
+        conversations = updated
     }
 
     /// One-shot cold-launch repair. iOS cannot keep a local provider loop

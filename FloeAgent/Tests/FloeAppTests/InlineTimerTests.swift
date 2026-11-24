@@ -53,6 +53,12 @@ struct InlineTimerTests {
         try #require(ChatContentReference(kind: .artifact, ownerID: run, contentID: artifact.id.uuidString)).markdown(title: "Tea")
     }
 
+    private func unreferenced(_ sources: [InlineTimerCardSource], text: String,
+                              streaming: Bool = false) -> [InlineTimerCardSource] {
+        InlineTimerBodyProjection.bodyReferences(
+            in: InlineContentBlockParser.parse(text, streaming: streaming), sources: sources).unreferencedSources
+    }
+
     @Test func bindingRoundTripRejectsForeignMissingAndChangedIdentity() throws {
         let row = record(), value = try binding(row)
         let restored = try JSONDecoder().decode(NativeTimerBinding.self, from: JSONEncoder().encode(value))
@@ -151,7 +157,7 @@ struct InlineTimerTests {
         let sources = InlineTimerBodyProjection.timerArtifacts(events: events)
         #expect(sources.count == 1 && sources.first?.artifact.id == first.id)
         #expect(sources.first?.aliasArtifactIDs == [retry.id])
-        #expect(InlineTimerBodyProjection.unreferencedSources(sources, text: try reference(retry, run: row.ownerRunID)).isEmpty)
+        #expect(unreferenced(sources, text: try reference(retry, run: row.ownerRunID)).isEmpty)
         let invalid = try [result(row, artifact: first, sequence: 3, status: "failed"),
             result(row, artifact: first, sequence: 4, tool: "mcp.apple.alarm.schedule"),
             result(row, artifact: first, sequence: 5, unknown: true)]
@@ -162,11 +168,11 @@ struct InlineTimerTests {
         let row = record(), file = try artifact(row)
         let sources = InlineTimerBodyProjection.timerArtifacts(events: try [result(row, artifact: file, sequence: 1)])
         let markup = try reference(file, run: row.ownerRunID)
-        #expect(InlineTimerBodyProjection.unreferencedSources(sources, text: markup).isEmpty)
-        #expect(InlineTimerBodyProjection.unreferencedSources(sources, text: "```markdown\n" + markup + "\n```").count == 1)
-        #expect(InlineTimerBodyProjection.unreferencedSources(sources, text: "Example: " + markup).count == 1)
-        #expect(InlineTimerBodyProjection.unreferencedSources(sources, text: markup, isStreaming: true).count == 1)
-        #expect(InlineTimerBodyProjection.unreferencedSources(sources, text: markup + "\n", isStreaming: true).isEmpty)
+        #expect(unreferenced(sources, text: markup).isEmpty)
+        #expect(unreferenced(sources, text: "```markdown\n" + markup + "\n```").count == 1)
+        #expect(unreferenced(sources, text: "Example: " + markup).count == 1)
+        #expect(unreferenced(sources, text: markup, streaming: true).count == 1)
+        #expect(unreferenced(sources, text: markup + "\n", streaming: true).isEmpty)
     }
 
     @Test func repeatedExplicitReferencesRenderOneCreation() throws {
@@ -174,12 +180,13 @@ struct InlineTimerTests {
         let sources = InlineTimerBodyProjection.timerArtifacts(events: try [result(row, artifact: first, sequence: 1),
             result(row, artifact: retry, sequence: 2)])
         let text = try reference(first, run: row.ownerRunID) + "\n\n" + reference(retry, run: row.ownerRunID)
-        let suppressed = InlineTimerBodyProjection.suppressedReferenceBlockIDs(text: text, sources: sources)
-        let visibleReferences = InlineContentBlockParser.parse(text).filter {
-            if case .reference = $0.content { return !suppressed.contains($0.id) }; return false
+        let blocks = InlineContentBlockParser.parse(text)
+        let references = InlineTimerBodyProjection.bodyReferences(in: blocks, sources: sources)
+        let visibleReferences = blocks.filter {
+            if case .reference = $0.content { return !references.suppressedBlockIDs.contains($0.id) }; return false
         }
         #expect(visibleReferences.count == 1)
-        #expect(InlineTimerBodyProjection.unreferencedSources(sources, text: text).isEmpty)
+        #expect(references.unreferencedSources.isEmpty)
     }
 
     @Test func oneRunAssignsEachCreationToOnlyItsNextAssistantSegment() throws {
@@ -190,30 +197,35 @@ struct InlineTimerTests {
         let secondAnswer = try answer(run: run, sequence: 6)
         let events = try [before, result(first, artifact: firstFile, sequence: 2), firstAnswer,
             result(first, artifact: artifact(first), sequence: 4), result(second, artifact: secondFile, sequence: 5), secondAnswer]
-        #expect(InlineTimerBodyProjection.project(text: "", events: events, answerID: before.id).isEmpty)
-        #expect(InlineTimerBodyProjection.project(text: "", events: events, answerID: firstAnswer.id).map(\.artifact.id) == [firstFile.id])
-        #expect(InlineTimerBodyProjection.project(text: "", events: events, answerID: secondAnswer.id).map(\.artifact.id) == [secondFile.id])
-        #expect(InlineTimerBodyProjection.project(text: "", events: events, isStreaming: true).isEmpty)
+        let assignments = InlineTimerBodyProjection.AnswerAssignments(events: events)
+        #expect(assignments.sources(answerID: before.id).isEmpty)
+        #expect(assignments.sources(answerID: firstAnswer.id).map(\.artifact.id) == [firstFile.id])
+        #expect(assignments.sources(answerID: secondAnswer.id).map(\.artifact.id) == [secondFile.id])
+        #expect(assignments.sources(isStreaming: true).isEmpty)
     }
 
     @Test func streamingCreationMovesToTheDurableSegmentWithoutRepeatingInTheTail() throws {
         let row = record(), file = try artifact(row), completion = try answer(run: row.ownerRunID, sequence: 2)
         let pending = try [result(row, artifact: file, sequence: 1)]
-        let streaming = InlineTimerBodyProjection.project(text: "Starting", events: pending, isStreaming: true)
-        let persisted = InlineTimerBodyProjection.project(text: "Ready", events: pending + [completion], answerID: completion.id)
+        let before = InlineTimerBodyProjection.AnswerAssignments(events: pending)
+        let after = InlineTimerBodyProjection.AnswerAssignments(events: pending + [completion])
+        let streaming = before.sources(isStreaming: true)
+        let persisted = after.sources(answerID: completion.id)
         #expect(streaming.map(\.creationID) == persisted.map(\.creationID))
-        #expect(InlineTimerBodyProjection.project(text: "Later", events: pending + [completion], isStreaming: true).isEmpty)
-        #expect(InlineTimerBodyProjection.project(text: "", events: pending, isStreaming: true, limit: 0).isEmpty)
+        #expect(after.sources(isStreaming: true).isEmpty)
+        #expect(before.sources(isStreaming: true, limit: 0).isEmpty)
     }
 
     @Test func unknownMessageIDNeverActsAsEveryLegacyAnswer() throws {
         let row = record(), file = try artifact(row), legacyID = UUID(), otherID = UUID()
         let events = try [result(row, artifact: file, sequence: 1)]
-        #expect(InlineTimerBodyProjection.project(text: "Legacy", events: events, answerID: otherID).isEmpty)
-        #expect(InlineTimerBodyProjection.project(text: "Legacy", events: events, answerID: otherID, legacyAnswerID: legacyID).isEmpty)
-        #expect(InlineTimerBodyProjection.project(text: "Legacy", events: events, answerID: legacyID, legacyAnswerID: legacyID).count == 1)
+        let assignments = InlineTimerBodyProjection.AnswerAssignments(events: events)
+        #expect(assignments.sources(answerID: otherID).isEmpty)
+        #expect(assignments.sources(answerID: otherID, legacyAnswerID: legacyID).isEmpty)
+        #expect(assignments.sources(answerID: legacyID, legacyAnswerID: legacyID).count == 1)
         let actual = try answer(run: row.ownerRunID, sequence: 2)
-        #expect(InlineTimerBodyProjection.project(text: "Legacy", events: events + [actual], answerID: legacyID, legacyAnswerID: legacyID).isEmpty)
+        let updated = InlineTimerBodyProjection.AnswerAssignments(events: events + [actual])
+        #expect(updated.sources(answerID: legacyID, legacyAnswerID: legacyID).isEmpty)
     }
 
     @Test func sqliteReopenKeepsTheSameCreationAndAnswerOwnership() async throws {
@@ -232,12 +244,37 @@ struct InlineTimerTests {
         let retry = try result(row, artifact: artifact(row), sequence: 3)
         _ = try await runs.appendEvent(runID: row.ownerRunID, kind: .toolResult, payloadJSON: retry.payloadJSON)
         let later = try await runs.appendEvent(runID: row.ownerRunID, kind: .assistantText, payloadJSON: payload(["text": "Later"]))
-        let initial = InlineTimerBodyProjection.project(text: "Ready", events: try await runs.events(runID: row.ownerRunID), answerID: answer.id)
+        let before = InlineTimerBodyProjection.AnswerAssignments(events: try await runs.events(runID: row.ownerRunID))
         let reopened = try DatabaseManager(path: path)
         let stored = try await SQLiteRunStore(database: reopened).events(runID: row.ownerRunID)
-        #expect(InlineTimerBodyProjection.project(text: "Ready", events: stored, answerID: answer.id) == initial)
-        #expect(InlineTimerBodyProjection.project(text: "Later", events: stored, answerID: later.id).isEmpty)
+        let after = InlineTimerBodyProjection.AnswerAssignments(events: stored)
+        let initial = before.sources(answerID: answer.id)
+        #expect(after.sources(answerID: answer.id) == initial)
+        #expect(after.sources(answerID: later.id).isEmpty)
         #expect(initial.count == 1 && initial.first?.artifact.id == file.id)
+    }
+
+    @Test func loadedEventPagesInvalidateTheCachedTimerAssignment() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = environment.conversationCenter
+        let task = try await center.createConversation(title: "Timer projection")
+        let row = record(task: task.id), file = try artifact(row)
+        let runs = environment.runStore
+        try await runs.saveRun(.init(id: row.ownerRunID, conversationID: task.id, state: "completed",
+                                    goal: "Timer", startedAt: now, endedAt: now))
+        let success = try result(row, artifact: file, sequence: 1)
+        _ = try await runs.appendEvent(runID: row.ownerRunID, kind: .toolResult, payloadJSON: success.payloadJSON)
+        let model = ThreadDetailViewModel(conversationID: task.id, center: center)
+        await model.load()
+        defer { model.stopLiveUpdates() }
+        #expect(model.timerSources(runID: row.ownerRunID, isStreaming: true).map(\.artifact.id) == [file.id])
+
+        let answer = try await runs.appendEvent(runID: row.ownerRunID, kind: .assistantText,
+                                                payloadJSON: payload(["text": "Ready"]))
+        await model.selectRun(row.ownerRunID)
+        #expect(model.timerSources(runID: row.ownerRunID, isStreaming: true).isEmpty)
+        #expect(model.timerSources(runID: row.ownerRunID, answerID: answer.id).map(\.artifact.id) == [file.id])
     }
 }
 #endif

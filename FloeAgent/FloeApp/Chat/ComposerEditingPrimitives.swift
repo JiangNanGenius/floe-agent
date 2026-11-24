@@ -314,12 +314,13 @@ enum ComposerResponsiveLayoutPolicy {
 /// never as an exact provider count.
 enum ComposerTokenEstimator {
     static func estimatedTokens(in text: String) -> Int {
-        guard !text.isEmpty else { return 0 }
-        let scalarCount = text.unicodeScalars.count
-        let cjkCount = text.unicodeScalars.filter {
-            (0x3400...0x9FFF).contains(Int($0.value))
-        }.count
-        return max(1, cjkCount + (scalarCount - cjkCount + 3) / 4)
+        var cjkCount = 0
+        var otherCount = 0
+        for scalar in text.unicodeScalars {
+            if (0x3400...0x9FFF).contains(scalar.value) { cjkCount += 1 }
+            else { otherCount += 1 }
+        }
+        return cjkCount + (otherCount + 3) / 4
     }
 }
 

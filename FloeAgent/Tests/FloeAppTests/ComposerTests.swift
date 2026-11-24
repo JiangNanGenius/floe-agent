@@ -524,7 +524,8 @@ struct ComposerEditingPrimitivesTests {
         // 12 Latin scalars ≈ 3 tokens.
         #expect(ComposerTokenEstimator.estimatedTokens(in: "hello world!") == 3)
         let mixed = ComposerTokenEstimator.estimatedTokens(in: "中文abc")
-        #expect(mixed >= 3)
+        #expect(mixed == 3)
+        #expect(ComposerTokenEstimator.estimatedTokens(in: "你🙂e\u{301} ") == 2)
     }
 
     @Test("A failed send restores the full original draft, never a trimmed copy")
