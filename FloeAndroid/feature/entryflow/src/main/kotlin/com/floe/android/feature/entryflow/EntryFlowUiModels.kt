@@ -72,13 +72,26 @@ public data class EntryShareUi(
     val itemCount: Int get() = items.size
 }
 
-public enum class EntrySetupStep { WELCOME, MODELS, VOICE, FILES, NOTIFICATIONS, DONE }
+public enum class EntrySetupStep { WELCOME, MODELS, VOICE, FILES, NOTIFICATIONS, LINUX, DEVICE, DONE }
+
+/** Real notification access as last read by the App host. UNKNOWN is an
+ * honest "couldn't read it", never a guessed default. */
+public enum class EntryNotificationStatus { UNKNOWN, ENABLED, DISABLED }
+
+/** What the notifications step action does on THIS device: ask the Android
+ * 13+ runtime permission, or open the real system notification settings
+ * (the only control before Android 13 and the fallback after a refusal). */
+public enum class EntryNotificationAction { OPEN_SETTINGS, REQUEST_PERMISSION }
 
 public data class EntrySetupUi(
     val step: EntrySetupStep,
     val index: Int,
     val total: Int,
     val visible: Boolean,
+    /** Live platform notification state for the notifications step; refreshed
+     * when the guide is shown and when the person returns from the system
+     * permission dialog or notification settings. */
+    val notificationStatus: EntryNotificationStatus = EntryNotificationStatus.UNKNOWN,
 ) {
     val canGoBack: Boolean get() = index > 0
     val isLast: Boolean get() = step == EntrySetupStep.DONE

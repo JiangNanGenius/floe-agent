@@ -1,8 +1,8 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="entryflow_title">设置与反馈</string>
-    <string name="entryflow_setup_title">设置指南</string>
-    <string name="entryflow_setup_body">用一小段指南了解模型、语音、文件和通知。你可以跳过，之后再回来。</string>
+    <string name="entryflow_setup_title">设置向导</string>
+    <string name="entryflow_setup_body">设置模型、语音、文件夹和通知，也可以稍后继续。</string>
     <string name="entryflow_feedback_title">反馈与诊断</string>
     <string name="entryflow_feedback_body">写下反馈并导出经过脱敏的诊断信息。不会自动发送任何内容。</string>
     <string name="entryflow_unavailable">应用就绪后可用。</string>
@@ -36,19 +36,32 @@
 
     <string name="entry_setup_progress">第 %1$d / %2$d 步</string>
     <string name="entry_setup_welcome_title">欢迎使用 Floe</string>
-    <string name="entry_setup_welcome_body">Floe 在本机运行，并使用你选择的服务商。此指南只指向现有设置，不会自行改动任何配置。</string>
+    <string name="entry_setup_welcome_body">先选择用于对话的模型服务商。其余项目可以按需设置。</string>
     <string name="entry_setup_models_title">模型</string>
-    <string name="entry_setup_models_body">在设置中添加或选择服务商与模型。Floe 不要求账户或订阅。</string>
+    <string name="entry_setup_models_body">添加服务商并选择对话模型。已有配置可以直接使用。</string>
     <string name="entry_setup_models_action">打开服务商</string>
     <string name="entry_setup_voice_title">语音</string>
-    <string name="entry_setup_voice_body">语音默认使用 Android 的语音服务。你当前的选择会保留；只有想更换引擎或声音时才需要修改。</string>
-    <string name="entry_setup_voice_action">打开语音设置</string>
-    <string name="entry_setup_files_title">文件</string>
-    <string name="entry_setup_files_body">可以把文件分享到新任务草稿或保存到手记。Floe 会让你逐个选择目标，不会读取无关存储。</string>
+    <string name="entry_setup_voice_body">默认使用 Android 系统语音。你也可以为语音输入和朗读配置云服务。</string>
+    <string name="entry_setup_voice_input_action">语音输入</string>
+    <string name="entry_setup_voice_output_action">朗读</string>
+    <string name="entry_setup_files_title">文件与文件夹</string>
+    <string name="entry_setup_files_body">选择 Floe 可以访问的文件夹。之后可在「空间 → 文件」中打开它们。</string>
+    <string name="entry_setup_files_action">管理文件夹访问</string>
     <string name="entry_setup_notifications_title">通知</string>
-    <string name="entry_setup_notifications_body">任务提问和计划任务可以通知你。想保持安静也可以关闭通知；应用内功能不受影响。</string>
-    <string name="entry_setup_done_title">设置完成</string>
-    <string name="entry_setup_done_body">你可以随时从“设置 → 设置与反馈”重新打开本指南。没有为你强制开启任何功能。</string>
+    <string name="entry_setup_notifications_body">开启通知后，Floe 可以提醒你查看任务提问和定时任务。</string>
+    <string name="entry_setup_notifications_action_request">允许通知</string>
+    <string name="entry_setup_notifications_action_settings">打开通知设置</string>
+    <string name="entry_setup_notifications_status_on">Floe 的通知已开启。</string>
+    <string name="entry_setup_notifications_status_off">Floe 的通知已关闭。</string>
+    <string name="entry_setup_notifications_status_unknown">暂时无法读取通知状态。</string>
+    <string name="entry_setup_linux_title">本地 Linux 环境</string>
+    <string name="entry_setup_linux_body">需要运行终端命令或安装 Linux 软件时，可以在这里准备本地环境。</string>
+    <string name="entry_setup_linux_action">打开环境设置</string>
+    <string name="entry_setup_device_title">设备控制</string>
+    <string name="entry_setup_device_body">要让 Floe 操作这台手机或平板，可在这里设置 ADB。Android 11 及以上支持无线配对，Android 9 和 10 使用 USB。</string>
+    <string name="entry_setup_device_action">打开设备设置</string>
+    <string name="entry_setup_done_title">向导结束</string>
+    <string name="entry_setup_done_body">以后可以从「设置 → 通用 → 设置向导」继续调整。</string>
     <string name="entry_setup_next">下一步</string>
     <string name="entry_setup_back">上一步</string>
     <string name="entry_setup_skip">稍后设置</string>

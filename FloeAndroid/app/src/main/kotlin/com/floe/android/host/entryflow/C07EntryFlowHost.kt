@@ -29,6 +29,7 @@ import com.floe.android.feature.entryflow.EntryFeedbackError
 import com.floe.android.feature.entryflow.EntryFeedbackPhase
 import com.floe.android.feature.entryflow.EntryFeedbackUi
 import com.floe.android.feature.entryflow.EntryNoticeKind
+import com.floe.android.feature.entryflow.EntryNotificationStatus
 import com.floe.android.feature.entryflow.EntryReviewAvailability
 import com.floe.android.feature.entryflow.EntrySetupStep
 import com.floe.android.feature.entryflow.EntrySetupUi
@@ -130,6 +131,18 @@ internal object C07EntryFlowHost {
     private var noticeJob: Job? = null
     private var pendingRawShare: C07RawShare? = null
     private var setupPendingOffer = false
+
+    /**
+     * True while the guide is SUSPENDED behind a configuration surface it
+     * opened (Settings or the folder manager). The wizard dialog and a
+     * configuration dialog are never stacked: the guide hides first and is
+     * re-presented at the SAME step only after that surface really closes.
+     * In-memory only — a process death simply leaves the guide dismissed,
+     * never a stale overlay.
+     */
+    private var setupConfigurationReturn = false
+    val showingSetupConfiguration: Boolean get() = setupConfigurationReturn
+    private var setupOriginSection: String? = null
     private val pendingRoutes = ArrayDeque<C07EntryRoute>()
     private val replayGuard = C07EntryReplayGuard()
 
@@ -261,16 +274,36 @@ internal object C07EntryFlowHost {
 
     /* ------------------------------ setup guide ------------------------------ */
 
-    fun openSetupGuide() {
+    /**
+     * Steps actually walkable in this process: the device/ADB step exists only
+     * while the Full phone settings category is genuinely registered, so the
+     * guide never offers a destination that is not there.
+     */
+    private fun visibleSetupSteps(): List<C07SetupStep> =
+        C07SetupMachine.visibleSteps(
+            deviceAvailable = com.floe.android.host.settings.DistributionSettingsFeature.wired,
+        )
+
+    fun openSetupGuide(originSection: String) {
         if (!initialized) return
-        val state = setupState.value.copy(seen = true, updatedAt = now())
+        if (shareUiState.value != null) {
+            // The share chooser is already asking for a destination; never
+            // stack the guide over it. The person can reopen the guide after.
+            showNotice(EntryNoticeKind.BUSY)
+            return
+        }
+        // An explicit open (Settings → General / Setup & Feedback) replaces
+        // any pending configuration return: the guide is the surface now.
+        setupConfigurationReturn = false
+        setupOriginSection = originSection
+        val state = C07SetupMachine.reopen(setupState.value, now())
         setupState.value = state
         setupStore.save(state)
         publishSetup(visible = true)
     }
 
     fun nextSetupStep() {
-        val state = C07SetupMachine.next(setupState.value, now())
+        val state = C07SetupMachine.next(setupState.value, visibleSetupSteps(), now())
         if (state == setupState.value) return
         setupState.value = state
         setupStore.save(state)
@@ -278,7 +311,7 @@ internal object C07EntryFlowHost {
     }
 
     fun previousSetupStep() {
-        val state = C07SetupMachine.previous(setupState.value, now())
+        val state = C07SetupMachine.previous(setupState.value, visibleSetupSteps(), now())
         if (state == setupState.value) return
         setupState.value = state
         setupStore.save(state)
@@ -286,31 +319,110 @@ internal object C07EntryFlowHost {
     }
 
     fun dismissSetupGuide() {
-        val state = C07SetupMachine.dismiss(setupState.value, now())
-        setupState.value = state
-        setupStore.save(state)
-        setupUiState.value = null
+        closeSetupGuide(C07SetupMachine.dismiss(setupState.value, now()))
     }
 
     fun skipSetupGuide() {
-        val state = C07SetupMachine.skip(setupState.value, now())
-        setupState.value = state
-        setupStore.save(state)
-        setupUiState.value = null
+        closeSetupGuide(C07SetupMachine.skip(setupState.value, now()))
     }
 
     fun finishSetupGuide() {
-        val state = C07SetupMachine.finish(setupState.value, now())
+        closeSetupGuide(C07SetupMachine.finish(setupState.value, now()))
+    }
+
+    private fun closeSetupGuide(state: C07SetupState) {
+        setupConfigurationReturn = false
         setupState.value = state
         setupStore.save(state)
         setupUiState.value = null
+        setupOriginSection?.let { settingsSectionState.value = it }
+        setupOriginSection = null
+    }
+
+    /**
+     * A configuration surface (Settings or the folder manager) is opening
+     * while the guide is visible. Hide the guide WITHOUT consuming it — no
+     * skip, no finish — and remember to return to the same step when that
+     * surface closes. Never stacks the two dialogs.
+     */
+    fun suspendSetupForConfiguration() {
+        if (!initialized) return
+        if (setupUiState.value?.visible == true) {
+            setupConfigurationReturn = true
+            setupUiState.value = null
+        }
+    }
+
+    /**
+     * A guide action opens the EXISTING settings category for its step
+     * (providers, voice, execution environment or the registered phone
+     * section). The guide suspends first; the one-shot section request then
+     * travels the same route as the package review owner's handoff.
+     */
+    fun beginSetupConfiguration(sectionKey: String) {
+        if (!initialized) return
+        suspendSetupForConfiguration()
+        settingsSectionState.value = sectionKey
+    }
+
+    /** The shell reports that Settings / the folder manager became visible. */
+    fun onConfigurationSurfaceShown() {
+        suspendSetupForConfiguration()
+    }
+
+    /** The shell reports that the configuration surface really closed. Only
+     * then is the guide re-presented, at the step it was suspended on. */
+    fun onConfigurationSurfaceHidden() {
+        if (!initialized) return
+        if (!setupConfigurationReturn) return
+        setupConfigurationReturn = false
+        if (setupUiState.value == null) publishSetup(visible = true)
+    }
+
+    /** Re-read the real platform notification state and refresh the visible
+     * guide (return from the system permission dialog or settings). */
+    fun refreshSetupStatus() {
+        if (!initialized) return
+        if (setupUiState.value?.visible != true) return
+        publishSetup(visible = true)
+    }
+
+    /** Open the real system notification settings for this App (the only
+     * notification control before Android 13, and the fallback afterwards).
+     * Nothing is enabled by opening it. */
+    fun openSystemNotificationSettings() {
+        if (!initialized) return
+        val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, appContext.packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { appContext.startActivity(intent) }.onFailure {
+            val fallback = Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${appContext.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { appContext.startActivity(fallback) }.onFailure {
+                showNotice(EntryNoticeKind.OPEN_FAILED)
+            }
+        }
+    }
+
+    private fun currentNotificationStatus(): EntryNotificationStatus = try {
+        if (androidx.core.app.NotificationManagerCompat.from(appContext)
+                .areNotificationsEnabled()
+        ) {
+            EntryNotificationStatus.ENABLED
+        } else {
+            EntryNotificationStatus.DISABLED
+        }
+    } catch (_: Throwable) {
+        EntryNotificationStatus.UNKNOWN
     }
 
     private fun maybeOfferInitialSetup() {
         if (setupState.value.seen || setupUiState.value != null) return
         if (activeState.value != null || pendingRawShare != null ||
             shareUiState.value != null || admissionJob?.isActive == true ||
-            navigationState.value != null
+            navigationState.value != null || linkJob?.isActive == true
         ) {
             setupPendingOffer = true
             return
@@ -326,18 +438,24 @@ internal object C07EntryFlowHost {
 
     private fun publishSetup(visible: Boolean) {
         val state = setupState.value
+        val steps = visibleSetupSteps()
+        val step = C07SetupMachine.normalize(state.step, steps)
         setupUiState.value = EntrySetupUi(
-            step = when (state.step) {
+            step = when (step) {
                 C07SetupStep.WELCOME -> EntrySetupStep.WELCOME
                 C07SetupStep.MODELS -> EntrySetupStep.MODELS
                 C07SetupStep.VOICE -> EntrySetupStep.VOICE
                 C07SetupStep.FILES -> EntrySetupStep.FILES
                 C07SetupStep.NOTIFICATIONS -> EntrySetupStep.NOTIFICATIONS
+                C07SetupStep.LINUX -> EntrySetupStep.LINUX
+                C07SetupStep.DEVICE -> EntrySetupStep.DEVICE
                 C07SetupStep.DONE -> EntrySetupStep.DONE
             },
-            index = state.step.ordinal,
-            total = C07SetupStep.entries.size,
+            index = steps.indexOf(step).coerceAtLeast(0),
+            total = steps.size,
             visible = visible,
+            notificationStatus = if (step == C07SetupStep.NOTIFICATIONS) currentNotificationStatus()
+                else EntryNotificationStatus.UNKNOWN,
         )
     }
 

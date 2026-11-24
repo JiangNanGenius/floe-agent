@@ -97,6 +97,34 @@ private enum class SettingsSubpage(
     MODEL_ROLES(FloeSettingsSection.PROVIDERS),
 }
 
+/** Deep-link keys that land directly on the real voice pages, e.g. from the
+ * setup guide. Compound form: `<section>#<subpage>`; the subpage is honored
+ * only when it really belongs to that section. */
+internal val SETTINGS_DEEP_LINK_VOICE_INPUT: String =
+    FloeSettingsSection.GENERAL.name + "#" + SettingsSubpage.VOICE_INPUT.name
+internal val SETTINGS_DEEP_LINK_VOICE_OUTPUT: String =
+    FloeSettingsSection.GENERAL.name + "#" + SettingsSubpage.VOICE_OUTPUT.name
+
+/** Parsed settings deep link: a section key (enum name or registered channel
+ * key) plus an optional same-section subpage. An unknown subpage degrades to
+ * the section root; an unknown section is refused by the caller. */
+private data class SettingsDeepLink(
+    val sectionKey: String,
+    val subpage: SettingsSubpage?,
+)
+
+private fun parseSettingsDeepLink(raw: String): SettingsDeepLink {
+    val hash = raw.indexOf('#')
+    if (hash < 0) return SettingsDeepLink(raw, null)
+    val sectionKey = raw.substring(0, hash)
+    val subpageName = raw.substring(hash + 1)
+    val parent = FloeSettingsSection.entries.firstOrNull { it.name == sectionKey }
+    val subpage = SettingsSubpage.entries.firstOrNull {
+        it.name == subpageName && it.parent == parent
+    }
+    return SettingsDeepLink(sectionKey, subpage)
+}
+
 /**
  * Settings opens as a page sheet (iOS presents `SettingsRootView` from the
  * sidebar footer gear), never a top-level sidebar row.
@@ -124,6 +152,9 @@ fun SettingsSheet(
     onThemeModeChange: (FloeThemeMode) -> Unit,
     onDismiss: () -> Unit,
     onOpenPreview: () -> Unit,
+    /** General's explicit setup-guide link; the shell swaps the sheet for the
+     * guide so the two dialogs never stack. Null hides the row. */
+    onOpenSetupGuide: (() -> Unit)? = null,
     /** G02 App host; null keeps the honest G01 placeholders. */
     runtimeHost: RuntimeHost? = null,
     /**
@@ -139,6 +170,7 @@ fun SettingsSheet(
      * supplies a real presentation, never as a fabricated default.
      */
     externalSections: List<FloeSettingsExternalSection> = emptyList(),
+    returnToSetupOnBack: Boolean = false,
 ) {
     var section by rememberSaveable { mutableStateOf(initialSection.ifEmpty { FloeSettingsSection.GENERAL.name }) }
     // Wide mode only: the sheet's own column toggle hid the category list
@@ -158,19 +190,27 @@ fun SettingsSheet(
     // starts at .all every presentation); rotation of a visible sheet keeps
     // the compact pushed page, the wide collapse and the current selection.
     var lastPresented by rememberSaveable { mutableStateOf(false) }
+    // The last deep-link request actually applied by this sheet. A fresh
+    // presentation (hidden→visible) records it; while the sheet stays
+    // visible, a NEW request value genuinely retargets the sheet instead of
+    // leaving the current section showing.
+    var appliedDeepLink by rememberSaveable { mutableStateOf(initialSection) }
     if (visible != lastPresented) {
         lastPresented = visible
+        appliedDeepLink = initialSection
         if (visible) {
             detailSubpage = null
+            val link = parseSettingsDeepLink(initialSection)
             val entrySection = FloeSettingsSection.entries
-                .firstOrNull { it.name == initialSection }
+                .firstOrNull { it.name == link.sectionKey }
             val externalEntry = externalSections
-                .firstOrNull { it.key == initialSection }
+                .firstOrNull { it.key == link.sectionKey }
             if (entrySection != null || externalEntry != null) {
-                // Explicit deep link (enum or channel category): select the
-                // target; compact opens its detail directly, wide shows both
-                // panes with it selected.
-                section = initialSection
+                // Explicit deep link (enum or channel category, optionally a
+                // same-section subpage): select the target; compact opens its
+                // detail directly, wide shows both panes with it selected.
+                section = link.sectionKey
+                detailSubpage = link.subpage?.name
                 wideListCollapsed = false
                 compactDetailOpen = true
             } else {
@@ -180,6 +220,25 @@ fun SettingsSheet(
                 wideListCollapsed = false
                 compactDetailOpen = false
             }
+        }
+    }
+    if (visible && initialSection != appliedDeepLink) {
+        // Already-visible retarget (a guide configuration step, a
+        // detail-surface link): the old value merely reselected nothing and
+        // the person stayed on the previous section. Only a REAL category —
+        // native or registered channel — is honored; anything else keeps the
+        // current selection exactly as a fresh presentation would.
+        val link = parseSettingsDeepLink(initialSection)
+        val entrySection = FloeSettingsSection.entries
+            .firstOrNull { it.name == link.sectionKey }
+        val externalEntry = externalSections
+            .firstOrNull { it.key == link.sectionKey }
+        if (entrySection != null || externalEntry != null) {
+            appliedDeepLink = initialSection
+            detailSubpage = link.subpage?.name
+            section = link.sectionKey
+            wideListCollapsed = false
+            compactDetailOpen = true
         }
     }
     val configuration = LocalConfiguration.current
@@ -233,7 +292,12 @@ fun SettingsSheet(
             val activeTitle = nestedTitle ?: activeExternal?.let { stringResource(it.titleRes) }
                 ?: settingsTitle(active)
             val onBack: () -> Unit = {
-                if (nested != null) detailSubpage = null else compactDetailOpen = false
+                val entry = parseSettingsDeepLink(initialSection)
+                when {
+                    returnToSetupOnBack && entry.sectionKey == section && entry.subpage == nested -> onDismiss()
+                    nested != null -> detailSubpage = null
+                    else -> compactDetailOpen = false
+                }
             }
             val openVoicePage: (C03VoiceSettingsPage) -> Unit = { page ->
                 detailSubpage = SettingsSubpage.entries.first { it.voicePage == page }.name
@@ -416,6 +480,7 @@ fun SettingsSheet(
                                         runtimeHost = runtimeHost,
                                         onOpenVoice = openVoicePage,
                                         onOpenModelRoles = { detailSubpage = SettingsSubpage.MODEL_ROLES.name },
+                                        onOpenSetupGuide = onOpenSetupGuide,
                                     )
                                 }
                             }
@@ -503,6 +568,7 @@ fun SettingsSheet(
                                             runtimeHost = runtimeHost,
                                             onOpenVoice = openVoicePage,
                                             onOpenModelRoles = { detailSubpage = SettingsSubpage.MODEL_ROLES.name },
+                                            onOpenSetupGuide = onOpenSetupGuide,
                                         )
                                     }
                                 }
@@ -721,10 +787,11 @@ private fun SettingsSectionContent(
     runtimeHost: RuntimeHost? = null,
     onOpenVoice: (C03VoiceSettingsPage) -> Unit,
     onOpenModelRoles: () -> Unit,
+    onOpenSetupGuide: (() -> Unit)? = null,
 ) {
     when (section) {
         FloeSettingsSection.GENERAL -> {
-            GeneralSettingsPage(themeMode, onThemeModeChange)
+            GeneralSettingsPage(themeMode, onThemeModeChange, onOpenSetupGuide)
             C03VoiceSettingsLinks(
                 runtimeHost?.voiceOrNull(), onOpenVoice,
                 Modifier.padding(horizontal = 16.dp),
@@ -835,12 +902,28 @@ private fun SkillsSettingsPage(runtimeHost: RuntimeHost?) {
 }
 
 @Composable
-private fun GeneralSettingsPage(themeMode: FloeThemeMode, onThemeModeChange: (FloeThemeMode) -> Unit) {
+private fun GeneralSettingsPage(
+    themeMode: FloeThemeMode,
+    onThemeModeChange: (FloeThemeMode) -> Unit,
+    onOpenSetupGuide: (() -> Unit)? = null,
+) {
     val colors = Floe.colors
     val configuration = LocalConfiguration.current
     val compact = FloeLayout.usesCompactNavigation(
         configuration.screenWidthDp.toFloat(), configuration.smallestScreenWidthDp.toFloat())
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        if (onOpenSetupGuide != null) {
+            // The setup guide stays reachable from General's first viewport.
+            // The shell swaps the sheet for the guide; nothing is re-run or
+            // reconfigured by opening it.
+            FloeSettingsSectionCard(null) {
+                FloeActionRow(
+                    stringResource(com.floe.android.feature.entryflow.R.string.entryflow_setup_title),
+                    onClick = onOpenSetupGuide,
+                    trailing = { IconGlyph(FloeIcons.ChevronForward, colors.tertiaryLabel, 14.dp) },
+                )
+            }
+        }
         FloeSettingsSectionCard(title = stringResource(R.string.day_night_theme)) {
             FloeSectionRow(
                 title = {

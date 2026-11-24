@@ -341,9 +341,12 @@ private fun shareErrorText(error: EntryShareError?): Int = when (error) {
 }
 
 /**
- * Lightweight, skippable first-run guide. It only presents the shipped
- * defaults and links to the existing Settings editors; it never writes a
- * provider/model/voice choice and never gates App use.
+ * Lightweight, skippable setup wizard. Every step either explains an optional
+ * capability or links to the REAL existing settings owner for it (providers,
+ * voice, folder access, system notifications, the local Linux environment and
+ * — only where actually registered — phone/ADB). It never writes a
+ * provider/model/voice choice, never enables anything silently and never
+ * gates App use.
  */
 @Composable
 public fun EntrySetupGuideSheet(
@@ -354,6 +357,8 @@ public fun EntrySetupGuideSheet(
     onFinish: () -> Unit,
     onAction: () -> Unit,
     onDismiss: () -> Unit,
+    notificationAction: EntryNotificationAction = EntryNotificationAction.OPEN_SETTINGS,
+    onSecondaryAction: (() -> Unit)? = null,
 ) {
     val colors = Floe.colors
     val step = state.step
@@ -394,13 +399,39 @@ public fun EntrySetupGuideSheet(
                 style = Floe.typography.body,
                 color = colors.secondaryLabel,
             )
-            setupActionLabel(step)?.let { label ->
+            if (step == EntrySetupStep.NOTIFICATIONS) {
+                Spacer(Modifier.height(10.dp))
+                FloeText(
+                    stringResource(
+                        when (state.notificationStatus) {
+                            EntryNotificationStatus.ENABLED ->
+                                R.string.entry_setup_notifications_status_on
+                            EntryNotificationStatus.DISABLED ->
+                                R.string.entry_setup_notifications_status_off
+                            EntryNotificationStatus.UNKNOWN ->
+                                R.string.entry_setup_notifications_status_unknown
+                        },
+                    ),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
+                )
+            }
+            setupActionLabel(step, notificationAction)?.let { label ->
                 Spacer(Modifier.height(18.dp))
                 FloePrimaryAction(
                     label = stringResource(label),
                     onClick = onAction,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                val secondary = setupSecondaryActionLabel(step)
+                if (secondary != null && onSecondaryAction != null) {
+                    Spacer(Modifier.height(8.dp))
+                    FloeCapsuleButton(
+                        label = stringResource(secondary),
+                        onClick = onSecondaryAction,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
             Spacer(Modifier.height(28.dp))
             FloeDivider()
@@ -435,6 +466,8 @@ private fun setupTitle(step: EntrySetupStep): Int = when (step) {
     EntrySetupStep.VOICE -> R.string.entry_setup_voice_title
     EntrySetupStep.FILES -> R.string.entry_setup_files_title
     EntrySetupStep.NOTIFICATIONS -> R.string.entry_setup_notifications_title
+    EntrySetupStep.LINUX -> R.string.entry_setup_linux_title
+    EntrySetupStep.DEVICE -> R.string.entry_setup_device_title
     EntrySetupStep.DONE -> R.string.entry_setup_done_title
 }
 
@@ -444,12 +477,33 @@ private fun setupBody(step: EntrySetupStep): Int = when (step) {
     EntrySetupStep.VOICE -> R.string.entry_setup_voice_body
     EntrySetupStep.FILES -> R.string.entry_setup_files_body
     EntrySetupStep.NOTIFICATIONS -> R.string.entry_setup_notifications_body
+    EntrySetupStep.LINUX -> R.string.entry_setup_linux_body
+    EntrySetupStep.DEVICE -> R.string.entry_setup_device_body
     EntrySetupStep.DONE -> R.string.entry_setup_done_body
 }
 
-private fun setupActionLabel(step: EntrySetupStep): Int? = when (step) {
+private fun setupActionLabel(
+    step: EntrySetupStep,
+    notificationAction: EntryNotificationAction,
+): Int? = when (step) {
     EntrySetupStep.MODELS -> R.string.entry_setup_models_action
-    EntrySetupStep.VOICE -> R.string.entry_setup_voice_action
+    EntrySetupStep.VOICE -> R.string.entry_setup_voice_input_action
+    EntrySetupStep.FILES -> R.string.entry_setup_files_action
+    EntrySetupStep.NOTIFICATIONS -> when (notificationAction) {
+        EntryNotificationAction.REQUEST_PERMISSION ->
+            R.string.entry_setup_notifications_action_request
+        EntryNotificationAction.OPEN_SETTINGS ->
+            R.string.entry_setup_notifications_action_settings
+    }
+    EntrySetupStep.LINUX -> R.string.entry_setup_linux_action
+    EntrySetupStep.DEVICE -> R.string.entry_setup_device_action
+    EntrySetupStep.WELCOME, EntrySetupStep.DONE -> null
+}
+
+/** Optional second destination for steps whose capability has two real
+ * settings pages (voice input vs read aloud). */
+private fun setupSecondaryActionLabel(step: EntrySetupStep): Int? = when (step) {
+    EntrySetupStep.VOICE -> R.string.entry_setup_voice_output_action
     else -> null
 }
 
