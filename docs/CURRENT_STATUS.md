@@ -9,7 +9,7 @@
 
 GitHub 无签名包和在线 Feather 源已核对至 1.8.80（401）。 / The GitHub unsigned IPA and live Feather feed have been verified for 1.8.80 (401). [GitHub Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.80)
 
-2026-11-25 从 App Store 正式审核队列撤下 393。接入的 400 因滚动问题留在草稿，正式送审已暂停。Apple 回读线上正式版仍为 1.8.32（353）。 / Build 393 was withdrawn on 2026-11-25. The replacement build 400 remains a draft while formal submission is paused. Apple still lists 1.8.32 (353) as available. [审核记录 / Review](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md#app-store-正式审核)
+2026-11-25 02:46（悉尼时间），1.8.80（401）提交 App Store 正式审核。Apple 回读状态为「等待审核」，设置为审核通过后自动发布。此时线上正式版为 1.8.32（353）。 / Build 401 was submitted for App Store review on 2026-11-25. Apple reported Waiting for Review with automatic release after approval. The live version at readback was 1.8.32 (353). [审核记录 / Review](releases/builds/FLOE_1.8.80_BUILD401_DELIVERY.md#发行)
 
 ## 2026-11-19 iOS 1.8.45（366）
 
