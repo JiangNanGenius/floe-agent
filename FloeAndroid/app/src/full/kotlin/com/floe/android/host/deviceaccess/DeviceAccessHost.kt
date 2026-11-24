@@ -911,6 +911,7 @@ internal class DeviceAccessHost(
             openAdbSettings(launcher, AdbPairingSettings.Page.ABOUT_PHONE)
         },
         onPairingNotificationsEnabled = ::refreshPairingNotification,
+        onRequestPairingLocalNetwork = ::requestPairingLocalNetwork,
         onCheckRootGrant = ::checkRootGrant,
         onEnableRoot = ::setRootEnabled,
         onStageApks = ::stageApks,
@@ -3836,21 +3837,27 @@ internal class DeviceAccessHost(
         closePairingSession()
         pairingSessionOpen = true
         error = null
-        val session = pairingNotification.open()
-        postPairingNotification()
+        pairingNotification.open()
+        if (!localNetworkBlocked()) postPairingNotification()
         publish()
-        // Prepare local-network access while Floe is visible on versions
-        // that require it. The system Settings button remains a separate
-        // foreground gesture even when this permission is denied.
-        if (Build.VERSION.SDK_INT >= LOCAL_NETWORK_API) withLocalPairingPermission(
+    }
+
+    private fun requestPairingLocalNetwork() {
+        val epoch = pairingNotification.currentEpoch() ?: return
+        withLocalPairingPermission(
             owner = "adb-pairing-open",
             onDenied = ::onPairingLocalNetworkDenied,
-            isCurrent = { !closed && pairingNotification.currentEpoch() == session.epoch },
-        ) {}
+            isCurrent = { !closed && pairingNotification.currentEpoch() == epoch },
+        ) {
+            if (error?.code?.startsWith("local_network_") == true) error = null
+            refreshPairingNotification()
+            publish()
+        }
     }
 
     private fun refreshPairingNotification() {
-        if (busy == DeviceAccessBusyUi.NONE &&
+        if (!closed && pairingSessionOpen && busy == DeviceAccessBusyUi.NONE &&
+            !localNetworkBlocked() &&
             PairingNotificationAccess.availability(context) == PairingNotificationPolicy.Availability.AVAILABLE
         ) {
             reissuePairingNotification(R.string.device_access_pairing_notification_text)
@@ -8416,7 +8423,9 @@ internal class DeviceAccessHost(
         const val KEY_ROOTS = "file_roots"
         const val KEY_APP_DATA_ROOTS = "app_data_roots"
         const val LOCAL_NETWORK_API = 37
-        const val LOCAL_PAIRING_ENDPOINT = "adb-tls-pairing._tcp.local"
+        // The shared LAN gate checks URI.host before requesting permission.
+        // Pairing and the resulting ADB connection are local to this phone.
+        const val LOCAL_PAIRING_ENDPOINT = "tcp://127.0.0.1"
         /** Legacy persisted choice; removed at startup, never restored. */
         const val KEY_SCREEN_SCOPE = "screen_scope"
         const val KEY_FILE_WRITES = "file_writes"

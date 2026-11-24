@@ -5,6 +5,8 @@ package com.floe.android
 
 import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -66,6 +68,7 @@ import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeValueRow
 import com.floe.android.design.IconGlyph
+import com.floe.android.host.LocalNetworkAccessBroker
 import com.floe.android.host.deviceaccess.DeviceAccessToolCatalog
 import com.floe.android.host.deviceaccess.PairingNotificationAccess
 import com.floe.android.host.deviceaccess.PairingNotificationPolicy
@@ -415,6 +418,7 @@ class DeviceAccessCallbacks(
     val onOpenDeveloperOptions: (Context) -> Unit = {},
     val onOpenAboutPhone: (Context) -> Unit = {},
     val onPairingNotificationsEnabled: () -> Unit = {},
+    val onRequestPairingLocalNetwork: () -> Unit = {},
     val onCheckRootGrant: () -> Unit = {},
     val onEnableRoot: (Boolean) -> Unit = {},
     /** Stage SAF-picked APKs into the App-local install staging dir. */
@@ -857,17 +861,25 @@ fun DeviceAccessSettingsPage(
     )
     val context = LocalContext.current
     val activity = LocalActivity.current as? ComponentActivity
+    val needsPairingLocalNetwork = {
+        Build.VERSION.SDK_INT >= LocalNetworkAccessBroker.API_LEVEL_LOCAL_NETWORK &&
+            context.checkSelfPermission(LocalNetworkAccessBroker.PERMISSION_NAME) != PackageManager.PERMISSION_GRANTED
+    }
     var notificationAvailability by remember {
         mutableStateOf(PairingNotificationAccess.availability(context))
     }
+    var localNetworkPermissionNeeded by remember { mutableStateOf(needsPairingLocalNetwork()) }
     var notificationDeniedHere by remember { mutableStateOf(false) }
     var showManualPairing by remember { mutableStateOf(false) }
     var showDeveloperOptionsHelp by remember { mutableStateOf(false) }
     val refreshNotificationAvailability: () -> Unit = {
         val next = PairingNotificationAccess.availability(context)
         val enabled = next == PairingNotificationPolicy.Availability.AVAILABLE
-        val newlyEnabled = enabled && notificationAvailability != next
+        val needsNetwork = needsPairingLocalNetwork()
+        val newlyEnabled = enabled && (notificationAvailability != next ||
+            (localNetworkPermissionNeeded && !needsNetwork))
         notificationAvailability = next
+        localNetworkPermissionNeeded = needsNetwork
         if (enabled) notificationDeniedHere = false
         if (newlyEnabled) callbacks.onPairingNotificationsEnabled()
     }
@@ -1100,6 +1112,12 @@ fun DeviceAccessSettingsPage(
                 )
             }
             if (pairingGuideOpen) {
+                if (localNetworkPermissionNeeded) {
+                    FloeActionRow(
+                        label = stringResource(R.string.device_access_adb_pair_allow_local_network),
+                        onClick = callbacks.onRequestPairingLocalNetwork,
+                    )
+                }
                 PairingNotificationAction(
                     availability = notificationAvailability,
                     permissionDenied = notificationDeniedHere,
@@ -1111,7 +1129,9 @@ fun DeviceAccessSettingsPage(
                 FloeActionRow(label = adbDevOptionsLabel, onClick = openDeveloperOptions)
                 FloeSectionRow(title = {
                     CaptionText(stringResource(
-                        if (notificationAvailability == PairingNotificationPolicy.Availability.AVAILABLE) {
+                        if (localNetworkPermissionNeeded) {
+                            R.string.device_access_adb_pair_local_network_hint
+                        } else if (notificationAvailability == PairingNotificationPolicy.Availability.AVAILABLE) {
                             R.string.device_access_adb_pair_open_hint
                         } else {
                             R.string.device_access_pairing_notification_off
