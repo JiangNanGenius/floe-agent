@@ -3,13 +3,13 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-内部 TestFlight 的 Floe QA 可安装 1.8.79（400）。本版优化长会话渲染、任务列表刷新、工具查找和目录筛选。 / Floe QA can install 1.8.79 (400), which improves long-conversation rendering, task-list refreshes, tool lookup, and directory filtering. [400 交付记录 / Delivery](releases/builds/FLOE_1.8.79_BUILD400_DELIVERY.md)
+内部 TestFlight 的 Floe QA 可安装 1.8.80（401）。本版修复长会话加载后和点击向下箭头时停在旧消息的问题。 / Floe QA can install 1.8.80 (401), which fixes jumps to the latest message when long conversations finish loading or the down arrow is tapped. [401 交付记录 / Delivery](releases/builds/FLOE_1.8.80_BUILD401_DELIVERY.md)
 
 399 于 2026-11-24 加入 `publictest1` 并提交公开 TestFlight 审核。当日回读为「等待 Beta 审核」，通过后自动通知。 / Build 399 was submitted for external TestFlight review on 2026-11-24. At readback it was awaiting review, with automatic notification enabled after approval. [公开测试 / Public beta](https://testflight.apple.com/join/nz6qeT2J)
 
-GitHub 无签名包和在线 Feather 源已核对至 1.8.79（400）。 / The GitHub unsigned IPA and live Feather feed have been verified for 1.8.79 (400). [GitHub Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.79)
+GitHub 无签名包和在线 Feather 源已核对至 1.8.80（401）。 / The GitHub unsigned IPA and live Feather feed have been verified for 1.8.80 (401). [GitHub Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.80)
 
-1.8.72（393）于 2026-11-23 带新版 iPad 宣传图重新提交 App Store 正式审核，当日回读为「等待审核」，设置为审核通过后自动发布。 / Build 393 was submitted again on 2026-11-23 with the updated iPad screenshot. Apple reported Waiting for Review that day, with automatic release after approval. [审核记录 / Review](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md#app-store-正式审核)
+2026-11-25 从 App Store 正式审核队列撤下 393。接入的 400 因滚动问题留在草稿，正式送审已暂停。Apple 回读线上正式版仍为 1.8.32（353）。 / Build 393 was withdrawn on 2026-11-25. The replacement build 400 remains a draft while formal submission is paused. Apple still lists 1.8.32 (353) as available. [审核记录 / Review](releases/builds/FLOE_1.8.72_BUILD393_DELIVERY.md#app-store-正式审核)
 
 ## 2026-11-19 iOS 1.8.45（366）
 

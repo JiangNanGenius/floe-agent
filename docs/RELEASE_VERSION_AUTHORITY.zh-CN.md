@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的 iOS 构建为 1.8.79（400）。** Floe QA 可安装，GitHub 无签名包和 Feather 更新源均已核验。 [400 交付记录](releases/builds/FLOE_1.8.79_BUILD400_DELIVERY.md)
+**最近已核验的 iOS 构建为 1.8.80（401）。** Floe QA 可安装，GitHub 无签名包和 Feather 更新源均已核验。 [401 交付记录](releases/builds/FLOE_1.8.80_BUILD401_DELIVERY.md)
 
 ## 依据与判定
 
@@ -12,6 +12,8 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+1.8.80（401）固定于 `6419044c99dfadf1b4fc7ed15793b9b8ef331568`／`v1.8.80`。本版修复长会话加载末尾消息后停在旧位置、向下箭头偶尔跳不到底的问题。 [401 交付记录](releases/builds/FLOE_1.8.80_BUILD401_DELIVERY.md)
 
 1.8.79（400）固定于 `4dddb7e4e3b1c517e66fb5535c3108f3ef1645ff`／`v1.8.79`。本版优化长会话的正文渲染及列表刷新、工具名称解析、工具清单和工作区目录筛选。 [400 交付记录](releases/builds/FLOE_1.8.79_BUILD400_DELIVERY.md)
 
