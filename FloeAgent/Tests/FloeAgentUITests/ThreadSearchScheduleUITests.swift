@@ -221,7 +221,7 @@ final class ThreadSearchScheduleUITests: XCTestCase {
 
         let transcript = app.scrollViews["thread.messages.viewport"].firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 15))
-        let latest = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "QA burst marker 95")).firstMatch
+        let latest = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "QA burst marker 95")).firstMatch
         func expectHittable(_ element: XCUIElement, timeout: TimeInterval) {
             let predicate = NSPredicate { _, _ in element.exists && element.isHittable }
             let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
@@ -235,10 +235,12 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         for _ in 0..<3 {
             transcript.swipeDown(velocity: .fast)
             XCTAssertTrue(arrow.waitForExistence(timeout: 3), "Scrolling into history must expose the return arrow")
-            XCTAssertFalse(latest.isHittable)
+            XCTAssertFalse(latest.exists && latest.isHittable)
             arrow.tap()
             expectHittable(latest, timeout: 3)
-            XCTAssertFalse(arrow.exists, "The arrow should disappear once the last message is in view")
+            let arrived = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: arrow)
+            XCTAssertEqual(XCTWaiter.wait(for: [arrived], timeout: 2), .completed,
+                           "The arrow should disappear once the last message is in view")
         }
     }
 
