@@ -41,6 +41,10 @@
     <string name="device_access_screen_requires_task">启动设备任务后才能选择共享范围。</string>
 
     <string name="device_access_adb_section">内嵌 ADB 访问</string>
+    <string name="device_access_adb_pair_guide_title">无线配对向导</string>
+    <string name="device_access_adb_state_usb_required">等待 USB 初始化</string>
+    <string name="device_access_adb_paired_next">设备已配对。点「启动服务」即可在 Floe 中使用 ADB。</string>
+    <string name="device_access_usb_check">检查服务状态</string>
     <string name="device_access_adb_intro">由 Floe 自带的 shell 权限服务提供。它不是 Root，需要在本机配对，并已包含在此版本中。</string>
     <string name="device_access_adb_state_off">关闭</string>
     <string name="device_access_adb_state_pair_required">需要配对</string>
@@ -48,7 +52,7 @@
     <string name="device_access_adb_state_paired">已配对</string>
     <string name="device_access_adb_state_alive">服务运行中</string>
     <string name="device_access_adb_state_died">服务已停止</string>
-    <string name="device_access_adb_state_restart">需要重启</string>
+    <string name="device_access_adb_state_restart">需要重新启动服务</string>
     <string name="device_access_adb_state_revoked">配对已撤销</string>
     <string name="device_access_adb_state_error">不可用</string>
     <string name="device_access_adb_state_uid">Shell 身份（UID %1$d）</string>
@@ -57,7 +61,7 @@
     <string name="device_access_adb_pair_hint">在 Android 设置里取配对码，再通过 Floe 的通知输入。</string>
     <string name="device_access_adb_pair_system_step">1. 在开发者选项中点击「无线调试」这一行，开启后点「使用配对码配对设备」。</string>
     <string name="device_access_adb_pair_allow_local_network">允许本地网络访问</string>
-    <string name="device_access_adb_pair_local_network_hint">2. 请先允许本地网络访问，让 Floe 能找到这台设备的配对端口。</string>
+    <string name="device_access_adb_pair_local_network_hint">允许本地网络访问后，Floe 才能找到这台设备的配对端口。</string>
     <string name="device_access_adb_pair_open_hint">2. 看到 6 位码后，下拉通知栏，在 Floe 通知中点「输入配对码」。完成后回 Floe 启动服务。</string>
     <string name="device_access_adb_pair_manual">手动配对</string>
     <string name="device_access_adb_pair_manual_hide">收起手动配对</string>
@@ -171,7 +175,7 @@
     <string name="device_access_pairing_port_label">配对端口</string>
     <string name="device_access_pairing_port_searching">正在查找本机的配对端口…</string>
     <string name="device_access_pairing_port_find">查找配对端口</string>
-    <string name="device_access_pairing_unsupported">无线配对需要 Android 11 或更高版本。此设备需要从电脑进行一次 USB 初始化；这里不会把服务显示为可用。</string>
+    <string name="device_access_pairing_unsupported">在开发者选项中开启「USB 调试」，用数据线连接电脑并确认调试授权，然后在电脑上运行 Floe 的 USB 初始化命令。</string>
 
     <string name="device_access_root_check_title">检查 Root 权限？</string>
     <string name="device_access_root_check_message">Floe 不会 Root 此设备。如果设备已有 Root 授权，检查会为你主动发起的操作开启 Root；否则会如实显示未找到授权。你可以随时关闭。</string>

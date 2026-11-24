@@ -32,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -251,6 +252,9 @@ sealed interface DeviceAccessAdbUi {
     /** The tier was never turned on by the user. */
     data object Off : DeviceAccessAdbUi
 
+    /** ADB was enabled on this device, but the computer-started service has not connected. */
+    data object UsbSetupRequired : DeviceAccessAdbUi
+
     /**
      * No usable pairing. [pairingSessionOpen] means Floe's setup guide is
      * open. The six-digit code can be entered in the
@@ -417,7 +421,7 @@ class DeviceAccessCallbacks(
     val onForgetAdbPairing: () -> Unit = {},
     val onOpenDeveloperOptions: (Context) -> Unit = {},
     val onOpenAboutPhone: (Context) -> Unit = {},
-    val onPairingNotificationsEnabled: () -> Unit = {},
+    val onPairingAccessChanged: () -> Unit = {},
     val onRequestPairingLocalNetwork: () -> Unit = {},
     val onCheckRootGrant: () -> Unit = {},
     val onEnableRoot: (Boolean) -> Unit = {},
@@ -473,6 +477,7 @@ object DeviceAccessPresentation {
 
     fun adbStatusRes(state: DeviceAccessAdbUi): Int = when (state) {
         DeviceAccessAdbUi.Off -> R.string.device_access_adb_state_off
+        DeviceAccessAdbUi.UsbSetupRequired -> R.string.device_access_adb_state_usb_required
         is DeviceAccessAdbUi.PairRequired -> R.string.device_access_adb_state_pair_required
         DeviceAccessAdbUi.Pairing -> R.string.device_access_adb_state_pairing
         is DeviceAccessAdbUi.Paired -> R.string.device_access_adb_state_paired
@@ -494,7 +499,16 @@ object DeviceAccessPresentation {
     fun adbActions(
         state: DeviceAccessAdbUi,
         busy: DeviceAccessBusyUi = DeviceAccessBusyUi.NONE,
+        pairingSupported: Boolean = true,
     ): Set<DeviceAccessAdbActionUi> {
+        if (!pairingSupported) {
+            if (busy != DeviceAccessBusyUi.NONE) return emptySet()
+            return when (state) {
+                DeviceAccessAdbUi.Off -> setOf(DeviceAccessAdbActionUi.ENABLE)
+                is DeviceAccessAdbUi.ServiceAlive -> setOf(DeviceAccessAdbActionUi.STOP)
+                else -> setOf(DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
+            }
+        }
         val base = if (adbShowsCodeField(state)) {
             setOf(
                 DeviceAccessAdbActionUi.SUBMIT_CODE,
@@ -503,6 +517,7 @@ object DeviceAccessPresentation {
             )
         } else when (state) {
             DeviceAccessAdbUi.Off -> setOf(DeviceAccessAdbActionUi.ENABLE)
+            DeviceAccessAdbUi.UsbSetupRequired -> setOf(DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
             is DeviceAccessAdbUi.PairRequired ->
                 setOf(DeviceAccessAdbActionUi.PAIR, DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
             DeviceAccessAdbUi.Pairing -> setOf(DeviceAccessAdbActionUi.CANCEL_PAIRING)
@@ -869,19 +884,19 @@ fun DeviceAccessSettingsPage(
         mutableStateOf(PairingNotificationAccess.availability(context))
     }
     var localNetworkPermissionNeeded by remember { mutableStateOf(needsPairingLocalNetwork()) }
-    var notificationDeniedHere by remember { mutableStateOf(false) }
-    var showManualPairing by remember { mutableStateOf(false) }
-    var showDeveloperOptionsHelp by remember { mutableStateOf(false) }
+    var notificationDeniedHere by rememberSaveable { mutableStateOf(false) }
+    var showManualPairing by rememberSaveable { mutableStateOf(false) }
+    var showDeveloperOptionsHelp by rememberSaveable { mutableStateOf(false) }
     val refreshNotificationAvailability: () -> Unit = {
         val next = PairingNotificationAccess.availability(context)
         val enabled = next == PairingNotificationPolicy.Availability.AVAILABLE
         val needsNetwork = needsPairingLocalNetwork()
-        val newlyEnabled = enabled && (notificationAvailability != next ||
-            (localNetworkPermissionNeeded && !needsNetwork))
+        val accessGranted = (enabled && notificationAvailability != next) ||
+            (localNetworkPermissionNeeded && !needsNetwork)
         notificationAvailability = next
         localNetworkPermissionNeeded = needsNetwork
         if (enabled) notificationDeniedHere = false
-        if (newlyEnabled) callbacks.onPairingNotificationsEnabled()
+        if (accessGranted) callbacks.onPairingAccessChanged()
     }
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -937,11 +952,13 @@ fun DeviceAccessSettingsPage(
         callbacks.onPairAdb()
     }
     val openDeveloperOptions: () -> Unit = { callbacks.onOpenDeveloperOptions(activity ?: context) }
-    val pairingGuideOpen = DeviceAccessPresentation.adbShowsCodeField(state.adb)
+    val pairingGuideOpen = state.pairingSupported && DeviceAccessPresentation.adbShowsCodeField(state.adb)
     // Explicit app-data folder draft. RAM-only presentation input; the host
     // validates the backend-shape before it becomes a grantable root.
     var appDataDraft by remember { mutableStateOf("") }
-    val adbActions = DeviceAccessPresentation.adbActions(state.adb, state.busy)
+    val adbActions = DeviceAccessPresentation.adbActions(state.adb, state.busy, state.pairingSupported)
+    val needsUsbSetup = !state.pairingSupported && state.adb != DeviceAccessAdbUi.Off &&
+        state.adb !is DeviceAccessAdbUi.ServiceAlive
     // One direct next action rides the status row; the remaining honest
     // actions for the current state share one wrapping capsule row. The
     // action sets come from DeviceAccessPresentation, so busy work already
@@ -1017,13 +1034,18 @@ fun DeviceAccessSettingsPage(
         // the iOS-style footer below the card, in the same conditions and the
         // same reading order as the flat layout.
         FloeSettingsSectionCard(
-            title = stringResource(R.string.device_access_adb_section),
+            title = stringResource(if (pairingGuideOpen) R.string.device_access_adb_pair_guide_title
+                else R.string.device_access_adb_section),
             caption = {
                 Column {
                     DeviceAccessPresentation.adbEffectiveUid(state.adb)?.let { uid ->
                         CaptionText(stringResource(R.string.device_access_adb_state_uid, uid))
                     }
                     when {
+                        state.adb is DeviceAccessAdbUi.Paired && DeviceAccessAdbActionUi.START in adbActions -> CaptionText(
+                            stringResource(R.string.device_access_adb_paired_next),
+                            Modifier.padding(top = 2.dp),
+                        )
                         state.adb == DeviceAccessAdbUi.RestartRequired -> CaptionText(
                             stringResource(R.string.device_access_adb_restart_hint),
                             Modifier.padding(top = 2.dp),
@@ -1040,12 +1062,12 @@ fun DeviceAccessSettingsPage(
                             Modifier.padding(top = 2.dp),
                         )
                     }
-                    if (!state.pairingSupported) {
+                    if (!state.pairingSupported && state.adb !is DeviceAccessAdbUi.ServiceAlive) {
                         CaptionText(
                             stringResource(R.string.device_access_pairing_unsupported),
                             Modifier.padding(top = 2.dp),
                         )
-                        if (state.usbBootstrapExported) {
+                        if (needsUsbSetup && state.usbBootstrapExported) {
                             CaptionText(
                                 stringResource(R.string.device_access_usb_bootstrap_copied),
                                 Modifier.padding(top = 2.dp),
@@ -1104,15 +1126,25 @@ fun DeviceAccessSettingsPage(
                     enabled = port != null,
                 )
             }
-            if (!state.pairingSupported) {
+            if (needsUsbSetup) {
                 FloeActionRow(
                     label = stringResource(R.string.device_access_usb_bootstrap),
                     onClick = callbacks.onExportUsbBootstrap,
                     enabled = state.busy == DeviceAccessBusyUi.NONE,
                 )
+                if (state.usbBootstrapExported) {
+                    FloeActionRow(
+                        label = stringResource(R.string.device_access_usb_check),
+                        onClick = callbacks.onRefresh,
+                        enabled = state.busy == DeviceAccessBusyUi.NONE,
+                    )
+                }
             }
             if (pairingGuideOpen) {
                 if (localNetworkPermissionNeeded) {
+                    FloeSectionRow(title = {
+                        CaptionText(stringResource(R.string.device_access_adb_pair_local_network_hint))
+                    })
                     FloeActionRow(
                         label = stringResource(R.string.device_access_adb_pair_allow_local_network),
                         onClick = callbacks.onRequestPairingLocalNetwork,
@@ -1129,9 +1161,7 @@ fun DeviceAccessSettingsPage(
                 FloeActionRow(label = adbDevOptionsLabel, onClick = openDeveloperOptions)
                 FloeSectionRow(title = {
                     CaptionText(stringResource(
-                        if (localNetworkPermissionNeeded) {
-                            R.string.device_access_adb_pair_local_network_hint
-                        } else if (notificationAvailability == PairingNotificationPolicy.Availability.AVAILABLE) {
+                        if (notificationAvailability == PairingNotificationPolicy.Availability.AVAILABLE) {
                             R.string.device_access_adb_pair_open_hint
                         } else {
                             R.string.device_access_pairing_notification_off
